@@ -299,7 +299,7 @@ class ImageVideoDataset(Dataset):
                 # Random use no text generation
                 if random.random() < self.text_drop_ratio:
                     text = ''
-            return pixel_values, text, 'video'
+            return pixel_values, text, 'video', batch_index
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -311,7 +311,7 @@ class ImageVideoDataset(Dataset):
                 image = np.expand_dims(np.array(image), 0)
             if random.random() < self.text_drop_ratio:
                 text = ''
-            return image, text, 'image'
+            return image, text, 'image', [0]
 
     def __len__(self):
         return self.length
@@ -327,7 +327,7 @@ class ImageVideoDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, name, data_type = self.get_batch(idx)
+                pixel_values, name, data_type, batch_index = self.get_batch(idx)
                 sample["pixel_values"] = pixel_values
                 sample["text"] = name
                 sample["data_type"] = data_type
@@ -357,7 +357,7 @@ class ImageVideoDataset(Dataset):
         return sample
 
 
-class ImageVideoControlDataset(Dataset):
+class ImageVideoControlDataset(ImageVideoDataset):
     def __init__(
             self,
             ann_path, data_root=None,
@@ -370,114 +370,27 @@ class ImageVideoControlDataset(Dataset):
             video_length_drop_end=1.0,
             enable_inpaint=False,
     ):
-        # Loading annotations from files
-        print(f"loading annotations from {ann_path} ...")
-        if ann_path.endswith('.csv'):
-            with open(ann_path, 'r') as csvfile:
-                dataset = list(csv.DictReader(csvfile))
-        elif ann_path.endswith('.json'):
-            dataset = json.load(open(ann_path))
-    
-        self.data_root = data_root
-
-        # It's used to balance num of images and videos.
-        self.dataset = []
-        for data in dataset:
-            if data.get('type', 'image') != 'video':
-                self.dataset.append(data)
-        if video_repeat > 0:
-            for _ in range(video_repeat):
-                for data in dataset:
-                    if data.get('type', 'image') == 'video':
-                        self.dataset.append(data)
-        del dataset
-
-        self.length = len(self.dataset)
-        print(f"data scale: {self.length}")
-        # TODO: enable bucket training
-        self.enable_bucket = enable_bucket
-        self.text_drop_ratio = text_drop_ratio
-        self.enable_inpaint  = enable_inpaint
-
-        self.video_length_drop_start = video_length_drop_start
-        self.video_length_drop_end = video_length_drop_end
-
-        # Video params
-        self.video_sample_stride    = video_sample_stride
-        self.video_sample_n_frames  = video_sample_n_frames
-        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
-        self.video_transforms = transforms.Compose(
-            [
-                transforms.Resize(min(self.video_sample_size)),
-                transforms.CenterCrop(self.video_sample_size),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-            ]
+        super().__init__(
+            ann_path,
+            data_root,
+            video_sample_size,
+            video_sample_stride,
+            video_sample_n_frames,
+            image_sample_size,
+            video_repeat,
+            text_drop_ratio,
+            enable_bucket,
+            video_length_drop_start,
+            video_length_drop_end,
+            enable_inpaint,
         )
 
-        # Image params
-        self.image_sample_size  = tuple(image_sample_size) if not isinstance(image_sample_size, int) else (image_sample_size, image_sample_size)
-        self.image_transforms   = transforms.Compose([
-            transforms.Resize(min(self.image_sample_size)),
-            transforms.CenterCrop(self.image_sample_size),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5],[0.5, 0.5, 0.5])
-        ])
-
-        self.larger_side_of_image_and_video = max(min(self.image_sample_size), min(self.video_sample_size))
-    
     def get_batch(self, idx):
+        pixel_values, text, _, batch_index = super().get_batch(idx)
         data_info = self.dataset[idx % len(self.dataset)]
         video_id, text = data_info['file_path'], data_info['text']
 
         if data_info.get('type', 'image')=='video':
-            if self.data_root is None:
-                video_dir = video_id
-            else:
-                video_dir = os.path.join(self.data_root, video_id)
-
-            with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
-                min_sample_n_frames = min(
-                    self.video_sample_n_frames, 
-                    int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
-                )
-                if min_sample_n_frames == 0:
-                    raise ValueError(f"No Frames in video.")
-
-                video_length = int(self.video_length_drop_end * len(video_reader))
-                clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-                start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
-                batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
-
-                try:
-                    sample_args = (video_reader, batch_index)
-                    pixel_values = func_timeout(
-                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
-                    )
-                    resized_frames = []
-                    for i in range(len(pixel_values)):
-                        frame = pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    pixel_values = np.array(resized_frames)
-                except FunctionTimedOut:
-                    raise ValueError(f"Read {idx} timeout.")
-                except Exception as e:
-                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
-
-                if not self.enable_bucket:
-                    pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-                    del video_reader
-                else:
-                    pixel_values = pixel_values
-
-                if not self.enable_bucket:
-                    pixel_values = self.video_transforms(pixel_values)
-                
-                # Random use no text generation
-                if random.random() < self.text_drop_ratio:
-                    text = ''
-
             control_video_id = data_info['control_file_path']
 
             if self.data_root is None:
@@ -513,18 +426,6 @@ class ImageVideoControlDataset(Dataset):
                     control_pixel_values = self.video_transforms(control_pixel_values)
             return pixel_values, control_pixel_values, text, "video"
         else:
-            image_path, text = data_info['file_path'], data_info['text']
-            if self.data_root is not None:
-                image_path = os.path.join(self.data_root, image_path)
-            image = Image.open(image_path).convert('RGB')
-            if not self.enable_bucket:
-                image = self.image_transforms(image).unsqueeze(0)
-            else:
-                image = np.expand_dims(np.array(image), 0)
-
-            if random.random() < self.text_drop_ratio:
-                text = ''
-
             control_image_id = data_info['control_file_path']
 
             if self.data_root is None:
@@ -537,10 +438,8 @@ class ImageVideoControlDataset(Dataset):
                 control_image = self.image_transforms(control_image).unsqueeze(0)
             else:
                 control_image = np.expand_dims(np.array(control_image), 0)
+            image = pixel_values
             return image, control_image, text, 'image'
-
-    def __len__(self):
-        return self.length
 
     def __getitem__(self, idx):
         data_info = self.dataset[idx % len(self.dataset)]
