@@ -40,6 +40,7 @@ from .pipeline_utils import (
     CogVideoX_Fun_PipelineOutput
 )
 
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -228,7 +229,16 @@ class CogVideoX_Fun_Pipeline(DiffusionPipeline):
         return prompt_embeds, negative_prompt_embeds
 
     def prepare_latents(
-        self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, latents=None
+        self,
+        batch_size,
+        num_channels_latents,
+        num_frames,
+        height,
+        width,
+        dtype,
+        device,
+        generator,
+        latents=None,
     ):
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
