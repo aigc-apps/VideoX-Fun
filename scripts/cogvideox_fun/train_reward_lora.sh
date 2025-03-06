@@ -5,7 +5,7 @@ export VALIDATION_PROMPT_PATH="MovieGenVideoBench_val.txt"
 # Use 49 for V1 and V1.1; Use 85 for V1.5.
 export VIDEO_LENGTH=49
 
-accelerate launch --num_processes=1 --mixed_precision="bf16" scripts/train_reward_lora.py \
+accelerate launch --num_processes=1 --mixed_precision="bf16" scripts/cogvideox_fun/train_reward_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --rank=32 \
   --network_alpha=16 \
@@ -33,7 +33,7 @@ accelerate launch --num_processes=1 --mixed_precision="bf16" scripts/train_rewar
   --backprop
 
 # Training command for CogVideoX-Fun-V1.1-2b-InP-HPS2.1.safetensors (with 8 A100 GPUs)
-# accelerate launch --num_processes=8 --mixed_precision="bf16" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json scripts/train_reward_lora.py \
+# accelerate launch --num_processes=8 --mixed_precision="bf16" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json scripts/cogvideox_fun/train_reward_lora.py \
 #   --pretrained_model_name_or_path=$MODEL_NAME \
 #   --rank=128 \
 #   --network_alpha=64 \

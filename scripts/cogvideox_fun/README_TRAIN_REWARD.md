@@ -228,7 +228,7 @@ wget -O $site_packages/hpsv2/src/open_clip/ https://github.com/tgxs002/HPSv2/raw
 ```
 
 > [!NOTE]
-> Since some models will be downloaded automatically from HuggingFace, Please run `HF_ENDPOINT=https://hf-mirror.com sh scripts/train_reward_lora.sh` if you cannot access to huggingface.com.
+> Since some models will be downloaded automatically from HuggingFace, Please run `HF_ENDPOINT=https://hf-mirror.com sh scripts/cogvideox_fun/train_reward_lora.sh` if you cannot access to huggingface.com.
 
 ### Important Args
 + `rank`: The size of LoRA model. The higher the LoRA rank, the more parameters it has, and the more it can learn (including some unnecessary information).

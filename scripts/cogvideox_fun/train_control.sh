@@ -5,7 +5,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/train_control.py \
+accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -44,7 +44,7 @@ accelerate launch --mixed_precision="bf16" scripts/train_control.py \
 # export NCCL_P2P_DISABLE=1
 # NCCL_DEBUG=INFO
 
-# accelerate launch --mixed_precision="bf16" scripts/train_control.py \
+# accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.py \
 #   --pretrained_model_name_or_path=$MODEL_NAME \
 #   --train_data_dir=$DATASET_NAME \
 #   --train_data_meta=$DATASET_META_NAME \
