@@ -676,7 +676,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
             for key in transformer_additional_kwargs["dict_mapping"]:
-                print(f"Add {transformer_additional_kwargs["dict_mapping"][key]} from {transformer_additional_kwargs[key]} to config")
+                # print(f"Add {transformer_additional_kwargs["dict_mapping"][key]} from {transformer_additional_kwargs[key]} to config")
                 transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = transformer_additional_kwargs[key]
 
         if low_cpu_mem_usage:

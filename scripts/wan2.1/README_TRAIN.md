@@ -1,4 +1,6 @@
-## Lora Training Code
+## Training Code
+
+The default training commands for the different versions are as follows:
 
 We can choose whether to use deep speed in Wan, which can save a lot of video memory. 
 
@@ -21,7 +23,6 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 
 Wan without deepspeed:
-
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -30,7 +31,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -46,7 +47,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_lora.py \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -58,7 +61,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --low_vram 
+  --low_vram \
+  --train_mode="normal" \
+  --trainable_modules "."
 ```
 
 Wan with deepspeed:
@@ -70,7 +75,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/cogvideox_fun/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/cogvideox_fun/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -86,7 +91,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -98,6 +105,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --low_vram \
   --use_deepspeed \
-  --low_vram
+  --train_mode="normal" \
+  --trainable_modules "."
 ```
