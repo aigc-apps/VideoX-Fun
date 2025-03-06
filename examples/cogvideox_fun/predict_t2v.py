@@ -1,32 +1,43 @@
-
-
-import json
 import os
+import sys
 
 import numpy as np
 import torch
-from diffusers import (AutoencoderKL, CogVideoXDDIMScheduler, DDIMScheduler,
+from diffusers import (CogVideoXDDIMScheduler, DDIMScheduler,
                        DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
-from transformers import T5EncoderModel, T5Tokenizer
-from omegaconf import OmegaConf
 from PIL import Image
+from transformers import T5EncoderModel
 
-from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.models.autoencoder_magvit import AutoencoderKLCogVideoX
-from cogvideox.pipeline.pipeline_cogvideox import CogVideoX_Fun_Pipeline
-from cogvideox.pipeline.pipeline_cogvideox_inpaint import CogVideoX_Fun_Pipeline_Inpaint
+current_file_path = os.path.abspath(__file__)
+project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
+for project_root in project_roots:
+    sys.path.insert(0, project_root) if project_root not in sys.path else None
+
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel, T5EncoderModel,
+                              T5Tokenizer)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
+                                CogVideoX_Fun_Pipeline_Inpaint)
+from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 
-# Low gpu memory mode, this is used when the GPU memory is under 16GB
-low_gpu_memory_mode = False
+# GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
+# 
+# model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
+# and the transformer model has been quantized to float8, which can save more GPU memory. 
+# 
+# sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
+# resulting in slower speeds but saving a large amount of GPU memory.
+GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 
 # model path
 model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
 
-# Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" and "DDIM"
+# Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" "DDIM_Cog" and "DDIM_Origin"
 sampler_name        = "DDIM_Origin"
 
 # Load pretrained model if need
@@ -52,10 +63,11 @@ num_inference_steps = 50
 lora_weight         = 0.55
 save_path           = "samples/cogvideox-fun-videos-t2v"
 
-transformer = CogVideoXTransformer3DModel.from_pretrained_2d(
+transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
+    torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -88,9 +100,14 @@ if vae_path is not None:
     m, u = vae.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
+# Get tokenizer and text_encoder
+tokenizer = T5Tokenizer.from_pretrained(
+    model_name, subfolder="tokenizer"
+)
 text_encoder = T5EncoderModel.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype
 )
+
 # Get Scheduler
 Choosen_Scheduler = scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
@@ -106,25 +123,26 @@ scheduler = Choosen_Scheduler.from_pretrained(
 )
 
 if transformer.config.in_channels != vae.config.latent_channels:
-    pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
-        model_name,
+    pipeline = CogVideoX_Fun_Pipeline_Inpaint(
         vae=vae,
+        tokenizer=tokenizer,
         text_encoder=text_encoder,
         transformer=transformer,
         scheduler=scheduler,
-        torch_dtype=weight_dtype
     )
 else:
-    pipeline = CogVideoX_Fun_Pipeline.from_pretrained(
-        model_name,
+    pipeline = CogVideoX_Fun_Pipeline(
         vae=vae,
+        tokenizer=tokenizer,
         text_encoder=text_encoder,
         transformer=transformer,
         scheduler=scheduler,
-        torch_dtype=weight_dtype
     )
-if low_gpu_memory_mode:
+if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload()
+elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+    convert_weight_dtype_wrapper(transformer, weight_dtype)
+    pipeline.enable_model_cpu_offload()
 else:
     pipeline.enable_model_cpu_offload()
 

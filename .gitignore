@@ -6,9 +6,12 @@ taming*
 samples*
 datasets*
 asset*
+_*
+logs*
 __pycache__/
 *.py[cod]
 *$py.class
+scripts_demo*
 
 # C extensions
 *.so

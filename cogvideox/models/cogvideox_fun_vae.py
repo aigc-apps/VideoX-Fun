@@ -19,18 +19,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
-from diffusers.utils import logging
-from diffusers.utils.accelerate_utils import apply_forward_hook
 from diffusers.models.activations import get_activation
+from diffusers.models.autoencoders.vae import (DecoderOutput,
+                                               DiagonalGaussianDistribution)
 from diffusers.models.downsampling import CogVideoXDownsample3D
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.upsampling import CogVideoXUpsample3D
-from diffusers.models.autoencoders.vae import DecoderOutput, DiagonalGaussianDistribution
-
+from diffusers.utils import logging
+from diffusers.utils.accelerate_utils import apply_forward_hook
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -1644,3 +1643,32 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if not return_dict:
             return (dec,)
         return dec
+            
+    @classmethod
+    def from_pretrained(cls, pretrained_model_path, subfolder=None, **vae_additional_kwargs):
+        import json
+        import os
+        if subfolder is not None:
+            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
+
+        config_file = os.path.join(pretrained_model_path, 'config.json')
+        if not os.path.isfile(config_file):
+            raise RuntimeError(f"{config_file} does not exist")
+        with open(config_file, "r") as f:
+            config = json.load(f)
+
+        model = cls.from_config(config, **vae_additional_kwargs)
+        from diffusers.utils import WEIGHTS_NAME
+        model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+        model_file_safetensors = model_file.replace(".bin", ".safetensors")
+        if os.path.exists(model_file_safetensors):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(model_file_safetensors)
+        else:
+            if not os.path.isfile(model_file):
+                raise RuntimeError(f"{model_file} does not exist")
+            state_dict = torch.load(model_file, map_location="cpu")
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m, u)
+        return model

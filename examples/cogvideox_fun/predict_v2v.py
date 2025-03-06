@@ -1,33 +1,42 @@
-import json
 import os
+import sys
 
-import cv2
 import numpy as np
 import torch
-from diffusers import (AutoencoderKL, CogVideoXDDIMScheduler, DDIMScheduler,
+from diffusers import (CogVideoXDDIMScheduler, DDIMScheduler,
                        DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
-from omegaconf import OmegaConf
 from PIL import Image
-from transformers import (CLIPImageProcessor, CLIPVisionModelWithProjection,
-                          T5EncoderModel, T5Tokenizer)
 
-from cogvideox.models.autoencoder_magvit import AutoencoderKLCogVideoX
-from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox import CogVideoX_Fun_Pipeline
-from cogvideox.pipeline.pipeline_cogvideox_control import \
-    CogVideoX_Fun_Pipeline_Control
+current_file_path = os.path.abspath(__file__)
+project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
+for project_root in project_roots:
+    sys.path.insert(0, project_root) if project_root not in sys.path else None
+
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel, T5EncoderModel,
+                              T5Tokenizer)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
+                                CogVideoX_Fun_Pipeline_Inpaint)
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
+from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.utils import get_video_to_video_latent, save_videos_grid
 
-# Low gpu memory mode, this is used when the GPU memory is under 16GB
-low_gpu_memory_mode = False
+# GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
+# 
+# model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
+# and the transformer model has been quantized to float8, which can save more GPU memory. 
+# 
+# sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
+# resulting in slower speeds but saving a large amount of GPU memory.
+GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 
 # model path
-model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-Pose"
+model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
 
-# Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" and "DDIM"
+# Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" "DDIM_Cog" and "DDIM_Origin"
 sampler_name        = "DDIM_Origin"
 
 # Load pretrained model if need
@@ -35,7 +44,7 @@ transformer_path    = None
 vae_path            = None
 lora_path           = None
 # Other params
-sample_size         = [672, 384]
+sample_size         = [384, 672]
 # V1.0 and V1.1 support up to 49 frames of video generation,
 # while V1.5 supports up to 85 frames.  
 video_length        = 49
@@ -44,21 +53,28 @@ fps                 = 8
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-control_video           = "asset/pose.mp4"
+# If you are preparing to redraw the reference video, set validation_video and validation_video_mask. 
+# If you do not use validation_video_mask, the entire video will be redrawn; 
+# if you use validation_video_mask, only a portion of the video will be redrawn.
+# Please set a larger denoise_strength when using validation_video_mask, such as 1.00 instead of 0.70
+validation_video        = "asset/1.mp4"
+validation_video_mask   = None 
+denoise_strength        = 0.70
 
 # prompts
-prompt                  = "A young woman with beautiful face, dressed in white, is moving her body. "
+prompt                  = "A cute cat is playing the guitar. "
 negative_prompt         = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. "
 guidance_scale          = 6.0
 seed                    = 43
 num_inference_steps     = 50
 lora_weight             = 0.55
-save_path               = "samples/cogvideox-fun-videos_control"
+save_path               = "samples/cogvideox-fun-videos_v2v"
 
-transformer = CogVideoXTransformer3DModel.from_pretrained_2d(
+transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
+    torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -91,9 +107,14 @@ if vae_path is not None:
     m, u = vae.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
+# Get tokenizer and text_encoder
+tokenizer = T5Tokenizer.from_pretrained(
+    model_name, subfolder="tokenizer"
+)
 text_encoder = T5EncoderModel.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype
 )
+
 # Get Scheduler
 Choosen_Scheduler = scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
@@ -108,17 +129,27 @@ scheduler = Choosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = CogVideoX_Fun_Pipeline_Control.from_pretrained(
-    model_name,
-    vae=vae,
-    text_encoder=text_encoder,
-    transformer=transformer,
-    scheduler=scheduler,
-    torch_dtype=weight_dtype
-)
-
-if low_gpu_memory_mode:
+if transformer.config.in_channels != vae.config.latent_channels:
+    pipeline = CogVideoX_Fun_Pipeline_Inpaint(
+        vae=vae,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        transformer=transformer,
+        scheduler=scheduler,
+    )
+else:
+    pipeline = CogVideoX_Fun_Pipeline(
+        vae=vae,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        transformer=transformer,
+        scheduler=scheduler,
+    )
+if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload()
+elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+    convert_weight_dtype_wrapper(transformer, weight_dtype)
+    pipeline.enable_model_cpu_offload()
 else:
     pipeline.enable_model_cpu_offload()
 
@@ -132,7 +163,7 @@ latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
 if video_length != 1 and transformer.config.patch_size_t is not None and latent_frames % transformer.config.patch_size_t != 0:
     additional_frames = transformer.config.patch_size_t - latent_frames % transformer.config.patch_size_t
     video_length += additional_frames * vae.config.temporal_compression_ratio
-input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps)
+input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=sample_size, validation_video_mask=validation_video_mask, fps=fps)
 
 with torch.no_grad():
     sample = pipeline(
@@ -145,7 +176,9 @@ with torch.no_grad():
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
 
-        control_video = input_video,
+        video       = input_video,
+        mask_video  = input_video_mask,
+        strength    = denoise_strength,
     ).videos
 
 if lora_path is not None:

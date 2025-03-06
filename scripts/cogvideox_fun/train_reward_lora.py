@@ -56,9 +56,9 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 import cogvideox.reward.reward_fn as reward_fn
-from cogvideox.models.autoencoder_magvit import AutoencoderKLCogVideoX
-from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_inpaint import (
+from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
+from cogvideox.models.cogvideox_fun_transformer3d import CogVideoXTransformer3DModel
+from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
     CogVideoX_Fun_Pipeline_Inpaint, add_noise_to_reference_video,
     get_3d_rotary_pos_embed, get_resize_crop_region_for_grid)
 from cogvideox.utils.lora_utils import create_network, merge_lora

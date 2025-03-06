@@ -20,12 +20,12 @@ from PIL import Image
 from transformers import T5EncoderModel, T5Tokenizer
 
 from ..cogvideox.data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..cogvideox.models.autoencoder_magvit import AutoencoderKLCogVideoX
-from ..cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from ..cogvideox.pipeline.pipeline_cogvideox import CogVideoX_Fun_Pipeline
-from ..cogvideox.pipeline.pipeline_cogvideox_control import \
+from ..cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
+from ..cogvideox.models.cogvideox_fun_transformer3d import CogVideoXTransformer3DModel
+from ..cogvideox.pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
+from ..cogvideox.pipeline.pipeline_cogvideox_fun_control import \
     CogVideoX_Fun_Pipeline_Control
-from ..cogvideox.pipeline.pipeline_cogvideox_inpaint import (
+from ..cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
     CogVideoX_Fun_Pipeline_Inpaint)
 from ..cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from ..cogvideox.utils.utils import (get_image_to_video_latent,

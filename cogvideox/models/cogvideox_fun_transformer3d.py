@@ -13,26 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
+import json
+import os
 from typing import Any, Dict, Optional, Tuple, Union
 
-import os
-import json
 import torch
-import glob
 import torch.nn.functional as F
-from torch import nn
-
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.models.embeddings import CogVideoXPatchEmbed
-from diffusers.utils import is_torch_version, logging
-from diffusers.utils.torch_utils import maybe_allow_in_graph
 from diffusers.models.attention import Attention, FeedForward
-from diffusers.models.attention_processor import AttentionProcessor, CogVideoXAttnProcessor2_0, FusedCogVideoXAttnProcessor2_0
-from diffusers.models.embeddings import TimestepEmbedding, Timesteps, get_3d_sincos_pos_embed, get_2d_sincos_pos_embed
+from diffusers.models.attention_processor import (
+    AttentionProcessor, CogVideoXAttnProcessor2_0,
+    FusedCogVideoXAttnProcessor2_0)
+from diffusers.models.embeddings import (CogVideoXPatchEmbed,
+                                         TimestepEmbedding, Timesteps,
+                                         get_2d_sincos_pos_embed,
+                                         get_3d_sincos_pos_embed)
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNorm, CogVideoXLayerNormZero
-
+from diffusers.utils import is_torch_version, logging
+from diffusers.utils.torch_utils import maybe_allow_in_graph
+from torch import nn
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -654,7 +656,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         return Transformer2DModelOutput(sample=output)
 
     @classmethod
-    def from_pretrained_2d(
+    def from_pretrained(
         cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
         low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
     ):
@@ -671,6 +673,11 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         from diffusers.utils import WEIGHTS_NAME
         model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
+
+        if "dict_mapping" in transformer_additional_kwargs.keys():
+            for key in transformer_additional_kwargs["dict_mapping"]:
+                print(f"Add {transformer_additional_kwargs["dict_mapping"][key]} from {transformer_additional_kwargs[key]} to config")
+                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = transformer_additional_kwargs[key]
 
         if low_cpu_mem_usage:
             try:

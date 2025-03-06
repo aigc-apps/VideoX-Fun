@@ -14,30 +14,26 @@ import numpy as np
 import pkg_resources
 import requests
 import torch
-from diffusers import (AutoencoderKL, AutoencoderKLCogVideoX,
-                       CogVideoXDDIMScheduler, DDIMScheduler,
-                       DPMSolverMultistepScheduler,
+from diffusers import (AutoencoderKLCogVideoX, CogVideoXDDIMScheduler,
+                       DDIMScheduler, DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
-from diffusers.utils.import_utils import is_xformers_available
-from omegaconf import OmegaConf
 from PIL import Image
 from safetensors import safe_open
-from transformers import (CLIPImageProcessor, CLIPVisionModelWithProjection,
-                          T5EncoderModel, T5Tokenizer)
 
 from cogvideox.data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from cogvideox.models.autoencoder_magvit import AutoencoderKLCogVideoX
-from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox import CogVideoX_Fun_Pipeline
-from cogvideox.pipeline.pipeline_cogvideox_control import \
+from cogvideox.models.cogvideox_fun_transformer3d import \
+    CogVideoXTransformer3DModel
+from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
+from cogvideox.pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
+from cogvideox.pipeline.pipeline_cogvideox_fun_control import \
     CogVideoX_Fun_Pipeline_Control
-from cogvideox.pipeline.pipeline_cogvideox_inpaint import \
+from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import \
     CogVideoX_Fun_Pipeline_Inpaint
+from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import (
-    get_image_to_video_latent, get_video_to_video_latent,
-    get_width_and_height_from_image_and_base_resolution, save_videos_grid)
+from cogvideox.utils.utils import (get_image_to_video_latent,
+                                   get_video_to_video_latent, save_videos_grid)
 
 scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
@@ -61,7 +57,7 @@ css = """
 """
 
 class CogVideoX_Fun_Controller:
-    def __init__(self, low_gpu_memory_mode, weight_dtype):
+    def __init__(self, GPU_memory_mode, weight_dtype):
         # config dirs
         self.basedir                    = os.getcwd()
         self.config_dir                 = os.path.join(self.basedir, "config")
@@ -90,7 +86,7 @@ class CogVideoX_Fun_Controller:
         self.motion_module_path    = "none"
         self.base_model_path       = "none"
         self.lora_model_path       = "none"
-        self.low_gpu_memory_mode   = low_gpu_memory_mode
+        self.GPU_memory_mode    = GPU_memory_mode
         
         self.weight_dtype = weight_dtype
 
@@ -151,8 +147,11 @@ class CogVideoX_Fun_Controller:
                 torch_dtype=self.weight_dtype
             )
 
-        if self.low_gpu_memory_mode:
+        if self.GPU_memory_mode == "sequential_cpu_offload":
             self.pipeline.enable_sequential_cpu_offload()
+        elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+            convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
+            self.pipeline.enable_model_cpu_offload()
         else:
             self.pipeline.enable_model_cpu_offload()
         print("Update diffusion transformer done")
@@ -469,8 +468,8 @@ class CogVideoX_Fun_Controller:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
 
-def ui(low_gpu_memory_mode, weight_dtype):
-    controller = CogVideoX_Fun_Controller(low_gpu_memory_mode, weight_dtype)
+def ui(GPU_memory_mode, weight_dtype):
+    controller = CogVideoX_Fun_Controller(GPU_memory_mode, weight_dtype)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -751,7 +750,7 @@ def ui(low_gpu_memory_mode, weight_dtype):
 
 
 class CogVideoX_Fun_Controller_Modelscope:
-    def __init__(self, model_name, model_type, savedir_sample, low_gpu_memory_mode, weight_dtype):
+    def __init__(self, model_name, model_type, savedir_sample, GPU_memory_mode, weight_dtype):
         # Basic dir
         self.basedir                    = os.getcwd()
         self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
@@ -803,8 +802,11 @@ class CogVideoX_Fun_Controller_Modelscope:
                 torch_dtype=self.weight_dtype
             )
 
-        if low_gpu_memory_mode:
+        if GPU_memory_mode == "sequential_cpu_offload":
             self.pipeline.enable_sequential_cpu_offload()
+        elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+            convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
+            self.pipeline.enable_model_cpu_offload()
         else:
             self.pipeline.enable_model_cpu_offload()
         print("Update diffusion transformer done")
@@ -1021,8 +1023,8 @@ class CogVideoX_Fun_Controller_Modelscope:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
 
-def ui_modelscope(model_name, model_type, savedir_sample, low_gpu_memory_mode, weight_dtype):
-    controller = CogVideoX_Fun_Controller_Modelscope(model_name, model_type, savedir_sample, low_gpu_memory_mode, weight_dtype)
+def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, weight_dtype):
+    controller = CogVideoX_Fun_Controller_Modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, weight_dtype)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
