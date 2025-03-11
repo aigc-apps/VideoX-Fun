@@ -42,20 +42,18 @@ def filter_kwargs(cls, kwargs):
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
 
-class LoadWanModel:
+class LoadWanFunModel:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "model": (
                     [ 
-                        'Wan2.1-T2V-1.3B',
-                        'Wan2.1-T2V-14B',
-                        'Wan2.1-I2V-14B-480P',
-                        'Wan2.1-I2V-14B-720P',
+                        'Wan2.1-Fun-1.3B-InP',
+                        'Wan2.1-Fun-14B-InP'
                     ],
                     {
-                        "default": 'Wan2.1-T2V-1.3B',
+                        "default": 'Wan2.1-Fun-1.3B-InP',
                     }
                 ),
                 "GPU_memory_mode":(
@@ -201,7 +199,7 @@ class LoadWanModel:
         }
         return (funmodels,)
 
-class LoadWanLora:
+class LoadWanFunLora:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -231,7 +229,7 @@ class LoadWanLora:
         else:
             return (funmodels,)
 
-class WanT2VSampler:
+class WanFunT2VSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -339,18 +337,33 @@ class WanT2VSampler:
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
                     pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
 
-            sample = pipeline(
-                prompt, 
-                num_frames = video_length,
-                negative_prompt = negative_prompt,
-                height      = height,
-                width       = width,
-                generator   = generator,
-                guidance_scale = cfg,
-                num_inference_steps = steps,
+            if pipeline.transformer.config.in_channels != pipeline.vae.config.latent_channels:
+                input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=(height, width))
 
-                comfyui_progressbar = True,
-            ).videos
+                sample = pipeline(
+                    prompt, 
+                    num_frames = video_length,
+                    negative_prompt = negative_prompt,
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    guidance_scale = cfg,
+                    num_inference_steps = steps,
+
+                    video        = input_video,
+                    mask_video   = input_video_mask,
+                ).videos
+            else:
+                sample = pipeline(
+                    prompt, 
+                    num_frames = video_length,
+                    negative_prompt = negative_prompt,
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    guidance_scale = cfg,
+                    num_inference_steps = steps,
+                ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
 
             if not funmodels.get("lora_cache", False):
@@ -360,7 +373,7 @@ class WanT2VSampler:
         return (videos,)   
 
 
-class WanI2VSampler:
+class WanFunInpaintSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -406,7 +419,8 @@ class WanI2VSampler:
                 ),
             },
             "optional":{
-                "start_img": ("IMAGE",)
+                "start_img": ("IMAGE",),
+                "end_img": ("IMAGE",),
             },
         }
     

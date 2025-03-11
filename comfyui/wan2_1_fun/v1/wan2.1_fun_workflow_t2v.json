@@ -1,6 +1,6 @@
 {
-  "last_node_id": 85,
-  "last_link_id": 53,
+  "last_node_id": 87,
+  "last_link_id": 58,
   "nodes": [
     {
       "id": 80,
@@ -72,7 +72,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            49
+            57
           ],
           "slot_index": 0,
           "shape": 3
@@ -106,7 +106,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            52
+            58
           ],
           "slot_index": 0,
           "shape": 3
@@ -121,102 +121,11 @@
       ]
     },
     {
-      "id": 85,
-      "type": "WanT2VSampler",
-      "pos": {
-        "0": 722,
-        "1": -73
-      },
-      "size": {
-        "0": 365.4000244140625,
-        "1": 290
-      },
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 48
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 49
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 52
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            53
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "WanT2VSampler"
-      },
-      "widgets_values": [
-        81,
-        832,
-        480,
-        false,
-        837135609139060,
-        "randomize",
-        50,
-        6,
-        "Flow"
-      ]
-    },
-    {
-      "id": 84,
-      "type": "LoadWanModel",
-      "pos": {
-        "0": 286,
-        "1": -297
-      },
-      "size": {
-        "0": 315,
-        "1": 130
-      },
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            48
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWanModel"
-      },
-      "widgets_values": [
-        "Wan2.1-T2V-14B",
-        "model_cpu_offload_and_qfloat8",
-        "wan2.1/wan_civitai.yaml",
-        "fp16"
-      ]
-    },
-    {
       "id": 17,
       "type": "VHS_VideoCombine",
       "pos": {
-        "0": 1126,
-        "1": -73
+        "0": 1185,
+        "1": -97
       },
       "size": [
         390.9534912109375,
@@ -229,7 +138,7 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 53,
+          "link": 55,
           "slot_index": 0,
           "label": "图像",
           "shape": 7
@@ -290,40 +199,130 @@
           }
         }
       }
+    },
+    {
+      "id": 86,
+      "type": "LoadWanFunModel",
+      "pos": {
+        "0": 291,
+        "1": -297
+      },
+      "size": {
+        "0": 315,
+        "1": 130
+      },
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            56
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanFunModel"
+      },
+      "widgets_values": [
+        "Wan2.1-Fun-1.3B-InP",
+        "model_cpu_offload",
+        "wan2.1/wan_civitai.yaml",
+        "fp16"
+      ]
+    },
+    {
+      "id": 87,
+      "type": "WanFunT2VSampler",
+      "pos": {
+        "0": 738,
+        "1": -97
+      },
+      "size": {
+        "0": 415.8000183105469,
+        "1": 290
+      },
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 56
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 57
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 58
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            55
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanFunT2VSampler"
+      },
+      "widgets_values": [
+        81,
+        832,
+        480,
+        false,
+        43,
+        "randomize",
+        50,
+        6,
+        "Flow"
+      ]
     }
   ],
   "links": [
     [
-      48,
-      84,
-      0,
-      85,
-      0,
-      "FunModels"
-    ],
-    [
-      49,
-      75,
-      0,
-      85,
-      1,
-      "STRING_PROMPT"
-    ],
-    [
-      52,
-      73,
-      0,
-      85,
-      2,
-      "STRING_PROMPT"
-    ],
-    [
-      53,
-      85,
+      55,
+      87,
       0,
       17,
       0,
       "IMAGE"
+    ],
+    [
+      56,
+      86,
+      0,
+      87,
+      0,
+      "FunModels"
+    ],
+    [
+      57,
+      75,
+      0,
+      87,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      58,
+      73,
+      0,
+      87,
+      2,
+      "STRING_PROMPT"
     ]
   ],
   "groups": [
@@ -357,8 +356,8 @@
     "ds": {
       "scale": 0.8264462809917354,
       "offset": [
-        82.2693970837709,
-        487.8936440727188
+        79.0364283337709,
+        487.6242300102188
       ]
     },
     "workspace_info": {

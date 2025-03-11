@@ -1,6 +1,6 @@
 {
-  "last_node_id": 85,
-  "last_link_id": 53,
+  "last_node_id": 101,
+  "last_link_id": 68,
   "nodes": [
     {
       "id": 80,
@@ -28,31 +28,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 78,
-      "type": "Note",
-      "pos": {
-        "0": 18,
-        "1": -46
-      },
-      "size": {
-        "0": 210,
-        "1": 58
-      },
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "You can write prompt here\n（你可以在此填写提示词）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
       "id": 75,
       "type": "CogVideoX_FUN_TextBox",
       "pos": {
@@ -64,7 +39,7 @@
         "1": 156.71620178222656
       },
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -72,7 +47,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            49
+            66
           ],
           "slot_index": 0,
           "shape": 3
@@ -98,7 +73,7 @@
         "1": 183.83506774902344
       },
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -106,7 +81,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            52
+            67
           ],
           "slot_index": 0,
           "shape": 3
@@ -121,74 +96,130 @@
       ]
     },
     {
-      "id": 85,
-      "type": "WanT2VSampler",
+      "id": 87,
+      "type": "LoadImage",
       "pos": {
-        "0": 722,
-        "1": -73
+        "0": 307.71392822265625,
+        "1": 481.920654296875
       },
       "size": {
-        "0": 365.4000244140625,
-        "1": 290
+        "0": 315,
+        "1": 314
+      },
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            68
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "6.png",
+        "image"
+      ]
+    },
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": {
+        "0": 18,
+        "1": -46
+      },
+      "size": {
+        "0": 210,
+        "1": 58
+      },
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 94,
+      "type": "Note",
+      "pos": {
+        "0": 17,
+        "1": -35
+      },
+      "size": {
+        "0": 210,
+        "1": 58
       },
       "flags": {},
       "order": 5,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 48
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 49
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 52
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            53
-          ],
-          "slot_index": 0
-        }
-      ],
+      "inputs": [],
+      "outputs": [],
       "properties": {
-        "Node name for S&R": "WanT2VSampler"
+        "text": ""
       },
       "widgets_values": [
-        81,
-        832,
-        480,
-        false,
-        837135609139060,
-        "randomize",
-        50,
-        6,
-        "Flow"
-      ]
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
     },
     {
-      "id": 84,
-      "type": "LoadWanModel",
+      "id": 95,
+      "type": "Note",
       "pos": {
-        "0": 286,
-        "1": -297
+        "0": 35.71394348144531,
+        "1": 536.9210205078125
+      },
+      "size": {
+        "0": 210,
+        "1": 58
+      },
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can upload image here\n（你可以在此上传图片）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 99,
+      "type": "LoadWanFunModel",
+      "pos": {
+        "0": 284,
+        "1": -290
       },
       "size": {
         "0": 315,
         "1": 130
       },
       "flags": {},
-      "order": 4,
+      "order": 7,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -196,40 +227,105 @@
           "name": "funmodels",
           "type": "FunModels",
           "links": [
-            48
+            65
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanFunModel"
+      },
+      "widgets_values": [
+        "Wan2.1-Fun-1.3B-InP",
+        "model_cpu_offload",
+        "wan2.1/wan_civitai.yaml",
+        "fp16"
+      ]
+    },
+    {
+      "id": 101,
+      "type": "WanFunInpaintSampler",
+      "pos": {
+        "0": 771,
+        "1": -67
+      },
+      "size": {
+        "0": 428.4000244140625,
+        "1": 282
+      },
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 65
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 66
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 67
+        },
+        {
+          "name": "start_img",
+          "type": "IMAGE",
+          "link": 68,
+          "shape": 7
+        },
+        {
+          "name": "end_img",
+          "type": "IMAGE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            64
           ],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadWanModel"
+        "Node name for S&R": "WanFunInpaintSampler"
       },
       "widgets_values": [
-        "Wan2.1-T2V-14B",
-        "model_cpu_offload_and_qfloat8",
-        "wan2.1/wan_civitai.yaml",
-        "fp16"
+        81,
+        640,
+        43,
+        "randomize",
+        50,
+        6,
+        "Flow"
       ]
     },
     {
       "id": 17,
       "type": "VHS_VideoCombine",
       "pos": {
-        "0": 1126,
-        "1": -73
+        "0": 1271,
+        "1": -67
       },
       "size": [
-        390.9534912109375,
-        538.0116295447716
+        390,
+        537.4615384615385
       ],
       "flags": {},
-      "order": 6,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 53,
+          "link": 64,
           "slot_index": 0,
           "label": "图像",
           "shape": 7
@@ -294,35 +390,43 @@
   ],
   "links": [
     [
-      48,
-      84,
+      64,
+      101,
       0,
-      85,
+      17,
+      0,
+      "IMAGE"
+    ],
+    [
+      65,
+      99,
+      0,
+      101,
       0,
       "FunModels"
     ],
     [
-      49,
+      66,
       75,
       0,
-      85,
+      101,
       1,
       "STRING_PROMPT"
     ],
     [
-      52,
+      67,
       73,
       0,
-      85,
+      101,
       2,
       "STRING_PROMPT"
     ],
     [
-      53,
-      85,
+      68,
+      87,
       0,
-      17,
-      0,
+      101,
+      3,
       "IMAGE"
     ]
   ],
@@ -350,15 +454,27 @@
       "color": "#3f789e",
       "font_size": 24,
       "flags": {}
+    },
+    {
+      "title": "Load Image",
+      "bounding": [
+        222,
+        396,
+        458,
+        436
+      ],
+      "color": "#a1309b",
+      "font_size": 24,
+      "flags": {}
     }
   ],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.8264462809917354,
+      "scale": 0.7513148009015777,
       "offset": [
-        82.2693970837709,
-        487.8936440727188
+        239.91963536502104,
+        411.88012063521853
       ]
     },
     "workspace_info": {
@@ -366,6 +482,7 @@
     },
     "node_versions": {
       "CogVideoX-Fun": "5145b8c8ad2b58303fdd7f158a363970c1734c66",
+      "comfy-core": "v0.2.7-3-g8afb97c",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
     }
   },
