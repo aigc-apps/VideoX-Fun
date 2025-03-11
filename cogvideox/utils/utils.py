@@ -1,12 +1,19 @@
 import os
 import gc
 import imageio
+import inspect
 import numpy as np
 import torch
 import torchvision
 import cv2
 from einops import rearrange
 from PIL import Image
+
+def filter_kwargs(cls, kwargs):
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+    return filtered_kwargs
 
 def get_width_and_height_from_image_and_base_resolution(image, base_resolution):
     target_pixels = int(base_resolution) * int(base_resolution)

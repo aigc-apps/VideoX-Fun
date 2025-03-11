@@ -23,7 +23,7 @@ from ...cogvideox.models import (AutoencoderKLCogVideoX,
 from ...cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
                                    CogVideoX_Fun_Pipeline_Control,
                                    CogVideoX_Fun_Pipeline_Inpaint)
-from ...cogvideox.ui.ui import all_cheduler_dict
+from ...cogvideox.ui.controller import all_cheduler_dict
 from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from ...cogvideox.utils.utils import (get_image_to_video_latent,
                                       get_video_to_video_latent,

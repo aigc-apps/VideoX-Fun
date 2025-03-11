@@ -12,8 +12,8 @@ for project_root in project_roots:
 from cogvideox.api.api import (infer_forward_api,
                                update_diffusion_transformer_api,
                                update_edition_api)
-from cogvideox.ui.controller import ddpm_scheduler_dict
-from cogvideox.ui.cogvideox_fun_ui import ui, ui_eas, ui_modelscope
+from cogvideox.ui.controller import flow_scheduler_dict
+from cogvideox.ui.wan_ui import ui, ui_eas, ui_modelscope
 
 if __name__ == "__main__":
     # Choose the ui mode  
@@ -31,24 +31,26 @@ if __name__ == "__main__":
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
     weight_dtype = torch.bfloat16
+    # Config path
+    config_path = "config/wan2.1/wan_civitai.yaml"
 
     # Server ip
     server_name = "0.0.0.0"
     server_port = 7860
 
     # Params below is used when ui_mode = "modelscope"
-    model_name = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
+    model_name = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
     # "Inpaint" or "Control"
     model_type = "Inpaint"
     # Save dir of this model
     savedir_sample = "samples"
 
     if ui_mode == "modelscope":
-        demo, controller = ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, ddpm_scheduler_dict, weight_dtype)
+        demo, controller = ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, flow_scheduler_dict, weight_dtype, config_path)
     elif ui_mode == "eas":
-        demo, controller = ui_eas(model_name, ddpm_scheduler_dict, savedir_sample)
+        demo, controller = ui_eas(model_name, flow_scheduler_dict, savedir_sample, config_path)
     else:
-        demo, controller = ui(GPU_memory_mode, ddpm_scheduler_dict, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, weight_dtype, config_path)
 
     # launch gradio
     app, _, _ = demo.queue(status_update_rate=1).launch(

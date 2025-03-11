@@ -21,7 +21,7 @@ from ...cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
 from ...cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                                  WanT5EncoderModel, WanTransformer3DModel)
 from ...cogvideox.pipeline import WanI2VPipeline, WanPipeline
-from ...cogvideox.ui.ui import all_cheduler_dict
+from ...cogvideox.ui.controller import all_cheduler_dict
 from ...cogvideox.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper)
 from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
