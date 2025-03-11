@@ -47,7 +47,6 @@ from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import T5EncoderModel, T5Tokenizer
 from transformers.utils import ContextManagers
 
 import datasets
@@ -56,23 +55,29 @@ current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
+
 from cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
                                            ASPECT_RATIO_RANDOM_CROP_512,
                                            ASPECT_RATIO_RANDOM_CROP_PROB,
                                            AspectRatioBatchImageVideoSampler,
                                            RandomSampler, get_closest_ratio)
-from cogvideox.data.dataset_image_video import (ImageVideoDataset,
+from cogvideox.data.dataset_image_video import (ImageVideoControlDataset,
+                                                ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
-from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
-from cogvideox.models.cogvideox_fun_transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel, T5EncoderModel,
+                              T5Tokenizer)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
+                                CogVideoX_Fun_Pipeline_Control,
+                                CogVideoX_Fun_Pipeline_Inpaint)
 from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
-    CogVideoX_Fun_Pipeline_Inpaint, add_noise_to_reference_video,
-    get_3d_rotary_pos_embed, get_resize_crop_region_for_grid)
-from cogvideox.utils.lora_utils import create_network, merge_lora, unmerge_lora
+    add_noise_to_reference_video, get_3d_rotary_pos_embed,
+    get_resize_crop_region_for_grid)
 from cogvideox.utils.discrete_sampler import DiscreteSampling
-from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
+from cogvideox.utils.lora_utils import create_network, merge_lora, unmerge_lora
+from cogvideox.utils.utils import (get_image_to_video_latent,
+                                   get_video_to_video_latent, save_videos_grid)
 
 if is_wandb_available():
     import wandb

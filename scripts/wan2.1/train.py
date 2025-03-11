@@ -30,9 +30,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-import transformers
 import torchvision.transforms.functional as TF
-from accelerate import Accelerator
+import transformers
+from accelerate import Accelerator, FullyShardedDataParallelPlugin
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
@@ -47,6 +47,8 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullOptimStateDictConfig, FullStateDictConfig, ShardedStateDictConfig, ShardedOptimStateDictConfig)
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -71,13 +73,20 @@ from cogvideox.data.dataset_image_video import (ImageVideoDataset,
                                                 get_random_mask)
 from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
-from cogvideox.pipeline import WanPipeline
+from cogvideox.pipeline import WanPipeline, WanI2VPipeline
 from cogvideox.utils.discrete_sampler import DiscreteSampling
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
     import wandb
 
+
+def filter_kwargs(cls, kwargs):
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+    return filtered_kwargs
 
 def get_random_downsample_ratio(sample_size, image_ratio=[],
                                 all_choices=False, rng=None):
@@ -110,13 +119,6 @@ def get_random_downsample_ratio(sample_size, image_ratio=[],
         return np.random.choice(number_list, p = number_list_prob)
     else:
         return rng.choice(number_list, p = number_list_prob)
-
-def filter_kwargs(cls, kwargs):
-    import inspect
-    sig = inspect.signature(cls.__init__)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-    return filtered_kwargs
 
 def resize_mask(mask, latent, process_first_frame_only=True):
     latent_size = latent.size()
@@ -159,7 +161,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
             
@@ -178,7 +180,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
-                scheduler=scheduler
+                scheduler=scheduler,
+                clip_image_encoder=clip_image_encoder,
             )
         else:
             pipeline = WanPipeline(
@@ -186,7 +189,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
-                scheduler=scheduler
+                scheduler=scheduler,
             )
         pipeline = pipeline.to(accelerator.device)
 
@@ -753,6 +756,13 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    deepspeed_plugin = accelerator.state.deepspeed_plugin
+    if deepspeed_plugin is not None:
+        zero_stage = int(deepspeed_plugin.zero_stage)
+        print(f"Using DeepSpeed Zero stage: {zero_stage}")
+    else:
+        zero_stage = 0
+        print("DeepSpeed is not enabled.")
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir=logging_dir)
 
@@ -902,6 +912,9 @@ def main():
 
     # Create EMA for the transformer3d.
     if args.use_ema:
+        if zero_stage == 3:
+            raise NotImplementedError("FSDP does not support EMA.")
+
         ema_transformer3d = WanTransformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -911,53 +924,68 @@ def main():
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
-        # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        def save_model_hook(models, weights, output_dir):
-            if accelerator.is_main_process:
+        if not zero_stage == 3:
+            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+            def save_model_hook(models, weights, output_dir):
+                if accelerator.is_main_process:
+                    if args.use_ema:
+                        ema_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
+
+                    models[0].save_pretrained(os.path.join(output_dir, "transformer"))
+                    if not args.use_deepspeed:
+                        weights.pop()
+
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+
+            def load_model_hook(models, input_dir):
                 if args.use_ema:
-                    ema_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
+                    ema_path = os.path.join(input_dir, "transformer_ema")
+                    _, ema_kwargs = WanTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = WanTransformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer_ema",
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs'])
+                    )
+                    load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel, model_config=load_model.config)
+                    load_model.load_state_dict(ema_kwargs)
 
-                models[0].save_pretrained(os.path.join(output_dir, "transformer"))
-                if not args.use_deepspeed:
-                    weights.pop()
+                    ema_transformer3d.load_state_dict(load_model.state_dict())
+                    ema_transformer3d.to(accelerator.device)
+                    del load_model
 
-                with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                    pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                for i in range(len(models)):
+                    # pop models so that they are not loaded again
+                    model = models.pop()
 
-        def load_model_hook(models, input_dir):
-            if args.use_ema:
-                ema_path = os.path.join(input_dir, "transformer_ema")
-                _, ema_kwargs = WanTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
-                load_model = WanTransformer3DModel.from_pretrained(
-                    input_dir, subfolder="transformer_ema",
-                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs'])
-                )
-                load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel, model_config=load_model.config)
-                load_model.load_state_dict(ema_kwargs)
+                    # load diffusers style into model
+                    load_model = WanTransformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer"
+                    )
+                    model.register_to_config(**load_model.config)
 
-                ema_transformer3d.load_state_dict(load_model.state_dict())
-                ema_transformer3d.to(accelerator.device)
-                del load_model
+                    model.load_state_dict(load_model.state_dict())
+                    del load_model
 
-            for i in range(len(models)):
-                # pop models so that they are not loaded again
-                model = models.pop()
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+        else:
+            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+            def save_model_hook(models, weights, output_dir):
+                if accelerator.is_main_process:
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
-                # load diffusers style into model
-                load_model = WanTransformer3DModel.from_pretrained(
-                    input_dir, subfolder="transformer"
-                )
-                model.register_to_config(**load_model.config)
-
-                model.load_state_dict(load_model.state_dict())
-                del load_model
-
-            pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-            if os.path.exists(pkl_path):
-                with open(pkl_path, 'rb') as file:
-                    loaded_number, _ = pickle.load(file)
-                    batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1270,11 +1298,11 @@ def main():
         ema_transformer3d.to(accelerator.device)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device)
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu")
     if args.train_mode != "normal":
-        clip_image_encoder.to(accelerator.device, dtype=weight_dtype)
+        clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1390,7 +1418,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length:
+                if args.training_with_video_token_length and not zero_stage == 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1411,7 +1439,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length:
+                    if args.training_with_video_token_length and not zero_stage == 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
@@ -1490,6 +1518,8 @@ def main():
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
+                    if args.train_mode != "normal":
+                        clip_image_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
 
@@ -1546,6 +1576,8 @@ def main():
 
                 if args.low_vram:
                     vae.to('cpu')
+                    if args.train_mode != "normal":
+                        clip_image_encoder.to('cpu')
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
@@ -1616,6 +1648,7 @@ def main():
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
                     target_shape[1]
                 )
+
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype):
                     noise_pred = transformer3d(
@@ -1727,6 +1760,7 @@ def main():
                             vae,
                             text_encoder,
                             tokenizer,
+                            clip_image_encoder,
                             transformer3d,
                             args,
                             config,
@@ -1754,6 +1788,7 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
+                    clip_image_encoder,
                     transformer3d,
                     args,
                     config,

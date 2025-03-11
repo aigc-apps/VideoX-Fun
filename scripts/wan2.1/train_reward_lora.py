@@ -60,6 +60,7 @@ for project_root in project_roots:
 import cogvideox.reward.reward_fn as reward_fn
 from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
+from cogvideox.pipeline import WanPipeline, WanI2VPipeline
 from cogvideox.utils.lora_utils import create_network, merge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -84,45 +85,40 @@ def video_reader(*args, **kwargs):
         gc.collect()
 
 
+def filter_kwargs(cls, kwargs):
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+    return filtered_kwargs
+
+
 def log_validation(
-    vae, text_encoder, text_encoder_2, tokenizer, tokenizer_2, transformer3d, network, 
+    vae, text_encoder, tokenizer, transformer3d, network, 
     loss_fn, config, args, accelerator, weight_dtype, global_step, validation_prompts_idx
 ):
     try:
         logger.info("Running validation... ")
 
-        # Get New Transformer
-        Choosen_Transformer3DModel = name_to_transformer3d[
-            config['transformer_additional_kwargs'].get('transformer_type', 'Transformer3DModel')
-        ]
-
-        transformer3d_val = Choosen_Transformer3DModel.from_pretrained_2d(
-            args.pretrained_model_name_or_path, subfolder="transformer",
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs'])
+        transformer3d_val = WanTransformer3DModel.from_pretrained(
+            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
+            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-
-        if "EasyAnimateV5.1" in args.pretrained_model_name_or_path:
-            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-        else:
-            scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-        
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+        )
         # Initialize a new vae if gradient checkpointing is enabled.
         if args.vae_gradient_checkpointing:
             # Get Vae
-            Choosen_AutoencoderKL = name_to_autoencoder_magvit[
-                config['vae_kwargs'].get('vae_type', 'AutoencoderKL')
-            ]
-            vae = Choosen_AutoencoderKL.from_pretrained(
+            vae = WanTransformer3DModel.from_pretrained(
                 args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
             ).to(weight_dtype)
 
-        pipeline = EasyAnimateInpaintPipeline(
+        pipeline = WanPipeline(
             vae=vae if args.vae_gradient_checkpointing else accelerator.unwrap_model(vae).to(weight_dtype),
             text_encoder=accelerator.unwrap_model(text_encoder),
-            text_encoder_2=accelerator.unwrap_model(text_encoder_2),
             tokenizer=tokenizer,
-            tokenizer_2=tokenizer_2,
             transformer=transformer3d_val,
             scheduler=scheduler,
         )
@@ -137,18 +133,11 @@ def log_validation(
         to_tensor = transforms.ToTensor()
         validation_loss, validation_reward = 0, 0
 
-        if args.enable_xformers_memory_efficient_attention \
-            and config['transformer_additional_kwargs'].get('transformer_type', 'Transformer3DModel') == 'Transformer3DModel':
-            pipeline.enable_xformers_memory_efficient_attention()
-
         for i in range(len(validation_prompts_idx)):
             validation_idx, validation_prompt = validation_prompts_idx[i]
             with torch.no_grad():
                 with torch.autocast("cuda", dtype=weight_dtype):
-                    if vae.cache_mag_vae:
-                        video_length = int((args.video_length - 1) // vae.mini_batch_encoder * vae.mini_batch_encoder) + 1 if args.video_length != 1 else 1
-                    else:
-                        video_length = int(args.video_length // vae.mini_batch_encoder * vae.mini_batch_encoder) if args.video_length != 1 else 1
+                    video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1                    
                     sample_size = [args.validation_sample_height, args.validation_sample_width]
                     input_video, input_video_mask, clip_image = get_image_to_video_latent(
                         None, None, video_length=args.video_length, sample_size=sample_size
@@ -165,7 +154,7 @@ def log_validation(
                         negative_prompt = "bad detailed",
                         height      = args.validation_sample_height,
                         width       = args.validation_sample_width,
-                        guidance_scale = 7,
+                        guidance_scale = 6,
                         generator   = generator,
 
                         video        = input_video,
@@ -349,14 +338,6 @@ def encode_prompt(
         )
 
     return prompt_embeds, negative_prompt_embeds
-
-
-def filter_kwargs(cls, kwargs):
-    import inspect
-    sig = inspect.signature(cls.__init__)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-    return filtered_kwargs
 
 
 # Modified from EasyAnimateInpaintPipeline.prepare_extra_step_kwargs

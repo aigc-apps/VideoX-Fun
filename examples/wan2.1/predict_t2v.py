@@ -6,16 +6,15 @@ import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
 from omegaconf import OmegaConf
 from PIL import Image
-from transformers import AutoTokenizer, T5EncoderModel
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.models import (AutoencoderKLWan, WanT5EncoderModel,
+from cogvideox.models import (AutoencoderKLWan, WanT5EncoderModel, AutoTokenizer,
                               WanTransformer3DModel)
-from cogvideox.pipeline.pipeline_wan import WanPipeline
+from cogvideox.pipeline import WanPipeline
 from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8,
                                               convert_weight_dtype_wrapper)
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
@@ -29,7 +28,7 @@ from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
+GPU_memory_mode     = "model_cpu_offload"
 
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"

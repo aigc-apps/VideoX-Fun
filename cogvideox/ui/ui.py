@@ -14,7 +14,7 @@ import numpy as np
 import pkg_resources
 import requests
 import torch
-from diffusers import (AutoencoderKLCogVideoX, CogVideoXDDIMScheduler,
+from diffusers import (CogVideoXDDIMScheduler,
                        DDIMScheduler, DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
@@ -22,14 +22,11 @@ from PIL import Image
 from safetensors import safe_open
 
 from cogvideox.data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from cogvideox.models.cogvideox_fun_transformer3d import \
-    CogVideoXTransformer3DModel
-from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
-from cogvideox.pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
-from cogvideox.pipeline.pipeline_cogvideox_fun_control import \
-    CogVideoX_Fun_Pipeline_Control
-from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import \
-    CogVideoX_Fun_Pipeline_Inpaint
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
+                                CogVideoX_Fun_Pipeline_Control,
+                                CogVideoX_Fun_Pipeline_Inpaint)
 from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import (get_image_to_video_latent,

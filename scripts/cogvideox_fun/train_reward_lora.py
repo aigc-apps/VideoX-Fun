@@ -17,18 +17,17 @@
 
 import argparse
 import gc
+import json
 import logging
 import math
 import os
+import random
 import shutil
 import sys
-import json
-import random
 from contextlib import contextmanager
 from typing import List, Optional, Union
 
 import accelerate
-import datasets
 import diffusers
 import numpy as np
 import torch
@@ -39,16 +38,17 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from diffusers import DDIMScheduler, CogVideoXDPMScheduler
+from decord import VideoReader
+from diffusers import CogVideoXDPMScheduler, DDIMScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.torch_utils import is_compiled_module
-from decord import VideoReader
 from einops import rearrange
 from packaging import version
 from tqdm.auto import tqdm
-from transformers import T5EncoderModel, T5Tokenizer
 from transformers.utils import ContextManagers
+
+import datasets
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path))]
@@ -56,11 +56,13 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 import cogvideox.reward.reward_fn as reward_fn
-from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
-from cogvideox.models.cogvideox_fun_transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
-    CogVideoX_Fun_Pipeline_Inpaint, add_noise_to_reference_video,
-    get_3d_rotary_pos_embed, get_resize_crop_region_for_grid)
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel, T5EncoderModel,
+                              T5Tokenizer)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline_Inpaint,
+                                add_noise_to_reference_video,
+                                get_3d_rotary_pos_embed,
+                                get_resize_crop_region_for_grid)
 from cogvideox.utils.lora_utils import create_network, merge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 

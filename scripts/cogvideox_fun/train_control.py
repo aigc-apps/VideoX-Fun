@@ -39,20 +39,13 @@ from diffusers import AutoencoderKL, DDPMScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
-from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
-from huggingface_hub import create_repo, upload_folder
-from omegaconf import OmegaConf
 from packaging import version
-from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import (BertModel, BertTokenizer, CLIPImageProcessor,
-                          CLIPVisionModelWithProjection, MT5Tokenizer,
-                          T5EncoderModel, T5Tokenizer)
 from transformers.utils import ContextManagers
 
 import datasets
@@ -71,14 +64,15 @@ from cogvideox.data.dataset_image_video import (ImageVideoControlDataset,
                                                 ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
-from cogvideox.models.cogvideox_fun_vae import AutoencoderKLCogVideoX
-from cogvideox.models.cogvideox_fun_transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
-from cogvideox.pipeline.pipeline_cogvideox_fun_control import \
-    CogVideoX_Fun_Pipeline_Control
+from cogvideox.models import (AutoencoderKLCogVideoX,
+                              CogVideoXTransformer3DModel, T5EncoderModel,
+                              T5Tokenizer)
+from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
+                                CogVideoX_Fun_Pipeline_Control,
+                                CogVideoX_Fun_Pipeline_Inpaint)
 from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
-    CogVideoX_Fun_Pipeline_Inpaint, add_noise_to_reference_video,
-    get_3d_rotary_pos_embed, get_resize_crop_region_for_grid)
+    add_noise_to_reference_video, get_3d_rotary_pos_embed,
+    get_resize_crop_region_for_grid)
 from cogvideox.utils.discrete_sampler import DiscreteSampling
 from cogvideox.utils.utils import (get_image_to_video_latent,
                                    get_video_to_video_latent, save_videos_grid)

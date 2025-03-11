@@ -30,8 +30,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-import transformers
 import torchvision.transforms.functional as TF
+import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
@@ -70,7 +70,7 @@ from cogvideox.data.dataset_image_video import (ImageVideoDataset,
                                                 get_random_mask)
 from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
-from cogvideox.pipeline.pipeline_wan import WanPipeline
+from cogvideox.pipeline import WanPipeline, WanI2VPipeline
 from cogvideox.utils.discrete_sampler import DiscreteSampling
 from cogvideox.utils.lora_utils import create_network, merge_lora, unmerge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -78,6 +78,13 @@ from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 if is_wandb_available():
     import wandb
 
+
+def filter_kwargs(cls, kwargs):
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+    return filtered_kwargs
 
 def get_random_downsample_ratio(sample_size, image_ratio=[],
                                 all_choices=False, rng=None):
@@ -152,38 +159,38 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, network, config, args, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = CogVideoXTransformer3DModel.from_pretrained_2d(
-            args.pretrained_model_name_or_path, subfolder="transformer",
+        transformer3d_val = WanTransformer3DModel.from_pretrained(
+            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
+            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-        scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+        )
         
         if args.train_mode != "normal":
-            pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
-                args.pretrained_model_name_or_path, 
+            pipeline = WanI2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
                 scheduler=scheduler,
-                torch_dtype=weight_dtype,
+                clip_image_encoder=clip_image_encoder,
             )
         else:
-            pipeline = CogVideoX_Fun_Pipeline.from_pretrained(
-                args.pretrained_model_name_or_path, 
+            pipeline = WanPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
                 scheduler=scheduler,
-                torch_dtype=weight_dtype
             )
-
         pipeline = pipeline.to(accelerator.device)
+
         pipeline = merge_lora(
             pipeline, None, 1, accelerator.device, state_dict=accelerator.unwrap_model(network).state_dict(), transformer_only=True
         )
@@ -205,7 +212,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                             negative_prompt = "bad detailed",
                             height      = args.video_sample_size,
                             width       = args.video_sample_size,
-                            guidance_scale = 7,
+                            guidance_scale = 6.0,
                             generator   = generator,
 
                             video        = input_video,
@@ -222,7 +229,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                             negative_prompt = "bad detailed",
                             height      = args.video_sample_size,
                             width       = args.video_sample_size,
-                            generator   = generator,
+                            guidance_scale = 6.0,
+                            generator   = generator, 
 
                             video        = input_video,
                             mask_video   = input_video_mask,
@@ -747,6 +755,13 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    deepspeed_plugin = accelerator.state.deepspeed_plugin
+    if deepspeed_plugin is not None:
+        zero_stage = int(deepspeed_plugin.zero_stage)
+        print(f"Using DeepSpeed Zero stage: {zero_stage}")
+    else:
+        zero_stage = 0
+        print("DeepSpeed is not enabled.")
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir=logging_dir)
 
@@ -793,12 +808,6 @@ def main():
         args.mixed_precision = accelerator.mixed_precision
 
     # Load scheduler, tokenizer and models.
-    def filter_kwargs(cls, kwargs):
-        import inspect
-        sig = inspect.signature(cls.__init__)
-        valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-        return filtered_kwargs
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
     )
@@ -832,7 +841,7 @@ def main():
         text_encoder = WanT5EncoderModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
             additional_kwargs=OmegaConf.to_container(config['text_encoder_kwargs']),
-        )
+        ).to(weight_dtype)
         # Get Vae
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
@@ -900,24 +909,38 @@ def main():
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        def save_model_hook(models, weights, output_dir):
-            if accelerator.is_main_process:
-                safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
-                if not args.use_deepspeed:
-                    for _ in range(len(weights)):
-                        weights.pop()
+        if zero_stage != 3:
+            def save_model_hook(models, weights, output_dir):
+                if accelerator.is_main_process:
+                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
+                    save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
+                    if not args.use_deepspeed:
+                        for _ in range(len(weights)):
+                            weights.pop()
 
-                with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                    pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
-        def load_model_hook(models, input_dir):
-            pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-            if os.path.exists(pkl_path):
-                with open(pkl_path, 'rb') as file:
-                    loaded_number, _ = pickle.load(file)
-                    batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+        else:
+            def save_model_hook(models, weights, output_dir):
+                if accelerator.is_main_process:
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1645,8 +1668,10 @@ def main():
                             vae,
                             text_encoder,
                             tokenizer,
+                            clip_image_encoder,
                             transformer3d,
                             network,
+                            config,
                             args,
                             accelerator,
                             weight_dtype,
@@ -1665,8 +1690,10 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
+                    clip_image_encoder,
                     transformer3d,
                     network,
+                    config,
                     args,
                     accelerator,
                     weight_dtype,

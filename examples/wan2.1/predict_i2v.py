@@ -13,8 +13,8 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
+from cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+                              WanT5EncoderModel, WanTransformer3DModel)
 from cogvideox.pipeline import WanI2VPipeline
 from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8,
                                               convert_weight_dtype_wrapper)
@@ -32,7 +32,7 @@ from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 GPU_memory_mode     = "model_cpu_offload"
 
 # Config and model path
-config_path         = "config/wan2.1/wan_14b_i2v_civitai.yaml"
+config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 
