@@ -9,6 +9,11 @@ from .wan2_1.nodes import (LoadWanModel,
                            WanT2VSampler,
                            WanI2VSampler)
 
+from .wan2_1_fun.nodes import (LoadWanFunModel,
+                           LoadWanFunLora,
+                           WanFunT2VSampler,
+                           WanFunInpaintSampler)
+
 class CogVideoX_FUN_TextBox:
     @classmethod
     def INPUT_TYPES(s):
@@ -38,6 +43,10 @@ NODE_CLASS_MAPPINGS = {
     "LoadWanLora": LoadWanLora,
     "WanT2VSampler": WanT2VSampler,
     "WanI2VSampler": WanI2VSampler,
+    "LoadWanFunModel": LoadWanFunModel,
+    "LoadWanFunLora": LoadWanFunLora,
+    "WanFunT2VSampler": WanFunT2VSampler,
+    "WanFunInpaintSampler": WanFunInpaintSampler,
 }
 
 
@@ -53,4 +62,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWanLora": "Load Wan Lora",
     "WanT2VSampler": "Wan Sampler for Text to Video",
     "WanI2VSampler": "Wan Sampler for Image to Video",
+
+    "LoadWanFunModel": "Load Wan Fun Model",
+    "LoadWanFunLora": "Load Wan Fun Lora",
+    "WanFunT2VSampler": "Wan Fun Sampler for Text to Video",
+    "WanFunInpaintSampler": "Wan Fun Sampler for Image to Video",
 }
