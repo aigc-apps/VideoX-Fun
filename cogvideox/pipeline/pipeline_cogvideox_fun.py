@@ -28,7 +28,7 @@ from diffusers.utils import BaseOutput, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 
-from cogvideox.models import (AutoencoderKLCogVideoX,
+from ..models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
 

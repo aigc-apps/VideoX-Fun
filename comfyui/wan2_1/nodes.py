@@ -35,6 +35,13 @@ transformer_cpu_cache   = {}
 # lora path before
 lora_path_before        = ""
 
+def filter_kwargs(cls, kwargs):
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+    return filtered_kwargs
+
 class LoadWanModel:
     @classmethod
     def INPUT_TYPES(s):
@@ -42,10 +49,10 @@ class LoadWanModel:
             "required": {
                 "model": (
                     [ 
-                        'Wan2.1-T2V-1.3B'
-                        'Wan2.1-T2V-14B'
-                        'Wan2.1-I2V-14B-480P'
-                        'Wan2.1-I2V-14B-720P'
+                        'Wan2.1-T2V-1.3B',
+                        'Wan2.1-T2V-14B',
+                        'Wan2.1-I2V-14B-480P',
+                        'Wan2.1-I2V-14B-720P',
                     ],
                     {
                         "default": 'Wan2.1-T2V-1.3B',
@@ -59,10 +66,10 @@ class LoadWanModel:
                 ),
                 "config": (
                     [
-                        "wan_civitai.yaml",
+                        "wan2.1/wan_civitai.yaml",
                     ],
                     {
-                        "default": "wan_civitai.yaml",
+                        "default": "wan2.1/wan_civitai.yaml",
                     }
                 ),
                 "precision": (
@@ -74,7 +81,7 @@ class LoadWanModel:
             },
         }
 
-    RETURN_TYPES = ("CogVideoXFUNSMODEL",)
+    RETURN_TYPES = ("FunModels",)
     RETURN_NAMES = ("cogvideoxfun_model",)
     FUNCTION = "loadmodel"
     CATEGORY = "CogVideoXFUNWrapper"
@@ -116,7 +123,9 @@ class LoadWanModel:
 
         # Load Sampler
         print("Load Sampler.")
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(model_name, subfolder='scheduler')
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+        )
         # Update pbar
         pbar.update(1)
         
@@ -125,7 +134,7 @@ class LoadWanModel:
             os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
             low_cpu_mem_usage=True,
-            torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
+            torch_dtype=weight_dtype,
         )
         # Update pbar
         pbar.update(1) 
@@ -188,6 +197,7 @@ class LoadWanModel:
             'model_type': model_type,
             'loras': [],
             'strength_model': [],
+            'config': config,
         }
         return (cogvideoxfun_model,)
 
@@ -196,13 +206,13 @@ class LoadWanLora:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "cogvideoxfun_model": ("CogVideoXFUNSMODEL",),
+                "cogvideoxfun_model": ("FunModels",),
                 "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
                 "lora_cache":([False, True],  {"default": False,}),
             }
         }
-    RETURN_TYPES = ("CogVideoXFUNSMODEL",)
+    RETURN_TYPES = ("FunModels",)
     RETURN_NAMES = ("cogvideoxfun_model",)
     FUNCTION = "load_lora"
     CATEGORY = "CogVideoXFUNWrapper"
@@ -227,7 +237,7 @@ class WanT2VSampler:
         return {
             "required": {
                 "cogvideoxfun_model": (
-                    "CogVideoXFUNSMODEL", 
+                    "FunModels", 
                 ),
                 "prompt": (
                     "STRING_PROMPT", 
@@ -289,18 +299,17 @@ class WanT2VSampler:
 
         # Get Pipeline
         pipeline = cogvideoxfun_model['pipeline']
-        model_name = cogvideoxfun_model['model_name']
+        config = cogvideoxfun_model['config']
         weight_dtype = cogvideoxfun_model['dtype']
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler].from_pretrained(model_name, subfolder='scheduler')
+        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
 
         generator= torch.Generator(device).manual_seed(seed)
         
         video_length = 1 if is_image else video_length
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
-            input_video, input_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=(height, width))
 
             # Apply lora
             if cogvideoxfun_model.get("lora_cache", False):
@@ -340,8 +349,6 @@ class WanT2VSampler:
                 guidance_scale = cfg,
                 num_inference_steps = steps,
 
-                video        = input_video,
-                mask_video   = input_video_mask,
                 comfyui_progressbar = True,
             ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
@@ -359,7 +366,7 @@ class WanI2VSampler:
         return {
             "required": {
                 "cogvideoxfun_model": (
-                    "CogVideoXFUNSMODEL", 
+                    "FunModels", 
                 ),
                 "prompt": (
                     "STRING_PROMPT",
@@ -427,11 +434,11 @@ class WanI2VSampler:
         
         # Get Pipeline
         pipeline = cogvideoxfun_model['pipeline']
-        model_name = cogvideoxfun_model['model_name']
+        config = cogvideoxfun_model['config']
         weight_dtype = cogvideoxfun_model['dtype']
-        
+
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler].from_pretrained(model_name, subfolder='scheduler')
+        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
 
         generator= torch.Generator(device).manual_seed(seed)
 

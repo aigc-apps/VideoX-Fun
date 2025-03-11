@@ -20,7 +20,7 @@ from einops import rearrange
 from PIL import Image
 from transformers import T5Tokenizer
 
-from cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                               WanT5EncoderModel, WanTransformer3DModel)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -493,6 +493,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         clip_image: Image = None,
         max_sequence_length: int = 512,
+        comfyui_progressbar: bool = False,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -558,6 +559,9 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         else:
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         self._num_timesteps = len(timesteps)
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(num_inference_steps + 2)
 
         # 5. Prepare latents.
         if video is not None:
@@ -580,6 +584,8 @@ class WanFunInpaintPipeline(DiffusionPipeline):
             generator,
             latents,
         )
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # Prepare mask latent variables
         if init_video is not None:
@@ -646,6 +652,8 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                 torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
             )
             clip_context = torch.zeros_like(clip_context)
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -701,6 +709,8 @@ class WanFunInpaintPipeline(DiffusionPipeline):
 
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
+                if comfyui_progressbar:
+                    pbar.update(1)
 
         if output_type == "numpy":
             video = self.decode_latents(latents)

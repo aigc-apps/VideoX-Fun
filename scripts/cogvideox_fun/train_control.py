@@ -158,7 +158,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
     try:
         logger.info("Running validation... ")
             
-        transformer3d_val = CogVideoXTransformer3DModel.from_pretrained_2d(
+        transformer3d_val = CogVideoXTransformer3DModel.from_pretrained
             args.pretrained_model_name_or_path, subfolder="transformer"
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
@@ -750,7 +750,7 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
-    transformer3d = CogVideoXTransformer3DModel.from_pretrained_2d(
+    transformer3d = CogVideoXTransformer3DModel.from_pretrained
         args.pretrained_model_name_or_path, subfolder="transformer"
     )
 
@@ -801,7 +801,7 @@ def main():
 
     # Create EMA for the transformer3d.
     if args.use_ema:
-        ema_transformer3d = CogVideoXTransformer3DModel.from_pretrained_2d(
+        ema_transformer3d = CogVideoXTransformer3DModel.from_pretrained
             args.pretrained_model_name_or_path, subfolder="transformer"
         )
         ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=CogVideoXTransformer3DModel, model_config=ema_transformer3d.config)
@@ -825,7 +825,7 @@ def main():
             if args.use_ema:
                 ema_path = os.path.join(input_dir, "transformer_ema")
                 _, ema_kwargs = CogVideoXTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
-                load_model = CogVideoXTransformer3DModel.from_pretrained_2d(
+                load_model = CogVideoXTransformer3DModel.from_pretrained
                     input_dir, subfolder="transformer_ema"
                 )
                 load_model = EMAModel(load_model.parameters(), model_cls=CogVideoXTransformer3DModel, model_config=load_model.config)
@@ -840,7 +840,7 @@ def main():
                 model = models.pop()
 
                 # load diffusers style into model
-                load_model = CogVideoXTransformer3DModel.from_pretrained_2d(
+                load_model = CogVideoXTransformer3DModel.from_pretrained
                     input_dir, subfolder="transformer"
                 )
                 model.register_to_config(**load_model.config)

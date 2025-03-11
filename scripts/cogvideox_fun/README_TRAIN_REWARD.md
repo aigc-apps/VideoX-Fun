@@ -185,7 +185,7 @@ prompt = "Pig with wings flying above a diamond mountain"
 sample_size = [512, 512]
 video_length = 49
 
-transformer = CogVideoXTransformer3DModel.from_pretrained_2d(model_path, subfolder="transformer").to(torch.bfloat16)
+transformer = CogVideoXTransformer3DModel.from_pretrained(model_path, subfolder="transformer").to(torch.bfloat16)
 scheduler = CogVideoXDDIMScheduler.from_pretrained(model_path, subfolder="scheduler")
 pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
     model_path, transformer=transformer, scheduler=scheduler, torch_dtype=torch.bfloat16

@@ -14,32 +14,40 @@ import numpy as np
 import pkg_resources
 import requests
 import torch
-from diffusers import (CogVideoXDDIMScheduler,
+from diffusers import (AutoencoderKLCogVideoX, CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler,
                        DDIMScheduler, DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
 from PIL import Image
 from safetensors import safe_open
 
-from cogvideox.data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from cogvideox.models import (AutoencoderKLCogVideoX,
-                              CogVideoXTransformer3DModel)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
-                                CogVideoX_Fun_Pipeline_Control,
-                                CogVideoX_Fun_Pipeline_Inpaint)
-from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
-from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import (get_image_to_video_latent,
+from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
+from ..models.cogvideox_transformer3d import \
+    CogVideoXTransformer3DModel
+from ..models.cogvideox_vae import AutoencoderKLCogVideoX
+from ..pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
+from ..pipeline.pipeline_cogvideox_fun_control import \
+    CogVideoX_Fun_Pipeline_Control
+from ..pipeline.pipeline_cogvideox_fun_inpaint import \
+    CogVideoX_Fun_Pipeline_Inpaint
+from ..utils.fp8_optimization import convert_weight_dtype_wrapper
+from ..utils.lora_utils import merge_lora, unmerge_lora
+from ..utils.utils import (get_image_to_video_latent,
                                    get_video_to_video_latent, save_videos_grid)
 
-scheduler_dict = {
+ddpm_scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
     "Euler A": EulerAncestralDiscreteScheduler,
     "DPM++": DPMSolverMultistepScheduler, 
     "PNDM": PNDMScheduler,
-    "DDIM_Cog": CogVideoXDDIMScheduler,
+    "DDIM": DDIMScheduler,
     "DDIM_Origin": DDIMScheduler,
+    "DDIM_Cog": CogVideoXDDIMScheduler,
 }
+flow_scheduler_dict = {
+    "Flow": FlowMatchEulerDiscreteScheduler,
+}
+all_cheduler_dict = {**ddpm_scheduler_dict, **flow_scheduler_dict}
 
 gradio_version = pkg_resources.get_distribution("gradio").version
 gradio_version_is_above_4 = True if int(gradio_version.split('.')[0]) >= 4 else False
@@ -111,7 +119,7 @@ class CogVideoX_Fun_Controller:
         ).to(self.weight_dtype)
 
         # Get Transformer
-        self.transformer = CogVideoXTransformer3DModel.from_pretrained_2d(
+        self.transformer = CogVideoXTransformer3DModel.from_pretrained(
             diffusion_transformer_dropdown, 
             subfolder="transformer",
             low_cpu_mem_usage=True, 
@@ -124,7 +132,7 @@ class CogVideoX_Fun_Controller:
                     diffusion_transformer_dropdown,
                     vae=self.vae, 
                     transformer=self.transformer,
-                    scheduler=scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
+                    scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
                     torch_dtype=self.weight_dtype
                 )
             else:
@@ -132,7 +140,7 @@ class CogVideoX_Fun_Controller:
                     diffusion_transformer_dropdown,
                     vae=self.vae, 
                     transformer=self.transformer,
-                    scheduler=scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
+                    scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
                     torch_dtype=self.weight_dtype
                 )
         else:
@@ -140,7 +148,7 @@ class CogVideoX_Fun_Controller:
                 diffusion_transformer_dropdown,
                 vae=self.vae, 
                 transformer=self.transformer,
-                scheduler=scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
+                scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
                 torch_dtype=self.weight_dtype
             )
 
@@ -273,7 +281,7 @@ class CogVideoX_Fun_Controller:
 
         is_image = True if generation_method == "Image Generation" else False
 
-        self.pipeline.scheduler = scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
+        self.pipeline.scheduler = ddpm_scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
         if self.lora_model_path != "none":
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
@@ -555,7 +563,7 @@ def ui(GPU_memory_mode, weight_dtype):
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        sampler_dropdown   = gr.Dropdown(label="Sampling method (采样器种类)", choices=list(scheduler_dict.keys()), value=list(scheduler_dict.keys())[0])
+                        sampler_dropdown   = gr.Dropdown(label="Sampling method (采样器种类)", choices=list(ddpm_scheduler_dict.keys()), value=list(ddpm_scheduler_dict.keys())[0])
                         sample_step_slider = gr.Slider(label="Sampling steps (生成步数)", value=50, minimum=10, maximum=100, step=1)
                         
                     resize_method = gr.Radio(
@@ -766,7 +774,7 @@ class CogVideoX_Fun_Controller_Modelscope:
         ).to(self.weight_dtype)
 
         # Get Transformer
-        self.transformer = CogVideoXTransformer3DModel.from_pretrained_2d(
+        self.transformer = CogVideoXTransformer3DModel.from_pretrained(
             model_name, 
             subfolder="transformer",
             low_cpu_mem_usage=True, 
@@ -779,7 +787,7 @@ class CogVideoX_Fun_Controller_Modelscope:
                     model_name,
                     vae=self.vae, 
                     transformer=self.transformer,
-                    scheduler=scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
+                    scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
                     torch_dtype=self.weight_dtype
                 )
             else:
@@ -787,7 +795,7 @@ class CogVideoX_Fun_Controller_Modelscope:
                     model_name,
                     vae=self.vae, 
                     transformer=self.transformer,
-                    scheduler=scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
+                    scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
                     torch_dtype=self.weight_dtype
                 )
         else:
@@ -795,7 +803,7 @@ class CogVideoX_Fun_Controller_Modelscope:
                 model_name,
                 vae=self.vae, 
                 transformer=self.transformer,
-                scheduler=scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
+                scheduler=ddpm_scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
                 torch_dtype=self.weight_dtype
             )
 
@@ -907,7 +915,7 @@ class CogVideoX_Fun_Controller_Modelscope:
 
         is_image = True if generation_method == "Image Generation" else False
 
-        self.pipeline.scheduler = scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
+        self.pipeline.scheduler = ddpm_scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
         if self.lora_model_path != "none":
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
@@ -1096,7 +1104,7 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, weigh
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        sampler_dropdown   = gr.Dropdown(label="Sampling method (采样器种类)", choices=list(scheduler_dict.keys()), value=list(scheduler_dict.keys())[0])
+                        sampler_dropdown   = gr.Dropdown(label="Sampling method (采样器种类)", choices=list(ddpm_scheduler_dict.keys()), value=list(ddpm_scheduler_dict.keys())[0])
                         sample_step_slider = gr.Slider(label="Sampling steps (生成步数)", value=50, minimum=10, maximum=50, step=1, interactive=False)
                     
                     resize_method = gr.Radio(
@@ -1474,7 +1482,7 @@ def ui_eas(model_name, savedir_sample):
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        sampler_dropdown   = gr.Dropdown(label="Sampling method", choices=list(scheduler_dict.keys()), value=list(scheduler_dict.keys())[0])
+                        sampler_dropdown   = gr.Dropdown(label="Sampling method", choices=list(ddpm_scheduler_dict.keys()), value=list(ddpm_scheduler_dict.keys())[0])
                         sample_step_slider = gr.Slider(label="Sampling steps", value=50, minimum=10, maximum=50, step=1, interactive=False)
                     
                     resize_method = gr.Radio(

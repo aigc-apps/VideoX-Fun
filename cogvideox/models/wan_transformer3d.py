@@ -225,7 +225,7 @@ def rope_apply(x, grid_sizes, freqs):
         seq_len = f * h * w
 
         # precompute multipliers
-        x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
+        x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float32).reshape(
             seq_len, n, -1, 2))
         freqs_i = torch.cat([
             freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
@@ -845,14 +845,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
             for key in transformer_additional_kwargs["dict_mapping"]:
-                print(f"Add {transformer_additional_kwargs["dict_mapping"][key]} from {transformer_additional_kwargs[key]} to config")
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = transformer_additional_kwargs[key]
+                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
 
         if low_cpu_mem_usage:
             try:
                 import re
+
+                from diffusers.models.modeling_utils import \
+                    load_model_dict_into_meta
                 from diffusers.utils import is_accelerate_available
-                from diffusers.models.modeling_utils import load_model_dict_into_meta
                 if is_accelerate_available():
                     import accelerate
                 

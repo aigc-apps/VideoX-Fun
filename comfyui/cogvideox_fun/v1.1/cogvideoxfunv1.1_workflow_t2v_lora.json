@@ -137,7 +137,7 @@
       "inputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "link": 57
         },
         {
@@ -276,7 +276,7 @@
       "outputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "links": [
             56
           ],
@@ -290,7 +290,7 @@
       "widgets_values": [
         "CogVideoX-Fun-V1.1-2b-InP",
         "Inpaint",
-        false,
+        "model_cpu_offload",
         "bf16"
       ]
     },
@@ -311,14 +311,14 @@
       "inputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "link": 56
         }
       ],
       "outputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "links": [
             57
           ],
@@ -365,7 +365,7 @@
       0,
       92,
       0,
-      "CogVideoXFUNSMODEL"
+      "FunModels"
     ],
     [
       57,
@@ -373,7 +373,7 @@
       0,
       88,
       0,
-      "CogVideoXFUNSMODEL"
+      "FunModels"
     ]
   ],
   "groups": [

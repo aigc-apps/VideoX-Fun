@@ -79,7 +79,7 @@ class LoadCogVideoX_Fun_Model:
             },
         }
 
-    RETURN_TYPES = ("CogVideoXFUNSMODEL",)
+    RETURN_TYPES = ("FunModels",)
     RETURN_NAMES = ("cogvideoxfun_model",)
     FUNCTION = "loadmodel"
     CATEGORY = "CogVideoXFUNWrapper"
@@ -122,7 +122,7 @@ class LoadCogVideoX_Fun_Model:
         pbar.update(1)
         
         # Get Transformer
-        transformer = CogVideoXTransformer3DModel.from_pretrained_2d(
+        transformer = CogVideoXTransformer3DModel.from_pretrained(
             model_name, 
             subfolder="transformer",
             torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
@@ -190,13 +190,13 @@ class LoadCogVideoX_Fun_Lora:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "cogvideoxfun_model": ("CogVideoXFUNSMODEL",),
+                "cogvideoxfun_model": ("FunModels",),
                 "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
                 "lora_cache":([False, True],  {"default": False,}),
             }
         }
-    RETURN_TYPES = ("CogVideoXFUNSMODEL",)
+    RETURN_TYPES = ("FunModels",)
     RETURN_NAMES = ("cogvideoxfun_model",)
     FUNCTION = "load_lora"
     CATEGORY = "CogVideoXFUNWrapper"
@@ -221,7 +221,7 @@ class CogVideoX_Fun_T2VSampler:
         return {
             "required": {
                 "cogvideoxfun_model": (
-                    "CogVideoXFUNSMODEL", 
+                    "FunModels", 
                 ),
                 "prompt": (
                     "STRING_PROMPT", 
@@ -357,7 +357,7 @@ class CogVideoX_Fun_I2VSampler:
         return {
             "required": {
                 "cogvideoxfun_model": (
-                    "CogVideoXFUNSMODEL", 
+                    "FunModels", 
                 ),
                 "prompt": (
                     "STRING_PROMPT",
@@ -498,7 +498,7 @@ class CogVideoX_Fun_V2VSampler:
         return {
             "required": {
                 "cogvideoxfun_model": (
-                    "CogVideoXFUNSMODEL", 
+                    "FunModels", 
                 ),
                 "prompt": (
                     "STRING_PROMPT",

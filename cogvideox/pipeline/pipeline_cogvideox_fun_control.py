@@ -32,7 +32,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 from einops import rearrange
 
-from cogvideox.models import (AutoencoderKLCogVideoX,
+from ..models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
 

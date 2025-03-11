@@ -237,7 +237,7 @@
       "inputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "link": 52
         },
         {
@@ -376,7 +376,7 @@
       "outputs": [
         {
           "name": "cogvideoxfun_model",
-          "type": "CogVideoXFUNSMODEL",
+          "type": "FunModels",
           "links": [
             52
           ],
@@ -389,7 +389,8 @@
       },
       "widgets_values": [
         "CogVideoX-Fun-2b-InP",
-        false,
+        "Inpaint",
+        "model_cpu_offload",
         "bf16"
       ]
     }
@@ -433,7 +434,7 @@
       0,
       87,
       0,
-      "CogVideoXFUNSMODEL"
+      "FunModels"
     ]
   ],
   "groups": [
