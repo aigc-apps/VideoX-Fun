@@ -696,7 +696,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             assert clip_fea is not None and y is not None
         # params
         device = self.patch_embedding.weight.device
-        if self.freqs.device != device:
+        if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
         if y is not None:

@@ -23,9 +23,9 @@ from ...cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
 from ...cogvideox.pipeline import WanI2VPipeline, WanPipeline
 from ...cogvideox.ui.controller import all_cheduler_dict
 from ...cogvideox.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
 from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from ...cogvideox.utils.utils import (get_image_to_video_latent,
+from ...cogvideox.utils.utils import (get_image_to_video_latent, filter_kwargs,
                                       get_video_to_video_latent,
                                       save_videos_grid)
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
@@ -182,6 +182,8 @@ class LoadWanModel:
             raise ValueError(f"Model type {model_type} not supported")
 
         if GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(transformer, ["modulation",], device="cuda")
+            transformer.freqs = transformer.freqs.to(device="cuda")
             pipeline.enable_sequential_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])

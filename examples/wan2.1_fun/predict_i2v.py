@@ -16,10 +16,11 @@ for project_root in project_roots:
 from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
 from cogvideox.pipeline import WanFunInpaintPipeline
-from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8,
+from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
                                               convert_weight_dtype_wrapper)
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
+from cogvideox.utils.utils import (filter_kwargs, get_image_to_video_latent,
+                                   save_videos_grid)
 
 # GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
@@ -29,7 +30,7 @@ from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
+GPU_memory_mode     = "sequential_cpu_offload"
 
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
@@ -126,13 +127,6 @@ clip_image_encoder = clip_image_encoder.eval()
 Choosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
 }[sampler_name]
-def filter_kwargs(cls, kwargs):
-    import inspect
-    sig = inspect.signature(cls.__init__)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-    return filtered_kwargs
-
 scheduler = Choosen_Scheduler(
     **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
@@ -147,6 +141,8 @@ pipeline = WanFunInpaintPipeline(
     clip_image_encoder=clip_image_encoder
 )
 if GPU_memory_mode == "sequential_cpu_offload":
+    replace_parameters_by_name(transformer, ["modulation",], device="cuda")
+    transformer.freqs = transformer.freqs.to(device="cuda")
     pipeline.enable_sequential_cpu_offload()
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])

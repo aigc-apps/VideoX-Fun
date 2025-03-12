@@ -229,8 +229,8 @@
         "Node name for S&R": "LoadWanFunModel"
       },
       "widgets_values": [
-        "Wan2.1-Fun-1.3B-InP",
-        "model_cpu_offload",
+        "Wan2.1-Fun-14B-InP",
+        "sequential_cpu_offload",
         "wan2.1/wan_civitai.yaml",
         "fp16"
       ]

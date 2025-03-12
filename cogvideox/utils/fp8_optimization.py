@@ -14,6 +14,17 @@ def autocast_model_forward(cls, origin_dtype, *inputs, **kwargs):
     cls.to(weight_dtype)
     return out
 
+def replace_parameters_by_name(module, name_keywords, device):
+    from torch import nn
+    for name, param in list(module.named_parameters(recurse=False)):
+        if any(keyword in name for keyword in name_keywords):
+            if isinstance(param, nn.Parameter):
+                tensor = param.data
+                delattr(module, name)
+                setattr(module, name, tensor.to(device=device))
+    for child_name, child_module in module.named_children():
+        replace_parameters_by_name(child_module, name_keywords, device)
+
 def convert_model_weight_to_float8(model, exclude_module_name=['embed_tokens']):
     for name, module in model.named_modules():
         flag = False

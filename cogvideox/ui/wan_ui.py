@@ -7,17 +7,19 @@ import cv2
 import gradio as gr
 import numpy as np
 import torch
-from PIL import Image
 from omegaconf import OmegaConf
+from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel, AutoTokenizer,
-                              WanTransformer3DModel)
-from ..pipeline import WanPipeline, WanI2VPipeline
-from ..utils.fp8_optimization import convert_weight_dtype_wrapper, convert_model_weight_to_float8
+from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+                      WanT5EncoderModel, WanTransformer3DModel)
+from ..pipeline import WanI2VPipeline, WanPipeline
+from ..utils.fp8_optimization import (convert_model_weight_to_float8,
+                                      convert_weight_dtype_wrapper,
+                                      replace_parameters_by_name)
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (get_image_to_video_latent, filter_kwargs,
+from ..utils.utils import (filter_kwargs, get_image_to_video_latent,
                            get_video_to_video_latent, save_videos_grid)
 from .controller import (Fun_Controller, Fun_Controller_EAS, all_cheduler_dict,
                          css, ddpm_scheduler_dict, flow_scheduler_dict,
@@ -101,6 +103,8 @@ class Wan_Controller(Fun_Controller):
             raise ValueError("Not support now")
 
         if self.GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(self.transformer, ["modulation",], device="cuda")
+            self.transformer.freqs = self.transformer.freqs.to(device="cuda")
             self.pipeline.enable_sequential_cpu_offload()
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
@@ -391,6 +395,8 @@ class Wan_Controller_Modelscope(Wan_Controller):
             raise ValueError("Not support now")
     
         if GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(self.transformer, ["modulation",], device="cuda")
+            self.transformer.freqs = self.transformer.freqs.to(device="cuda")
             self.pipeline.enable_sequential_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])

@@ -206,7 +206,7 @@
       },
       "widgets_values": [
         "Wan2.1-T2V-14B",
-        "model_cpu_offload_and_qfloat8",
+        "sequential_cpu_offload",
         "wan2.1/wan_civitai.yaml",
         "fp16"
       ]

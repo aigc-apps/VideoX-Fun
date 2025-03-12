@@ -27,7 +27,7 @@ if __name__ == "__main__":
     # 
     # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
     # resulting in slower speeds but saving a large amount of GPU memory.
-    GPU_memory_mode = "model_cpu_offload_and_qfloat8"
+    GPU_memory_mode = "sequential_cpu_offload"
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
     weight_dtype = torch.bfloat16
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     server_port = 7860
 
     # Params below is used when ui_mode = "modelscope"
-    model_name = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
+    model_name = "models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
     # "Inpaint" or "Control"
     model_type = "Inpaint"
     # Save dir of this model
