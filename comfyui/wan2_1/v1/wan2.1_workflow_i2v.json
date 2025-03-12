@@ -153,9 +153,9 @@
         "Node name for S&R": "VHS_VideoCombine"
       },
       "widgets_values": {
-        "frame_rate": 8,
+        "frame_rate": 16,
         "loop_count": 0,
-        "filename_prefix": "CogVideoX-Fun",
+        "filename_prefix": "Fun",
         "format": "video/h264-mp4",
         "pix_fmt": "yuv420p",
         "crf": 22,
@@ -166,7 +166,7 @@
           "hidden": false,
           "paused": false,
           "params": {
-            "filename": "CogVideoX-Fun_00008.mp4",
+            "filename": "Fun_00008.mp4",
             "subfolder": "",
             "type": "output",
             "format": "video/h264-mp4",
@@ -319,7 +319,7 @@
         "Wan2.1-I2V-14B-480P",
         "sequential_cpu_offload",
         "wan2.1/wan_civitai.yaml",
-        "fp16"
+        "bf16"
       ]
     },
     {
