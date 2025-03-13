@@ -33,6 +33,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --train_mode="inpaint" \
   --low_vram 
 
@@ -72,5 +73,6 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
 #   --random_hw_adapt \
 #   --training_with_video_token_length \
 #   --enable_bucket \
+#   --uniform_sampling \
 #   --low_vram \
 #   --train_mode="normal" 

@@ -1505,10 +1505,10 @@ def main():
                             _clip_context = clip_image_encoder([clip_image[:, None, :, :]])
 
                             if rng is None:
-                                zero_init_clip_in = np.random.choice([True, False])
+                                zero_init_clip_in = np.random.choice([True, False], p=[0.1, 0.9])
                             else:
-                                zero_init_clip_in = rng.choice([True, False])
-                            clip_context.append(_clip_context if zero_init_clip_in else torch.zeros_like(_clip_context))
+                                zero_init_clip_in = rng.choice([True, False], p=[0.1, 0.9])
+                            clip_context.append(_clip_context if not zero_init_clip_in else torch.zeros_like(_clip_context))
                             
                         clip_context = torch.cat(clip_context)
                         
@@ -1549,11 +1549,23 @@ def main():
 
                 bsz, channel, num_frames, height, width = latents.size()
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                # Sample a random timestep for each image
-                # timesteps = generate_timestep_with_lognorm(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                # timesteps = torch.randint(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                timesteps = idx_sampling(bsz, generator=torch_rng, device=latents.device)
-                timesteps = timesteps.long()
+
+                if not args.uniform_sampling:
+                    u = compute_density_for_timestep_sampling(
+                        weighting_scheme=args.weighting_scheme,
+                        batch_size=bsz,
+                        logit_mean=args.logit_mean,
+                        logit_std=args.logit_std,
+                        mode_scale=args.mode_scale,
+                    )
+                    indices = (u * noise_scheduler.config.num_train_timesteps).long()
+                else:
+                    # Sample a random timestep for each image
+                    # timesteps = generate_timestep_with_lognorm(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
+                    # timesteps = torch.randint(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
+                    indices = idx_sampling(bsz, generator=torch_rng, device="cpu")
+                    indices = indices.long()
+                timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
 
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
@@ -1565,16 +1577,6 @@ def main():
                     while len(sigma.shape) < n_dim:
                         sigma = sigma.unsqueeze(-1)
                     return sigma
-
-                u = compute_density_for_timestep_sampling(
-                    weighting_scheme=args.weighting_scheme,
-                    batch_size=bsz,
-                    logit_mean=args.logit_mean,
-                    logit_std=args.logit_std,
-                    mode_scale=args.mode_scale,
-                )
-                indices = (u * noise_scheduler.config.num_train_timesteps).long()
-                timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
 
                 # Add noise according to flow matching.
                 # zt = (1 - texp) * x + texp * z1

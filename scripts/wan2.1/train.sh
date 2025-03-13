@@ -35,6 +35,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --low_vram \
   --train_mode="normal" \
   --trainable_modules "."
@@ -77,6 +78,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
 #   --random_hw_adapt \
 #   --training_with_video_token_length \
 #   --enable_bucket \
+#   --uniform_sampling \
 #   --low_vram \
 #   --train_mode="i2v" \
 #   --trainable_modules "."

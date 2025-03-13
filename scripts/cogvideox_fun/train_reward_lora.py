@@ -91,7 +91,7 @@ def video_reader(*args, **kwargs):
 def log_validation(vae, text_encoder, tokenizer, transformer3d, network, loss_fn, args, accelerator, weight_dtype, global_step, validation_prompts_idx):
     logger.info("Running validation... ")
 
-    transformer3d_val = CogVideoXTransformer3DModel.from_pretrained
+    transformer3d_val = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer",
     ).to(weight_dtype)
     transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
@@ -816,7 +816,7 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
-    transformer3d = CogVideoXTransformer3DModel.from_pretrained
+    transformer3d = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer"
     )
 

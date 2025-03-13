@@ -33,6 +33,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --low_vram 
 
 # # Training command for I2V
@@ -71,5 +72,6 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_lora.py \
 #   --random_hw_adapt \
 #   --training_with_video_token_length \
 #   --enable_bucket \
+#   --uniform_sampling \
 #   --low_vram \
 #   --train_mode="i2v" 

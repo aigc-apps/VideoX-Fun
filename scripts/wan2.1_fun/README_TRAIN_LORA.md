@@ -59,6 +59,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --train_mode="inpaint" \
   --low_vram 
 ```
@@ -103,6 +104,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --use_deepspeed \
   --train_mode="inpaint" \
   --low_vram
@@ -152,6 +154,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --uniform_sampling \
   --save_state \
   --use_deepspeed \
   --train_mode="inpaint" \
