@@ -63,7 +63,7 @@ negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字
 guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 1.00
+lora_weight         = 0.55
 save_path           = "samples/wan-videos-fun-i2v"
 
 config = OmegaConf.load(config_path)

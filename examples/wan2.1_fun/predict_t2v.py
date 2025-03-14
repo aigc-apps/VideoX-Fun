@@ -52,18 +52,13 @@ fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
-weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
-validation_image_end    = None
-
-# prompts
+weight_dtype        = torch.bfloat16
 prompt              = "The dog is shaking head. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 1.00
+lora_weight         = 0.55
 save_path           = "samples/wan-videos-fun-i2v"
 
 config = OmegaConf.load(config_path)
