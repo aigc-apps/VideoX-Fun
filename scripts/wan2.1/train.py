@@ -1621,8 +1621,8 @@ def main():
                     # Sample a random timestep for each image
                     # timesteps = generate_timestep_with_lognorm(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
                     # timesteps = torch.randint(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                    indices = idx_sampling(bsz, generator=torch_rng, device="cpu")
-                    indices = indices.long()
+                    indices = idx_sampling(bsz, generator=torch_rng, device=latents.device)
+                    indices = indices.long().cpu()
                 timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
 
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
