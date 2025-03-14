@@ -1173,7 +1173,7 @@ def main():
             latent_shape = [
                 args.train_batch_size,
                 vae.config.latent_channels,
-                int((args.video_length - 1) // vae.temporal_compression_ratio * vae.temporal_compression_ratio + 1) if args.video_length != 1 else 1,
+                int((args.video_length - 1) // vae.temporal_compression_ratio + 1) if args.video_length != 1 else 1,
                 args.train_sample_height // vae_scale_factor,
                 args.train_sample_width // vae_scale_factor,
             ]
@@ -1233,14 +1233,13 @@ def main():
                         latent_model_input = latent_model_input.detach()
 
                     # predict noise model_output
-                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                    with torch.cuda.amp.autocast(dtype=weight_dtype):
                         noise_pred = transformer3d(
                             x=latent_model_input,
                             context=prompt_embeds,
                             t=t_expand,
                             seq_len=seq_len,
                         )
-                        noise_pred = torch.stack(noise_pred)
 
                     # Optimize the denoising results only for the specified steps.
                     if i in backprop_step_list:
@@ -1252,8 +1251,6 @@ def main():
                     if do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_text = noise_pred[0], noise_pred[1]
                         noise_pred = noise_pred_uncond + args.guidance_scale * (noise_pred_text - noise_pred_uncond)
-                    else:
-                        noise_pred = torch.stack(noise_pred)
 
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = noise_scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
