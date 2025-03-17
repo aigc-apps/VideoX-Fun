@@ -59,7 +59,7 @@ import cogvideox.reward.reward_fn as reward_fn
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline_Inpaint,
+from cogvideox.pipeline import (CogVideoXFunInpaintPipeline,
                                 add_noise_to_reference_video,
                                 get_3d_rotary_pos_embed,
                                 get_resize_crop_region_for_grid)
@@ -102,7 +102,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, loss_fn
         vae = AutoencoderKLCogVideoX.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         ).to(weight_dtype)
-    pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
+    pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=vae if args.vae_gradient_checkpointing else accelerator.unwrap_model(vae).to(weight_dtype),
         text_encoder=accelerator.unwrap_model(text_encoder),
@@ -189,7 +189,7 @@ def load_prompts(prompt_path, prompt_column="prompt", start_idx=None, end_idx=No
     return prompt_list
 
 
-# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoX_Fun_Pipeline_Inpaint._get_t5_prompt_embeds
+# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoXFunInpaintPipeline._get_t5_prompt_embeds
 def get_t5_prompt_embeds(
     tokenizer: T5Tokenizer,
     text_encoder: T5EncoderModel,
@@ -231,7 +231,7 @@ def get_t5_prompt_embeds(
     return prompt_embeds
 
 
-# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoX_Fun_Pipeline_Inpaint.encode_prompt
+# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoXFunInpaintPipeline.encode_prompt
 def encode_prompt(
     tokenizer: T5Tokenizer,
     text_encoder: T5EncoderModel,
@@ -294,7 +294,7 @@ def encode_prompt(
     return prompt_embeds, negative_prompt_embeds
 
 
-# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoX_Fun_Pipeline_Inpaint.prepare_extra_step_kwargs
+# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoXFunInpaintPipeline.prepare_extra_step_kwargs
 def prepare_extra_step_kwargs(scheduler, generator, eta):
     # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
     # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
@@ -314,7 +314,7 @@ def prepare_extra_step_kwargs(scheduler, generator, eta):
     return extra_step_kwargs
 
 
-# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoX_Fun_Pipeline_Inpaint._prepare_rotary_positional_embeddings
+# Modified from cogvideox.pipeline.pipeline_cogvideox_inpaint.CogVideoXFunInpaintPipeline._prepare_rotary_positional_embeddings
 def prepare_rotary_positional_embeddings(
     height: int,
     width: int,
@@ -1066,7 +1066,7 @@ def main():
         train_loss = 0.0
         train_reward = 0.0
         # In the following training loop, randomly select training prompts and use the 
-        # `CogVideoX_Fun_Pipeline_Inpaint` to sample videos, calculate rewards, and update the network.
+        # `CogVideoXFunInpaintPipeline` to sample videos, calculate rewards, and update the network.
         for _ in range(num_update_steps_per_epoch):
             # train_prompt = random.sample(prompt_list, args.train_batch_size)
             train_prompt = random.choices(prompt_list, k=args.train_batch_size)

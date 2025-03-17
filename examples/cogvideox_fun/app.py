@@ -13,7 +13,7 @@ from cogvideox.api.api import (infer_forward_api,
                                update_diffusion_transformer_api,
                                update_edition_api)
 from cogvideox.ui.controller import ddpm_scheduler_dict
-from cogvideox.ui.cogvideox_fun_ui import ui, ui_eas, ui_modelscope
+from cogvideox.ui.CogVideoXFunui import ui, ui_eas, ui_modelscope
 
 if __name__ == "__main__":
     # Choose the ui mode  

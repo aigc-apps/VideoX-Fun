@@ -1,8 +1,8 @@
-from .cogvideox_fun.nodes import (CogVideoX_Fun_I2VSampler,
-                                  CogVideoX_Fun_T2VSampler,
-                                  CogVideoX_Fun_V2VSampler,
-                                  LoadCogVideoX_Fun_Lora,
-                                  LoadCogVideoX_Fun_Model)
+from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
+                                  CogVideoXFunT2VSampler,
+                                  CogVideoXFunV2VSampler,
+                                  LoadCogVideoXFunLora,
+                                  LoadCogVideoXFunModel)
 
 from .wan2_1.nodes import (LoadWanModel,
                            LoadWanLora,
@@ -14,7 +14,7 @@ from .wan2_1_fun.nodes import (LoadWanFunModel,
                            WanFunT2VSampler,
                            WanFunInpaintSampler)
 
-class CogVideoX_FUN_TextBox:
+class FunTextBox:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -33,16 +33,19 @@ class CogVideoX_FUN_TextBox:
 
 
 NODE_CLASS_MAPPINGS = {
-    "CogVideoX_FUN_TextBox": CogVideoX_FUN_TextBox,
-    "LoadCogVideoX_Fun_Model": LoadCogVideoX_Fun_Model,
-    "LoadCogVideoX_Fun_Lora": LoadCogVideoX_Fun_Lora,
-    "CogVideoX_Fun_I2VSampler": CogVideoX_Fun_I2VSampler,
-    "CogVideoX_Fun_T2VSampler": CogVideoX_Fun_T2VSampler,
-    "CogVideoX_Fun_V2VSampler": CogVideoX_Fun_V2VSampler,
+    "FunTextBox": FunTextBox,
+
+    "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
+    "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
+    "CogVideoXFunT2VSampler": CogVideoXFunT2VSampler,
+    "CogVideoXFunInpaintSampler": CogVideoXFunInpaintSampler,
+    "CogVideoXFunV2VSampler": CogVideoXFunV2VSampler,
+
     "LoadWanModel": LoadWanModel,
     "LoadWanLora": LoadWanLora,
     "WanT2VSampler": WanT2VSampler,
     "WanI2VSampler": WanI2VSampler,
+
     "LoadWanFunModel": LoadWanFunModel,
     "LoadWanFunLora": LoadWanFunLora,
     "WanFunT2VSampler": WanFunT2VSampler,
@@ -51,12 +54,12 @@ NODE_CLASS_MAPPINGS = {
 
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "CogVideoX_FUN_TextBox": "CogVideoX_FUN_TextBox",
-    "LoadCogVideoX_Fun_Model": "Load CogVideoX-Fun Model",
-    "LoadCogVideoX_Fun_Lora": "Load CogVideoX-Fun Lora",
-    "CogVideoX_Fun_I2VSampler": "CogVideoX-Fun Sampler for Image to Video",
-    "CogVideoX_Fun_T2VSampler": "CogVideoX-Fun Sampler for Text to Video",
-    "CogVideoX_Fun_V2VSampler": "CogVideoX-Fun Sampler for Video to Video",
+    "FunTextBox": "FunTextBox",
+    "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
+    "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
+    "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
+    "CogVideoXFunT2VSampler": "CogVideoX-Fun Sampler for Text to Video",
+    "CogVideoXFunV2VSampler": "CogVideoX-Fun Sampler for Video to Video",
 
     "LoadWanModel": "Load Wan Model",
     "LoadWanLora": "Load Wan Lora",

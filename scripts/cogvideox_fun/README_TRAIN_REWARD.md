@@ -173,7 +173,7 @@ import torch
 from diffusers import CogVideoXDDIMScheduler
 
 from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_inpaint import CogVideoX_Fun_Pipeline_Inpaint
+from cogvideox.pipeline.pipeline_cogvideox_inpaint import CogVideoXFunInpaintPipeline
 from cogvideox.utils.lora_utils import merge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -187,7 +187,7 @@ video_length = 49
 
 transformer = CogVideoXTransformer3DModel.from_pretrained(model_path, subfolder="transformer").to(torch.bfloat16)
 scheduler = CogVideoXDDIMScheduler.from_pretrained(model_path, subfolder="scheduler")
-pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
+pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
     model_path, transformer=transformer, scheduler=scheduler, torch_dtype=torch.bfloat16
 )
 pipeline.enable_model_cpu_offload()

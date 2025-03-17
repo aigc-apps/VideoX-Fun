@@ -99,20 +99,34 @@ class LoadWanModel:
         config_path = f"{script_directory}/config/{config}"
         config = OmegaConf.load(config_path)
 
-        # Detect model is existing or not 
-        model_name = os.path.join(folder_paths.models_dir, "CogVideoX_Fun", model)
-      
-        if not os.path.exists(model_name):
-            if os.path.exists(eas_cache_dir):
-                model_name = os.path.join(eas_cache_dir, 'CogVideoX_Fun', model)
-            else:
-                model_name = os.path.join(folder_paths.models_dir, "CogVideoX-Fun", model)
-                if not os.path.exists(model_name):
-                    if os.path.exists(eas_cache_dir):
-                        model_name = os.path.join(eas_cache_dir, 'CogVideoX_Fun', model)
-                    else:
-                        # Detect model is existing or not 
-                        print(f"Please download cogvideoxfun model to: {model_name}")
+        # Detect model is existing or not
+        possible_folders = ["CogVideoX_Fun", "Fun_Models"]  # Possible folder names to check
+
+        # Initialize model_name as None
+        model_name = None
+
+        # Check if the model exists in any of the possible folders within folder_paths.models_dir
+        for folder in possible_folders:
+            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
+            if os.path.exists(candidate_path):
+                model_name = candidate_path
+                break
+
+        # If model_name is still None, check eas_cache_dir for each possible folder
+        if model_name is None and os.path.exists(eas_cache_dir):
+            for folder in possible_folders:
+                candidate_path = os.path.join(eas_cache_dir, folder, model)
+                if os.path.exists(candidate_path):
+                    model_name = candidate_path
+                    break
+
+        # If model_name is still None, prompt the user to download the model
+        if model_name is None:
+            print(f"Please download cogvideoxfun model to one of the following directories:")
+            for folder in possible_folders:
+                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
+                if os.path.exists(eas_cache_dir):
+                    print(f"- {os.path.join(eas_cache_dir, folder)}")
 
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),

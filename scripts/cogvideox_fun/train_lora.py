@@ -68,10 +68,10 @@ from cogvideox.data.dataset_image_video import (ImageVideoControlDataset,
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
-                                CogVideoX_Fun_Pipeline_Control,
-                                CogVideoX_Fun_Pipeline_Inpaint)
-from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
+from cogvideox.pipeline import (CogVideoXFunPipeline,
+                                CogVideoXFunControlPipeline,
+                                CogVideoXFunInpaintPipeline)
+from cogvideox.pipeline.pipeline_CogVideoXFuninpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from cogvideox.utils.discrete_sampler import DiscreteSampling
@@ -167,7 +167,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
         scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
         
         if args.train_mode != "normal":
-            pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
+            pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
                 args.pretrained_model_name_or_path, 
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
@@ -177,7 +177,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                 torch_dtype=weight_dtype,
             )
         else:
-            pipeline = CogVideoX_Fun_Pipeline.from_pretrained(
+            pipeline = CogVideoXFunPipeline.from_pretrained(
                 args.pretrained_model_name_or_path, 
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),

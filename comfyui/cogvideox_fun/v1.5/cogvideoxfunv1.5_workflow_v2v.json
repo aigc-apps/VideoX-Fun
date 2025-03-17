@@ -164,7 +164,7 @@
     },
     {
       "id": 75,
-      "type": "CogVideoX_FUN_TextBox",
+      "type": "FunTextBox",
       "pos": {
         "0": 250,
         "1": -50
@@ -190,7 +190,7 @@
       ],
       "title": "Positive Prompt（正向提示词）",
       "properties": {
-        "Node name for S&R": "CogVideoX_FUN_TextBox"
+        "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
         "A cute cat is playing the guitar."
@@ -198,7 +198,7 @@
     },
     {
       "id": 73,
-      "type": "CogVideoX_FUN_TextBox",
+      "type": "FunTextBox",
       "pos": {
         "0": 250,
         "1": 160
@@ -224,7 +224,7 @@
       ],
       "title": "Negtive Prompt（反向提示词）",
       "properties": {
-        "Node name for S&R": "CogVideoX_FUN_TextBox"
+        "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
         "The video is not of a high quality, it has a low resolution. Watermark present in each frame. Strange motion trajectory. "
@@ -312,7 +312,7 @@
     },
     {
       "id": 88,
-      "type": "LoadCogVideoX_Fun_Model",
+      "type": "LoadCogVideoXFunModel",
       "pos": {
         "0": 309,
         "1": -286
@@ -337,7 +337,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadCogVideoX_Fun_Model"
+        "Node name for S&R": "LoadCogVideoXFunModel"
       },
       "widgets_values": [
         "CogVideoX-Fun-V1.5-5b-InP",
@@ -348,7 +348,7 @@
     },
     {
       "id": 90,
-      "type": "CogVideoX_Fun_V2VSampler",
+      "type": "CogVideoXFunV2VSampler",
       "pos": {
         "0": 754,
         "1": 14
@@ -401,7 +401,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "CogVideoX_Fun_V2VSampler"
+        "Node name for S&R": "CogVideoXFunV2VSampler"
       },
       "widgets_values": [
         45,

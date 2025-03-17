@@ -79,7 +79,7 @@
     },
     {
       "id": 75,
-      "type": "CogVideoX_FUN_TextBox",
+      "type": "FunTextBox",
       "pos": {
         "0": 250,
         "1": -50
@@ -105,7 +105,7 @@
       ],
       "title": "Positive Prompt（正向提示词）",
       "properties": {
-        "Node name for S&R": "CogVideoX_FUN_TextBox"
+        "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
         "fireworks display over night city. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
@@ -193,7 +193,7 @@
     },
     {
       "id": 73,
-      "type": "CogVideoX_FUN_TextBox",
+      "type": "FunTextBox",
       "pos": {
         "0": 250,
         "1": 160
@@ -219,7 +219,7 @@
       ],
       "title": "Negtive Prompt（反向提示词）",
       "properties": {
-        "Node name for S&R": "CogVideoX_FUN_TextBox"
+        "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
         "The video is not of a high quality, it has a low resolution. Watermark present in each frame. Strange motion trajectory. "
@@ -227,7 +227,7 @@
     },
     {
       "id": 83,
-      "type": "LoadCogVideoX_Fun_Model",
+      "type": "LoadCogVideoXFunModel",
       "pos": {
         "0": 300,
         "1": -294
@@ -252,7 +252,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadCogVideoX_Fun_Model"
+        "Node name for S&R": "LoadCogVideoXFunModel"
       },
       "widgets_values": [
         "CogVideoX-Fun-V1.5-5b-InP",
@@ -306,7 +306,7 @@
     },
     {
       "id": 82,
-      "type": "CogVideoX_Fun_I2VSampler",
+      "type": "CogVideoXFunInpaintSampler",
       "pos": {
         "0": 758,
         "1": 93
@@ -360,7 +360,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "CogVideoX_Fun_I2VSampler"
+        "Node name for S&R": "CogVideoXFunInpaintSampler"
       },
       "widgets_values": [
         85,

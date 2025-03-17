@@ -17,8 +17,8 @@ for project_root in project_roots:
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
-                                CogVideoX_Fun_Pipeline_Inpaint)
+from cogvideox.pipeline import (CogVideoXFunPipeline,
+                                CogVideoXFunInpaintPipeline)
 from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -131,7 +131,7 @@ scheduler = Choosen_Scheduler.from_pretrained(
 )
 
 if transformer.config.in_channels != vae.config.latent_channels:
-    pipeline = CogVideoX_Fun_Pipeline_Inpaint(
+    pipeline = CogVideoXFunInpaintPipeline(
         vae=vae,
         tokenizer=tokenizer,
         text_encoder=text_encoder,
@@ -139,7 +139,7 @@ if transformer.config.in_channels != vae.config.latent_channels:
         scheduler=scheduler,
     )
 else:
-    pipeline = CogVideoX_Fun_Pipeline(
+    pipeline = CogVideoXFunPipeline(
         vae=vae,
         tokenizer=tokenizer,
         text_encoder=text_encoder,

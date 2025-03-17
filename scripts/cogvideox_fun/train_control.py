@@ -67,10 +67,10 @@ from cogvideox.data.dataset_image_video import (ImageVideoControlDataset,
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
-                                CogVideoX_Fun_Pipeline_Control,
-                                CogVideoX_Fun_Pipeline_Inpaint)
-from cogvideox.pipeline.pipeline_cogvideox_fun_inpaint import (
+from cogvideox.pipeline import (CogVideoXFunPipeline,
+                                CogVideoXFunControlPipeline,
+                                CogVideoXFunInpaintPipeline)
+from cogvideox.pipeline.pipeline_CogVideoXFuninpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from cogvideox.utils.discrete_sampler import DiscreteSampling
@@ -163,7 +163,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
 
-        pipeline = CogVideoX_Fun_Pipeline_Control.from_pretrained(
+        pipeline = CogVideoXFunControlPipeline.from_pretrained(
             args.pretrained_model_name_or_path, 
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),

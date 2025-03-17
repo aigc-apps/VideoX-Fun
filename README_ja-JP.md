@@ -13,7 +13,6 @@
 - [ビデオ結果](#ビデオ結果)
 - [使用方法](#使用方法)
 - [モデルの場所](#モデルの場所)
-- [TODOリスト](#todoリスト)
 - [参考文献](#参考文献)
 - [ライセンス](#ライセンス)
 
@@ -23,11 +22,12 @@ CogVideoX-Funは、CogVideoX構造に基づいて修正されたパイプライ�
 異なるプラットフォームからのクイックスタートをサポートします。詳細は[クイックスタート](#クイックスタート)を参照してください。
 
 新機能：
-- I2Vモデルと関連するトレーニング予測コードをV1.5バージョンに更新。[2024.12.16]
-- 報酬逆伝播を使用してLoraをトレーニングし、生成されたビデオを最適化し、人間の好みにより一致させます。詳細は[こちら](scripts/README_TRAIN_REWARD.md)をご覧ください。新しいバージョンのコントロールモデルは、Canny、Depth、Pose、MLSDなどのさまざまな条件をサポートします。[2024.11.21]
-- CogVideoX-Fun Controlはdiffusersでサポートされています。サポートを提供してくれた[a-r-r-o-w](https://github.com/a-r-r-o-w)に感謝します。この[PR](https://github.com/huggingface/diffusers/pull/9671)でサポートが提供されました。詳細は[ドキュメント](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox)をご覧ください。[2024.10.16]
-- i2vモデルを再トレーニングし、ノイズを追加してビデオの動きの幅を広げました。コントロールモデルのトレーニングコードとコントロールモデルをアップロードしました。[2024.09.29]
-- コードを作成しました！現在、WindowsとLinuxをサポートしています。2bおよび5bモデルをサポートし、256x256x49から1024x1024x49までの任意の解像度でビデオを生成できます。[2024.09.18]
+- Wan2.1-Fun-V1.0の更新：14Bと1.3BモデルのI2Vモデルをサポートし、開始フレームと終了フレームの予測に対応。[2025.03.17]
+- CogVideoX-Fun-V1.5の更新：I2Vモデルと関連するトレーニング・予測コードをアップロード。[2024.12.16]
+- 報酬Loraのサポート：報酬逆伝播技術を使用してLoraをトレーニングし、生成された動画を最適化し、人間の好みによりよく一致させる。[詳細情報](scripts/README_TRAIN_REWARD.md)。新しいバージョンの制御モデルでは、Canny、Depth、Pose、MLSDなどの異なる制御条件に対応。[2024.11.21]
+- diffusersのサポート：CogVideoX-Fun Controlがdiffusersでサポートされるようになりました。[a-r-r-o-w](https://github.com/a-r-r-o-w)がこの[PR](https://github.com/huggingface/diffusers/pull/9671)でサポートを提供してくれたことに感謝します。詳細は[ドキュメント](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox)をご覧ください。[2024.10.16]
+- CogVideoX-Fun-V1.1の更新：i2vモデルを再トレーニングし、Noiseを追加して動画の動きの範囲を拡大。制御モデルのトレーニングコードとControlモデルをアップロード。[2024.09.29]
+- CogVideoX-Fun-V1.0の更新：コードを作成！WindowsとLinuxに対応しました。2Bおよび5Bモデルでの最大256x256x49から1024x1024x49までの任意の解像度の動画生成をサポート。[2024.09.18]
 
 機能：
 - [データ前処理](#data-preprocess)
@@ -72,16 +72,19 @@ cd CogVideoX-Fun
 mkdir models/Diffusion_Transformer
 mkdir models/Personalized_Model
 
-wget https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP.tar.gz -O models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP.tar.gz
+# Please use the hugginface link or modelscope link to download the model.
+# CogVideoX-Fun
+# https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP
+# https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
 
-cd models/Diffusion_Transformer/
-tar -xvf CogVideoX-Fun-V1.1-2b-InP.tar.gz
-cd ../../
+# Wan
+# https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP
+# https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP
 ```
 
 ### 2. ローカルインストール: 環境チェック/ダウンロード/インストール
 #### a. 環境チェック
-以下の環境でCogVideoX-Funの実行を確認しました：
+以下の環境でこのライブラリの実行を確認しています：
 
 Windowsの詳細：
 - OS: Windows 10
@@ -108,7 +111,9 @@ Linuxの詳細：
 📦 models/
 ├── 📂 Diffusion_Transformer/
 │   ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
-│   └── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│   ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│   ├── 📂 Wan2.1-Fun-14B-InP
+│   └── 📂 Wan2.1-Fun-1.3B-InP/
 ├── 📂 Personalized_Model/
 │   └── あなたのトレーニング済みのトランスフォーマーモデル / あなたのトレーニング済みのLoraモデル（UIロード用）
 ```
@@ -176,47 +181,6 @@ Linuxの詳細：
   </tr>
 </table>
 
-### CogVideoX-Fun-V1.1-5B with Reward Backpropagation
-
-<table border="0" style="width: 100%; text-align: center; margin-top: 20px;">
-    <thead>
-        <tr>
-            <th style="text-align: center;" width="10%">プロンプト</sup></th>
-            <th style="text-align: center;" width="30%">CogVideoX-Fun-V1.1-5B</th>
-            <th style="text-align: center;" width="30%">CogVideoX-Fun-V1.1-5B <br> HPSv2.1 Reward LoRA</th>
-            <th style="text-align: center;" width="30%">CogVideoX-Fun-V1.1-5B <br> MPS Reward LoRA</th>
-        </tr>
-    </thead>
-    <tr>
-        <td>
-            翼のある豚がダイヤモンドの山の上を飛んでいる
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/6682f507-4ca2-45e9-9d76-86e2d709efb3" width="100%" controls autoplay loop></video>
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/ec9219a2-96b3-44dd-b918-8176b2beb3b0" width="100%" controls autoplay loop></video>
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/a75c6a6a-0b69-4448-afc0-fda3c7955ba0" width="100%" controls autoplay loop></video>
-        </td>
-    </tr>
-    <tr>
-        <td>
-            犬が野原を走り、猫が木に登る
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/0392d632-2ec3-46b4-8867-0da1db577b6d" width="100%" controls autoplay loop></video>
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/7d8c729d-6afb-408e-b812-67c40c3aaa96" width="100%" controls autoplay loop></video>
-        </td>
-        <td>
-            <video src="https://github.com/user-attachments/assets/dcd1343c-7435-4558-b602-9c0fa08cbd59" width="100%" controls autoplay loop></video>
-        </td>
-    </tr>
-</table>
-
 ### CogVideoX-Fun-V1.1-5B-Control
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
@@ -254,99 +218,52 @@ Linuxの詳細：
   </tr>
 </table>
 
-### CogVideoX-Fun-V1.1-5B-Pose
+# 使い方
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          解像度-512
-      </td>
-      <td>
-          解像度-768
-      </td>
-       <td>
-          解像度-1024
-      </td>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/a746df51-9eb7-4446-bee5-2ee30285c143" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/db295245-e6aa-43be-8c81-32cb411f1473" width="100%" controls autoplay loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/ec9875b2-fde0-48e1-ab7e-490cee51ef40" width="100%" controls autoplay loop></video>
-     </td>
-  </tr>
-</table>
+<h3 id="video-gen">1. 生成</h3>
 
-### CogVideoX-Fun-V1.1-2B
+#### a. GPUメモリ節約方法
+Wan2.1のパラメータが非常に大きいため、GPUメモリを節約し、コンシューマー向けGPUに適応させる必要があります。各予測ファイルには`GPU_memory_mode`を提供しており、`model_cpu_offload`、`model_cpu_offload_and_qfloat8`、`sequential_cpu_offload`の中から選択できます。この方法はCogVideoX-Funの生成にも適用されます。
 
-解像度-768
+- `model_cpu_offload`: モデル全体が使用後にCPUに移動し、一部のGPUメモリを節約します。
+- `model_cpu_offload_and_qfloat8`: モデル全体が使用後にCPUに移動し、Transformerモデルに対してfloat8の量子化を行い、より多くのGPUメモリを節約します。
+- `sequential_cpu_offload`: モデルの各層が使用後にCPUに移動します。速度は遅くなりますが、大量のGPUメモリを節約します。
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/03235dea-980e-4fc5-9c41-e40a5bc1b6d0" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/f7302648-5017-47db-bdeb-4d893e620b37" width="100%" controls autoplay loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/cbadf411-28fa-4b87-813d-da63ff481904" width="100%" controls autoplay loop></video>
-     </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/87cc9d0b-b6fe-4d2d-b447-174513d169ab" width="100%" controls autoplay loop></video>
-     </td>
-  </tr>
-</table>
+`qfloat8`はモデルの性能を部分的に低下させる可能性がありますが、より多くのGPUメモリを節約できます。十分なGPUメモリがある場合は、`model_cpu_offload`の使用をお勧めします。
 
-### CogVideoX-Fun-V1.1-2B-Pose
+#### b. ComfyUIを使用する
+詳細は[ComfyUI README](comfyui/README.md)をご覧ください。
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          解像度-512
-      </td>
-      <td>
-          解像度-768
-      </td>
-       <td>
-          解像度-1024
-      </td>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/487bcd7b-1b7f-4bb4-95b5-96a6b6548b3e" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/2710fd18-8489-46e4-8086-c237309ae7f6" width="100%" controls autoplay loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/b79513db-7747-4512-b86c-94f9ca447fe2" width="100%" controls autoplay loop></video>
-     </td>
-  </tr>
-</table>
+#### c. Pythonファイルを実行する
+- ステップ1: 対応する[重み](#model-zoo)をダウンロードし、`models`フォルダに配置します。
+- ステップ2: 異なる重みと予測目標に基づいて、異なるファイルを使用して予測を行います。現在、このライブラリはCogVideoX-Fun、Wan2.1、およびWan2.1-Funをサポートしています。`examples`フォルダ内のフォルダ名で区別され、異なるモデルがサポートする機能が異なりますので、状況に応じて区別してください。以下はCogVideoX-Funを例として説明します。
+  - テキストからビデオ:
+    - `examples/cogvideox_fun/predict_t2v.py`ファイルで`prompt`、`neg_prompt`、`guidance_scale`、`seed`を変更します。
+    - 次に、`examples/cogvideox_fun/predict_t2v.py`ファイルを実行し、結果が生成されるのを待ちます。結果は`samples/cogvideox-fun-videos`フォルダに保存されます。
+  - 画像からビデオ:
+    - `examples/cogvideox_fun/predict_i2v.py`ファイルで`validation_image_start`、`validation_image_end`、`prompt`、`neg_prompt`、`guidance_scale`、`seed`を変更します。
+    - `validation_image_start`はビデオの開始画像、`validation_image_end`はビデオの終了画像です。
+    - 次に、`examples/cogvideox_fun/predict_i2v.py`ファイルを実行し、結果が生成されるのを待ちます。結果は`samples/cogvideox-fun-videos_i2v`フォルダに保存されます。
+  - ビデオからビデオ:
+    - `examples/cogvideox_fun/predict_v2v.py`ファイルで`validation_video`、`validation_image_end`、`prompt`、`neg_prompt`、`guidance_scale`、`seed`を変更します。
+    - `validation_video`はビデオ生成のための参照ビデオです。以下のデモビデオを使用して実行できます：[デモビデオ](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/play_guitar.mp4)
+    - 次に、`examples/cogvideox_fun/predict_v2v.py`ファイルを実行し、結果が生成されるのを待ちます。結果は`samples/cogvideox-fun-videos_v2v`フォルダに保存されます。
+  - 通常の制御付きビデオ生成（Canny、Pose、Depthなど）:
+    - `examples/cogvideox_fun/predict_v2v_control.py`ファイルで`control_video`、`validation_image_end`、`prompt`、`neg_prompt`、`guidance_scale`、`seed`を変更します。
+    - `control_video`は、Canny、Pose、Depthなどの演算子で抽出された制御用ビデオです。以下のデモビデオを使用して実行できます：[デモビデオ](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4)
+    - 次に、`examples/cogvideox_fun/predict_v2v_control.py`ファイルを実行し、結果が生成されるのを待ちます。結果は`samples/cogvideox-fun-videos_v2v_control`フォルダに保存されます。
+- ステップ3: 自分でトレーニングした他のバックボーンやLoraを組み合わせたい場合は、必要に応じて`examples/{model_name}/predict_t2v.py`や`examples/{model_name}/predict_i2v.py`、`lora_path`を修正します。
 
-# 使用方法
+#### d. UIインターフェースを使用する
 
-<h3 id="video-gen">1. 推論 </h3>
+WebUIは、テキストからビデオ、画像からビデオ、ビデオからビデオ、および通常の制御付きビデオ生成（Canny、Pose、Depthなど）をサポートします。現在、このライブラリはCogVideoX-Fun、Wan2.1、およびWan2.1-Funをサポートしており、`examples`フォルダ内のフォルダ名で区別されています。異なるモデルがサポートする機能が異なるため、状況に応じて区別してください。以下はCogVideoX-Funを例として説明します。
 
-#### a. Pythonコードを使用
-- ステップ1: 対応する[重み](#model-zoo)をダウンロードし、modelsフォルダに配置します。
-- ステップ2: predict_t2v.pyファイルでprompt、neg_prompt、guidance_scale、およびseedを変更します。
-- ステップ3: predict_t2v.pyファイルを実行し、生成された結果を待ちます。結果はsamples/cogvideox-fun-videos-t2vフォルダに保存されます。
-- ステップ4: 他のトレーニング済みのバックボーンとLoraを組み合わせたい場合は、状況に応じてpredict_t2v.pyおよびLora_pathを変更します。
-
-#### b. WebUIを使用
-- ステップ1: 対応する[重み](#model-zoo)をダウンロードし、modelsフォルダに配置します。
-- ステップ2: app.pyファイルを実行してグラフページに入ります。
-- ステップ3: ページに基づいて生成モデルを選択し、prompt、neg_prompt、guidance_scale、およびseedを入力し、生成をクリックして生成結果を待ちます。結果はsamplesフォルダに保存されます。
-
-#### c. ComfyUIから
-詳細は[ComfyUI README](comfyui/README.md)を参照してください。
+- ステップ1: 対応する[重み](#model-zoo)をダウンロードし、`models`フォルダに配置します。
+- ステップ2: `examples/cogvideox_fun/app.py`ファイルを実行し、Gradioページに入ります。
+- ステップ3: ページ上で生成モデルを選択し、`prompt`、`neg_prompt`、`guidance_scale`、`seed`などを入力し、「生成」をクリックして結果が生成されるのを待ちます。結果は`sample`フォルダに保存されます。
 
 ### 2. モデルのトレーニング
-完全なCogVideoX-Funトレーニングパイプラインには、データ前処理とVideo DiTトレーニングが含まれている必要があります。
+完全なモデルトレーニングの流れには、データの前処理とVideo DiTのトレーニングが含まれるべきです。異なるモデルのトレーニングプロセスは類似しており、データ形式も類似しています：
 
 <h4 id="data-preprocess">a. データ前処理</h4>
 
@@ -403,7 +320,7 @@ json_of_internal_datasets.jsonは標準のJSONファイルです。json内のfil
 
 <h4 id="dit-train">b. Video DiTトレーニング </h4>
 
-データ前処理時にデータ形式が相対パスの場合、```scripts/train.sh```を次のように設定します。
+データ前処理時にデータ形式が相対パスの場合、```scripts/{model_name}/train.sh```を次のように設定します。
 ```
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/json_of_internal_datasets.json"
@@ -419,10 +336,30 @@ export DATASET_META_NAME="/mnt/data/json_of_internal_datasets.json"
 ```sh
 sh scripts/train.sh
 ```
-
-一部のパラメータの設定の詳細については、[Readme Train](scripts/README_TRAIN.md)、[Readme Lora](scripts/README_TRAIN_LORA.md)、および[Readme Control](scripts/README_TRAIN_CONTROL.md)を参照してください。
+いくつかのパラメータ設定の詳細について：
+Wan2.1-Funは[Readme Train](scripts/wan2.1_fun/README_TRAIN.md)と[Readme Lora](scripts/wan2.1_fun/README_TRAIN_LORA.md)を参照してください。
+Wan2.1は[Readme Train](scripts/wan2.1/README_TRAIN.md)と[Readme Lora](scripts/wan2.1/README_TRAIN_LORA.md)を参照してください。
+CogVideoX-Funは[Readme Train](scripts/cogvideox_fun/README_TRAIN.md)と[Readme Lora](scripts/cogvideox_fun/README_TRAIN_LORA.md)を参照してください。
 
 # モデルの場所
+## 1. Wan2.1-Fun
+
+V1.0:
+| 名称 | ストレージ容量 | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| Wan2.1-Fun-1.3B-InP | 13.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-1.3B-InP) | Wan2.1-Fun-1.3Bのテキスト・画像から動画生成する重み。マルチ解像度で学習され、開始・終了画像予測をサポート。 |
+| Wan2.1-Fun-14B-InP | 20.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP) | Wan2.1-Fun-14Bのテキスト・画像から動画生成する重み。マルチ解像度で学習され、開始・終了画像予測をサポート。 |
+
+## 2. Wan2.1
+
+| 名称  | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|
+| Wan2.1-T2V-1.3B | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-InP) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-1.3B) | 万象2.1-1.3Bのテキストから動画生成する重み |
+| Wan2.1-T2V-14B | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-InP) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-14B) | 万象2.1-14Bのテキストから動画生成する重み |
+| Wan2.1-I2V-14B-480P | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P) | 万象2.1-14B-480Pの画像から動画生成する重み |
+| Wan2.1-I2V-14B-720P| [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P) | 万象2.1-14B-720Pの画像から動画生成する重み |
+
+## 3. CogVideoX-Fun
 
 V1.5:
 
@@ -443,12 +380,14 @@ V1.1:
 | CogVideoX-Fun-V1.1-5b-Control |  20.0 GB  | [🤗リンク](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-Control) | [😄リンク](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-Control) | 公式のコントロールビデオモデルは、複数の解像度（512、768、1024、1280）でビデオを予測できます。49フレーム、8フレーム/秒でトレーニングされています。Canny、Depth、Pose、MLSDなどのさまざまなコントロール条件をサポートします。|
 | CogVideoX-Fun-V1.1-Reward-LoRAs | - | [🤗リンク](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-Reward-LoRAs) | [😄リンク](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.5-Reward-LoRAs) | 公式の報酬逆伝播技術モデルで、CogVideoX-Fun-V1.1が生成するビデオを最適化し、人間の嗜好によりよく合うようにする。 |
 
-V1.0:
+<details>
+  <summary>(Obsolete) V1.0:</summary>
 
 | 名称 | ストレージスペース | Hugging Face | Model Scope | 説明 |
 |--|--|--|--|--|
 | CogVideoX-Fun-2b-InP |  13.0 GB | [🤗リンク](https://huggingface.co/alibaba-pai/CogVideoX-Fun-2b-InP) | [😄リンク](https://modelscope.cn/models/PAI/CogVideoX-Fun-2b-InP) | 公式のグラフ生成ビデオモデルは、複数の解像度（512、768、1024、1280）でビデオを予測できます。49フレーム、8フレーム/秒でトレーニングされています。 |
 | CogVideoX-Fun-5b-InP |  20.0 GB  | [🤗リンク](https://huggingface.co/alibaba-pai/CogVideoX-Fun-5b-InP)| [😄リンク](https://modelscope.cn/models/PAI/CogVideoX-Fun-5b-InP)| 公式のグラフ生成ビデオモデルは、複数の解像度（512、768、1024、1280）でビデオを予測できます。49フレーム、8フレーム/秒でトレーニングされています。|
+</details>
 
 # TODOリスト
 - 日本語をサポート。
@@ -456,6 +395,7 @@ V1.0:
 # 参考文献
 - CogVideo: https://github.com/THUDM/CogVideo/
 - EasyAnimate: https://github.com/aigc-apps/EasyAnimate
+- Wan2.1: https://github.com/Wan-Video/Wan2.1/
 
 # ライセンス
 このプロジェクトは[Apache License (Version 2.0)](https://github.com/modelscope/modelscope/blob/master/LICENSE)の下でライセンスされています。

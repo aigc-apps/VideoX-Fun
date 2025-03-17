@@ -19,8 +19,8 @@ for project_root in project_roots:
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoX_Fun_Pipeline_Control,
-                                CogVideoX_Fun_Pipeline_Inpaint)
+from cogvideox.pipeline import (CogVideoXFunControlPipeline,
+                                CogVideoXFunInpaintPipeline)
 from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import get_video_to_video_latent, save_videos_grid
@@ -125,7 +125,7 @@ scheduler = Choosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = CogVideoX_Fun_Pipeline_Control.from_pretrained(
+pipeline = CogVideoXFunControlPipeline.from_pretrained(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,

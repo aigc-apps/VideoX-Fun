@@ -20,9 +20,9 @@ from ...cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
 from ...cogvideox.models import (AutoencoderKLCogVideoX,
                                  CogVideoXTransformer3DModel, T5EncoderModel,
                                  T5Tokenizer)
-from ...cogvideox.pipeline import (CogVideoX_Fun_Pipeline,
-                                   CogVideoX_Fun_Pipeline_Control,
-                                   CogVideoX_Fun_Pipeline_Inpaint)
+from ...cogvideox.pipeline import (CogVideoXFunPipeline,
+                                   CogVideoXFunControlPipeline,
+                                   CogVideoXFunInpaintPipeline)
 from ...cogvideox.ui.controller import all_cheduler_dict
 from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from ...cogvideox.utils.utils import (get_image_to_video_latent,
@@ -36,7 +36,7 @@ transformer_cpu_cache   = {}
 # lora path before
 lora_path_before        = ""
 
-class LoadCogVideoX_Fun_Model:
+class LoadCogVideoXFunModel:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -93,20 +93,35 @@ class LoadCogVideoX_Fun_Model:
         # Init processbar
         pbar = ProgressBar(5)
 
-        # Detect model is existing or not 
-        model_name = os.path.join(folder_paths.models_dir, "CogVideoX_Fun", model)
-      
-        if not os.path.exists(model_name):
-            if os.path.exists(eas_cache_dir):
-                model_name = os.path.join(eas_cache_dir, 'CogVideoX_Fun', model)
-            else:
-                model_name = os.path.join(folder_paths.models_dir, "CogVideoX-Fun", model)
-                if not os.path.exists(model_name):
-                    if os.path.exists(eas_cache_dir):
-                        model_name = os.path.join(eas_cache_dir, 'CogVideoX_Fun', model)
-                    else:
-                        # Detect model is existing or not 
-                        print(f"Please download cogvideoxfun model to: {model_name}")
+        # Detect model is existing or not
+        possible_folders = ["CogVideoX_Fun", "Fun_Models"]  # Possible folder names to check
+
+        # Initialize model_name as None
+        model_name = None
+
+        # Check if the model exists in any of the possible folders within folder_paths.models_dir
+        for folder in possible_folders:
+            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
+            if os.path.exists(candidate_path):
+                model_name = candidate_path
+                break
+
+        # If model_name is still None, check eas_cache_dir for each possible folder
+        if model_name is None and os.path.exists(eas_cache_dir):
+            for folder in possible_folders:
+                candidate_path = os.path.join(eas_cache_dir, folder, model)
+                if os.path.exists(candidate_path):
+                    model_name = candidate_path
+                    break
+
+        # If model_name is still None, prompt the user to download the model
+        if model_name is None:
+            print(f"Please download cogvideoxfun model to one of the following directories:")
+            for folder in possible_folders:
+                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
+                if os.path.exists(eas_cache_dir):
+                    print(f"- {os.path.join(eas_cache_dir, folder)}")
+
 
         vae = AutoencoderKLCogVideoX.from_pretrained(
             model_name, 
@@ -144,7 +159,7 @@ class LoadCogVideoX_Fun_Model:
         # Get pipeline
         if model_type == "Inpaint":
             if transformer.config.in_channels != vae.config.latent_channels:
-                pipeline = CogVideoX_Fun_Pipeline_Inpaint(
+                pipeline = CogVideoXFunInpaintPipeline(
                     vae=vae,
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
@@ -152,7 +167,7 @@ class LoadCogVideoX_Fun_Model:
                     scheduler=scheduler,
                 )
             else:
-                pipeline = CogVideoX_Fun_Pipeline(
+                pipeline = CogVideoXFunPipeline(
                     vae=vae,
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
@@ -160,7 +175,7 @@ class LoadCogVideoX_Fun_Model:
                     scheduler=scheduler,
                 )
         else:
-            pipeline = CogVideoX_Fun_Pipeline_Control(
+            pipeline = CogVideoXFunControlPipeline(
                 vae=vae,
                 tokenizer=tokenizer,
                 text_encoder=text_encoder,
@@ -185,7 +200,7 @@ class LoadCogVideoX_Fun_Model:
         }
         return (cogvideoxfun_model,)
 
-class LoadCogVideoX_Fun_Lora:
+class LoadCogVideoXFunLora:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -215,7 +230,7 @@ class LoadCogVideoX_Fun_Lora:
         else:
             return (cogvideoxfun_model,)
 
-class CogVideoX_Fun_T2VSampler:
+class CogVideoXFunT2VSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -351,7 +366,7 @@ class CogVideoX_Fun_T2VSampler:
         return (videos,)   
 
 
-class CogVideoX_Fun_I2VSampler:
+class CogVideoXFunInpaintSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -492,7 +507,7 @@ class CogVideoX_Fun_I2VSampler:
         return (videos,)   
 
 
-class CogVideoX_Fun_V2VSampler:
+class CogVideoXFunV2VSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {

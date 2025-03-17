@@ -42,11 +42,11 @@ EXAMPLE_DOC_STRING = """
     Examples:
         ```python
         >>> import torch
-        >>> from diffusers import CogVideoX_Fun_Pipeline
+        >>> from diffusers import CogVideoXFunPipeline
         >>> from diffusers.utils import export_to_video
 
         >>> # Models: "THUDM/CogVideoX-2b" or "THUDM/CogVideoX-5b"
-        >>> pipe = CogVideoX_Fun_Pipeline.from_pretrained("THUDM/CogVideoX-2b", torch_dtype=torch.float16).to("cuda")
+        >>> pipe = CogVideoXFunPipeline.from_pretrained("THUDM/CogVideoX-2b", torch_dtype=torch.float16).to("cuda")
         >>> prompt = (
         ...     "A panda, dressed in a small, red jacket and a tiny hat, sits on a wooden stool in a serene bamboo forest. "
         ...     "The panda's fluffy paws strum a miniature acoustic guitar, producing soft, melodic tunes. Nearby, a few other "
@@ -285,7 +285,7 @@ def add_noise_to_reference_video(image, ratio=None):
 
 
 @dataclass
-class CogVideoX_Fun_PipelineOutput(BaseOutput):
+class CogVideoXFunPipelineOutput(BaseOutput):
     r"""
     Output class for CogVideo pipelines.
 
@@ -299,7 +299,7 @@ class CogVideoX_Fun_PipelineOutput(BaseOutput):
     videos: torch.Tensor
 
 
-class CogVideoX_Fun_Pipeline_Inpaint(DiffusionPipeline):
+class CogVideoXFunInpaintPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-video generation using CogVideoX.
 
@@ -783,7 +783,7 @@ class CogVideoX_Fun_Pipeline_Inpaint(DiffusionPipeline):
         strength: float = 1,
         noise_aug_strength: float = 0.0563,
         comfyui_progressbar: bool = False,
-    ) -> Union[CogVideoX_Fun_PipelineOutput, Tuple]:
+    ) -> Union[CogVideoXFunPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
 
@@ -855,8 +855,8 @@ class CogVideoX_Fun_Pipeline_Inpaint(DiffusionPipeline):
         Examples:
 
         Returns:
-            [`~pipelines.cogvideo.pipeline_cogvideox.CogVideoX_Fun_PipelineOutput`] or `tuple`:
-            [`~pipelines.cogvideo.pipeline_cogvideox.CogVideoX_Fun_PipelineOutput`] if `return_dict` is True, otherwise a
+            [`~pipelines.cogvideo.pipeline_cogvideox.CogVideoXFunPipelineOutput`] or `tuple`:
+            [`~pipelines.cogvideo.pipeline_cogvideox.CogVideoXFunPipelineOutput`] if `return_dict` is True, otherwise a
             `tuple`. When returning a tuple, the first element is a list with the generated images.
         """
 
@@ -1148,4 +1148,4 @@ class CogVideoX_Fun_Pipeline_Inpaint(DiffusionPipeline):
         if not return_dict:
             video = torch.from_numpy(video)
 
-        return CogVideoX_Fun_PipelineOutput(videos=video)
+        return CogVideoXFunPipelineOutput(videos=video)

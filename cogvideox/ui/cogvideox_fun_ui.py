@@ -12,8 +12,8 @@ from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel
-from ..pipeline import (CogVideoX_Fun_Pipeline, CogVideoX_Fun_Pipeline_Control,
-                        CogVideoX_Fun_Pipeline_Inpaint)
+from ..pipeline import (CogVideoXFunPipeline, CogVideoXFunControlPipeline,
+                        CogVideoXFunInpaintPipeline)
 from ..utils.fp8_optimization import convert_weight_dtype_wrapper
 from ..utils.lora_utils import merge_lora, unmerge_lora
 from ..utils.utils import (get_image_to_video_latent,
@@ -32,7 +32,7 @@ from .ui import (create_cfg_and_seedbox,
                  create_ui_outputs)
 
 
-class CogVideoX_Fun_Controller(Fun_Controller):
+class CogVideoXFunController(Fun_Controller):
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
         print("Update diffusion transformer")
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
@@ -53,7 +53,7 @@ class CogVideoX_Fun_Controller(Fun_Controller):
         # Get pipeline
         if self.model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
+                self.pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
                     diffusion_transformer_dropdown,
                     vae=self.vae, 
                     transformer=self.transformer,
@@ -61,7 +61,7 @@ class CogVideoX_Fun_Controller(Fun_Controller):
                     torch_dtype=self.weight_dtype
                 )
             else:
-                self.pipeline = CogVideoX_Fun_Pipeline.from_pretrained(
+                self.pipeline = CogVideoXFunPipeline.from_pretrained(
                     diffusion_transformer_dropdown,
                     vae=self.vae, 
                     transformer=self.transformer,
@@ -69,7 +69,7 @@ class CogVideoX_Fun_Controller(Fun_Controller):
                     torch_dtype=self.weight_dtype
                 )
         else:
-            self.pipeline = CogVideoX_Fun_Pipeline_Control.from_pretrained(
+            self.pipeline = CogVideoXFunControlPipeline.from_pretrained(
                 diffusion_transformer_dropdown,
                 vae=self.vae, 
                 transformer=self.transformer,
@@ -289,7 +289,7 @@ class CogVideoX_Fun_Controller(Fun_Controller):
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
 
-class CogVideoX_Fun_Controller_Modelscope(CogVideoX_Fun_Controller):
+class CogVideoXFunController_Modelscope(CogVideoXFunController):
     def __init__(self, model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype):
         # Basic dir
         self.basedir                    = os.getcwd()
@@ -319,7 +319,7 @@ class CogVideoX_Fun_Controller_Modelscope(CogVideoX_Fun_Controller):
         # Get pipeline
         if model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoX_Fun_Pipeline_Inpaint.from_pretrained(
+                self.pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
                     model_name,
                     vae=self.vae, 
                     transformer=self.transformer,
@@ -327,7 +327,7 @@ class CogVideoX_Fun_Controller_Modelscope(CogVideoX_Fun_Controller):
                     torch_dtype=self.weight_dtype
                 )
             else:
-                self.pipeline = CogVideoX_Fun_Pipeline.from_pretrained(
+                self.pipeline = CogVideoXFunPipeline.from_pretrained(
                     model_name,
                     vae=self.vae, 
                     transformer=self.transformer,
@@ -335,7 +335,7 @@ class CogVideoX_Fun_Controller_Modelscope(CogVideoX_Fun_Controller):
                     torch_dtype=self.weight_dtype
                 )
         else:
-            self.pipeline = CogVideoX_Fun_Pipeline_Control.from_pretrained(
+            self.pipeline = CogVideoXFunControlPipeline.from_pretrained(
                 model_name,
                 vae=self.vae, 
                 transformer=self.transformer,
@@ -352,10 +352,10 @@ class CogVideoX_Fun_Controller_Modelscope(CogVideoX_Fun_Controller):
             self.pipeline.enable_model_cpu_offload()
         print("Update diffusion transformer done")
 
-CogVideoX_Fun_Controller_EAS = Fun_Controller_EAS
+CogVideoXFunController_EAS = Fun_Controller_EAS
 
 def ui(GPU_memory_mode, scheduler_dict, weight_dtype):
-    controller = CogVideoX_Fun_Controller(GPU_memory_mode, scheduler_dict, weight_dtype)
+    controller = CogVideoXFunController(GPU_memory_mode, scheduler_dict, weight_dtype)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -481,7 +481,7 @@ def ui(GPU_memory_mode, scheduler_dict, weight_dtype):
     return demo, controller
 
 def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype):
-    controller = CogVideoX_Fun_Controller_Modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype)
+    controller = CogVideoXFunController_Modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -597,7 +597,7 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, sched
     return demo, controller
 
 def ui_eas(model_name, scheduler_dict, savedir_sample):
-    controller = CogVideoX_Fun_Controller_EAS(model_name, scheduler_dict, savedir_sample)
+    controller = CogVideoXFunController_EAS(model_name, scheduler_dict, savedir_sample)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(

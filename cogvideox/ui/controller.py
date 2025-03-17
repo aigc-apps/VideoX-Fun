@@ -26,11 +26,11 @@ from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models.cogvideox_transformer3d import \
     CogVideoXTransformer3DModel
 from ..models.cogvideox_vae import AutoencoderKLCogVideoX
-from ..pipeline.pipeline_cogvideox_fun import CogVideoX_Fun_Pipeline
-from ..pipeline.pipeline_cogvideox_fun_control import \
-    CogVideoX_Fun_Pipeline_Control
-from ..pipeline.pipeline_cogvideox_fun_inpaint import \
-    CogVideoX_Fun_Pipeline_Inpaint
+from ..pipeline.pipeline_cogvideox_fun import CogVideoXFunPipeline
+from ..pipeline.pipeline_CogVideoXFuncontrol import \
+    CogVideoXFunControlPipeline
+from ..pipeline.pipeline_CogVideoXFuninpaint import \
+    CogVideoXFunInpaintPipeline
 from ..utils.fp8_optimization import convert_weight_dtype_wrapper
 from ..utils.lora_utils import merge_lora, unmerge_lora
 from ..utils.utils import (get_image_to_video_latent,
