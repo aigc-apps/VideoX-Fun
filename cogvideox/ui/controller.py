@@ -15,7 +15,7 @@ import numpy as np
 import pkg_resources
 import requests
 import torch
-from diffusers import (AutoencoderKLCogVideoX, CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler,
+from diffusers import (CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler,
                        DDIMScheduler, DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
                        PNDMScheduler)
@@ -23,18 +23,7 @@ from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models.cogvideox_transformer3d import \
-    CogVideoXTransformer3DModel
-from ..models.cogvideox_vae import AutoencoderKLCogVideoX
-from ..pipeline.pipeline_cogvideox_fun import CogVideoXFunPipeline
-from ..pipeline.pipeline_CogVideoXFuncontrol import \
-    CogVideoXFunControlPipeline
-from ..pipeline.pipeline_CogVideoXFuninpaint import \
-    CogVideoXFunInpaintPipeline
-from ..utils.fp8_optimization import convert_weight_dtype_wrapper
-from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (get_image_to_video_latent,
-                                   get_video_to_video_latent, save_videos_grid)
+from ..utils.utils import save_videos_grid
 
 gradio_version = pkg_resources.get_distribution("gradio").version
 gradio_version_is_above_4 = True if int(gradio_version.split('.')[0]) >= 4 else False
