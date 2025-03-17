@@ -295,6 +295,7 @@ class CogVideoXFunController_Modelscope(CogVideoXFunController):
         self.basedir                    = os.getcwd()
         self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
         self.lora_model_path            = "none"
+        self.base_model_path            = "none"
         self.savedir_sample             = savedir_sample
         self.scheduler_dict             = scheduler_dict
         self.refresh_personalized_model()
