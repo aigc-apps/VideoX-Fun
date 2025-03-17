@@ -35,7 +35,7 @@ GPU_memory_mode     = "sequential_cpu_offload"
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
 
 # Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" and "DDIM"
 sampler_name        = "Flow"
@@ -58,7 +58,7 @@ validation_image_start  = "asset/1.png"
 validation_image_end    = None
 
 # prompts
-prompt              = "The dog is shaking head. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
+prompt              = "一只棕褐色的狗正摇晃着脑袋，坐在一个舒适的房间里的浅色沙发上。沙发看起来柔软而宽敞，为这只活泼的狗狗提供了一个完美的休息地点。在狗的后面，靠墙摆放着一个架子，架子上挂着一幅精美的镶框画，画中描绘着一些美丽的风景或场景。画框周围装饰着粉红色的花朵，这些花朵不仅增添了房间的色彩，还带来了一丝自然和生机。房间里的灯光柔和而温暖，从天花板上的吊灯和角落里的台灯散发出来，营造出一种温馨舒适的氛围。整个空间给人一种宁静和谐的感觉，仿佛时间在这里变得缓慢而美好。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 6.0
 seed                = 43

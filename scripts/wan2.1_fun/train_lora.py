@@ -1468,7 +1468,7 @@ def main():
                         for i in range(0, pixel_values.shape[0], bs):
                             pixel_values_bs = pixel_values[i : i + bs]
                             pixel_values_bs = vae.encode(pixel_values_bs)[0]
-                            pixel_values_bs = pixel_values_bs.mode()
+                            pixel_values_bs = pixel_values_bs.sample()
                             new_pixel_values.append(pixel_values_bs)
                         return torch.cat(new_pixel_values, dim = 0)
                     if vae_stream_1 is not None:
