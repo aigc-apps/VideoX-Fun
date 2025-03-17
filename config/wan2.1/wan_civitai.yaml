@@ -4,6 +4,7 @@ transformer_additional_kwargs:
   transformer_subpath: ./
   dict_mapping:
     in_dim: in_channels
+    dim: hidden_size
 
 vae_kwargs:
   vae_subpath: Wan2.1_VAE.pth
