@@ -235,7 +235,7 @@ class Wan_Controller(Fun_Controller):
                             last_frames = init_frames + _partial_video_length
                     else:
                         if validation_video is not None:
-                            input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=8)
+                            input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
                             strength = denoise_strength
                         else:
                             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
@@ -267,7 +267,7 @@ class Wan_Controller(Fun_Controller):
                         generator           = generator
                     ).videos
             else:
-                input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=8)
+                input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -296,7 +296,7 @@ class Wan_Controller(Fun_Controller):
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
         save_sample_path = self.save_outputs(
-            is_image, length_slider, sample, fps=8
+            is_image, length_slider, sample, fps=16
         )
 
         if is_image or length_slider == 1:
@@ -323,6 +323,7 @@ class Wan_Controller_Modelscope(Wan_Controller):
         self.basedir                    = os.getcwd()
         self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
         self.lora_model_path            = "none"
+        self.base_model_path            = "none"
         self.savedir_sample             = savedir_sample
         self.scheduler_dict             = scheduler_dict
         self.config                     = OmegaConf.load(config_path)
@@ -630,7 +631,7 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, sched
             )
     return demo, controller
 
-def ui_eas(model_name, scheduler_dict, savedir_sample):
+def ui_eas(model_name, scheduler_dict, savedir_sample, config_path):
     controller = Wan_Controller_EAS(model_name, scheduler_dict, savedir_sample)
 
     with gr.Blocks(css=css) as demo:
@@ -658,7 +659,7 @@ def ui_eas(model_name, scheduler_dict, savedir_sample):
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
                             default_video_length=81,
-                            maximum_video_length=71,
+                            maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
                         ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox

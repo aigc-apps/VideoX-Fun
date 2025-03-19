@@ -320,8 +320,9 @@ def post_eas(
 
 
 class Fun_Controller_EAS:
-    def __init__(self, model_name, savedir_sample):
+    def __init__(self, model_name, scheduler_dict, savedir_sample):
         self.savedir_sample = savedir_sample
+        self.scheduler_dict = scheduler_dict
         os.makedirs(self.savedir_sample, exist_ok=True)
 
     def generate(
