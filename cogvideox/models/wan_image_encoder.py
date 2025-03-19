@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 
-from .wan_transformer3d import flash_attention
+from .wan_transformer3d import attention
 from .wan_xlm_roberta import XLMRoberta
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
@@ -84,7 +84,7 @@ class SelfAttention(nn.Module):
 
         # compute attention
         p = self.attn_dropout if self.training else 0.0
-        x = flash_attention(q, k, v, dropout_p=p, causal=self.causal, version=2)
+        x = attention(q, k, v, dropout_p=p, causal=self.causal)
         x = x.reshape(b, s, c)
 
         # output

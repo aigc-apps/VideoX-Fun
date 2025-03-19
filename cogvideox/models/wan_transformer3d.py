@@ -1,20 +1,20 @@
 # Modified from https://github.com/Wan-Video/Wan2.1/blob/main/wan/modules/model.py
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 
+import glob
+import json
 import math
+import os
 import warnings
 from typing import Any, Dict
 
-import os
-import json
-import glob
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-from diffusers.utils import is_torch_version, logging
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.utils import is_torch_version, logging
 from torch import nn
 
 try:
@@ -300,7 +300,7 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs):
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -319,12 +319,13 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
-        x = flash_attention(
-            q=rope_apply(q, grid_sizes, freqs),
-            k=rope_apply(k, grid_sizes, freqs),
-            v=v,
+        x = attention(
+            q=rope_apply(q, grid_sizes, freqs).to(dtype),
+            k=rope_apply(k, grid_sizes, freqs).to(dtype),
+            v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size)
+        x = x.to(dtype)
 
         # output
         x = x.flatten(2)
@@ -349,7 +350,7 @@ class WanT2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -389,9 +390,9 @@ class WanI2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
+        img_x = attention(q, k_img, v_img, k_lens=None)
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -456,6 +457,7 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
+        dtype=torch.float32
     ):
         r"""
         Args:
@@ -465,24 +467,23 @@ class WanAttentionBlock(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
-        assert e.dtype == torch.float32
-        with amp.autocast(dtype=torch.float32):
-            e = (self.modulation + e).chunk(6, dim=1)
-        assert e[0].dtype == torch.float32
+        e = (self.modulation + e).chunk(6, dim=1)
 
         # self-attention
-        y = self.self_attn(
-            self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes,
-            freqs)
-        with amp.autocast(dtype=torch.float32):
-            x = x + y * e[2]
+        temp_x = self.norm1(x) * (1 + e[1]) + e[0]
+        temp_x = temp_x.to(dtype)
+
+        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype)
+        x = x + y * e[2]
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             x = x + self.cross_attn(self.norm3(x), context, context_lens)
-            y = self.ffn(self.norm2(x).float() * (1 + e[4]) + e[3])
-            with amp.autocast(dtype=torch.float32):
-                x = x + y * e[5]
+            temp_x = self.norm2(x) * (1 + e[4]) + e[3]
+            temp_x = temp_x.to(dtype)
+            
+            y = self.ffn(temp_x)
+            x = x + y * e[5]
             return x
 
         x = cross_attn_ffn(x, context, context_lens, e)
@@ -512,10 +513,8 @@ class Head(nn.Module):
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, C]
         """
-        assert e.dtype == torch.float32
-        with amp.autocast(dtype=torch.float32):
-            e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
-            x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
+        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
         return x
 
 
@@ -565,6 +564,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         cross_attn_norm=True,
         eps=1e-6,
         in_channels=16,
+        hidden_size=2048,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -647,12 +647,14 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
         d = dim // num_heads
-        self.freqs = torch.cat([
-            rope_params(1024, d - 4 * (d // 6)),
-            rope_params(1024, 2 * (d // 6)),
-            rope_params(1024, 2 * (d // 6))
-        ],
-                               dim=1)
+        self.freqs = torch.cat(
+            [
+                rope_params(1024, d - 4 * (d // 6)),
+                rope_params(1024, 2 * (d // 6)),
+                rope_params(1024, 2 * (d // 6))
+            ],
+            dim=1
+        )
 
         if model_type == 'i2v':
             self.img_emb = MLPProj(1280, dim)
@@ -696,6 +698,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             assert clip_fea is not None and y is not None
         # params
         device = self.patch_embedding.weight.device
+        dtype = x.dtype
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
@@ -720,6 +723,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
+            # to bfloat16 for saving memeory
+            e0 = e0.to(dtype)
+            e = e.to(dtype)
 
         # context
         context_lens = None
@@ -753,6 +759,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     self.freqs,
                     context,
                     context_lens,
+                    dtype,
                     **ckpt_kwargs,
                 )
             else:
@@ -763,7 +770,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     grid_sizes=grid_sizes,
                     freqs=self.freqs,
                     context=context,
-                    context_lens=context_lens)
+                    context_lens=context_lens,
+                    dtype=dtype
+                )
                 x = block(x, **kwargs)
 
         # head
