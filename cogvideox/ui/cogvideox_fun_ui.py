@@ -11,7 +11,7 @@ from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel
+from ..models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel, T5Tokenizer, T5EncoderModel
 from ..pipeline import (CogVideoXFunPipeline, CogVideoXFunControlPipeline,
                         CogVideoXFunInpaintPipeline)
 from ..utils.fp8_optimization import convert_weight_dtype_wrapper
@@ -50,23 +50,31 @@ class CogVideoXFunController(Fun_Controller):
             low_cpu_mem_usage=True, 
         ).to(self.weight_dtype)
         
+        # Get tokenizer and text_encoder
+        tokenizer = T5Tokenizer.from_pretrained(
+            diffusion_transformer_dropdown, subfolder="tokenizer"
+        )
+        text_encoder = T5EncoderModel.from_pretrained(
+            diffusion_transformer_dropdown, subfolder="text_encoder", torch_dtype=self.weight_dtype
+        )
+    
         # Get pipeline
         if self.model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
                 self.pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
-                    diffusion_transformer_dropdown,
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
                     vae=self.vae, 
                     transformer=self.transformer,
                     scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
-                    torch_dtype=self.weight_dtype
                 )
             else:
                 self.pipeline = CogVideoXFunPipeline.from_pretrained(
-                    diffusion_transformer_dropdown,
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
                     vae=self.vae, 
                     transformer=self.transformer,
                     scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
-                    torch_dtype=self.weight_dtype
                 )
         else:
             self.pipeline = CogVideoXFunControlPipeline.from_pretrained(
@@ -316,32 +324,40 @@ class CogVideoXFunController_Modelscope(CogVideoXFunController):
             subfolder="transformer",
             low_cpu_mem_usage=True, 
         ).to(self.weight_dtype)
+
+        # Get tokenizer and text_encoder
+        tokenizer = T5Tokenizer.from_pretrained(
+            model_name, subfolder="tokenizer"
+        )
+        text_encoder = T5EncoderModel.from_pretrained(
+            model_name, subfolder="text_encoder", torch_dtype=self.weight_dtype
+        )
         
         # Get pipeline
         if model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
-                    model_name,
+                self.pipeline = CogVideoXFunInpaintPipeline(
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
                     vae=self.vae, 
                     transformer=self.transformer,
                     scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-                    torch_dtype=self.weight_dtype
                 )
             else:
-                self.pipeline = CogVideoXFunPipeline.from_pretrained(
-                    model_name,
+                self.pipeline = CogVideoXFunPipeline(
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
                     vae=self.vae, 
                     transformer=self.transformer,
                     scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-                    torch_dtype=self.weight_dtype
                 )
         else:
-            self.pipeline = CogVideoXFunControlPipeline.from_pretrained(
-                model_name,
+            self.pipeline = CogVideoXFunControlPipeline(
+                tokenizer=tokenizer,
+                text_encoder=text_encoder,
                 vae=self.vae, 
                 transformer=self.transformer,
                 scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-                torch_dtype=self.weight_dtype
             )
 
         if GPU_memory_mode == "sequential_cpu_offload":
