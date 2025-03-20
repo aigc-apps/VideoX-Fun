@@ -1,5 +1,5 @@
 """
-This script (optional) can rewrite and beautify the user-uploaded prompt via LLMs, mapping it to the style of cogvideox's training captions,
+This script (optional) can rewrite and beautify the user-uploaded prompt via LLMs, mapping it to the style of EasyAnimate's training captions,
 making it more suitable as the inference prompt and thus improving the quality of the generated videos.
 
 Usage:
@@ -32,7 +32,7 @@ import os
 
 from openai import OpenAI
 
-from cogvideox.video_caption.caption_rewrite import extract_output
+from easyanimate.video_caption.caption_rewrite import extract_output
 
 
 def parse_args():
@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--template",
         type=str,
-        default="cogvideox/video_caption/prompt/beautiful_prompt.txt",
+        default="easyanimate/video_caption/prompt/beautiful_prompt.txt",
         help="A string or a txt file contains the template for beautiful prompt."
     )
     parser.add_argument(
