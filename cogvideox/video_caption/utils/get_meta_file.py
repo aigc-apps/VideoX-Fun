@@ -1,15 +1,38 @@
 import argparse
-from pathlib import Path
+import os
 
 import pandas as pd
 from natsort import natsorted
-from tqdm import tqdm
 
 from .logger import logger
 
-
-ALL_VIDEO_EXT = set(["mp4", "webm", "mkv", "avi", "flv", "mov"])
+ALL_VIDEO_EXT = set(["mp4", "webm", "mkv", "avi", "flv", "mov", "rmvb"])
 ALL_IMGAE_EXT = set(["png", "webp", "jpg", "jpeg", "bmp", "gif"])
+
+
+def get_relative_file_paths(directory, recursive=False, ext_set=None):
+    """Get the relative paths of subfiles (recursively) in the directory that match the extension set.
+    """
+    if not recursive:
+        for entry in os.scandir(directory):
+            if entry.is_file():
+                file_name = entry.name
+                if ext_set is not None:
+                    ext = os.path.splitext(file_name)[1][1:].lower()
+                    if ext in ext_set:
+                        yield file_name
+                else:
+                    yield file_name
+    else:
+        for root, _, files in os.walk(directory):
+            for file in files:
+                relative_path = os.path.relpath(os.path.join(root, file), directory)
+                if ext_set is not None:
+                    ext = os.path.splitext(file)[1][1:].lower()
+                    if ext in ext_set:
+                        yield relative_path
+                else:
+                    yield relative_path
 
 
 def parse_args():
@@ -42,27 +65,19 @@ def main():
         raise ValueError("Either video_folder or image_folder should be specified in the arguments.")
     if args.video_folder is not None and args.image_folder is not None:
         raise ValueError("Both video_folder and image_folder can not be specified in the arguments at the same time.")
+    if args.image_folder is None and not os.path.exists(args.video_folder):
+        raise ValueError(f"The video_folder {args.video_folder} does not exist.")
+    if args.video_folder is None and not os.path.exists(args.image_folder):
+        raise ValueError(f"The image_folder {args.image_folder} does not exist.")
 
     # Use the path name instead of the file name as video_path/image_path (unique ID).
     if args.video_folder is not None:
-        video_path_list = []
-        video_folder = Path(args.video_folder)
-        for ext in tqdm(list(ALL_VIDEO_EXT)):
-            if args.recursive:
-                video_path_list += [str(file.relative_to(video_folder)) for file in video_folder.rglob(f"*.{ext}")]
-            else:
-                video_path_list += [str(file.relative_to(video_folder)) for file in video_folder.glob(f"*.{ext}")]
+        video_path_list = list(get_relative_file_paths(args.video_folder, recursive=args.recursive, ext_set=ALL_VIDEO_EXT))
         video_path_list = natsorted(video_path_list)
         meta_file_df = pd.DataFrame({args.video_path_column: video_path_list})
     
     if args.image_folder is not None:
-        image_path_list = []
-        image_folder = Path(args.image_folder)
-        for ext in tqdm(list(ALL_IMGAE_EXT)):
-            if args.recursive:
-                image_path_list += [str(file.relative_to(image_folder)) for file in image_folder.rglob(f"*.{ext}")]
-            else:
-                image_path_list += [str(file.relative_to(image_folder)) for file in image_folder.glob(f"*.{ext}")]
+        image_path_list = list(get_relative_file_paths(args.image_folder, recursive=args.recursive, ext_set=ALL_IMGAE_EXT))
         image_path_list = natsorted(image_path_list)
         meta_file_df = pd.DataFrame({args.image_path_column: image_path_list})
 
