@@ -117,7 +117,44 @@ Linux 的详细信息：
 ```
 
 # 视频作品
-所展示的结果都是图生视频获得。
+
+### Wan2.1-Fun-14B-InP
+
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/bd72a276-e60e-4b5d-86c1-d0f67e7425b9" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/cb7aef09-52c2-4973-80b4-b2fb63425044" width="100%" controls autoplay loop></video>
+     </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/4e10d491-f1cf-4b08-a7c5-1e01e5418140" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/f7e363a9-be09-4b72-bccf-cce9c9ebeb9b" width="100%" controls autoplay loop></video>
+     </td>
+  </tr>
+</table>
+
+### Wan2.1-Fun-1.3B-InP
+
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/28f3e720-8acc-4f22-a5d0-ec1c571e9466" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/fb6e4cb9-270d-47cd-8501-caf8f3e91b5c" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/989a4644-e33b-4f0c-b68e-2ff6ba37ac7e" width="100%" controls autoplay loop></video>
+     </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/9c604fa7-8657-49d1-8066-b5bb198b28b6" width="100%" controls autoplay loop></video>
+     </td>
+  </tr>
+</table>
 
 ### CogVideoX-Fun-V1.1-5B
 
