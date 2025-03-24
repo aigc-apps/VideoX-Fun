@@ -2,7 +2,11 @@
 
 😊 Welcome!
 
+CogVideoX-Fun:
 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/alibaba-pai/CogVideoX-Fun-5b)
+
+Wan-Fun:
+[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/alibaba-pai/Wan2.1-Fun-1.3B-InP)
 
 English | [简体中文](./README_zh-CN.md) | [日本語](./README_ja-JP.md)
 
