@@ -133,15 +133,18 @@ def create_fake_finetune_models_checkpoints(visible):
         
     return base_model_dropdown, lora_model_dropdown, lora_alpha_slider
 
-def create_prompts():
+def create_prompts(
+    prompt="A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic.",
+    negative_prompt="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. "
+):
     gr.Markdown(
         """
         ### Configs for Generation (生成参数配置).
         """
     )
     
-    prompt_textbox = gr.Textbox(label="Prompt (正向提示词)", lines=2, value="A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic.")
-    negative_prompt_textbox = gr.Textbox(label="Negative prompt (负向提示词)", lines=2, value="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. " )
+    prompt_textbox = gr.Textbox(label="Prompt (正向提示词)", lines=2, value=prompt)
+    negative_prompt_textbox = gr.Textbox(label="Negative prompt (负向提示词)", lines=2, value=negative_prompt)
     return prompt_textbox, negative_prompt_textbox
 
 def create_samplers(controller, maximum_step=100):

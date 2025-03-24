@@ -426,7 +426,7 @@ def ui(GPU_memory_mode, scheduler_dict, weight_dtype, config_path):
                 create_finetune_models_checkpoints(controller, visible=True)
 
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():
@@ -540,7 +540,7 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, sched
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
         
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():
@@ -645,7 +645,7 @@ def ui_eas(model_name, scheduler_dict, savedir_sample, config_path):
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
         
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():

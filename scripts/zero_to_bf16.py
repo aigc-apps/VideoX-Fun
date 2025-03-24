@@ -635,7 +635,7 @@ def convert_zero_checkpoint_to_bf16_state_dict(checkpoint_dir,
                                                           lazy_mode=True)
 
     # Shard the model if it is too big.
-    weights_name = "model.safetensors" if safe_serialization else "pytorch_model.bin"
+    weights_name = "diffusion_pytorch_model.safetensors" if safe_serialization else "pytorch_model.bin"
     if max_shard_size is not None:
         filename_pattern = weights_name.replace(".bin", "{suffix}.bin").replace(".safetensors", "{suffix}.safetensors")
         # an memory-efficient approach for sharding
