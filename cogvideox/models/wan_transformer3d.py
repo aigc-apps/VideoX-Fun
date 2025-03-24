@@ -17,6 +17,8 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version, logging
 from torch import nn
 
+from .cache_utils import TeaCache
+
 try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
@@ -659,7 +661,20 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if model_type == 'i2v':
             self.img_emb = MLPProj(1280, dim)
 
+        self.teacache = None
         self.gradient_checkpointing = False
+    
+    def enable_teacache(
+        self,
+        coefficients,
+        num_steps: int,
+        rel_l1_thresh: float,
+        num_skip_start_steps: int = 0,
+        offload: bool = True
+    ):
+        self.teacache = TeaCache(
+            coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
+        )
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
@@ -672,6 +687,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         seq_len,
         clip_fea=None,
         y=None,
+        cond_flag=True,
     ):
         r"""
         Forward pass through the diffusion model
@@ -689,6 +705,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 CLIP image features for image-to-video mode
             y (List[Tensor], *optional*):
                 Conditional video inputs for image-to-video mode, same shape as x
+            cond_flag (`bool`, *optional*, defaults to True):
+                Flag to indicate whether to forward the condition input
 
         Returns:
             List[Tensor]:
@@ -739,41 +757,112 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
-
-
-        for block in self.blocks:
-            if self.training and self.gradient_checkpointing:
-
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
-
-                    return custom_forward
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                x = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    x,
-                    e0,
-                    seq_lens,
-                    grid_sizes,
-                    self.freqs,
-                    context,
-                    context_lens,
-                    dtype,
-                    **ckpt_kwargs,
-                )
+        
+        # TeaCache
+        if self.teacache is not None:
+            if cond_flag:
+                modulated_inp = e0
+                skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
+                if self.teacache.cnt == 0 or self.teacache.cnt == self.teacache.num_steps - 1 or skip_flag:
+                    should_calc = True
+                    self.teacache.accumulated_rel_l1_distance = 0
+                else:
+                    if cond_flag:
+                        rel_l1_distance = self.teacache.compute_rel_l1_distance(self.teacache.previous_modulated_input, modulated_inp)
+                        self.teacache.accumulated_rel_l1_distance += self.teacache.rescale_func(rel_l1_distance)
+                    if self.teacache.accumulated_rel_l1_distance < self.teacache.rel_l1_thresh:
+                        should_calc = False
+                    else:
+                        should_calc = True
+                        self.teacache.accumulated_rel_l1_distance = 0
+                self.teacache.previous_modulated_input = modulated_inp
+                self.teacache.cnt += 1
+                if self.teacache.cnt == self.teacache.num_steps:
+                    self.teacache.reset()
+                self.teacache.should_calc = should_calc
             else:
-                # arguments
-                kwargs = dict(
-                    e=e0,
-                    seq_lens=seq_lens,
-                    grid_sizes=grid_sizes,
-                    freqs=self.freqs,
-                    context=context,
-                    context_lens=context_lens,
-                    dtype=dtype
-                )
-                x = block(x, **kwargs)
+                should_calc = self.teacache.should_calc
+        
+        # TeaCache
+        if self.teacache is not None:
+            if not should_calc:
+                previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
+                x = x + previous_residual.to(x.device)
+            else:
+                ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
+
+                for block in self.blocks:
+                    if self.training and self.gradient_checkpointing:
+
+                        def create_custom_forward(module):
+                            def custom_forward(*inputs):
+                                return module(*inputs)
+
+                            return custom_forward
+                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                        x = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block),
+                            x,
+                            e0,
+                            seq_lens,
+                            grid_sizes,
+                            self.freqs,
+                            context,
+                            context_lens,
+                            dtype,
+                            **ckpt_kwargs,
+                        )
+                    else:
+                        # arguments
+                        kwargs = dict(
+                            e=e0,
+                            seq_lens=seq_lens,
+                            grid_sizes=grid_sizes,
+                            freqs=self.freqs,
+                            context=context,
+                            context_lens=context_lens,
+                            dtype=dtype
+                        )
+                        x = block(x, **kwargs)
+                    
+                    if cond_flag:
+                        self.teacache.previous_residual_cond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
+                    else:
+                        self.teacache.previous_residual_uncond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
+        else:
+            for block in self.blocks:
+                if self.training and self.gradient_checkpointing:
+
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs)
+
+                        return custom_forward
+                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    x = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        x,
+                        e0,
+                        seq_lens,
+                        grid_sizes,
+                        self.freqs,
+                        context,
+                        context_lens,
+                        dtype,
+                        **ckpt_kwargs,
+                    )
+                else:
+                    # arguments
+                    kwargs = dict(
+                        e=e0,
+                        seq_lens=seq_lens,
+                        grid_sizes=grid_sizes,
+                        freqs=self.freqs,
+                        context=context,
+                        context_lens=context_lens,
+                        dtype=dtype
+                    )
+                    x = block(x, **kwargs)
 
         # head
         x = self.head(x, e)
