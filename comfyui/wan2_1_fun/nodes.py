@@ -28,6 +28,7 @@ from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from ...cogvideox.utils.utils import (get_image_to_video_latent, filter_kwargs,
                                       get_video_to_video_latent,
                                       save_videos_grid)
+from ...cogvideox.models.cache_utils import get_teacache_coefficients
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
 
 # Used in lora cache
@@ -50,7 +51,7 @@ class LoadWanFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -194,8 +195,10 @@ class LoadWanFunModel:
             convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload()
-        else:
+        elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload()
+        else:
+            pipeline.to("cuda")
 
         funmodels = {
             'pipeline': pipeline, 
@@ -287,6 +290,18 @@ class WanFunT2VSampler:
                         "default": 'Flow'
                     }
                 ),
+                "teacache_threshold": (
+                    "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
+                ),
+                "enable_teacache":(
+                    [False, True],  {"default": True,}
+                ),
+                "num_skip_start_steps": (
+                    "INT", {"default": 5, "min": 0, "max": 50, "step": 1}
+                ),
+                "teacache_offload":(
+                    [False, True],  {"default": True,}
+                ),
             },
         }
     
@@ -295,7 +310,7 @@ class WanFunT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -306,11 +321,19 @@ class WanFunT2VSampler:
 
         # Get Pipeline
         pipeline = funmodels['pipeline']
+        model_name = funmodels['model_name']
         config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
         pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+
+        coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+            pipeline.transformer.enable_teacache(
+                coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+            )
 
         generator= torch.Generator(device).manual_seed(seed)
         
@@ -426,6 +449,18 @@ class WanFunInpaintSampler:
                         "default": 'Flow'
                     }
                 ),
+                "teacache_threshold": (
+                    "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
+                ),
+                "enable_teacache":(
+                    [False, True],  {"default": True,}
+                ),
+                "num_skip_start_steps": (
+                    "INT", {"default": 5, "min": 0, "max": 50, "step": 1}
+                ),
+                "teacache_offload":(
+                    [False, True],  {"default": True,}
+                ),
             },
             "optional":{
                 "start_img": ("IMAGE",),
@@ -438,7 +473,7 @@ class WanFunInpaintSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, start_img=None, end_img=None):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -457,11 +492,18 @@ class WanFunInpaintSampler:
         
         # Get Pipeline
         pipeline = funmodels['pipeline']
+        model_name = funmodels['model_name']
         config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
         pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+            pipeline.transformer.enable_teacache(
+                coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+            )
 
         generator= torch.Generator(device).manual_seed(seed)
 

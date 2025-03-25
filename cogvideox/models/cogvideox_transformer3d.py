@@ -27,7 +27,6 @@ from diffusers.models.attention_processor import (
     FusedCogVideoXAttnProcessor2_0)
 from diffusers.models.embeddings import (CogVideoXPatchEmbed,
                                          TimestepEmbedding, Timesteps,
-                                         get_2d_sincos_pos_embed,
                                          get_3d_sincos_pos_embed)
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
@@ -36,7 +35,15 @@ from diffusers.utils import is_torch_version, logging
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from torch import nn
 
+from ..dist import (get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, 
+                    get_sp_group,
+                    xFuserLongContextAttention)
+from ..dist.cogvideox_xfuser import CogVideoXMultiGPUsAttnProcessor2_0
+
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
 
 class CogVideoXPatchEmbed(nn.Module):
     def __init__(
@@ -447,9 +454,16 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         self.proj_out = nn.Linear(inner_dim, output_dim)
 
         self.gradient_checkpointing = False
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
+
+    def enable_multi_gpus_inference(self,):
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.set_attn_processor(CogVideoXMultiGPUsAttnProcessor2_0())
 
     @property
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors
@@ -573,6 +587,40 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         else:
             local_num_frames = num_frames
 
+        if self.sp_world_size > 1:
+            if hidden_states.shape[-2] // self.patch_size % self.sp_world_size == 0:
+                split_height = height // self.sp_world_size
+                split_dim = -2
+            elif hidden_states.shape[-1] // self.patch_size % self.sp_world_size == 0:
+                split_width = width // self.sp_world_size
+                split_dim = -1
+            else:
+                raise ValueError("Cannot split video sequence into ulysses_degree x ring_degree=%d parts evenly, hidden_states.shape=%s" % (self.sp_world_size, str(hidden_states.shape)))
+
+            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
+            if inpaint_latents is not None:
+                inpaint_latents = torch.chunk(inpaint_latents, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
+            if control_latents is not None:
+                control_latents = torch.chunk(control_latents, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
+
+            if image_rotary_emb is not None:
+                embed_dim = image_rotary_emb[0].shape[-1]
+                freq_cos = image_rotary_emb[0].reshape(num_frames, height // self.patch_size, width // self.patch_size, embed_dim)
+                freq_sin = image_rotary_emb[1].reshape(num_frames, height // self.patch_size, width // self.patch_size, embed_dim)
+
+                freq_cos = torch.chunk(freq_cos, self.sp_world_size, dim=split_dim-1)[self.sp_world_rank]
+                freq_sin = torch.chunk(freq_sin, self.sp_world_size, dim=split_dim-1)[self.sp_world_rank]
+
+                freq_cos = freq_cos.reshape(-1, embed_dim)
+                freq_sin = freq_sin.reshape(-1, embed_dim)
+
+                image_rotary_emb = (freq_cos, freq_sin)
+
+            if split_dim == -2:
+                height = split_height
+            elif split_dim == -1:
+                width = split_width
+
         # 1. Time embedding
         timesteps = timestep
         t_emb = self.time_proj(timesteps)
@@ -651,6 +699,9 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         if num_frames == 1:
             output = output[:, :num_frames, :]
 
+        if self.sp_world_size > 1:
+            output = get_sp_group().all_gather(output, dim=split_dim)
+
         if not return_dict:
             return (output,)
         return Transformer2DModelOutput(sample=output)
@@ -681,8 +732,10 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         if low_cpu_mem_usage:
             try:
                 import re
+
+                from diffusers.models.modeling_utils import \
+                    load_model_dict_into_meta
                 from diffusers.utils import is_accelerate_available
-                from diffusers.models.modeling_utils import load_model_dict_into_meta
                 if is_accelerate_available():
                     import accelerate
                 

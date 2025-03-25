@@ -13,13 +13,15 @@ from cogvideox.api.api import (infer_forward_api,
                                update_diffusion_transformer_api,
                                update_edition_api)
 from cogvideox.ui.controller import flow_scheduler_dict
-from cogvideox.ui.wan_ui import ui, ui_eas, ui_modelscope
+from cogvideox.ui.wan_ui import ui, ui_client, ui_host
 
 if __name__ == "__main__":
     # Choose the ui mode  
     ui_mode = "normal"
     
-    # GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+    # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+    # model_full_load means that the entire model will be moved to the GPU.
+    # 
     # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
     # 
     # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
@@ -28,42 +30,65 @@ if __name__ == "__main__":
     # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "sequential_cpu_offload"
+    # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
+    # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+    # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+    ulysses_degree      = 1
+    ring_degree         = 1
+
+    # Support TeaCache.
+    enable_teacache     = True
+    # Recommended to be set between 0.10 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
+    # but it may cause slight differences between the generated content and the original content.
+    teacache_threshold  = 0.10
+    # The number of steps to skip TeaCache at the beginning of the inference process, which can
+    # reduce the impact of TeaCache on generated video quality.
+    num_skip_start_steps = 5
+    # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
+    teacache_offload    = False
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
     weight_dtype = torch.bfloat16
-    # Config path
-    config_path = "config/wan2.1/wan_civitai.yaml"
 
     # Server ip
     server_name = "0.0.0.0"
     server_port = 7860
-
-    # Params below is used when ui_mode = "modelscope"
+    
+    # Config path
+    config_path = "config/wan2.1/wan_civitai.yaml"
+    # Params below is used when ui_mode = "host"
+    # Model path of the pretrained model
     model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
     # "Inpaint" or "Control"
     model_type = "Inpaint"
-    # Save dir of this model
-    savedir_sample = "samples"
 
-    if ui_mode == "modelscope":
-        demo, controller = ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, flow_scheduler_dict, weight_dtype, config_path)
-    elif ui_mode == "eas":
-        demo, controller = ui_eas(model_name, flow_scheduler_dict, savedir_sample, config_path)
+    if ui_mode == "host":
+        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
+    elif ui_mode == "client":
+        demo, controller = ui_client(flow_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, weight_dtype, config_path)
+        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
 
-    # launch gradio
-    app, _, _ = demo.queue(status_update_rate=1).launch(
-        server_name=server_name,
-        server_port=server_port,
-        prevent_thread_lock=True
-    )
+    def gr_launch():
+        # launch gradio
+        app, _, _ = demo.queue(status_update_rate=1).launch(
+            server_name=server_name,
+            server_port=server_port,
+            prevent_thread_lock=True
+        )
+        
+        # launch api
+        infer_forward_api(None, app, controller)
+        update_diffusion_transformer_api(None, app, controller)
+        update_edition_api(None, app, controller)
     
-    # launch api
-    infer_forward_api(None, app, controller)
-    update_diffusion_transformer_api(None, app, controller)
-    update_edition_api(None, app, controller)
-    
+    if ulysses_degree > 1 or ring_degree > 1:
+        import torch.distributed as dist
+        if dist.get_rank() == 0:
+            gr_launch()
+    else:
+        gr_launch()
+        
     # not close the python
     while True:
         time.sleep(5)

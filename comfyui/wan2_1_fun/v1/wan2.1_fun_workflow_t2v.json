@@ -287,7 +287,11 @@
         "randomize",
         50,
         6,
-        "Flow"
+        "Flow",
+        0.10,
+        true,
+        5,
+        true
       ]
     }
   ],

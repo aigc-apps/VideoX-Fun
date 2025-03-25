@@ -1,5 +1,7 @@
-import gradio as gr
 import random
+
+import gradio as gr
+
 
 def create_model_type(visible):
     gr.Markdown(

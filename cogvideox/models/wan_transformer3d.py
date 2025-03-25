@@ -7,6 +7,7 @@ import math
 import os
 import warnings
 from typing import Any, Dict
+import types
 
 import torch
 import torch.cuda.amp as amp
@@ -18,6 +19,11 @@ from diffusers.utils import is_torch_version, logging
 from torch import nn
 
 from .cache_utils import TeaCache
+from ..dist import (get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, 
+                    get_sp_group,
+                    xFuserLongContextAttention)
+from ..dist.wan_xfuser import usp_attn_forward
 
 try:
     import flash_attn_interface
@@ -663,6 +669,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         self.teacache = None
         self.gradient_checkpointing = False
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
     
     def enable_teacache(
         self,
@@ -679,6 +687,13 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
 
+    def enable_multi_gpus_inference(self,):
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        for block in self.blocks:
+            block.self_attn.forward = types.MethodType(
+                usp_attn_forward, block.self_attn)
+        
     def forward(
         self,
         x,
@@ -729,6 +744,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
+        if self.sp_world_size > 1:
+            seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
         assert seq_lens.max() <= seq_len
         x = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
@@ -757,6 +774,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
+
+        # Context Parallel
+        if self.sp_world_size > 1:
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
         
         # TeaCache
         if self.teacache is not None:
@@ -863,6 +884,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         dtype=dtype
                     )
                     x = block(x, **kwargs)
+
+        if self.sp_world_size > 1:
+            x = get_sp_group().all_gather(x, dim=1)
 
         # head
         x = self.head(x, e)

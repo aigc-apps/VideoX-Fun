@@ -64,7 +64,7 @@ class LoadCogVideoXFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -187,8 +187,10 @@ class LoadCogVideoXFunModel:
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload()
-        else:
+        elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload()
+        else:
+            pipeline.to("cuda")
 
         cogvideoxfun_model = {
             'pipeline': pipeline, 

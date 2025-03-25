@@ -7,7 +7,6 @@ import os
 import random
 from datetime import datetime
 from glob import glob
-from omegaconf import OmegaConf
 
 import cv2
 import gradio as gr
@@ -15,15 +14,17 @@ import numpy as np
 import pkg_resources
 import requests
 import torch
-from diffusers import (CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler,
-                       DDIMScheduler, DPMSolverMultistepScheduler,
+from diffusers import (CogVideoXDDIMScheduler, DDIMScheduler,
+                       DPMSolverMultistepScheduler,
                        EulerAncestralDiscreteScheduler, EulerDiscreteScheduler,
-                       PNDMScheduler)
+                       FlowMatchEulerDiscreteScheduler, PNDMScheduler)
+from omegaconf import OmegaConf
 from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..utils.utils import save_videos_grid
+from ..dist import set_multi_gpus_devices
 
 gradio_version = pkg_resources.get_distribution("gradio").version
 gradio_version_is_above_4 = True if int(gradio_version.split('.')[0]) >= 4 else False
@@ -52,7 +53,12 @@ flow_scheduler_dict = {
 all_cheduler_dict = {**ddpm_scheduler_dict, **flow_scheduler_dict}
 
 class Fun_Controller:
-    def __init__(self, GPU_memory_mode, scheduler_dict, weight_dtype, config_path=None):
+    def __init__(
+        self, GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
+        config_path=None, ulysses_degree=1, ring_degree=1,
+        enable_teacache=None, teacache_threshold=None, 
+        num_skip_start_steps=None, teacache_offload=None, weight_dtype=None, 
+    ):
         # config dirs
         self.basedir                    = os.getcwd()
         self.config_dir                 = os.path.join(self.basedir, "config")
@@ -61,16 +67,26 @@ class Fun_Controller:
         self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
         self.savedir                    = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
         self.savedir_sample             = os.path.join(self.savedir, "sample")
-        self.model_type                 = "Inpaint"
         os.makedirs(self.savedir, exist_ok=True)
 
+        self.GPU_memory_mode            = GPU_memory_mode
+        self.model_name                 = model_name
+        self.scheduler_dict             = scheduler_dict
+        self.model_type                 = model_type
+        if config_path is not None:
+            self.config = OmegaConf.load(config_path)
+        self.ulysses_degree             = ulysses_degree
+        self.ring_degree                = ring_degree
+        self.enable_teacache            = enable_teacache
+        self.teacache_threshold         = teacache_threshold
+        self.num_skip_start_steps       = num_skip_start_steps
+        self.teacache_offload           = teacache_offload
+        self.weight_dtype               = weight_dtype
+        self.device                     = set_multi_gpus_devices(self.ulysses_degree, self.ring_degree)
+
         self.diffusion_transformer_list = []
-        self.motion_module_list      = []
-        self.personalized_model_list = []
-        
-        self.refresh_diffusion_transformer()
-        self.refresh_motion_module()
-        self.refresh_personalized_model()
+        self.motion_module_list         = []
+        self.personalized_model_list    = []
 
         # config models
         self.tokenizer             = None
@@ -78,22 +94,16 @@ class Fun_Controller:
         self.vae                   = None
         self.transformer           = None
         self.pipeline              = None
-        self.motion_module_path    = "none"
         self.base_model_path       = "none"
         self.lora_model_path       = "none"
-        self.GPU_memory_mode       = GPU_memory_mode
         
-        self.weight_dtype           = weight_dtype
-        self.scheduler_dict         = scheduler_dict
-        if config_path is not None:
-            self.config = OmegaConf.load(config_path)
+        self.refresh_diffusion_transformer()
+        self.refresh_personalized_model()
+        if model_name != "none":
+            self.update_diffusion_transformer(model_name)
 
     def refresh_diffusion_transformer(self):
         self.diffusion_transformer_list = sorted(glob(os.path.join(self.diffusion_transformer_dir, "*/")))
-
-    def refresh_motion_module(self):
-        motion_module_list = sorted(glob(os.path.join(self.motion_module_dir, "*.safetensors")))
-        self.motion_module_list = [os.path.basename(p) for p in motion_module_list]
 
     def refresh_personalized_model(self):
         personalized_model_list = sorted(glob(os.path.join(self.personalized_model_dir, "*.safetensors")))
@@ -206,23 +216,32 @@ class Fun_Controller:
         return height_slider, width_slider
 
     def save_outputs(self, is_image, length_slider, sample, fps):
-        if not os.path.exists(self.savedir_sample):
-            os.makedirs(self.savedir_sample, exist_ok=True)
-        index = len([path for path in os.listdir(self.savedir_sample)]) + 1
-        prefix = str(index).zfill(3)
+        def save_results():
+            if not os.path.exists(self.savedir_sample):
+                os.makedirs(self.savedir_sample, exist_ok=True)
+            index = len([path for path in os.listdir(self.savedir_sample)]) + 1
+            prefix = str(index).zfill(3)
 
-        if is_image or length_slider == 1:
-            save_sample_path = os.path.join(self.savedir_sample, prefix + f".png")
+            if is_image or length_slider == 1:
+                save_sample_path = os.path.join(self.savedir_sample, prefix + f".png")
 
-            image = sample[0, :, 0]
-            image = image.transpose(0, 1).transpose(1, 2)
-            image = (image * 255).numpy().astype(np.uint8)
-            image = Image.fromarray(image)
-            image.save(save_sample_path)
+                image = sample[0, :, 0]
+                image = image.transpose(0, 1).transpose(1, 2)
+                image = (image * 255).numpy().astype(np.uint8)
+                image = Image.fromarray(image)
+                image.save(save_sample_path)
 
+            else:
+                save_sample_path = os.path.join(self.savedir_sample, prefix + f".mp4")
+                save_videos_grid(sample, save_sample_path, fps=fps)
+            return save_sample_path
+
+        if self.ulysses_degree * self.ring_degree > 1:
+            import torch.distributed as dist
+            if dist.get_rank() == 0:
+                save_sample_path = save_results()
         else:
-            save_sample_path = os.path.join(self.savedir_sample, prefix + f".mp4")
-            save_videos_grid(sample, save_sample_path, fps=fps)
+            save_sample_path = save_results()
         return save_sample_path
 
     def generate(
@@ -255,7 +274,7 @@ class Fun_Controller:
     ):
         pass
 
-def post_eas(
+def post_to_host(
     diffusion_transformer_dropdown,
     base_model_dropdown, lora_model_dropdown, lora_alpha_slider,
     prompt_textbox, negative_prompt_textbox, 
@@ -319,11 +338,13 @@ def post_eas(
     return outputs
 
 
-class Fun_Controller_EAS:
-    def __init__(self, model_name, scheduler_dict, savedir_sample):
-        self.savedir_sample = savedir_sample
+class Fun_Controller_Client:
+    def __init__(self, scheduler_dict):
+        self.basedir = os.getcwd()
+        self.savedir = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
+        self.savedir_sample = os.path.join(self.savedir, "sample")
+        
         self.scheduler_dict = scheduler_dict
-        os.makedirs(self.savedir_sample, exist_ok=True)
 
     def generate(
         self,
@@ -351,7 +372,7 @@ class Fun_Controller_EAS:
     ):
         is_image = True if generation_method == "Image Generation" else False
 
-        outputs = post_eas(
+        outputs = post_to_host(
             diffusion_transformer_dropdown,
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider,
             prompt_textbox, negative_prompt_textbox, 

@@ -11,16 +11,18 @@ from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel, T5Tokenizer, T5EncoderModel
-from ..pipeline import (CogVideoXFunPipeline, CogVideoXFunControlPipeline,
-                        CogVideoXFunInpaintPipeline)
+from ..models import (AutoencoderKLCogVideoX, CogVideoXTransformer3DModel,
+                      T5EncoderModel, T5Tokenizer)
+from ..pipeline import (CogVideoXFunControlPipeline,
+                        CogVideoXFunInpaintPipeline, CogVideoXFunPipeline)
 from ..utils.fp8_optimization import convert_weight_dtype_wrapper
 from ..utils.lora_utils import merge_lora, unmerge_lora
 from ..utils.utils import (get_image_to_video_latent,
                            get_video_to_video_latent, save_videos_grid)
-from .controller import (Fun_Controller, Fun_Controller_EAS, all_cheduler_dict,
-                         css, ddpm_scheduler_dict, flow_scheduler_dict,
-                         gradio_version, gradio_version_is_above_4)
+from .controller import (Fun_Controller, Fun_Controller_Client,
+                         all_cheduler_dict, css, ddpm_scheduler_dict,
+                         flow_scheduler_dict, gradio_version,
+                         gradio_version_is_above_4)
 from .ui import (create_cfg_and_seedbox,
                  create_fake_finetune_models_checkpoints,
                  create_fake_height_width, create_fake_model_checkpoints,
@@ -85,13 +87,18 @@ class CogVideoXFunController(Fun_Controller):
                 torch_dtype=self.weight_dtype
             )
 
+        if self.ulysses_degree > 1 or self.ring_degree > 1:
+            self.transformer.enable_multi_gpus_inference()
+
         if self.GPU_memory_mode == "sequential_cpu_offload":
-            self.pipeline.enable_sequential_cpu_offload()
+            self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
-            self.pipeline.enable_model_cpu_offload()
+            self.pipeline.enable_model_cpu_offload(device=self.device)
+        elif self.GPU_memory_mode == "model_cpu_offload":
+            self.pipeline.enable_model_cpu_offload(device=self.device)
         else:
-            self.pipeline.enable_model_cpu_offload()
+            self.pipeline.to(self.device)
         print("Update diffusion transformer done")
         return gr.update()
 
@@ -148,7 +155,7 @@ class CogVideoXFunController(Fun_Controller):
 
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
-        generator = torch.Generator(device="cuda").manual_seed(int(seed_textbox))
+        generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         
         try:
             if self.model_type == "Inpaint":
@@ -296,83 +303,15 @@ class CogVideoXFunController(Fun_Controller):
                 else:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
+CogVideoXFunController_Host = CogVideoXFunController
+CogVideoXFunController_Client = Fun_Controller_Client
 
-class CogVideoXFunController_Modelscope(CogVideoXFunController):
-    def __init__(self, model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype):
-        # Basic dir
-        self.basedir                    = os.getcwd()
-        self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
-        self.lora_model_path            = "none"
-        self.base_model_path            = "none"
-        self.savedir_sample             = savedir_sample
-        self.scheduler_dict             = scheduler_dict
-        self.refresh_personalized_model()
-        os.makedirs(self.savedir_sample, exist_ok=True)
-
-        # model path
-        self.model_type = model_type
-        self.weight_dtype = weight_dtype
-        
-        self.vae = AutoencoderKLCogVideoX.from_pretrained(
-            model_name, 
-            subfolder="vae", 
-        ).to(self.weight_dtype)
-
-        # Get Transformer
-        self.transformer = CogVideoXTransformer3DModel.from_pretrained(
-            model_name, 
-            subfolder="transformer",
-            low_cpu_mem_usage=True, 
-        ).to(self.weight_dtype)
-
-        # Get tokenizer and text_encoder
-        tokenizer = T5Tokenizer.from_pretrained(
-            model_name, subfolder="tokenizer"
-        )
-        text_encoder = T5EncoderModel.from_pretrained(
-            model_name, subfolder="text_encoder", torch_dtype=self.weight_dtype
-        )
-        
-        # Get pipeline
-        if model_type == "Inpaint":
-            if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoXFunInpaintPipeline(
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    vae=self.vae, 
-                    transformer=self.transformer,
-                    scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-                )
-            else:
-                self.pipeline = CogVideoXFunPipeline(
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    vae=self.vae, 
-                    transformer=self.transformer,
-                    scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-                )
-        else:
-            self.pipeline = CogVideoXFunControlPipeline(
-                tokenizer=tokenizer,
-                text_encoder=text_encoder,
-                vae=self.vae, 
-                transformer=self.transformer,
-                scheduler=self.scheduler_dict["Euler"].from_pretrained(model_name, subfolder="scheduler"),
-            )
-
-        if GPU_memory_mode == "sequential_cpu_offload":
-            self.pipeline.enable_sequential_cpu_offload()
-        elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
-            self.pipeline.enable_model_cpu_offload()
-        else:
-            self.pipeline.enable_model_cpu_offload()
-        print("Update diffusion transformer done")
-
-CogVideoXFunController_EAS = Fun_Controller_EAS
-
-def ui(GPU_memory_mode, scheduler_dict, weight_dtype):
-    controller = CogVideoXFunController(GPU_memory_mode, scheduler_dict, weight_dtype)
+def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtype):
+    controller = CogVideoXFunController(
+        GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
+        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
+    )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -497,8 +436,12 @@ def ui(GPU_memory_mode, scheduler_dict, weight_dtype):
             )
     return demo, controller
 
-def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype):
-    controller = CogVideoXFunController_Modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype)
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_degree, ring_degree, weight_dtype):
+    controller = CogVideoXFunController_Host(
+        GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
+        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
+    )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -613,8 +556,8 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, sched
             )
     return demo, controller
 
-def ui_eas(model_name, scheduler_dict, savedir_sample):
-    controller = CogVideoXFunController_EAS(model_name, scheduler_dict, savedir_sample)
+def ui_client(scheduler_dict, model_name):
+    controller = CogVideoXFunController_Client(scheduler_dict)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(

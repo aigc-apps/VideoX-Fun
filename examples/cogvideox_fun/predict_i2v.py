@@ -14,16 +14,19 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
+from cogvideox.dist import set_multi_gpus_devices
 from cogvideox.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoXFunPipeline,
-                                CogVideoXFunInpaintPipeline)
+from cogvideox.pipeline import (CogVideoXFunInpaintPipeline,
+                                CogVideoXFunPipeline)
 from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
 from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 
-# GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# model_full_load means that the entire model will be moved to the GPU.
+# 
 # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
 # 
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
@@ -32,6 +35,12 @@ from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
+# Multi GPUs config
+# Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
+# For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+# If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+ulysses_degree      = 1
+ring_degree         = 1
 
 # Config and model path
 model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
@@ -70,6 +79,8 @@ seed                    = 43
 num_inference_steps     = 50
 lora_weight             = 0.55
 save_path               = "samples/cogvideox-fun-videos_i2v"
+
+device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
 transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
@@ -146,18 +157,23 @@ else:
         transformer=transformer,
         scheduler=scheduler,
     )
+if ulysses_degree > 1 or ring_degree > 1:
+    transformer.enable_multi_gpus_inference()
+
 if GPU_memory_mode == "sequential_cpu_offload":
-    pipeline.enable_sequential_cpu_offload()
+    pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload()
+    pipeline.enable_model_cpu_offload(device=device)
+elif GPU_memory_mode == "model_cpu_offload":
+    pipeline.enable_model_cpu_offload(device=device)
 else:
-    pipeline.enable_model_cpu_offload()
+    pipeline.to(device=device)
 
-generator = torch.Generator(device="cuda").manual_seed(seed)
+generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
 
 if partial_video_length is not None:
     partial_video_length = int((partial_video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -247,22 +263,29 @@ else:
         ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
 
-if not os.path.exists(save_path):
-    os.makedirs(save_path, exist_ok=True)
+def save_results():
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
 
-index = len([path for path in os.listdir(save_path)]) + 1
-prefix = str(index).zfill(8)
+    index = len([path for path in os.listdir(save_path)]) + 1
+    prefix = str(index).zfill(8)
+    if video_length == 1:
+        video_path = os.path.join(save_path, prefix + ".png")
 
-if video_length == 1:
-    video_path = os.path.join(save_path, prefix + ".png")
+        image = sample[0, :, 0]
+        image = image.transpose(0, 1).transpose(1, 2)
+        image = (image * 255).numpy().astype(np.uint8)
+        image = Image.fromarray(image)
+        image.save(video_path)
+    else:
+        video_path = os.path.join(save_path, prefix + ".mp4")
+        save_videos_grid(sample, video_path, fps=fps)
 
-    image = sample[0, :, 0]
-    image = image.transpose(0, 1).transpose(1, 2)
-    image = (image * 255).numpy().astype(np.uint8)
-    image = Image.fromarray(image)
-    image.save(video_path)
+if ulysses_degree * ring_degree > 1:
+    import torch.distributed as dist
+    if dist.get_rank() == 0:
+        save_results()
 else:
-    video_path = os.path.join(save_path, prefix + ".mp4")
-    save_videos_grid(sample, video_path, fps=fps)
+    save_results()

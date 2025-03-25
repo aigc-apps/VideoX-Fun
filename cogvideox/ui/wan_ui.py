@@ -14,6 +14,7 @@ from safetensors import safe_open
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, WanTransformer3DModel)
+from ..models.cache_utils import get_teacache_coefficients
 from ..pipeline import WanI2VPipeline, WanPipeline
 from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
@@ -21,9 +22,10 @@ from ..utils.fp8_optimization import (convert_model_weight_to_float8,
 from ..utils.lora_utils import merge_lora, unmerge_lora
 from ..utils.utils import (filter_kwargs, get_image_to_video_latent,
                            get_video_to_video_latent, save_videos_grid)
-from .controller import (Fun_Controller, Fun_Controller_EAS, all_cheduler_dict,
-                         css, ddpm_scheduler_dict, flow_scheduler_dict,
-                         gradio_version, gradio_version_is_above_4)
+from .controller import (Fun_Controller, Fun_Controller_Client,
+                         all_cheduler_dict, css, ddpm_scheduler_dict,
+                         flow_scheduler_dict, gradio_version,
+                         gradio_version_is_above_4)
 from .ui import (create_cfg_and_seedbox,
                  create_fake_finetune_models_checkpoints,
                  create_fake_height_width, create_fake_model_checkpoints,
@@ -102,16 +104,21 @@ class Wan_Controller(Fun_Controller):
         else:
             raise ValueError("Not support now")
 
+        if self.ulysses_degree > 1 or self.ring_degree > 1:
+            self.transformer.enable_multi_gpus_inference()
+
         if self.GPU_memory_mode == "sequential_cpu_offload":
-            replace_parameters_by_name(self.transformer, ["modulation",], device="cuda")
-            self.transformer.freqs = self.transformer.freqs.to(device="cuda")
-            self.pipeline.enable_sequential_cpu_offload()
+            replace_parameters_by_name(self.transformer, ["modulation",], device=self.device)
+            self.transformer.freqs = self.transformer.freqs.to(device=self.device)
+            self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
             convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            self.pipeline.enable_model_cpu_offload()
+            self.pipeline.enable_model_cpu_offload(device=self.device)
+        elif self.GPU_memory_mode == "model_cpu_offload":
+            self.pipeline.enable_model_cpu_offload(device=self.device)
         else:
-            self.pipeline.enable_model_cpu_offload()
+            self.pipeline.to(self.device)
         print("Update diffusion transformer done")
         return gr.update()
 
@@ -166,9 +173,16 @@ class Wan_Controller(Fun_Controller):
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
+        coefficients = get_teacache_coefficients(self.base_model_path) if self.enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {self.teacache_threshold} and skip the first {self.num_skip_start_steps} steps.")
+            self.pipeline.transformer.enable_teacache(
+                coefficients, sample_step_slider, self.teacache_threshold, num_skip_start_steps=self.num_skip_start_steps, offload=self.teacache_offload
+            )
+        
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
-        generator = torch.Generator(device="cuda").manual_seed(int(seed_textbox))
+        generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         
         try:
             if self.model_type == "Inpaint":
@@ -316,101 +330,15 @@ class Wan_Controller(Fun_Controller):
                 else:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
+Wan_Controller_Host = Wan_Controller
+Wan_Controller_Client = Fun_Controller_Client
 
-class Wan_Controller_Modelscope(Wan_Controller):
-    def __init__(self, model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype, config_path):
-        # Basic dir
-        self.basedir                    = os.getcwd()
-        self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
-        self.lora_model_path            = "none"
-        self.base_model_path            = "none"
-        self.savedir_sample             = savedir_sample
-        self.scheduler_dict             = scheduler_dict
-        self.config                     = OmegaConf.load(config_path)
-        self.refresh_personalized_model()
-        os.makedirs(self.savedir_sample, exist_ok=True)
-
-        # model path
-        self.model_type = model_type
-        self.weight_dtype = weight_dtype
-        
-        self.vae = AutoencoderKLWan.from_pretrained(
-            os.path.join(model_name, self.config['vae_kwargs'].get('vae_subpath', 'vae')),
-            additional_kwargs=OmegaConf.to_container(self.config['vae_kwargs']),
-        ).to(self.weight_dtype)
-
-        # Get Transformer
-        self.transformer = WanTransformer3DModel.from_pretrained(
-            os.path.join(model_name, self.config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(self.config['transformer_additional_kwargs']),
-            low_cpu_mem_usage=True,
-            torch_dtype=self.weight_dtype,
-        )
-
-        # Get Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            os.path.join(model_name, self.config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')),
-        )
-
-        # Get Text encoder
-        self.text_encoder = WanT5EncoderModel.from_pretrained(
-            os.path.join(model_name, self.config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
-            additional_kwargs=OmegaConf.to_container(self.config['text_encoder_kwargs']),
-        ).to(self.weight_dtype)
-        self.text_encoder = self.text_encoder.eval()
-
-        if self.transformer.config.in_channels != self.vae.config.latent_channels:
-            # Get Clip Image Encoder
-            self.clip_image_encoder = CLIPModel.from_pretrained(
-                os.path.join(model_name, self.config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
-            ).to(self.weight_dtype)
-            self.clip_image_encoder = self.clip_image_encoder.eval()
-        else:
-            self.clip_image_encoder = None
-        
-        Choosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
-        self.scheduler = Choosen_Scheduler(
-            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
-        )
-
-        # Get pipeline
-        if self.model_type == "Inpaint":
-            if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = WanPipeline(
-                    vae=self.vae,
-                    tokenizer=self.tokenizer,
-                    text_encoder=self.text_encoder,
-                    transformer=self.transformer,
-                    scheduler=self.scheduler,
-                    clip_image_encoder=self.clip_image_encoder,
-                )
-            else:
-                self.pipeline = WanPipeline(
-                    vae=self.vae,
-                    tokenizer=self.tokenizer,
-                    text_encoder=self.text_encoder,
-                    transformer=self.transformer,
-                    scheduler=self.scheduler,
-                )
-        else:
-            raise ValueError("Not support now")
-    
-        if GPU_memory_mode == "sequential_cpu_offload":
-            replace_parameters_by_name(self.transformer, ["modulation",], device="cuda")
-            self.transformer.freqs = self.transformer.freqs.to(device="cuda")
-            self.pipeline.enable_sequential_cpu_offload()
-        elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
-            convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            self.pipeline.enable_model_cpu_offload()
-        else:
-            self.pipeline.enable_model_cpu_offload()
-        print("Update diffusion transformer done")
-
-Wan_Controller_EAS = Fun_Controller_EAS
-
-def ui(GPU_memory_mode, scheduler_dict, weight_dtype, config_path):
-    controller = Wan_Controller(GPU_memory_mode, scheduler_dict, weight_dtype, config_path)
+def ui(GPU_memory_mode, scheduler_dict, config_path, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+    controller = Wan_Controller(
+        GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
+        config_path=config_path, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+    )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -525,8 +453,12 @@ def ui(GPU_memory_mode, scheduler_dict, weight_dtype, config_path):
             )
     return demo, controller
 
-def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype, config_path):
-    controller = Wan_Controller_Modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, scheduler_dict, weight_dtype, config_path)
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+    controller = Wan_Controller_Host(
+        GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
+        config_path=config_path, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+    )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -631,8 +563,8 @@ def ui_modelscope(model_name, model_type, savedir_sample, GPU_memory_mode, sched
             )
     return demo, controller
 
-def ui_eas(model_name, scheduler_dict, savedir_sample, config_path):
-    controller = Wan_Controller_EAS(model_name, scheduler_dict, savedir_sample)
+def ui_client(scheduler_dict, model_name):
+    controller = Wan_Controller_Client(scheduler_dict)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
@@ -673,7 +605,7 @@ def ui_eas(model_name, scheduler_dict, savedir_sample, config_path):
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return gr.update(visible=True, minimum=5, maximum=85, value=49, interactive=True)
+                    return gr.update(visible=True, minimum=5, maximum=81, value=49, interactive=True)
                 elif generation_method == "Image Generation":
                     return gr.update(minimum=1, maximum=1, value=1, interactive=False)
             generation_method.change(
