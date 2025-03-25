@@ -30,12 +30,6 @@ if __name__ == "__main__":
     # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "sequential_cpu_offload"
-    # Multi GPUs config
-    # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
-    # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
-    # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
-    ulysses_degree      = 1
-    ring_degree         = 1
 
     # Support TeaCache.
     enable_teacache     = True
@@ -64,11 +58,11 @@ if __name__ == "__main__":
     model_type = "Inpaint"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, 1, 1, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(flow_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, 1, 1, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype)
 
     def gr_launch():
         # launch gradio
@@ -83,12 +77,7 @@ if __name__ == "__main__":
         update_diffusion_transformer_api(None, app, controller)
         update_edition_api(None, app, controller)
     
-    if ulysses_degree > 1 or ring_degree > 1:
-        import torch.distributed as dist
-        if dist.get_rank() == 0:
-            gr_launch()
-    else:
-        gr_launch()
+    gr_launch()
         
     # not close the python
     while True:
