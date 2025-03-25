@@ -36,7 +36,7 @@ GPU_memory_mode     = "sequential_cpu_offload"
 enable_teacache     = True
 # Recommended to be set between 0.10 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
-teacache_threshold  = 0.3
+teacache_threshold  = 0.20
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
 num_skip_start_steps = 5
