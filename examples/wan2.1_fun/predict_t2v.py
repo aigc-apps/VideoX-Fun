@@ -15,6 +15,7 @@ for project_root in project_roots:
 
 from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
+from cogvideox.models.cache_utils import get_teacache_coefficients
 from cogvideox.pipeline import WanFunInpaintPipeline, WanFunPipeline
 from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
                                               convert_weight_dtype_wrapper)
@@ -31,6 +32,16 @@ from cogvideox.utils.utils import (filter_kwargs, get_image_to_video_latent,
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "sequential_cpu_offload"
+
+enable_teacache     = True
+# Recommended to be set between 0.05 and 0.20. A larger threshold can cache more steps, speeding up the inference process, 
+# but it may cause slight differences between the generated content and the original content.
+teacache_threshold  = 0.10
+# The number of steps to skip TeaCache at the beginning of the inference process, which can
+# reduce the impact of TeaCache on generated video quality.
+num_skip_start_steps = 5
+# Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
+teacache_offload = False
 
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
@@ -157,6 +168,13 @@ elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     pipeline.enable_model_cpu_offload()
 else:
     pipeline.enable_model_cpu_offload()
+
+coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+if coefficients is not None:
+    print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+    pipeline.transformer.enable_teacache(
+        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+    )
 
 generator = torch.Generator(device="cuda").manual_seed(seed)
 
