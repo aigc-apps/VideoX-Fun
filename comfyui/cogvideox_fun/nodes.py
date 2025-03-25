@@ -121,7 +121,7 @@ class LoadCogVideoXFunModel:
                 print(f"- {os.path.join(folder_paths.models_dir, folder)}")
                 if os.path.exists(eas_cache_dir):
                     print(f"- {os.path.join(eas_cache_dir, folder)}")
-
+            raise ValueError("Please download Fun model")
 
         vae = AutoencoderKLCogVideoX.from_pretrained(
             model_name, 
