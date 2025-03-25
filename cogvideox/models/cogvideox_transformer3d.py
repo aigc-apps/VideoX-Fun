@@ -587,40 +587,6 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         else:
             local_num_frames = num_frames
 
-        if self.sp_world_size > 1:
-            if hidden_states.shape[-2] // self.patch_size % self.sp_world_size == 0:
-                split_height = height // self.sp_world_size
-                split_dim = -2
-            elif hidden_states.shape[-1] // self.patch_size % self.sp_world_size == 0:
-                split_width = width // self.sp_world_size
-                split_dim = -1
-            else:
-                raise ValueError("Cannot split video sequence into ulysses_degree x ring_degree=%d parts evenly, hidden_states.shape=%s" % (self.sp_world_size, str(hidden_states.shape)))
-
-            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
-            if inpaint_latents is not None:
-                inpaint_latents = torch.chunk(inpaint_latents, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
-            if control_latents is not None:
-                control_latents = torch.chunk(control_latents, self.sp_world_size, dim=split_dim)[self.sp_world_rank]
-
-            if image_rotary_emb is not None:
-                embed_dim = image_rotary_emb[0].shape[-1]
-                freq_cos = image_rotary_emb[0].reshape(num_frames, height // self.patch_size, width // self.patch_size, embed_dim)
-                freq_sin = image_rotary_emb[1].reshape(num_frames, height // self.patch_size, width // self.patch_size, embed_dim)
-
-                freq_cos = torch.chunk(freq_cos, self.sp_world_size, dim=split_dim-1)[self.sp_world_rank]
-                freq_sin = torch.chunk(freq_sin, self.sp_world_size, dim=split_dim-1)[self.sp_world_rank]
-
-                freq_cos = freq_cos.reshape(-1, embed_dim)
-                freq_sin = freq_sin.reshape(-1, embed_dim)
-
-                image_rotary_emb = (freq_cos, freq_sin)
-
-            if split_dim == -2:
-                height = split_height
-            elif split_dim == -1:
-                width = split_width
-
         # 1. Time embedding
         timesteps = timestep
         t_emb = self.time_proj(timesteps)
@@ -642,6 +608,15 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         text_seq_length = encoder_hidden_states.shape[1]
         encoder_hidden_states = hidden_states[:, :text_seq_length]
         hidden_states = hidden_states[:, text_seq_length:]
+
+        # Context Parallel
+        if self.sp_world_size > 1:
+            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=1)[self.sp_world_rank]
+            if image_rotary_emb is not None:
+                image_rotary_emb = (
+                    torch.chunk(image_rotary_emb[0], self.sp_world_size, dim=0)[self.sp_world_rank],
+                    torch.chunk(image_rotary_emb[1], self.sp_world_size, dim=0)[self.sp_world_rank]
+                )
 
         # 3. Transformer blocks
         for i, block in enumerate(self.transformer_blocks):
@@ -683,6 +658,9 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         hidden_states = self.norm_out(hidden_states, temb=emb)
         hidden_states = self.proj_out(hidden_states)
 
+        if self.sp_world_size > 1:
+            hidden_states = get_sp_group().all_gather(hidden_states, dim=1)
+
         # 5. Unpatchify
         p = self.config.patch_size
         p_t = self.config.patch_size_t
@@ -698,9 +676,6 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         
         if num_frames == 1:
             output = output[:, :num_frames, :]
-
-        if self.sp_world_size > 1:
-            output = get_sp_group().all_gather(output, dim=split_dim)
 
         if not return_dict:
             return (output,)
