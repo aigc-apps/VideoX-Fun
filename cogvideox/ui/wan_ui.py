@@ -333,10 +333,11 @@ class Wan_Controller(Fun_Controller):
 Wan_Controller_Host = Wan_Controller
 Wan_Controller_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, config_path, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
     controller = Wan_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        config_path=config_path, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
         num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
     )
 
@@ -453,10 +454,11 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, enable_teacache, teacache_t
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
     controller = Wan_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
-        config_path=config_path, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
         num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
     )
 

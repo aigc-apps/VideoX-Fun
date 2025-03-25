@@ -99,7 +99,7 @@ class Fun_Controller:
         
         self.refresh_diffusion_transformer()
         self.refresh_personalized_model()
-        if model_name != "none":
+        if model_name != None:
             self.update_diffusion_transformer(model_name)
 
     def refresh_diffusion_transformer(self):

@@ -24,7 +24,9 @@ from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import (filter_kwargs, get_image_to_video_latent,
                                    save_videos_grid)
 
-# GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# model_full_load means that the entire model will be moved to the GPU.
+# 
 # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
 # 
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
@@ -43,7 +45,7 @@ ring_degree         = 1
 enable_teacache     = True
 # Recommended to be set between 0.10 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
-teacache_threshold  = 0.20
+teacache_threshold  = 0.00
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
 num_skip_start_steps = 5
@@ -163,15 +165,17 @@ if ulysses_degree > 1 or ring_degree > 1:
     transformer.enable_multi_gpus_inference()
 
 if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(transformer, ["modulation",], device="cuda")
-    transformer.freqs = transformer.freqs.to(device="cuda")
-    pipeline.enable_sequential_cpu_offload()
+    replace_parameters_by_name(transformer, ["modulation",], device=device)
+    transformer.freqs = transformer.freqs.to(device=device)
+    pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload()
+    pipeline.enable_model_cpu_offload(device=device)
+elif GPU_memory_mode == "model_cpu_offload":
+    pipeline.enable_model_cpu_offload(device=device)
 else:
-    pipeline.enable_model_cpu_offload()
+    pipeline.to(device=device)
 
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
 if coefficients is not None:

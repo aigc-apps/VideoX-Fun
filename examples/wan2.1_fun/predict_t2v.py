@@ -24,7 +24,9 @@ from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
 from cogvideox.utils.utils import (filter_kwargs, get_image_to_video_latent,
                                    save_videos_grid)
 
-# GPU memory mode, which can be choosen in [model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# model_full_load means that the entire model will be moved to the GPU.
+# 
 # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
 # 
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
@@ -71,7 +73,7 @@ fps                 = 16
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-prompt              = "一只棕褐色的狗正摇晃着脑袋，坐在一个舒适的房间里的浅色沙发上。沙发看起来柔软而宽敞，为这只活泼的狗狗提供了一个完美的休息地点。在狗的后面，靠墙摆放着一个架子，架子上挂着一幅精美的镶框画，画中描绘着一些美丽的风景或场景。画框周围装饰着粉红色的花朵，这些花朵不仅增添了房间的色彩，还带来了一丝自然和生机。房间里的灯光柔和而温暖，从天花板上的吊灯和角落里的台灯散发出来，营造出一种温馨舒适的氛围。整个空间给人一种宁静和谐的感觉，仿佛时间在这里变得缓慢而美好。"
+prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 6.0
 seed                = 43
@@ -170,15 +172,17 @@ if ulysses_degree > 1 or ring_degree > 1:
     transformer.enable_multi_gpus_inference()
 
 if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(transformer, ["modulation",], device="cuda")
-    transformer.freqs = transformer.freqs.to(device="cuda")
-    pipeline.enable_sequential_cpu_offload()
+    replace_parameters_by_name(transformer, ["modulation",], device=device)
+    transformer.freqs = transformer.freqs.to(device=device)
+    pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload()
+    pipeline.enable_model_cpu_offload(device=device)
+elif GPU_memory_mode == "model_cpu_offload":
+    pipeline.enable_model_cpu_offload(device=device)
 else:
-    pipeline.enable_model_cpu_offload()
+    pipeline.to(device=device)
 
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
 if coefficients is not None:
