@@ -63,7 +63,7 @@ class CogVideoXFunController(Fun_Controller):
         # Get pipeline
         if self.model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
+                self.pipeline = CogVideoXFunInpaintPipeline(
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
                     vae=self.vae, 
@@ -71,7 +71,7 @@ class CogVideoXFunController(Fun_Controller):
                     scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
                 )
             else:
-                self.pipeline = CogVideoXFunPipeline.from_pretrained(
+                self.pipeline = CogVideoXFunPipeline(
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
                     vae=self.vae, 
@@ -79,7 +79,7 @@ class CogVideoXFunController(Fun_Controller):
                     scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
                 )
         else:
-            self.pipeline = CogVideoXFunControlPipeline.from_pretrained(
+            self.pipeline = CogVideoXFunControlPipeline(
                 diffusion_transformer_dropdown,
                 vae=self.vae, 
                 transformer=self.transformer,

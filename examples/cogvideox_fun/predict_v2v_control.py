@@ -136,7 +136,7 @@ scheduler = Choosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = CogVideoXFunControlPipeline.from_pretrained(
+pipeline = CogVideoXFunControlPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
