@@ -316,7 +316,7 @@
         "Node name for S&R": "LoadWanModel"
       },
       "widgets_values": [
-        "Wan2.1-I2V-14B-480P",
+        "Wan2.1-I2V-14B-720P",
         "sequential_cpu_offload",
         "wan2.1/wan_civitai.yaml",
         "bf16"
