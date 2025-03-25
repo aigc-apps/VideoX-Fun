@@ -338,7 +338,7 @@ def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtyp
                     sampler_dropdown, sample_step_slider = create_samplers(controller)
 
                     resize_method, width_slider, height_slider, base_resolution = create_height_width(
-                        default_height = 672, default_width = 384, maximum_height = 1344,
+                        default_height = 384, default_width = 672, maximum_height = 1344,
                         maximum_width = 1344,
                     )
                     gr.Markdown(
@@ -466,7 +466,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_deg
                     sampler_dropdown, sample_step_slider = create_samplers(controller)
 
                     resize_method, width_slider, height_slider, base_resolution = create_height_width(
-                        default_height = 672, default_width = 384, maximum_height = 1344,
+                        default_height = 384, default_width = 672, maximum_height = 1344,
                         maximum_width = 1344,
                     )
                     gr.Markdown(
@@ -581,7 +581,7 @@ def ui_client(scheduler_dict, model_name):
                     sampler_dropdown, sample_step_slider = create_samplers(controller, maximum_step=50)
 
                     resize_method, width_slider, height_slider, base_resolution = create_fake_height_width(
-                        default_height = 672, default_width = 384, maximum_height = 1344,
+                        default_height = 384, default_width = 672, maximum_height = 1344,
                         maximum_width = 1344,
                     )
                     gr.Markdown(
