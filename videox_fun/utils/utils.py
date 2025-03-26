@@ -216,7 +216,10 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
         input_video, input_video_mask = None, None
 
     if ref_image is not None:
-        clip_image = Image.open(ref_image).convert("RGB")
+        if isinstance(ref_image, str):
+            clip_image = Image.open(ref_image).convert("RGB")
+        else:
+            clip_image = Image.fromarray(np.array(ref_image, np.uint8))
     else:
         clip_image = None
 
