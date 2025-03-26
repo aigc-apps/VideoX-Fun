@@ -62,40 +62,6 @@
       ]
     },
     {
-      "id": 73,
-      "type": "FunTextBox",
-      "pos": {
-        "0": 250,
-        "1": 160
-      },
-      "size": {
-        "0": 383.7149963378906,
-        "1": 183.83506774902344
-      },
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "links": [
-            52
-          ],
-          "slot_index": 0,
-          "shape": 3
-        }
-      ],
-      "title": "Negtive Prompt（反向提示词）",
-      "properties": {
-        "Node name for S&R": "FunTextBox"
-      },
-      "widgets_values": [
-        "The video is not of a high quality, it has a low resolution. Watermark present in each frame. Strange motion trajectory. "
-      ]
-    },
-    {
       "id": 85,
       "type": "WanT2VSampler",
       "pos": {
@@ -247,7 +213,7 @@
         "1": 130
       },
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -277,12 +243,12 @@
         "0": -92,
         "1": -294
       },
-      "size": [
-        351.15000858219935,
-        130.1266091673274
-      ],
+      "size": {
+        "0": 351.1499938964844,
+        "1": 130.12660217285156
+      },
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -294,6 +260,40 @@
       ],
       "color": "#432",
       "bgcolor": "#653"
+    },
+    {
+      "id": 73,
+      "type": "FunTextBox",
+      "pos": {
+        "0": 250,
+        "1": 160
+      },
+      "size": {
+        "0": 383.7149963378906,
+        "1": 183.83506774902344
+      },
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "links": [
+            52
+          ],
+          "slot_index": 0,
+          "shape": 3
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
     }
   ],
   "links": [
@@ -359,17 +359,17 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7513148009015777,
+      "scale": 0.6830134553650705,
       "offset": [
-        204.86623751155076,
-        599.6304142701725
+        356.367407042801,
+        487.2362084107991
       ]
     },
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "b9504775e161e677064517de801bbf9075d33eef",
+      "CogVideoX-Fun": "e054344e39c5030c23b0146ed4a1293bff2505ed",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
     }
   },

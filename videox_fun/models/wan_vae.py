@@ -674,7 +674,6 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     @apply_forward_hook
     def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
-        print(z.size())
         decoded = self._decode(z).sample
 
         if not return_dict:

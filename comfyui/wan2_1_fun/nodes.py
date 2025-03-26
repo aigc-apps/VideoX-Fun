@@ -44,10 +44,18 @@ class LoadWanFunModel:
                 "model": (
                     [ 
                         'Wan2.1-Fun-1.3B-InP',
-                        'Wan2.1-Fun-14B-InP'
+                        'Wan2.1-Fun-14B-InP',
+                        'Wan2.1-Fun-1.3B-Control',
+                        'Wan2.1-Fun-14B-Control'
                     ],
                     {
                         "default": 'Wan2.1-Fun-1.3B-InP',
+                    }
+                ),
+                "model_type": (
+                    ["Inpaint", "Control"],
+                    {
+                        "default": "Inpaint",
                     }
                 ),
                 "GPU_memory_mode":(
@@ -78,7 +86,7 @@ class LoadWanFunModel:
     FUNCTION = "loadmodel"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def loadmodel(self, GPU_memory_mode, model, precision, config):
+    def loadmodel(self, GPU_memory_mode, model_type, model, precision, config):
         # Init weight_dtype and device
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
@@ -166,7 +174,6 @@ class LoadWanFunModel:
             clip_image_encoder = clip_image_encoder.eval()
 
         # Get pipeline
-        model_type = "Inpaint"
         if model_type == "Inpaint":
             if transformer.config.in_channels != vae.config.latent_channels:
                 pipeline = WanFunInpaintPipeline(
@@ -572,7 +579,7 @@ class WanFunInpaintSampler:
         return (videos,)   
 
 
-class CogVideoXFunV2VSampler:
+class WanFunV2VSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -697,14 +704,11 @@ class CogVideoXFunV2VSampler:
         generator= torch.Generator(device).manual_seed(seed)
 
         with torch.no_grad():
-            if pipeline.vae.cache_mag_vae:
-                video_length = int((video_length - 1) // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) + 1 if video_length != 1 else 1
-            else:
-                video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
+            video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
             if model_type == "Inpaint":
-                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=8, ref_image=ref_image[0])
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=ref_image[0] if ref_image is not None else ref_image)
             else:
-                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=8, ref_image=ref_image[0])
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=ref_image[0] if ref_image is not None else ref_image)
 
             # Apply lora
             if funmodels.get("lora_cache", False):
@@ -737,7 +741,7 @@ class CogVideoXFunV2VSampler:
             if model_type == "Inpaint":
                 sample = pipeline(
                     prompt, 
-                    video_length = video_length,
+                    num_frames = video_length,
                     negative_prompt = negative_prompt,
                     height      = height,
                     width       = width,
@@ -754,7 +758,7 @@ class CogVideoXFunV2VSampler:
             else:
                 sample = pipeline(
                     prompt, 
-                    video_length = video_length,
+                    num_frames = video_length,
                     negative_prompt = negative_prompt,
                     height      = height,
                     width       = width,

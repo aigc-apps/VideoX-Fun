@@ -12,7 +12,8 @@ from .wan2_1.nodes import (LoadWanModel,
 from .wan2_1_fun.nodes import (LoadWanFunModel,
                            LoadWanFunLora,
                            WanFunT2VSampler,
-                           WanFunInpaintSampler)
+                           WanFunInpaintSampler,
+                           WanFunV2VSampler)
 
 class FunTextBox:
     @classmethod
@@ -50,6 +51,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadWanFunLora": LoadWanFunLora,
     "WanFunT2VSampler": WanFunT2VSampler,
     "WanFunInpaintSampler": WanFunInpaintSampler,
+    "WanFunV2VSampler": WanFunV2VSampler,
 }
 
 
@@ -70,4 +72,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWanFunLora": "Load Wan Fun Lora",
     "WanFunT2VSampler": "Wan Fun Sampler for Text to Video",
     "WanFunInpaintSampler": "Wan Fun Sampler for Image to Video",
+    "WanFunV2VSampler": "Wan Fun Sampler for Video to Video",
 }
