@@ -128,6 +128,7 @@ class LoadWanModel:
                 print(f"- {os.path.join(folder_paths.models_dir, folder)}")
                 if os.path.exists(eas_cache_dir):
                     print(f"- {os.path.join(eas_cache_dir, folder)}")
+            raise ValueError("Please download Fun model")
 
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
