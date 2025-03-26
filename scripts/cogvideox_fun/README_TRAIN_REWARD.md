@@ -172,10 +172,10 @@ We provide an example inference code to run CogVideoX-Fun-V1.1-5b-InP with its H
 import torch
 from diffusers import CogVideoXDDIMScheduler
 
-from cogvideox.models.transformer3d import CogVideoXTransformer3DModel
-from cogvideox.pipeline.pipeline_cogvideox_inpaint import CogVideoXFunInpaintPipeline
-from cogvideox.utils.lora_utils import merge_lora
-from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.models.transformer3d import CogVideoXTransformer3DModel
+from videox_fun.pipeline.pipeline_cogvideox_inpaint import CogVideoXFunInpaintPipeline
+from videox_fun.utils.lora_utils import merge_lora
+from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 model_path = "alibaba-pai/CogVideoX-Fun-V1.1-5b-InP"
 lora_path = "alibaba-pai/CogVideoX-Fun-V1.1-Reward-LoRAs/CogVideoX-Fun-V1.1-5b-InP-HPS2.1.safetensors"
