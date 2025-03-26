@@ -234,7 +234,6 @@ class LoadWanFunLora:
                 "funmodels": ("FunModels",),
                 "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
-                "lora_cache":([False, True],  {"default": False,}),
             }
         }
     RETURN_TYPES = ("FunModels",)
@@ -251,6 +250,8 @@ class LoadWanFunLora:
                     'model_name': funmodels["model_name"],
                     'loras': funmodels.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)],
                     'strength_model': funmodels.get("strength_model", []) + [strength_model],
+                    'config': funmodels["config"],
+                    'model_type': funmodels["model_type"],
                 }, 
             )
         else:
