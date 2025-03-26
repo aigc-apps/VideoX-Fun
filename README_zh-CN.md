@@ -1,4 +1,4 @@
-# CogVideoX-Fun
+# VideoX-Fun
 
 😊 Welcome!
 
@@ -21,7 +21,7 @@ Wan-Fun:
 - [许可证](#许可证)
 
 # 简介
-CogVideoX-Fun是一个基于CogVideoX结构修改后的的pipeline，是一个生成条件更自由的CogVideoX，可用于生成AI图片与视频、训练Diffusion Transformer的基线模型与Lora模型，我们支持从已经训练好的CogVideoX-Fun模型直接进行预测，生成不同分辨率，6秒左右、fps8的视频（1 ~ 49帧），也支持用户训练自己的基线模型与Lora模型，进行一定的风格变换。
+VideoX-Fun是一个视频生成的pipeline，可用于生成AI图片与视频、训练Diffusion Transformer的基线模型与Lora模型，我们支持从已经训练好的基线模型直接进行预测，生成不同分辨率，不同秒数、不同FPS的视频，也支持用户训练自己的基线模型与Lora模型，进行一定的风格变换。
 
 我们会逐渐支持从不同平台快速启动，请参阅 [快速启动](#快速启动)。
 

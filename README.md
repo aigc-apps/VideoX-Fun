@@ -1,4 +1,4 @@
-# CogVideoX-Fun
+# VideoX-Fun
 
 😊 Welcome!
 
@@ -21,7 +21,7 @@ English | [简体中文](./README_zh-CN.md) | [日本語](./README_ja-JP.md)
 - [License](#license)
 
 # Introduction
-CogVideoX-Fun is a modified pipeline based on the CogVideoX structure, designed to provide more flexibility in generation. It can be used to create AI images and videos, as well as to train baseline models and Lora models for Diffusion Transformer. We support predictions directly from the already trained CogVideoX-Fun model, allowing the generation of videos at different resolutions, approximately 6 seconds long with 8 fps (1 to 49 frames). Users can also train their own baseline models and Lora models to achieve certain style transformations.
+VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and Lora models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and Lora models to perform specific style transformations.
 
 We will support quick pull-ups from different platforms, refer to [Quick Start](#quick-start).
 
