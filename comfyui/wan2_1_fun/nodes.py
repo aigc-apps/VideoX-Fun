@@ -16,19 +16,19 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
-from ...cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
+from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                               get_closest_ratio)
-from ...cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                                  WanT5EncoderModel, WanTransformer3DModel)
-from ...cogvideox.pipeline import WanI2VPipeline, WanPipeline
-from ...cogvideox.ui.controller import all_cheduler_dict
-from ...cogvideox.utils.fp8_optimization import (
+from ...videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline, WanFunControlPipeline
+from ...videox_fun.ui.controller import all_cheduler_dict
+from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
-from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from ...cogvideox.utils.utils import (get_image_to_video_latent, filter_kwargs,
+from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs,
                                       get_video_to_video_latent,
                                       save_videos_grid)
-from ...cogvideox.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
 
 # Used in lora cache
@@ -92,7 +92,7 @@ class LoadWanFunModel:
         config = OmegaConf.load(config_path)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models"]  # Possible folder names to check
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"]  # Possible folder names to check
 
         # Initialize model_name as None
         model_name = None
@@ -168,7 +168,7 @@ class LoadWanFunModel:
         model_type = "Inpaint"
         if model_type == "Inpaint":
             if transformer.config.in_channels != vae.config.latent_channels:
-                pipeline = WanI2VPipeline(
+                pipeline = WanFunInpaintPipeline(
                     vae=vae,
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
@@ -177,7 +177,7 @@ class LoadWanFunModel:
                     clip_image_encoder=clip_image_encoder
                 )
             else:
-                pipeline = WanPipeline(
+                pipeline = WanFunPipeline(
                     vae=vae,
                     tokenizer=tokenizer,
                     text_encoder=text_encoder,
@@ -185,7 +185,14 @@ class LoadWanFunModel:
                     scheduler=scheduler,
                 )
         else:
-            raise ValueError(f"Model type {model_type} not supported")
+            pipeline = WanFunControlPipeline(
+                vae=vae,
+                tokenizer=tokenizer,
+                text_encoder=text_encoder,
+                transformer=transformer,
+                scheduler=scheduler,
+                clip_image_encoder=clip_image_encoder
+            )
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device="cuda")
@@ -555,6 +562,210 @@ class WanFunInpaintSampler:
                 clip_image   = clip_image,
                 comfyui_progressbar = True,
             ).videos
+            videos = rearrange(sample, "b c t h w -> (b t) h w c")
+
+            if not funmodels.get("lora_cache", False):
+                print('Unmerge Lora')
+                for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+        return (videos,)   
+
+
+class CogVideoXFunV2VSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "funmodels": (
+                    "FunModels", 
+                ),
+                "prompt": (
+                    "STRING_PROMPT", 
+                ),
+                "negative_prompt": (
+                    "STRING_PROMPT", 
+                ),
+                "video_length": (
+                    "INT", {"default": 81, "min": 1, "max": 81, "step": 4}
+                ),
+                "base_resolution": (
+                    [ 
+                        512,
+                        640,
+                        768,
+                        896,
+                        960,
+                        1024,
+                    ], {"default": 640}
+                ),
+                "seed": (
+                    "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
+                ),
+                "steps": (
+                    "INT", {"default": 25, "min": 1, "max": 200, "step": 1}
+                ),
+                "cfg": (
+                    "FLOAT", {"default": 7.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                ),
+                "denoise_strength": (
+                    "FLOAT", {"default": 0.70, "min": 0.05, "max": 1.00, "step": 0.01}
+                ),
+                "scheduler": (
+                    [ 
+                        "Flow",
+                    ],
+                    {
+                        "default": 'Flow'
+                    }
+                ),
+                "teacache_threshold": (
+                    "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
+                ),
+                "enable_teacache":(
+                    [False, True],  {"default": True,}
+                ),
+                "num_skip_start_steps": (
+                    "INT", {"default": 5, "min": 0, "max": 50, "step": 1}
+                ),
+                "teacache_offload":(
+                    [False, True],  {"default": True,}
+                ),
+            },
+            "optional":{
+                "validation_video": ("IMAGE",),
+                "control_video": ("IMAGE",),
+                "ref_image": ("IMAGE",),
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES =("images",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, ref_image=None, ):
+        global transformer_cpu_cache
+        global lora_path_before
+
+        device = mm.get_torch_device()
+        offload_device = mm.unet_offload_device()
+
+        mm.soft_empty_cache()
+        gc.collect()
+        
+        # Get Pipeline
+        pipeline = funmodels['pipeline']
+        model_name = funmodels['model_name']
+        config = funmodels['config']
+        weight_dtype = funmodels['dtype']
+        model_type = funmodels['model_type']
+
+        # Count most suitable height and width
+        aspect_ratio_sample_size    = {key : [x / 512 * base_resolution for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+        if model_type == "Inpaint":
+            if type(validation_video) is str:
+                original_width, original_height = Image.fromarray(cv2.VideoCapture(validation_video).read()[1]).size
+            else:
+                validation_video = np.array(validation_video.cpu().numpy() * 255, np.uint8)
+                original_width, original_height = Image.fromarray(validation_video[0]).size
+        else:
+            if control_video is not None and type(control_video) is str:
+                original_width, original_height = Image.fromarray(cv2.VideoCapture(control_video).read()[1]).size
+            elif control_video is not None:
+                control_video = np.array(control_video.cpu().numpy() * 255, np.uint8)
+                original_width, original_height = Image.fromarray(control_video[0]).size
+            else:
+                original_width, original_height = 384 / 512 * base_resolution, 672 / 512 * base_resolution
+
+            if ref_image is not None:
+                ref_image = [to_pil(_ref_image) for _ref_image in ref_image]
+                original_width, original_height = ref_image[0].size if type(ref_image) is list else Image.open(ref_image).size
+
+        closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
+        height, width = [int(x / 16) * 16 for x in closest_size]
+
+        # Load Sampler
+        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+            pipeline.transformer.enable_teacache(
+                coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+            )
+
+        generator= torch.Generator(device).manual_seed(seed)
+
+        with torch.no_grad():
+            if pipeline.vae.cache_mag_vae:
+                video_length = int((video_length - 1) // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) + 1 if video_length != 1 else 1
+            else:
+                video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
+            if model_type == "Inpaint":
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=8, ref_image=ref_image[0])
+            else:
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=8, ref_image=ref_image[0])
+
+            # Apply lora
+            if funmodels.get("lora_cache", False):
+                if len(funmodels.get("loras", [])) != 0:
+                    # Save the original weights to cpu
+                    if len(transformer_cpu_cache) == 0:
+                        print('Save transformer state_dict to cpu memory')
+                        transformer_state_dict = pipeline.transformer.state_dict()
+                        for key in transformer_state_dict:
+                            transformer_cpu_cache[key] = transformer_state_dict[key].clone().cpu()
+                    
+                    lora_path_now = str(funmodels.get("loras", []) + funmodels.get("strength_model", []))
+                    if lora_path_now != lora_path_before:
+                        print('Merge Lora with Cache')
+                        lora_path_before = copy.deepcopy(lora_path_now)
+                        pipeline.transformer.load_state_dict(transformer_cpu_cache)
+                        for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+            else:
+                # Clear lora when switch from lora_cache=True to lora_cache=False.
+                if len(transformer_cpu_cache) != 0:
+                    pipeline.transformer.load_state_dict(transformer_cpu_cache)
+                    transformer_cpu_cache = {}
+                    lora_path_before = ""
+                    gc.collect()
+                print('Merge Lora')
+                for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+
+            if model_type == "Inpaint":
+                sample = pipeline(
+                    prompt, 
+                    video_length = video_length,
+                    negative_prompt = negative_prompt,
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    guidance_scale = cfg,
+                    num_inference_steps = steps,
+
+                    video        = input_video,
+                    mask_video   = input_video_mask,
+                    clip_image   = clip_image, 
+                    strength = float(denoise_strength),
+                    comfyui_progressbar = True,
+                ).videos
+            else:
+                sample = pipeline(
+                    prompt, 
+                    video_length = video_length,
+                    negative_prompt = negative_prompt,
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    guidance_scale = cfg,
+                    num_inference_steps = steps,
+
+                    ref_image = ref_image,
+                    clip_image = clip_image,
+                    control_video = input_video,
+                    comfyui_progressbar = True,
+                ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
 
             if not funmodels.get("lora_cache", False):

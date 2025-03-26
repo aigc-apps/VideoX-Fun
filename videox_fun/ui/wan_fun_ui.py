@@ -7,17 +7,20 @@ import cv2
 import gradio as gr
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import (AutoencoderKLCogVideoX, CogVideoXTransformer3DModel,
-                      T5EncoderModel, T5Tokenizer)
-from ..pipeline import (CogVideoXFunControlPipeline,
-                        CogVideoXFunInpaintPipeline, CogVideoXFunPipeline)
-from ..utils.fp8_optimization import convert_weight_dtype_wrapper
+from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+                      WanT5EncoderModel, WanTransformer3DModel)
+from ..models.cache_utils import get_teacache_coefficients
+from ..pipeline import WanFunInpaintPipeline, WanFunPipeline
+from ..utils.fp8_optimization import (convert_model_weight_to_float8,
+                                      convert_weight_dtype_wrapper,
+                                      replace_parameters_by_name)
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (get_image_to_video_latent,
+from ..utils.utils import (filter_kwargs, get_image_to_video_latent,
                            get_video_to_video_latent, save_videos_grid)
 from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
@@ -34,66 +37,83 @@ from .ui import (create_cfg_and_seedbox,
                  create_ui_outputs)
 
 
-class CogVideoXFunController(Fun_Controller):
+class Wan_Fun_Controller(Fun_Controller):
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
         print("Update diffusion transformer")
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
             return gr.update()
-        self.vae = AutoencoderKLCogVideoX.from_pretrained(
-            diffusion_transformer_dropdown, 
-            subfolder="vae", 
+        self.vae = AutoencoderKLWan.from_pretrained(
+            os.path.join(diffusion_transformer_dropdown, self.config['vae_kwargs'].get('vae_subpath', 'vae')),
+            additional_kwargs=OmegaConf.to_container(self.config['vae_kwargs']),
         ).to(self.weight_dtype)
 
         # Get Transformer
-        self.transformer = CogVideoXTransformer3DModel.from_pretrained(
-            diffusion_transformer_dropdown, 
-            subfolder="transformer",
-            low_cpu_mem_usage=True, 
+        self.transformer = WanTransformer3DModel.from_pretrained(
+            os.path.join(diffusion_transformer_dropdown, self.config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
+            transformer_additional_kwargs=OmegaConf.to_container(self.config['transformer_additional_kwargs']),
+            low_cpu_mem_usage=True,
+            torch_dtype=self.weight_dtype,
+        )
+
+        # Get Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            os.path.join(diffusion_transformer_dropdown, self.config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')),
+        )
+
+        # Get Text encoder
+        self.text_encoder = WanT5EncoderModel.from_pretrained(
+            os.path.join(diffusion_transformer_dropdown, self.config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
+            additional_kwargs=OmegaConf.to_container(self.config['text_encoder_kwargs']),
         ).to(self.weight_dtype)
+        self.text_encoder = self.text_encoder.eval()
+
+        if self.transformer.config.in_channels != self.vae.config.latent_channels:
+            # Get Clip Image Encoder
+            self.clip_image_encoder = CLIPModel.from_pretrained(
+                os.path.join(diffusion_transformer_dropdown, self.config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
+            ).to(self.weight_dtype)
+            self.clip_image_encoder = self.clip_image_encoder.eval()
+        else:
+            self.clip_image_encoder = None
         
-        # Get tokenizer and text_encoder
-        tokenizer = T5Tokenizer.from_pretrained(
-            diffusion_transformer_dropdown, subfolder="tokenizer"
+        Choosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
+        self.scheduler = Choosen_Scheduler(
+            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
         )
-        text_encoder = T5EncoderModel.from_pretrained(
-            diffusion_transformer_dropdown, subfolder="text_encoder", torch_dtype=self.weight_dtype
-        )
-    
+
         # Get pipeline
         if self.model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = CogVideoXFunInpaintPipeline(
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    vae=self.vae, 
+                self.pipeline = WanFunInpaintPipeline(
+                    vae=self.vae,
+                    tokenizer=self.tokenizer,
+                    text_encoder=self.text_encoder,
                     transformer=self.transformer,
-                    scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
+                    scheduler=self.scheduler,
+                    clip_image_encoder=self.clip_image_encoder,
                 )
             else:
-                self.pipeline = CogVideoXFunPipeline(
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    vae=self.vae, 
+                self.pipeline = WanFunPipeline(
+                    vae=self.vae,
+                    tokenizer=self.tokenizer,
+                    text_encoder=self.text_encoder,
                     transformer=self.transformer,
-                    scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
+                    scheduler=self.scheduler,
                 )
         else:
-            self.pipeline = CogVideoXFunControlPipeline(
-                diffusion_transformer_dropdown,
-                vae=self.vae, 
-                transformer=self.transformer,
-                scheduler=self.scheduler_dict[list(self.scheduler_dict.keys())[0]].from_pretrained(diffusion_transformer_dropdown, subfolder="scheduler"),
-                torch_dtype=self.weight_dtype
-            )
+            raise ValueError("Not support now")
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             self.transformer.enable_multi_gpus_inference()
 
         if self.GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(self.transformer, ["modulation",], device=self.device)
+            self.transformer.freqs = self.transformer.freqs.to(device=self.device)
             self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
+            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload":
             self.pipeline.enable_model_cpu_offload(device=self.device)
@@ -153,6 +173,13 @@ class CogVideoXFunController(Fun_Controller):
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
+        coefficients = get_teacache_coefficients(self.base_model_path) if self.enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {self.teacache_threshold} and skip the first {self.num_skip_start_steps} steps.")
+            self.pipeline.transformer.enable_teacache(
+                coefficients, sample_step_slider, self.teacache_threshold, num_skip_start_steps=self.num_skip_start_steps, offload=self.teacache_offload
+            )
+
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
@@ -193,7 +220,7 @@ class CogVideoXFunController(Fun_Controller):
 
                                     video        = input_video,
                                     mask_video   = input_video_mask,
-                                    strength     = 1,
+                                    clip_image   = clip_image
                                 ).videos
                             
                             if init_frames != 0:
@@ -222,7 +249,7 @@ class CogVideoXFunController(Fun_Controller):
                             last_frames = init_frames + _partial_video_length
                     else:
                         if validation_video is not None:
-                            input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=8)
+                            input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
                             strength = denoise_strength
                         else:
                             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
@@ -240,7 +267,7 @@ class CogVideoXFunController(Fun_Controller):
 
                             video        = input_video,
                             mask_video   = input_video_mask,
-                            strength     = strength,
+                            clip_image   = clip_image
                         ).videos
                 else:
                     sample = self.pipeline(
@@ -254,7 +281,7 @@ class CogVideoXFunController(Fun_Controller):
                         generator           = generator
                     ).videos
             else:
-                input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=8)
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -283,7 +310,7 @@ class CogVideoXFunController(Fun_Controller):
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
         save_sample_path = self.save_outputs(
-            is_image, length_slider, sample, fps=8
+            is_image, length_slider, sample, fps=16
         )
 
         if is_image or length_slider == 1:
@@ -303,22 +330,23 @@ class CogVideoXFunController(Fun_Controller):
                 else:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
-CogVideoXFunController_Host = CogVideoXFunController
-CogVideoXFunController_Client = Fun_Controller_Client
+Wan_Fun_Controller_Host = Wan_Fun_Controller
+Wan_Fun_Controller_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtype):
-    controller = CogVideoXFunController(
+def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+    controller = Wan_Fun_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
+        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
     )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # CogVideoX-Fun:
+            # Wan-Fun:
 
-            A CogVideoX with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 49), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -331,30 +359,24 @@ def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtyp
                 create_finetune_models_checkpoints(controller, visible=True)
 
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():
                     sampler_dropdown, sample_step_slider = create_samplers(controller)
 
                     resize_method, width_slider, height_slider, base_resolution = create_height_width(
-                        default_height = 384, default_width = 672, maximum_height = 1344,
+                        default_height = 480, default_width = 832, maximum_height = 1344,
                         maximum_width = 1344,
-                    )
-                    gr.Markdown(
-                        """
-                        V1.0 and V1.1 support up to 49 frames of video generation, while V1.5 supports up to 85 frames.  
-                        (V1.0和V1.1支持最大49帧视频生成，V1.5支持最大85帧视频生成。)
-                        """
                     )
                     generation_method, length_slider, overlap_video_length, partial_video_length = \
                         create_generation_methods_and_video_length(
-                            ["Video Generation", "Image Generation", "Long Video Generation"],
-                            default_video_length=49,
-                            maximum_video_length=85,
+                            ["Video Generation", "Image Generation"],
+                            default_video_length=81,
+                            maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video to Video (视频到视频)", "Video Control (视频控制)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -370,7 +392,7 @@ def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtyp
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return [gr.update(visible=True, maximum=85, value=49, interactive=True), gr.update(visible=False), gr.update(visible=False)]
+                    return [gr.update(visible=True, maximum=81, value=81, interactive=True), gr.update(visible=False), gr.update(visible=False)]
                 elif generation_method == "Image Generation":
                     return [gr.update(minimum=1, maximum=1, value=1, interactive=False), gr.update(visible=False), gr.update(visible=False)]
                 else:
@@ -436,19 +458,20 @@ def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtyp
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_degree, ring_degree, weight_dtype):
-    controller = CogVideoXFunController_Host(
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+    controller = Wan_Fun_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
-        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
+        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
     )
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # CogVideoX-Fun
+            # Wan-Fun:
 
-            A CogVideoX with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 49), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -459,30 +482,24 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_deg
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
         
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():
                     sampler_dropdown, sample_step_slider = create_samplers(controller)
 
                     resize_method, width_slider, height_slider, base_resolution = create_height_width(
-                        default_height = 384, default_width = 672, maximum_height = 1344,
+                        default_height = 480, default_width = 832, maximum_height = 1344,
                         maximum_width = 1344,
-                    )
-                    gr.Markdown(
-                        """
-                        V1.0 and V1.1 support up to 49 frames of video generation, while V1.5 supports up to 85 frames.  
-                        (V1.0和V1.1支持最大49帧视频生成，V1.5支持最大85帧视频生成。)
-                        """
                     )
                     generation_method, length_slider, overlap_video_length, partial_video_length = \
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
-                            default_video_length=49,
-                            maximum_video_length=85,
+                            default_video_length=81,
+                            maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video to Video (视频到视频)", "Video Control (视频控制)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -492,7 +509,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_deg
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return gr.update(visible=True, minimum=8, maximum=85, value=49, interactive=True)
+                    return gr.update(visible=True, minimum=1, maximum=81, value=81, interactive=True)
                 elif generation_method == "Image Generation":
                     return gr.update(minimum=1, maximum=1, value=1, interactive=False)
             generation_method.change(
@@ -557,14 +574,14 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_deg
     return demo, controller
 
 def ui_client(scheduler_dict, model_name):
-    controller = CogVideoXFunController_Client(scheduler_dict)
+    controller = Wan_Fun_Controller_Client(scheduler_dict)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # CogVideoX-Fun
+            # Wan-Fun:
 
-            A CogVideoX with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 49), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -574,30 +591,24 @@ def ui_client(scheduler_dict, model_name):
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
         
         with gr.Column(variant="panel"):
-            prompt_textbox, negative_prompt_textbox = create_prompts()
+            prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
 
             with gr.Row():
                 with gr.Column():
                     sampler_dropdown, sample_step_slider = create_samplers(controller, maximum_step=50)
 
                     resize_method, width_slider, height_slider, base_resolution = create_fake_height_width(
-                        default_height = 384, default_width = 672, maximum_height = 1344,
+                        default_height = 480, default_width = 832, maximum_height = 1344,
                         maximum_width = 1344,
-                    )
-                    gr.Markdown(
-                        """
-                        V1.0 and V1.1 support up to 49 frames of video generation, while V1.5 supports up to 85 frames.  
-                        (V1.0和V1.1支持最大49帧视频生成，V1.5支持最大85帧视频生成。)
-                        """
                     )
                     generation_method, length_slider, overlap_video_length, partial_video_length = \
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
-                            default_video_length=49,
-                            maximum_video_length=85,
+                            default_video_length=81,
+                            maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video to Video (视频到视频)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
                     )
 
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
@@ -608,7 +619,7 @@ def ui_client(scheduler_dict, model_name):
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return gr.update(visible=True, minimum=5, maximum=85, value=49, interactive=True)
+                    return gr.update(visible=True, minimum=5, maximum=81, value=49, interactive=True)
                 elif generation_method == "Image Generation":
                     return gr.update(minimum=1, maximum=1, value=1, interactive=False)
             generation_method.change(

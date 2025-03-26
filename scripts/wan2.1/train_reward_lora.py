@@ -57,12 +57,12 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-import cogvideox.reward.reward_fn as reward_fn
-from cogvideox.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
+import videox_fun.reward.reward_fn as reward_fn
+from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                               WanTransformer3DModel)
-from cogvideox.pipeline import WanPipeline, WanI2VPipeline
-from cogvideox.utils.lora_utils import create_network, merge_lora
-from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.pipeline import WanPipeline, WanI2VPipeline
+from videox_fun.utils.lora_utils import create_network, merge_lora
+from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
     import wandb

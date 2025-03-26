@@ -16,15 +16,15 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.models import (AutoencoderKLCogVideoX,
+from videox_fun.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoXFunControlPipeline,
+from videox_fun.pipeline import (CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
-from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import get_video_to_video_latent, save_videos_grid
-from cogvideox.dist import set_multi_gpus_devices
+from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
+from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import get_video_to_video_latent, save_videos_grid
+from videox_fun.dist import set_multi_gpus_devices
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -166,7 +166,7 @@ latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
 if video_length != 1 and transformer.config.patch_size_t is not None and latent_frames % transformer.config.patch_size_t != 0:
     additional_frames = transformer.config.patch_size_t - latent_frames % transformer.config.patch_size_t
     video_length += additional_frames * vae.config.temporal_compression_ratio
-input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps)
+input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps)
 
 with torch.no_grad():
     sample = pipeline(

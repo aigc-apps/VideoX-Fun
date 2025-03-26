@@ -16,19 +16,19 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
-from ...cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
+from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                               get_closest_ratio)
-from ...cogvideox.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                                  WanT5EncoderModel, WanTransformer3DModel)
-from ...cogvideox.pipeline import WanI2VPipeline, WanPipeline
-from ...cogvideox.ui.controller import all_cheduler_dict
-from ...cogvideox.utils.fp8_optimization import (
+from ...videox_fun.pipeline import WanI2VPipeline, WanPipeline
+from ...videox_fun.ui.controller import all_cheduler_dict
+from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
-from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from ...cogvideox.utils.utils import (get_image_to_video_latent, filter_kwargs,
+from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs,
                                       get_video_to_video_latent,
                                       save_videos_grid)
-from ...cogvideox.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
 
 # Used in lora cache
@@ -101,7 +101,7 @@ class LoadWanModel:
         config = OmegaConf.load(config_path)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models"]  # Possible folder names to check
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"]  # Possible folder names to check
 
         # Initialize model_name as None
         model_name = None

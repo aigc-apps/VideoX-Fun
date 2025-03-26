@@ -12,15 +12,15 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.dist import set_multi_gpus_devices
-from cogvideox.models import (AutoencoderKLWan, WanT5EncoderModel, AutoTokenizer,
+from videox_fun.dist import set_multi_gpus_devices
+from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel, AutoTokenizer,
                               WanTransformer3DModel)
-from cogvideox.models.cache_utils import get_teacache_coefficients
-from cogvideox.pipeline import WanPipeline
-from cogvideox.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
+from videox_fun.models.cache_utils import get_teacache_coefficients
+from videox_fun.pipeline import WanPipeline
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
                                               convert_weight_dtype_wrapper)
-from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import (filter_kwargs, get_image_to_video_latent,
+from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
                                    save_videos_grid)
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
@@ -56,7 +56,7 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-14B"
 
-# Choose the sampler in "Euler" "Euler A" "DPM++" "PNDM" and "DDIM"
+# Choose the sampler in "Flow"
 sampler_name        = "Flow"
 
 # Load pretrained model if need

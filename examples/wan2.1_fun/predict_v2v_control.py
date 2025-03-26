@@ -14,15 +14,17 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices
-from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
+from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+                               WanT5EncoderModel, WanTransformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import WanFunInpaintPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
+from videox_fun.pipeline import WanFunControlPipeline, WanPipeline
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
+                                               convert_weight_dtype_wrapper,
+                                               replace_parameters_by_name)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -55,7 +57,7 @@ teacache_offload    = False
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
+model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-Control"
 
 # Choose the sampler in "Flow"
 sampler_name        = "Flow"
@@ -66,25 +68,30 @@ vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [480, 832]
-video_length        = 81
+sample_size         = [832, 480]
+video_length        = 49
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
-validation_image_end    = None
+control_video           = "asset/pose.mp4"
+ref_image               = None
 
-# prompts
-prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
+# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
+# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+prompt              = "在这个阳光明媚的户外花园里，美女身穿一袭及膝的白色无袖连衣裙，裙摆在她轻盈的舞姿中轻柔地摆动，宛如一只翩翩起舞的蝴蝶。阳光透过树叶间洒下斑驳的光影，映衬出她柔和的脸庞和清澈的眼眸，显得格外优雅。仿佛每一个动作都在诉说着青春与活力，她在草地上旋转，裙摆随之飞扬，仿佛整个花园都因她的舞动而欢愉。周围五彩缤纷的花朵在微风中摇曳，玫瑰、菊花、百合，各自释放出阵阵香气，营造出一种轻松而愉快的氛围。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-guidance_scale      = 6.0
-seed                = 43
-num_inference_steps = 50
-lora_weight         = 0.55
-save_path           = "samples/wan-videos-fun-i2v"
+
+# Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
+# Adding words such as "quiet, solid" to the neg prompt can increase dynamism.
+# prompt                  = "A young woman with beautiful, clear eyes and blonde hair stands in the forest, wearing a white dress and a crown. Her expression is serene, reminiscent of a movie star, with fair and youthful skin. Her brown long hair flows in the wind. The video quality is very high, with a clear view. High quality, masterpiece, best quality, high resolution, ultra-fine, fantastical."
+# negative_prompt         = "Twisted body, limb deformities, text captions, comic, static, ugly, error, messy code."
+guidance_scale          = 6.0
+seed                    = 43
+num_inference_steps     = 50
+lora_weight             = 0.55
+save_path               = "samples/wan-videos-fun-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -153,7 +160,7 @@ scheduler = Choosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = WanFunInpaintPipeline(
+pipeline = WanFunControlPipeline(
     transformer=transformer,
     vae=vae,
     tokenizer=tokenizer,
@@ -187,13 +194,13 @@ if coefficients is not None:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
     latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
 
-    input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, validation_image_end, video_length=video_length, sample_size=sample_size)
+    input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=ref_image)
 
     sample = pipeline(
         prompt, 
@@ -205,13 +212,13 @@ with torch.no_grad():
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
 
-        video      = input_video,
-        mask_video   = input_video_mask,
+        control_video = input_video,
+        ref_image = ref_image,
         clip_image = clip_image,
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
 
 def save_results():
     if not os.path.exists(save_path):

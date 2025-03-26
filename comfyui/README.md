@@ -76,8 +76,8 @@ V1.1:
 | CogVideoX-Fun-5b-InP | 20.0 GB  | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-5b-InP)| [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-5b-InP)| Our official graph-generated video model is capable of predicting videos at multiple resolutions (512, 768, 1024, 1280) and has been trained on 49 frames at a rate of 8 frames per second. |
 </details>
 
-### 3. (Optional) Download Lora models into `ComfyUI/models/loras/cogvideox_fun/`
-If you want to use lora in CogVideoX-Fun, please put the lora to `ComfyUI/models/loras/cogvideox_fun/`.
+### 3. (Optional) Download Lora models into `ComfyUI/models/loras/fun_models/`
+If you want to use lora in CogVideoX-Fun, please put the lora to `ComfyUI/models/loras/fun_models/`.
 
 ## Node types
 ### 1. Wan-Fun

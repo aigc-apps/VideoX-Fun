@@ -15,15 +15,15 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.models import (AutoencoderKLCogVideoX,
+from videox_fun.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoXFunPipeline,
+from videox_fun.pipeline import (CogVideoXFunPipeline,
                                 CogVideoXFunInpaintPipeline)
-from cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
-from cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from cogvideox.utils.utils import get_image_to_video_latent, save_videos_grid
-from cogvideox.dist import set_multi_gpus_devices
+from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
+from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.dist import set_multi_gpus_devices
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.

@@ -56,27 +56,27 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
+from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                            ASPECT_RATIO_RANDOM_CROP_512,
                                            ASPECT_RATIO_RANDOM_CROP_PROB,
                                            AspectRatioBatchImageVideoSampler,
                                            RandomSampler, get_closest_ratio)
-from cogvideox.data.dataset_image_video import (ImageVideoControlDataset,
+from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                 ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
-from cogvideox.models import (AutoencoderKLCogVideoX,
+from videox_fun.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
-from cogvideox.pipeline import (CogVideoXFunPipeline,
+from videox_fun.pipeline import (CogVideoXFunPipeline,
                                 CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from cogvideox.pipeline.pipeline_CogVideoXFuninpaint import (
+from videox_fun.pipeline.pipeline_CogVideoXFuninpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
-from cogvideox.utils.discrete_sampler import DiscreteSampling
-from cogvideox.utils.lora_utils import create_network, merge_lora, unmerge_lora
-from cogvideox.utils.utils import (get_image_to_video_latent,
+from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
+from videox_fun.utils.utils import (get_image_to_video_latent,
                                    get_video_to_video_latent, save_videos_grid)
 
 if is_wandb_available():

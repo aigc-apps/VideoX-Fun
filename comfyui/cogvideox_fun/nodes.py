@@ -15,20 +15,20 @@ from diffusers import EulerDiscreteScheduler
 from einops import rearrange
 from PIL import Image
 
-from ...cogvideox.data.bucket_sampler import (ASPECT_RATIO_512,
+from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                               get_closest_ratio)
-from ...cogvideox.models import (AutoencoderKLCogVideoX,
+from ...videox_fun.models import (AutoencoderKLCogVideoX,
                                  CogVideoXTransformer3DModel, T5EncoderModel,
                                  T5Tokenizer)
-from ...cogvideox.pipeline import (CogVideoXFunPipeline,
+from ...videox_fun.pipeline import (CogVideoXFunPipeline,
                                    CogVideoXFunControlPipeline,
                                    CogVideoXFunInpaintPipeline)
-from ...cogvideox.ui.controller import all_cheduler_dict
-from ...cogvideox.utils.lora_utils import merge_lora, unmerge_lora
-from ...cogvideox.utils.utils import (get_image_to_video_latent,
+from ...videox_fun.ui.controller import all_cheduler_dict
+from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from ...videox_fun.utils.utils import (get_image_to_video_latent,
                                       get_video_to_video_latent,
                                       save_videos_grid)
-from ...cogvideox.utils.fp8_optimization import convert_weight_dtype_wrapper
+from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
 from ..comfyui_utils import eas_cache_dir, to_pil
 
 # Used in lora cache
@@ -94,7 +94,7 @@ class LoadCogVideoXFunModel:
         pbar = ProgressBar(5)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models"]  # Possible folder names to check
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"]  # Possible folder names to check
 
         # Initialize model_name as None
         model_name = None
@@ -614,9 +614,9 @@ class CogVideoXFunV2VSampler:
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
             if model_type == "Inpaint":
-                input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=8)
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=8)
             else:
-                input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=8)
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=8)
 
             # Apply lora
             if cogvideoxfun_model.get("lora_cache", False):

@@ -15,7 +15,7 @@ from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, WanTransformer3DModel)
 from ..models.cache_utils import get_teacache_coefficients
-from ..pipeline import WanFunInpaintPipeline, WanFunPipeline
+from ..pipeline import WanI2VPipeline, WanPipeline
 from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
@@ -37,7 +37,7 @@ from .ui import (create_cfg_and_seedbox,
                  create_ui_outputs)
 
 
-class Wan_Fun_Controller(Fun_Controller):
+class Wan_Controller(Fun_Controller):
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
         print("Update diffusion transformer")
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
@@ -85,7 +85,7 @@ class Wan_Fun_Controller(Fun_Controller):
         # Get pipeline
         if self.model_type == "Inpaint":
             if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = WanFunInpaintPipeline(
+                self.pipeline = WanI2VPipeline(
                     vae=self.vae,
                     tokenizer=self.tokenizer,
                     text_encoder=self.text_encoder,
@@ -94,7 +94,7 @@ class Wan_Fun_Controller(Fun_Controller):
                     clip_image_encoder=self.clip_image_encoder,
                 )
             else:
-                self.pipeline = WanFunPipeline(
+                self.pipeline = WanPipeline(
                     vae=self.vae,
                     tokenizer=self.tokenizer,
                     text_encoder=self.text_encoder,
@@ -179,7 +179,7 @@ class Wan_Fun_Controller(Fun_Controller):
             self.pipeline.transformer.enable_teacache(
                 coefficients, sample_step_slider, self.teacache_threshold, num_skip_start_steps=self.num_skip_start_steps, offload=self.teacache_offload
             )
-
+        
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
@@ -249,7 +249,7 @@ class Wan_Fun_Controller(Fun_Controller):
                             last_frames = init_frames + _partial_video_length
                     else:
                         if validation_video is not None:
-                            input_video, input_video_mask, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
+                            input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
                             strength = denoise_strength
                         else:
                             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
@@ -281,7 +281,7 @@ class Wan_Fun_Controller(Fun_Controller):
                         generator           = generator
                     ).videos
             else:
-                input_video, input_video_mask, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -330,11 +330,11 @@ class Wan_Fun_Controller(Fun_Controller):
                 else:
                     return gr.Image.update(visible=False, value=None), gr.Video.update(value=save_sample_path, visible=True), "Success"
 
-Wan_Fun_Controller_Host = Wan_Fun_Controller
-Wan_Fun_Controller_Client = Fun_Controller_Client
+Wan_Controller_Host = Wan_Controller
+Wan_Controller_Client = Fun_Controller_Client
 
 def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
-    controller = Wan_Fun_Controller(
+    controller = Wan_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
         enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
@@ -344,11 +344,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # Wan-Fun:
-
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
-
-            [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
+            # Wan:
             """
         )
         with gr.Column(variant="panel"):
@@ -376,7 +372,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                             maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox, support_end_image=False
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -459,7 +455,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
     return demo, controller
 
 def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
-    controller = Wan_Fun_Controller_Host(
+    controller = Wan_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
         enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
@@ -469,11 +465,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # Wan-Fun:
-
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
-
-            [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
+            # Wan:
             """
         )
         with gr.Column(variant="panel"):
@@ -574,16 +566,12 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
     return demo, controller
 
 def ui_client(scheduler_dict, model_name):
-    controller = Wan_Fun_Controller_Client(scheduler_dict)
+    controller = Wan_Controller_Client(scheduler_dict)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(
             """
-            # Wan-Fun:
-
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
-
-            [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
+            # Wan:
             """
         )
         with gr.Column(variant="panel"):
