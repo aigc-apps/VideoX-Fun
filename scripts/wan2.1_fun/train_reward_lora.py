@@ -122,10 +122,6 @@ def log_validation(
         to_tensor = transforms.ToTensor()
         validation_loss, validation_reward = 0, 0
 
-        if args.enable_xformers_memory_efficient_attention \
-            and config['transformer_additional_kwargs'].get('transformer_type', 'Transformer3DModel') == 'Transformer3DModel':
-            pipeline.enable_xformers_memory_efficient_attention()
-
         for i in range(len(validation_prompts_idx)):
             validation_idx, validation_prompt = validation_prompts_idx[i]
             with torch.no_grad():
