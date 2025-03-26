@@ -849,7 +849,7 @@
         "Control",
         "model_cpu_offload",
         "wan2.1/wan_civitai.yaml",
-        "fp16"
+        "bf16"
       ]
     }
   ],

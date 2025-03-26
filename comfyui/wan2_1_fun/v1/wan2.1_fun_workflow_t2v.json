@@ -230,6 +230,7 @@
       },
       "widgets_values": [
         "Wan2.1-Fun-1.3B-InP",
+        "Control",
         "model_cpu_offload",
         "wan2.1/wan_civitai.yaml",
         "bf16"
