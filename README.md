@@ -26,7 +26,7 @@ CogVideoX-Fun is a modified pipeline based on the CogVideoX structure, designed 
 We will support quick pull-ups from different platforms, refer to [Quick Start](#quick-start).
 
 What's New:
-- Update Wan2.1-Fun-V1.0: Support I2V models for 14B and 1.3B models, with support for start and end frame prediction. [2025.03.17]
+- Update Wan2.1-Fun-V1.0: Support I2V and Control models for 14B and 1.3B models, with support for start and end frame prediction. [2025.03.26]
 - Update CogVideoX-Fun-V1.5: Upload I2V model and related training/prediction code. [2024.12.16]
 - Reward Lora Support: Train Lora using reward backpropagation techniques to optimize generated videos, making them better aligned with human preferences. [More Information](scripts/README_TRAIN_REWARD.md). New version of the control model supports various control conditions such as Canny, Depth, Pose, MLSD, etc. [2024.11.21]
 - Diffusers Support: CogVideoX-Fun Control is now supported in diffusers. Thanks to [a-r-r-o-w](https://github.com/a-r-r-o-w) for contributing support in this [PR](https://github.com/huggingface/diffusers/pull/9671). Check out the [documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox) for more details. [2024.10.16]

@@ -26,7 +26,7 @@ CogVideoX-Fun是一个基于CogVideoX结构修改后的的pipeline，是一个�
 我们会逐渐支持从不同平台快速启动，请参阅 [快速启动](#快速启动)。
 
 新特性：
-- 更新Wan2.1-Fun-V1.0版本：支持14B与1.3B模型的I2V模型，支持首尾图预测。[2025.03.17]
+- 更新Wan2.1-Fun-V1.0版本：支持14B与1.3B模型的I2V和Control模型，支持首尾图预测。[2025.03.26]
 - 更新CogVideoX-Fun-V1.5版本：上传I2V模型与相关训练预测代码。[2024.12.16]
 - 奖励Lora支持：通过奖励反向传播技术训练Lora，以优化生成的视频，使其更好地与人类偏好保持一致，[更多信息](scripts/README_TRAIN_REWARD.md)。新版本的控制模型，支持不同的控制条件，如Canny、Depth、Pose、MLSD等。[2024.11.21]
 - diffusers支持：CogVideoX-Fun Control现在在diffusers中得到了支持。感谢 [a-r-r-o-w](https://github.com/a-r-r-o-w)在这个 [PR](https://github.com/huggingface/diffusers/pull/9671)中贡献了支持。查看[文档](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox)以了解更多信息。[2024.10.16]

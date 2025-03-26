@@ -26,7 +26,7 @@ CogVideoX-Funは、CogVideoX構造に基づいて修正されたパイプライ�
 異なるプラットフォームからのクイックスタートをサポートします。詳細は[クイックスタート](#クイックスタート)を参照してください。
 
 新機能：
-- Wan2.1-Fun-V1.0の更新：14Bと1.3BモデルのI2Vモデルをサポートし、開始フレームと終了フレームの予測に対応。[2025.03.17]
+- Wan2.1-Fun-V1.0の更新：14Bおよび1.3BのI2V（画像からビデオ）モデルとControlモデルをサポートし、開始フレームと終了フレームの予測に対応。[2025.03.26]
 - CogVideoX-Fun-V1.5の更新：I2Vモデルと関連するトレーニング・予測コードをアップロード。[2024.12.16]
 - 報酬Loraのサポート：報酬逆伝播技術を使用してLoraをトレーニングし、生成された動画を最適化し、人間の好みによりよく一致させる。[詳細情報](scripts/README_TRAIN_REWARD.md)。新しいバージョンの制御モデルでは、Canny、Depth、Pose、MLSDなどの異なる制御条件に対応。[2024.11.21]
 - diffusersのサポート：CogVideoX-Fun Controlがdiffusersでサポートされるようになりました。[a-r-r-o-w](https://github.com/a-r-r-o-w)がこの[PR](https://github.com/huggingface/diffusers/pull/9671)でサポートを提供してくれたことに感謝します。詳細は[ドキュメント](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox)をご覧ください。[2024.10.16]
