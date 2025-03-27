@@ -1,6 +1,6 @@
 {
-  "last_node_id": 87,
-  "last_link_id": 58,
+  "last_node_id": 89,
+  "last_link_id": 60,
   "nodes": [
     {
       "id": 78,
@@ -73,7 +73,7 @@
         538.0116295447716
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -132,7 +132,7 @@
           "hidden": false,
           "paused": false,
           "params": {
-            "filename": "Fun_00008.mp4",
+            "filename": "Fun_00017.mp4",
             "subfolder": "",
             "type": "output",
             "format": "video/h264-mp4",
@@ -140,6 +140,141 @@
           }
         }
       }
+    },
+    {
+      "id": 86,
+      "type": "LoadWanFunModel",
+      "pos": {
+        "0": 299.31610107421875,
+        "1": -334.70806884765625
+      },
+      "size": {
+        "0": 315,
+        "1": 154
+      },
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            59
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanFunModel"
+      },
+      "widgets_values": [
+        "Wan2.1-Fun-1.3B-InP",
+        "Inpaint",
+        "model_cpu_offload",
+        "wan2.1/wan_civitai.yaml",
+        "bf16"
+      ]
+    },
+    {
+      "id": 73,
+      "type": "FunTextBox",
+      "pos": {
+        "0": 250,
+        "1": 160
+      },
+      "size": {
+        "0": 383.7149963378906,
+        "1": 183.83506774902344
+      },
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "links": [
+            58
+          ],
+          "slot_index": 0,
+          "shape": 3
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
+    },
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": {
+        "0": -125.68385314941406,
+        "1": -341.70806884765625
+      },
+      "size": [
+        413.06488553532427,
+        159.48434647201407
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 89,
+      "type": "LoadWanFunLora",
+      "pos": {
+        "0": 646,
+        "1": -334
+      },
+      "size": {
+        "0": 315,
+        "1": 106
+      },
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 59
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            60
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanFunLora"
+      },
+      "widgets_values": [
+        "cogvideox_fun/Wan2.1-Fun-1.3B-InP_MovieGen_tail_10_hpsv2.1_max_grad_norm0.3_lr1e-5_latent1_checkpoint-1000.safetensors",
+        0.55,
+        false
+      ]
     },
     {
       "id": 87,
@@ -153,13 +288,13 @@
         "1": 386
       },
       "flags": {},
-      "order": 5,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 56
+          "link": 60
         },
         {
           "name": "prompt",
@@ -189,7 +324,7 @@
         832,
         480,
         false,
-        43,
+        637063819662010,
         "randomize",
         50,
         6,
@@ -198,101 +333,6 @@
         true,
         5,
         true
-      ]
-    },
-    {
-      "id": 86,
-      "type": "LoadWanFunModel",
-      "pos": {
-        "0": 291,
-        "1": -317.7618408203125
-      },
-      "size": {
-        "0": 315,
-        "1": 154
-      },
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            56
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWanFunModel"
-      },
-      "widgets_values": [
-        "Wan2.1-Fun-1.3B-InP",
-        "Inpaint",
-        "model_cpu_offload",
-        "wan2.1/wan_civitai.yaml",
-        "bf16"
-      ]
-    },
-    {
-      "id": 80,
-      "type": "Note",
-      "pos": {
-        "0": -134,
-        "1": -324.7618408203125
-      },
-      "size": {
-        "0": 397.7547302246094,
-        "1": 125.90532684326172
-      },
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 73,
-      "type": "FunTextBox",
-      "pos": {
-        "0": 250,
-        "1": 160
-      },
-      "size": {
-        "0": 383.7149963378906,
-        "1": 183.83506774902344
-      },
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "links": [
-            58
-          ],
-          "slot_index": 0,
-          "shape": 3
-        }
-      ],
-      "title": "Negtive Prompt（反向提示词）",
-      "properties": {
-        "Node name for S&R": "FunTextBox"
-      },
-      "widgets_values": [
-        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
       ]
     }
   ],
@@ -304,14 +344,6 @@
       17,
       0,
       "IMAGE"
-    ],
-    [
-      56,
-      86,
-      0,
-      87,
-      0,
-      "FunModels"
     ],
     [
       57,
@@ -328,9 +360,37 @@
       87,
       2,
       "STRING_PROMPT"
+    ],
+    [
+      59,
+      86,
+      0,
+      89,
+      0,
+      "FunModels"
+    ],
+    [
+      60,
+      89,
+      0,
+      87,
+      0,
+      "FunModels"
     ]
   ],
   "groups": [
+    {
+      "title": "Load Model",
+      "bounding": [
+        229,
+        -418,
+        747,
+        259
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
     {
       "title": "Prompts",
       "bounding": [
@@ -342,18 +402,6 @@
       "color": "#3f789e",
       "font_size": 24,
       "flags": {}
-    },
-    {
-      "title": "Load Model",
-      "bounding": [
-        220,
-        -401,
-        469,
-        251
-      ],
-      "color": "#b06634",
-      "font_size": 24,
-      "flags": {}
     }
   ],
   "config": {},
@@ -361,8 +409,8 @@
     "ds": {
       "scale": 0.8264462809917354,
       "offset": [
-        137.06842501155074,
-        523.7785392701735
+        137.21967501155075,
+        523.9297892701735
       ]
     },
     "workspace_info": {

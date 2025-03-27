@@ -218,17 +218,12 @@ class LoadCogVideoXFunLora:
     FUNCTION = "load_lora"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def load_lora(self, cogvideoxfun_model, lora_name, strength_model):
+    def load_lora(self, cogvideoxfun_model, lora_name, strength_model, lora_cache):
         if lora_name is not None:
-            return (
-                {
-                    'pipeline': cogvideoxfun_model["pipeline"], 
-                    'dtype': cogvideoxfun_model["dtype"],
-                    'model_name': cogvideoxfun_model["model_name"],
-                    'loras': cogvideoxfun_model.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)],
-                    'strength_model': cogvideoxfun_model.get("strength_model", []) + [strength_model],
-                }, 
-            )
+            cogvideoxfun_model['lora_cache'] = lora_cache
+            cogvideoxfun_model['loras'] = cogvideoxfun_model.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)]
+            cogvideoxfun_model['strength_model'] = cogvideoxfun_model.get("strength_model", []) + [strength_model]
+            return (cogvideoxfun_model,)
         else:
             return (cogvideoxfun_model,)
 
