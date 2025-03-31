@@ -1,4 +1,4 @@
-
+# This file is modified from https://github.com/xdit-project/xDiT/blob/main/entrypoints/launch.py
 import base64
 import gc
 import os
