@@ -111,6 +111,19 @@ Linuxの詳細：
 #### b. 重み
 [重み](#model-zoo)を指定されたパスに配置することをお勧めします：
 
+**ComfyUIを通じて**:
+モデルをComfyUIの重みフォルダ `ComfyUI/models/Fun_Models/` に入れます：
+```
+📦 ComfyUI/
+├──models/
+│   └── 📂 Fun_Models/
+│       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
+│       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│       ├── 📂 Wan2.1-Fun-14B-InP
+│       └── 📂 Wan2.1-Fun-1.3B-InP/
+```
+
+**独自のpythonファイルまたはUIインターフェースを実行**:
 ```
 📦 models/
 ├── 📂 Diffusion_Transformer/

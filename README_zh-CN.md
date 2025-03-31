@@ -109,6 +109,19 @@ Linux 的详细信息：
 #### b. 权重放置
 我们最好将[权重](#model-zoo)按照指定路径进行放置：
 
+**通过comfyui**：
+将模型放入Comfyui的权重文件夹`ComfyUI/models/Fun_Models/`：
+```
+📦 ComfyUI/
+├──models/
+│   └── 📂 Fun_Models/
+│       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
+│       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│       ├── 📂 Wan2.1-Fun-14B-InP
+│       └── 📂 Wan2.1-Fun-1.3B-InP/
+```
+
+**运行自身的python文件或ui界面**:
 ```
 📦 models/
 ├── 📂 Diffusion_Transformer/
