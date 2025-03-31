@@ -840,7 +840,9 @@ def main():
         text_encoder = WanT5EncoderModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
             additional_kwargs=OmegaConf.to_container(config['text_encoder_kwargs']),
-        ).to(weight_dtype)
+            low_cpu_mem_usage=True,
+            torch_dtype=weight_dtype,
+        )
         # Get Vae
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
