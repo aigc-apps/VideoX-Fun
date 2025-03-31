@@ -81,9 +81,9 @@ if __name__ == '__main__':
     # -------------------------- #
     #  Step 1: update edition
     # -------------------------- #
-    diffusion_transformer_path = "models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
-    outputs = post_diffusion_transformer(diffusion_transformer_path)
-    print('Output update edition: ', outputs)
+    # diffusion_transformer_path = "models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
+    # outputs = post_diffusion_transformer(diffusion_transformer_path)
+    # print('Output update edition: ', outputs)
 
     # -------------------------- #
     #  Step 2: infer

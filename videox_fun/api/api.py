@@ -19,7 +19,7 @@ def encode_file_to_base64(file_path):
         return file_base64
 
 def update_edition_api(_: gr.Blocks, app: FastAPI, controller):
-    @app.post("/cogvideox_fun/update_edition")
+    @app.post("/videox_fun/update_edition")
     def _update_edition_api(
         datas: dict,
     ):
@@ -37,7 +37,7 @@ def update_edition_api(_: gr.Blocks, app: FastAPI, controller):
         return {"message": comment}
 
 def update_diffusion_transformer_api(_: gr.Blocks, app: FastAPI, controller):
-    @app.post("/cogvideox_fun/update_diffusion_transformer")
+    @app.post("/videox_fun/update_diffusion_transformer")
     def _update_diffusion_transformer_api(
         datas: dict,
     ):
@@ -83,7 +83,7 @@ def save_base64_image(base64_string):
     return file_path
 
 def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
-    @app.post("/cogvideox_fun/infer_forward")
+    @app.post("/videox_fun/infer_forward")
     def _infer_forward_api(
         datas: dict,
     ):

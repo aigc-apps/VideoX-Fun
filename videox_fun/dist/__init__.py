@@ -5,7 +5,7 @@ try:
     import xfuser
     from xfuser.core.distributed import (get_sequence_parallel_rank,
                                          get_sequence_parallel_world_size,
-                                         get_sp_group,
+                                         get_sp_group, get_world_group,
                                          init_distributed_environment,
                                          initialize_model_parallel)
     from xfuser.core.long_ctx_attention import xFuserLongContextAttention
@@ -14,6 +14,7 @@ except Exception as ex:
     get_sequence_parallel_rank = None
     xFuserLongContextAttention = None
     get_sp_group = None
+    get_world_group = None
     init_distributed_environment = None
     initialize_model_parallel = None
 
@@ -31,8 +32,9 @@ def set_multi_gpus_devices(ulysses_degree, ring_degree):
         initialize_model_parallel(sequence_parallel_degree=dist.get_world_size(),
                 ring_degree=ring_degree,
                 ulysses_degree=ulysses_degree)
-        device = torch.device("cuda:%d" % dist.get_rank())
-        print('rank=%d device=%s' % (dist.get_rank(), str(device)))
+        # device = torch.device("cuda:%d" % dist.get_rank())
+        device = torch.device(f"cuda:{get_world_group().local_rank}")
+        print('rank=%d device=%s' % (get_world_group().rank, str(device)))
     else:
         device = "cuda"
     return device

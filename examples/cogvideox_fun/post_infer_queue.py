@@ -45,7 +45,7 @@ def post_infer(
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request
-    post_r = session.post(f'{url}/cogvideox_fun/infer_forward', data=datas, timeout=timeout)
+    post_r = session.post(f'{url}/videox_fun/infer_forward', data=datas, timeout=timeout)
 
     # Extract request ID from POST response headers
     request_id = post_r.headers.get("X-Eas-Queueservice-Request-Id")
