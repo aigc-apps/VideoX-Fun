@@ -75,7 +75,6 @@ class LoadCogVideoXFunModel:
                         "default": 'fp16'
                     }
                 ),
-                
             },
         }
 
@@ -94,8 +93,8 @@ class LoadCogVideoXFunModel:
         pbar = ProgressBar(5)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"]  # Possible folder names to check
-
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+                [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
         model_name = None
 
