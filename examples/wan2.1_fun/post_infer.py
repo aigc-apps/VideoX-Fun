@@ -11,7 +11,7 @@ def post_diffusion_transformer(diffusion_transformer_path, url='http://127.0.0.1
     datas = json.dumps({
         "diffusion_transformer_path": diffusion_transformer_path
     })
-    r = requests.post(f'{url}/cogvideox_fun/update_diffusion_transformer', data=datas, timeout=1500)
+    r = requests.post(f'{url}/videox_fun/update_diffusion_transformer', data=datas, timeout=1500)
     data = r.content.decode('utf-8')
     return data
 
@@ -19,7 +19,7 @@ def post_update_edition(edition, url='http://0.0.0.0:7860'):
     datas = json.dumps({
         "edition": edition
     })
-    r = requests.post(f'{url}/cogvideox_fun/update_edition', data=datas, timeout=1500)
+    r = requests.post(f'{url}/videox_fun/update_edition', data=datas, timeout=1500)
     data = r.content.decode('utf-8')
     return data
 
@@ -64,7 +64,7 @@ def post_infer(
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request
-    post_r = session.post(f'{url}/cogvideox_fun/infer_forward', data=datas, timeout=timeout)
+    post_r = session.post(f'{url}/videox_fun/infer_forward', data=datas, timeout=timeout)
     
     data = post_r.content.decode('utf-8')
     return data
@@ -81,9 +81,9 @@ if __name__ == '__main__':
     # -------------------------- #
     #  Step 1: update edition
     # -------------------------- #
-    diffusion_transformer_path = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InPP"
-    outputs = post_diffusion_transformer(diffusion_transformer_path)
-    print('Output update edition: ', outputs)
+    # diffusion_transformer_path = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
+    # outputs = post_diffusion_transformer(diffusion_transformer_path)
+    # print('Output update edition: ', outputs)
 
     # -------------------------- #
     #  Step 2: infer

@@ -240,6 +240,8 @@ class Fun_Controller:
             import torch.distributed as dist
             if dist.get_rank() == 0:
                 save_sample_path = save_results()
+            else:
+                save_sample_path = None
         else:
             save_sample_path = save_results()
         return save_sample_path

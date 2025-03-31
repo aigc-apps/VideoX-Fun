@@ -111,6 +111,19 @@ We need about 60GB available on disk (for saving weights), please check!
 #### b. Weights
 We'd better place the [weights](#model-zoo) along the specified path:
 
+**Via ComfyUI**:
+Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
+```
+📦 ComfyUI/
+├── 📂 models/
+│   └── 📂 Fun_Models/
+│       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
+│       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│       ├── 📂 Wan2.1-Fun-14B-InP
+│       └── 📂 Wan2.1-Fun-1.3B-InP/
+```
+
+**Run its own python file or UI interface**:
 ```
 📦 models/
 ├── 📂 Diffusion_Transformer/
@@ -182,10 +195,10 @@ We'd better place the [weights](#model-zoo) along the specified path:
           <video src="https://github.com/user-attachments/assets/53002ce2-dd18-4d4f-8135-b6f68364cabd" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fce43c0b-81fa-4ab2-9ca7-78d786f520e6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a1a07cf8-d86d-4cd2-831f-18a6c1ceee1d" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/b208b92c-5add-4ece-a200-3dbbe47b93c3" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls autoplay loop></video>
      </td>
   <tr>
       <td>
@@ -268,10 +281,10 @@ Resolution-512
           <video src="https://github.com/user-attachments/assets/53002ce2-dd18-4d4f-8135-b6f68364cabd" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fce43c0b-81fa-4ab2-9ca7-78d786f520e6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a1a07cf8-d86d-4cd2-831f-18a6c1ceee1d" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/b208b92c-5add-4ece-a200-3dbbe47b93c3" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls autoplay loop></video>
      </td>
   <tr>
       <td>

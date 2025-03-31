@@ -378,6 +378,12 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
+    sequential_cpu_offload_flag = False
+    if pipeline.transformer.device == torch.device(type="meta"):
+        pipeline.remove_all_hooks()
+        sequential_cpu_offload_flag = True
+        offload_device = pipeline._offload_device
+
     for layer, elems in updates.items():
 
         if "lora_te" in layer:
@@ -433,6 +439,8 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
 
+    if sequential_cpu_offload_flag:
+        pipeline.enable_sequential_cpu_offload(device=offload_device)
     return pipeline
 
 # TODO: Refactor with merge_lora.
@@ -446,6 +454,11 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     for key, value in state_dict.items():
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
+
+    sequential_cpu_offload_flag = False
+    if pipeline.transformer.device == torch.device(type="meta"):
+        pipeline.remove_all_hooks()
+        sequential_cpu_offload_flag = True
 
     for layer, elems in updates.items():
 
@@ -499,4 +512,6 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer.weight.data -= multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
 
+    if sequential_cpu_offload_flag:
+        pipeline.enable_sequential_cpu_offload(device=device)
     return pipeline

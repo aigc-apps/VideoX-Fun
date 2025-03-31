@@ -109,6 +109,19 @@ Linux 的详细信息：
 #### b. 权重放置
 我们最好将[权重](#model-zoo)按照指定路径进行放置：
 
+**通过comfyui**：
+将模型放入Comfyui的权重文件夹`ComfyUI/models/Fun_Models/`：
+```
+📦 ComfyUI/
+├── 📂 models/
+│   └── 📂 Fun_Models/
+│       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
+│       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│       ├── 📂 Wan2.1-Fun-14B-InP
+│       └── 📂 Wan2.1-Fun-1.3B-InP/
+```
+
+**运行自身的python文件或ui界面**:
 ```
 📦 models/
 ├── 📂 Diffusion_Transformer/
@@ -180,10 +193,10 @@ Linux 的详细信息：
           <video src="https://github.com/user-attachments/assets/53002ce2-dd18-4d4f-8135-b6f68364cabd" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fce43c0b-81fa-4ab2-9ca7-78d786f520e6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a1a07cf8-d86d-4cd2-831f-18a6c1ceee1d" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/b208b92c-5add-4ece-a200-3dbbe47b93c3" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls autoplay loop></video>
      </td>
   <tr>
       <td>
@@ -266,10 +279,10 @@ Resolution-512
           <video src="https://github.com/user-attachments/assets/53002ce2-dd18-4d4f-8135-b6f68364cabd" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fce43c0b-81fa-4ab2-9ca7-78d786f520e6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a1a07cf8-d86d-4cd2-831f-18a6c1ceee1d" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/b208b92c-5add-4ece-a200-3dbbe47b93c3" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls autoplay loop></video>
      </td>
   <tr>
       <td>

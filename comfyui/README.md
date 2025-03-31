@@ -1,5 +1,5 @@
-# ComfyUI CogVideoX-Fun
-Easily use CogVideoX-Fun and Wan2.1-Fun inside ComfyUI!
+# ComfyUI VideoX-Fun
+Easily use VideoX-Fun and Wan2.1-Fun inside ComfyUI!
 
 - [Installation](#1-installation)
 - [Node types](#node-types)
@@ -12,23 +12,31 @@ Easily use CogVideoX-Fun and Wan2.1-Fun inside ComfyUI!
 TBD
 
 #### Option 2: Install manually
-The CogVideoX-Fun repository needs to be placed at `ComfyUI/custom_nodes/CogVideoX-Fun/`.
+The VideoX-Fun repository needs to be placed at `ComfyUI/custom_nodes/VideoX-Fun/`.
 
 ```
 cd ComfyUI/custom_nodes/
 
 # Git clone the cogvideox_fun itself
-git clone https://github.com/aigc-apps/CogVideoX-Fun.git
+git clone https://github.com/aigc-apps/VideoX-Fun.git
 
 # Git clone the video outout node
 git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
 
-cd CogVideoX-Fun/
+cd VideoX-Fun/
 python install.py
 ```
 
 ### 2. Download models into `ComfyUI/models/Fun_Models/`
 
+### 3. (Optional) Download preprocess weights into `ComfyUI/custom_nodes/Fun_Models/Third_Party/`.
+Except for the fun models' weights, if you want to use the control preprocess nodes, you can download the preprocess weights to `ComfyUI/custom_nodes/Fun_Models/Third_Party/`.
+
+```
+remote_onnx_det = "https://huggingface.co/yzd-v/DWPose/resolve/main/yolox_l.onnx"
+remote_onnx_pose = "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx"
+remote_zoe= "https://huggingface.co/lllyasviel/Annotators/resolve/main/ZoeD_M12_N.pt"
+```
 #### i. Wan2.1-Fun
 
 V1.0:
@@ -141,6 +149,8 @@ You can run a demo using the following photo:
 
 ### iv. Control Video Generation
 Our user interface is shown as follows, this is the [json](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/wan2.1_fun_workflow_v2v_control.json):
+
+To facilitate usage, we have added several JSON configurations that automatically process input videos into the necessary control videos. These include [canny processing](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/wan2.1_fun_workflow_v2v_control_canny.json), [pose processing](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/wan2.1_fun_workflow_v2v_control_pose.json), and [depth processing](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/wan2.1_fun_workflow_v2v_control_depth.json).
 
 ![Workflow Diagram](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/wan2.1_fun_workflow_v2v_control.jpg)
 

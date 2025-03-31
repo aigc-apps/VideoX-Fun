@@ -14,6 +14,7 @@ from .wan2_1_fun.nodes import (LoadWanFunModel,
                            WanFunT2VSampler,
                            WanFunInpaintSampler,
                            WanFunV2VSampler)
+from .annotator.nodes import VideoToCanny, VideoToDepth, VideoToPose
 
 class FunTextBox:
     @classmethod
@@ -52,6 +53,10 @@ NODE_CLASS_MAPPINGS = {
     "WanFunT2VSampler": WanFunT2VSampler,
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
+
+    "VideoToCanny": VideoToCanny,
+    "VideoToDepth": VideoToDepth,
+    "VideoToOpenpose": VideoToPose,
 }
 
 
@@ -73,4 +78,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanFunT2VSampler": "Wan Fun Sampler for Text to Video",
     "WanFunInpaintSampler": "Wan Fun Sampler for Image to Video",
     "WanFunV2VSampler": "Wan Fun Sampler for Video to Video",
+
+    "VideoToCanny": "Video To Canny",
+    "VideoToDepth": "Video To Depth",
+    "VideoToOpenpose": "Video To Pose",
 }
