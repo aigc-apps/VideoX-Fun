@@ -65,7 +65,9 @@ class Wan_Fun_Controller(Fun_Controller):
         self.text_encoder = WanT5EncoderModel.from_pretrained(
             os.path.join(diffusion_transformer_dropdown, self.config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
             additional_kwargs=OmegaConf.to_container(self.config['text_encoder_kwargs']),
-        ).to(self.weight_dtype)
+            low_cpu_mem_usage=True,
+            torch_dtype=self.weight_dtype,
+        )
         self.text_encoder = self.text_encoder.eval()
 
         if self.transformer.config.in_channels != self.vae.config.latent_channels:
