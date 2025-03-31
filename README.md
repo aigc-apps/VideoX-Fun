@@ -115,7 +115,7 @@ We'd better place the [weights](#model-zoo) along the specified path:
 Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
 ```
 📦 ComfyUI/
-├──models/
+├── 📂 models/
 │   └── 📂 Fun_Models/
 │       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
 │       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/

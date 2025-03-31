@@ -115,7 +115,7 @@ Linuxの詳細：
 モデルをComfyUIの重みフォルダ `ComfyUI/models/Fun_Models/` に入れます：
 ```
 📦 ComfyUI/
-├──models/
+├── 📂 models/
 │   └── 📂 Fun_Models/
 │       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
 │       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/

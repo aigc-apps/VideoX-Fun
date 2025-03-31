@@ -113,7 +113,7 @@ Linux 的详细信息：
 将模型放入Comfyui的权重文件夹`ComfyUI/models/Fun_Models/`：
 ```
 📦 ComfyUI/
-├──models/
+├── 📂 models/
 │   └── 📂 Fun_Models/
 │       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
 │       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
