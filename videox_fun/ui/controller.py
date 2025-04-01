@@ -57,7 +57,8 @@ class Fun_Controller:
         self, GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
         config_path=None, ulysses_degree=1, ring_degree=1,
         enable_teacache=None, teacache_threshold=None, 
-        num_skip_start_steps=None, teacache_offload=None, weight_dtype=None, 
+        num_skip_start_steps=None, teacache_offload=None,
+        enable_riflex=None, riflex_k=None, weight_dtype=None, 
     ):
         # config dirs
         self.basedir                    = os.getcwd()
@@ -81,6 +82,8 @@ class Fun_Controller:
         self.teacache_threshold         = teacache_threshold
         self.num_skip_start_steps       = num_skip_start_steps
         self.teacache_offload           = teacache_offload
+        self.enable_riflex              = enable_riflex
+        self.riflex_k                   = riflex_k
         self.weight_dtype               = weight_dtype
         self.device                     = set_multi_gpus_devices(self.ulysses_degree, self.ring_degree)
 

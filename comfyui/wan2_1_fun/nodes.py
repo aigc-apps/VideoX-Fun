@@ -268,7 +268,7 @@ class WanFunT2VSampler:
                     "STRING_PROMPT", 
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "width": (
                     "INT", {"default": 832, "min": 64, "max": 2048, "step": 16}
@@ -315,6 +315,9 @@ class WanFunT2VSampler:
                     [False, True],  {"default": True,}
                 ),
             },
+            "optional": {
+                "riflex_k": ("RIFLEXT_ARGS",),
+            },
         }
     
     RETURN_TYPES = ("IMAGE",)
@@ -322,7 +325,7 @@ class WanFunT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -352,6 +355,9 @@ class WanFunT2VSampler:
         video_length = 1 if is_image else video_length
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
+
+            if riflex_k > 0:
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
 
             # Apply lora
             if funmodels.get("lora_cache", False):
@@ -434,7 +440,7 @@ class WanFunInpaintSampler:
                     "STRING_PROMPT",
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "base_resolution": (
                     [ 
@@ -476,9 +482,10 @@ class WanFunInpaintSampler:
                     [False, True],  {"default": True,}
                 ),
             },
-            "optional":{
+            "optional": {
                 "start_img": ("IMAGE",),
                 "end_img": ("IMAGE",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
@@ -487,7 +494,7 @@ class WanFunInpaintSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -523,6 +530,10 @@ class WanFunInpaintSampler:
 
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
+
+            if riflex_k > 0:
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
+
             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
             # Apply lora
@@ -593,7 +604,7 @@ class WanFunV2VSampler:
                     "STRING_PROMPT", 
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 1, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 1, "max": 161, "step": 4}
                 ),
                 "base_resolution": (
                     [ 
@@ -638,10 +649,11 @@ class WanFunV2VSampler:
                     [False, True],  {"default": True,}
                 ),
             },
-            "optional":{
+            "optional": {
                 "validation_video": ("IMAGE",),
                 "control_video": ("IMAGE",),
                 "ref_image": ("IMAGE",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
@@ -650,7 +662,7 @@ class WanFunV2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, ref_image=None, ):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, ref_image=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
 
@@ -704,6 +716,10 @@ class WanFunV2VSampler:
 
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
+
+            if riflex_k > 0:
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
+
             if model_type == "Inpaint":
                 input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=ref_image[0] if ref_image is not None else ref_image)
             else:
