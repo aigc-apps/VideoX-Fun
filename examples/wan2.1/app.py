@@ -49,6 +49,11 @@ if __name__ == "__main__":
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
     weight_dtype = torch.bfloat16
 
+    # Riflex config
+    enable_riflex       = False
+    # Index of intrinsic frequency
+    riflex_k            = 6
+
     # Server ip
     server_name = "0.0.0.0"
     server_port = 7860

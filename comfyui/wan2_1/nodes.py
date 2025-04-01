@@ -310,6 +310,9 @@ class WanT2VSampler:
                     [False, True],  {"default": True,}
                 ),
             },
+            "optional":{
+                "riflex_k": ("INT",),
+            },
         }
     
     RETURN_TYPES = ("IMAGE",)
@@ -317,7 +320,7 @@ class WanT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -347,6 +350,9 @@ class WanT2VSampler:
         video_length = 1 if is_image else video_length
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
+
+            if riflex_k > 0:
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
 
             # Apply lora
             if funmodels.get("lora_cache", False):
@@ -455,7 +461,8 @@ class WanI2VSampler:
                 ),
             },
             "optional":{
-                "start_img": ("IMAGE",)
+                "start_img": ("IMAGE",),
+                "riflex_k": ("INT",),
             },
         }
     
@@ -464,7 +471,7 @@ class WanI2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -501,6 +508,9 @@ class WanI2VSampler:
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
+
+            if riflex_k > 0:
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
 
             # Apply lora
             if funmodels.get("lora_cache", False):

@@ -33,9 +33,26 @@ class FunTextBox:
     def process(self, prompt):
         return (prompt, )
 
+class FunRiflex:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "seed": (
+                "riflex_k", {"default": 6, "min": 0, "max": 10086}
+            ),
+        }
+    
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES =("k",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, riflex_k):
+        return (riflex_k, )
 
 NODE_CLASS_MAPPINGS = {
     "FunTextBox": FunTextBox,
+    "FunRiflex": FunRiflex,
 
     "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
     "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
@@ -62,6 +79,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
+    "FunRiflex": "FunRiflex",
+
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
     "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
