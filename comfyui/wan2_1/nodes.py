@@ -263,7 +263,7 @@ class WanT2VSampler:
                     "STRING_PROMPT", 
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "width": (
                     "INT", {"default": 832, "min": 64, "max": 2048, "step": 16}
@@ -311,7 +311,7 @@ class WanT2VSampler:
                 ),
             },
             "optional":{
-                "riflex_k": ("INT",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
@@ -418,7 +418,7 @@ class WanI2VSampler:
                     "STRING_PROMPT",
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "base_resolution": (
                     [ 
@@ -462,7 +462,7 @@ class WanI2VSampler:
             },
             "optional":{
                 "start_img": ("IMAGE",),
-                "riflex_k": ("INT",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     

@@ -22,7 +22,7 @@ class FunTextBox:
         return {
             "required": {
                 "prompt": ("STRING", {"multiline": True, "default": "",}),
-            }
+            },
         }
     
     RETURN_TYPES = ("STRING_PROMPT",)
@@ -37,13 +37,13 @@ class FunRiflex:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "seed": (
-                "riflex_k", {"default": 6, "min": 0, "max": 10086}
-            ),
+            "required": {
+                "riflex_k": ("INT", {"default": 6, "min": 0, "max": 10086}),
+            },
         }
     
-    RETURN_TYPES = ("INT",)
-    RETURN_NAMES =("k",)
+    RETURN_TYPES = ("RIFLEXT_ARGS",)
+    RETURN_NAMES = ("riflex_k",)
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 

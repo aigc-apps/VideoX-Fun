@@ -268,7 +268,7 @@ class WanFunT2VSampler:
                     "STRING_PROMPT", 
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "width": (
                     "INT", {"default": 832, "min": 64, "max": 2048, "step": 16}
@@ -315,8 +315,8 @@ class WanFunT2VSampler:
                     [False, True],  {"default": True,}
                 ),
             },
-            "optional":{
-                "riflex_k": ("INT",),
+            "optional": {
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
@@ -440,7 +440,7 @@ class WanFunInpaintSampler:
                     "STRING_PROMPT",
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 5, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 5, "max": 161, "step": 4}
                 ),
                 "base_resolution": (
                     [ 
@@ -482,10 +482,10 @@ class WanFunInpaintSampler:
                     [False, True],  {"default": True,}
                 ),
             },
-            "optional":{
+            "optional": {
                 "start_img": ("IMAGE",),
                 "end_img": ("IMAGE",),
-                "riflex_k": ("INT",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
@@ -604,7 +604,7 @@ class WanFunV2VSampler:
                     "STRING_PROMPT", 
                 ),
                 "video_length": (
-                    "INT", {"default": 81, "min": 1, "max": 81, "step": 4}
+                    "INT", {"default": 81, "min": 1, "max": 161, "step": 4}
                 ),
                 "base_resolution": (
                     [ 
@@ -649,11 +649,11 @@ class WanFunV2VSampler:
                     [False, True],  {"default": True,}
                 ),
             },
-            "optional":{
+            "optional": {
                 "validation_video": ("IMAGE",),
                 "control_video": ("IMAGE",),
                 "ref_image": ("IMAGE",),
-                "riflex_k": ("INT",),
+                "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
     
