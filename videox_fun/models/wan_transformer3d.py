@@ -37,6 +37,8 @@ try:
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 
+from einops import rearrange
+
 
 def flash_attention(
     q,
@@ -290,7 +292,8 @@ class WanSelfAttention(nn.Module):
                  num_heads,
                  window_size=(-1, -1),
                  qk_norm=True,
-                 eps=1e-6):
+                 eps=1e-6,
+                 bidx=0):
         assert dim % num_heads == 0
         super().__init__()
         self.dim = dim
@@ -299,6 +302,7 @@ class WanSelfAttention(nn.Module):
         self.window_size = window_size
         self.qk_norm = qk_norm
         self.eps = eps
+        self.bidx = bidx
 
         # layers
         self.q = nn.Linear(dim, dim)
@@ -326,13 +330,30 @@ class WanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
+        f, h, w = grid_sizes.tolist()[0]
+        q = rope_apply(q, grid_sizes, freqs).to(dtype)
+        k=rope_apply(k, grid_sizes, freqs).to(dtype)
+        v = v.to(dtype)
+        
+        q = rearrange(q, 'b (f h w) n d -> b (h w f) n d', f=f, h=h, w=w)
+        k = rearrange(k, 'b (f h w) n d -> b (h w f) n d', f=f, h=h, w=w)
+        v = rearrange(v, 'b (f h w) n d -> b (h w f) n d', f=f, h=h, w=w)
+
 
         x = attention(
-            q=rope_apply(q, grid_sizes, freqs).to(dtype),
-            k=rope_apply(k, grid_sizes, freqs).to(dtype),
-            v=v.to(dtype),
+            q=q,
+            k=k,
+            v=v,
             k_lens=seq_lens,
             window_size=self.window_size)
+        x = rearrange(x, 'b (h w f) n d -> b (f h w) n d', f=f, h=h, w=w)
+
+        # x = attention(
+        #     q=rope_apply(q, grid_sizes, freqs).to(dtype),
+        #     k=rope_apply(k, grid_sizes, freqs).to(dtype),
+        #     v=v.to(dtype),
+        #     k_lens=seq_lens,
+        #     window_size=self.window_size)
         x = x.to(dtype)
 
         # output
@@ -426,7 +447,8 @@ class WanAttentionBlock(nn.Module):
                  window_size=(-1, -1),
                  qk_norm=True,
                  cross_attn_norm=False,
-                 eps=1e-6):
+                 eps=1e-6,
+                 bidx=0):
         super().__init__()
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -435,11 +457,13 @@ class WanAttentionBlock(nn.Module):
         self.qk_norm = qk_norm
         self.cross_attn_norm = cross_attn_norm
         self.eps = eps
+        if (bidx + 1)%5!=0:
+            window_size = (4096, 4096)
 
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm,
-                                          eps)
+                                          eps, bidx=bidx)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -645,7 +669,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
             WanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
-                              window_size, qk_norm, cross_attn_norm, eps)
+                              window_size, qk_norm, cross_attn_norm, eps, bidx=_)
             for _ in range(num_layers)
         ])
 
