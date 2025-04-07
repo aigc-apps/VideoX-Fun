@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import pickle
+import random
 import shutil
 import sys
 
@@ -47,8 +48,6 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedStateDictConfig, ShardedOptimStateDictConfig)
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -72,10 +71,11 @@ from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
-from videox_fun.pipeline import WanFunControlPipeline, WanFunInpaintPipeline
+                               WanTransformer3DModel)
+from videox_fun.pipeline import WanFunControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_video_to_video_latent, save_videos_grid
+from videox_fun.utils.utils import (get_video_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -88,73 +88,18 @@ def filter_kwargs(cls, kwargs):
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
 
-def get_random_downsample_ratio(sample_size, image_ratio=[],
-                                all_choices=False, rng=None):
-    def _create_special_list(length):
-        if length == 1:
-            return [1.0]
-        if length >= 2:
-            first_element = 0.75
-            remaining_sum = 1.0 - first_element
-            other_elements_value = remaining_sum / (length - 1)
-            special_list = [first_element] + [other_elements_value] * (length - 1)
-            return special_list
-            
-    if sample_size >= 1536:
-        number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
-    elif sample_size >= 1024:
-        number_list = [1, 1.25, 1.5, 2] + image_ratio
-    elif sample_size >= 768:
-        number_list = [1, 1.25, 1.5] + image_ratio
-    elif sample_size >= 512:
-        number_list = [1] + image_ratio
-    else:
-        number_list = [1]
+def linear_decay(initial_value, final_value, total_steps, current_step):
+    if current_step >= total_steps:
+        return final_value
+    current_step = max(0, current_step)
+    step_size = (final_value - initial_value) / total_steps
+    current_value = initial_value + step_size * current_step
+    return current_value
 
-    if all_choices:
-        return number_list
-
-    number_list_prob = np.array(_create_special_list(len(number_list)))
-    if rng is None:
-        return np.random.choice(number_list, p = number_list_prob)
-    else:
-        return rng.choice(number_list, p = number_list_prob)
-
-def resize_mask(mask, latent, process_first_frame_only=True):
-    latent_size = latent.size()
-    batch_size, channels, num_frames, height, width = mask.shape
-
-    if process_first_frame_only:
-        target_size = list(latent_size[2:])
-        target_size[0] = 1
-        first_frame_resized = F.interpolate(
-            mask[:, :, 0:1, :, :],
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
-        )
-        
-        target_size = list(latent_size[2:])
-        target_size[0] = target_size[0] - 1
-        if target_size[0] != 0:
-            remaining_frames_resized = F.interpolate(
-                mask[:, :, 1:, :, :],
-                size=target_size,
-                mode='trilinear',
-                align_corners=False
-            )
-            resized_mask = torch.cat([first_frame_resized, remaining_frames_resized], dim=2)
-        else:
-            resized_mask = first_frame_resized
-    else:
-        target_size = list(latent_size[2:])
-        resized_mask = F.interpolate(
-            mask,
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
-        )
-    return resized_mask
+def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
+    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
+    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
+    return torch.clip(t.to(torch.int32), low, high - 1)
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
@@ -221,19 +166,6 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
         torch.cuda.ipc_collect()
         print(f"Eval error with info {e}")
         return None
-
-def linear_decay(initial_value, final_value, total_steps, current_step):
-    if current_step >= total_steps:
-        return final_value
-    current_step = max(0, current_step)
-    step_size = (final_value - initial_value) / total_steps
-    current_value = initial_value + step_size * current_step
-    return current_value
-
-def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
-    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
-    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
-    return torch.clip(t.to(torch.int32), low, high - 1)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -1040,6 +972,14 @@ def main():
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, enable_inpaint=False,
     )
+
+    def worker_init_fn(_seed):
+        _seed = _seed * 256
+        def _worker_init_fn(worker_id):
+            print(f"worker_init_fn with {_seed + worker_id}")
+            np.random.seed(_seed + worker_id)
+            random.seed(_seed + worker_id)
+        return _worker_init_fn
     
     if args.enable_bucket:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
@@ -1050,22 +990,54 @@ def main():
             aspect_ratios=aspect_ratio_sample_size,
         )
 
-        def get_length_to_frame_num(token_length):
-            if args.image_sample_size > args.video_sample_size:
-                sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                if sample_sizes[-1] != args.image_sample_size:
-                    sample_sizes.append(args.image_sample_size)
-            else:
-                sample_sizes = [args.image_sample_size]
-            
-            length_to_frame_num = {
-                sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-            }
-
-            return length_to_frame_num
-
         def collate_fn(examples):
+            def get_length_to_frame_num(token_length):
+                if args.image_sample_size > args.video_sample_size:
+                    sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
+
+                    if sample_sizes[-1] != args.image_sample_size:
+                        sample_sizes.append(args.image_sample_size)
+                else:
+                    sample_sizes = [args.image_sample_size]
+                
+                length_to_frame_num = {
+                    sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+                }
+
+                return length_to_frame_num
+
+            def get_random_downsample_ratio(sample_size, image_ratio=[],
+                                            all_choices=False, rng=None):
+                def _create_special_list(length):
+                    if length == 1:
+                        return [1.0]
+                    if length >= 2:
+                        first_element = 0.90
+                        remaining_sum = 1.0 - first_element
+                        other_elements_value = remaining_sum / (length - 1)
+                        special_list = [first_element] + [other_elements_value] * (length - 1)
+                        return special_list
+                        
+                if sample_size >= 1536:
+                    number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
+                elif sample_size >= 1024:
+                    number_list = [1, 1.25, 1.5, 2] + image_ratio
+                elif sample_size >= 768:
+                    number_list = [1, 1.25, 1.5] + image_ratio
+                elif sample_size >= 512:
+                    number_list = [1] + image_ratio
+                else:
+                    number_list = [1]
+
+                if all_choices:
+                    return number_list
+
+                number_list_prob = np.array(_create_special_list(len(number_list)))
+                if rng is None:
+                    return np.random.choice(number_list, p = number_list_prob)
+                else:
+                    return rng.choice(number_list, p = number_list_prob)
+
             # Get token length
             target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
             length_to_frame_num = get_length_to_frame_num(target_token_length)
@@ -1087,7 +1059,7 @@ def main():
             data_type       = examples[0]["data_type"]
             f, h, w, c      = np.shape(pixel_value)
             if data_type == 'image':
-                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size], rng=rng)
+                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size])
 
                 aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
@@ -1101,15 +1073,11 @@ def main():
                         choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
                         if len(choice_list) == 0:
                             choice_list = list(length_to_frame_num.keys())
-                        if rng is None:
-                            local_video_sample_size = np.random.choice(choice_list)
-                        else:
-                            local_video_sample_size = rng.choice(choice_list)
+                        local_video_sample_size = np.random.choice(choice_list)
                         batch_video_length = length_to_frame_num[local_video_sample_size]
                         random_downsample_ratio = args.video_sample_size / local_video_sample_size
                     else:
-                        random_downsample_ratio = get_random_downsample_ratio(
-                                args.video_sample_size, rng=rng)
+                        random_downsample_ratio = get_random_downsample_ratio(args.video_sample_size)
                         batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
                 else:
                     random_downsample_ratio = 1
@@ -1121,14 +1089,9 @@ def main():
             closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
             closest_size = [int(x / 16) * 16 for x in closest_size]
             if args.random_ratio_crop:
-                if rng is None:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                else:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
 
             for example in examples:
@@ -1239,6 +1202,7 @@ def main():
             collate_fn=collate_fn,
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
     else:
         # DataLoaders creation:
@@ -1249,6 +1213,7 @@ def main():
             batch_sampler=batch_sampler, 
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
 
     # Scheduler and math around the number of training steps.
@@ -1400,7 +1365,7 @@ def main():
                 control_pixel_values = batch["control_pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length and not zero_stage == 3:
+                if args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
@@ -1422,7 +1387,7 @@ def main():
                     ref_pixel_values = batch["ref_pixel_values"].to(weight_dtype)
                     clip_pixel_values = batch["clip_pixel_values"]
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length and not zero_stage == 3:
+                    if args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             ref_pixel_values = torch.tile(ref_pixel_values, (4, 1, 1, 1, 1))
