@@ -376,9 +376,9 @@ class WanSelfAttention(nn.Module):
 
         # query, key, value function
         def qkv_fn(x):
-            q = self.norm_q(self.q(x)).view(b, s, n, d)
-            k = self.norm_k(self.k(x)).view(b, s, n, d)
-            v = self.v(x).view(b, s, n, d)
+            q = self.norm_q(self.q(x.to(dtype))).view(b, s, n, d)
+            k = self.norm_k(self.k(x.to(dtype))).view(b, s, n, d)
+            v = self.v(x.to(dtype)).view(b, s, n, d)
             return q, k, v
 
         q, k, v = qkv_fn(x)
@@ -399,7 +399,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens):
+    def forward(self, x, context, context_lens, dtype):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -409,12 +409,18 @@ class WanT2VCrossAttention(WanSelfAttention):
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
         # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
+        q = self.norm_q(self.q(x.to(dtype))).view(b, -1, n, d)
+        k = self.norm_k(self.k(context.to(dtype))).view(b, -1, n, d)
+        v = self.v(context.to(dtype)).view(b, -1, n, d)
 
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        x = attention(
+            q.to(dtype), 
+            k.to(dtype), 
+            v.to(dtype), 
+            k_lens=context_lens
+        )
+        x = x.to(dtype)
 
         # output
         x = x.flatten(2)
@@ -437,7 +443,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens):
+    def forward(self, x, context, context_lens, dtype):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -449,14 +455,27 @@ class WanI2VCrossAttention(WanSelfAttention):
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
         # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
-        k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = attention(q, k_img, v_img, k_lens=None)
+        q = self.norm_q(self.q(x.to(dtype))).view(b, -1, n, d)
+        k = self.norm_k(self.k(context.to(dtype))).view(b, -1, n, d)
+        v = self.v(context.to(dtype)).view(b, -1, n, d)
+        k_img = self.norm_k_img(self.k_img(context_img.to(dtype))).view(b, -1, n, d)
+        v_img = self.v_img(context_img.to(dtype)).view(b, -1, n, d)
+
+        img_x = attention(
+            q.to(dtype), 
+            k_img.to(dtype), 
+            v_img.to(dtype), 
+            k_lens=None
+        )
+        img_x = img_x.to(dtype)
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        x = attention(
+            q.to(dtype), 
+            k.to(dtype), 
+            v.to(dtype), 
+            k_lens=context_lens
+        )
+        x = x.to(dtype)
 
         # output
         x = x.flatten(2)
@@ -542,7 +561,10 @@ class WanAttentionBlock(nn.Module):
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens)
+            # cross-attention
+            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype)
+
+            # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
             temp_x = temp_x.to(dtype)
             
@@ -841,8 +863,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             e = self.time_embedding(
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            assert e.dtype == torch.float32 and e0.dtype == torch.float32
             # to bfloat16 for saving memeory
+            # assert e.dtype == torch.float32 and e0.dtype == torch.float32
             e0 = e0.to(dtype)
             e = e.to(dtype)
 
@@ -897,7 +919,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
 
                 for block in self.blocks:
-                    if self.training and self.gradient_checkpointing:
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
 
                         def create_custom_forward(module):
                             def custom_forward(*inputs):
@@ -936,7 +958,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         self.teacache.previous_residual_uncond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
         else:
             for block in self.blocks:
-                if self.training and self.gradient_checkpointing:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
 
                     def create_custom_forward(module):
                         def custom_forward(*inputs):

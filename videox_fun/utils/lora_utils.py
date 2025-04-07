@@ -169,7 +169,7 @@ class LoRANetwork(torch.nn.Module):
         alpha: float = 1,
         dropout: Optional[float] = None,
         module_class: Type[object] = LoRAModule,
-        add_lora_in_attn_temporal: bool = False,
+        skip_name: str = None,
         varbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
@@ -202,9 +202,8 @@ class LoRANetwork(torch.nn.Module):
                         is_conv2d = child_module.__class__.__name__ == "Conv2d" or child_module.__class__.__name__ == "LoRACompatibleConv"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
                         
-                        if not add_lora_in_attn_temporal:
-                            if "attn_temporal" in child_name:
-                                continue
+                        if skip_name is not None and skip_name in child_name:
+                            continue
 
                         if is_linear or is_conv2d:
                             lora_name = prefix + "." + name + "." + child_name
@@ -346,7 +345,7 @@ def create_network(
     text_encoder: Union[T5EncoderModel, List[T5EncoderModel]],
     transformer,
     neuron_dropout: Optional[float] = None,
-    add_lora_in_attn_temporal: bool = False,
+    skip_name: str = None,
     **kwargs,
 ):
     if network_dim is None:
@@ -361,7 +360,7 @@ def create_network(
         lora_dim=network_dim,
         alpha=network_alpha,
         dropout=neuron_dropout,
-        add_lora_in_attn_temporal=add_lora_in_attn_temporal,
+        skip_name=skip_name,
         varbose=True,
     )
     return network
