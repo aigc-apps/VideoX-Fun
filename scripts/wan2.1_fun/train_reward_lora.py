@@ -1265,9 +1265,8 @@ def main():
                         dtype=latent_model_input.dtype
                     )
 
-                    # predict the noise residual
+                    # Whether to enable DRTune: https://arxiv.org/abs/2405.00760
                     if args.stop_latent_model_input_gradient:
-                        # See https://arxiv.org/abs/2405.00760
                         latent_model_input = latent_model_input.detach()
 
                     # predict noise model_output
