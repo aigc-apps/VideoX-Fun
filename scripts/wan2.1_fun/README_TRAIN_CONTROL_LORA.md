@@ -129,7 +129,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 Wan T2V with deepspeed zero-3:
 
-Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
+Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. You must set save_state to True to save the model. After training, you can use the following command to get the final model:
 ```sh
 python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
 ```
@@ -172,6 +172,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --save_state \
   --use_deepspeed \
   --train_mode="control_ref" \
   --control_ref_image="first_frame" \
