@@ -1,4 +1,4 @@
-"""Modified from EasyAnimate/scripts/train_lora.py
+"""Modified from VideoX-Fun/scripts/wan2.1_fun/train_lora.py
 """
 #!/usr/bin/env python
 # coding=utf-8
@@ -103,9 +103,23 @@ def log_validation(
             **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
         )
 
+        # Initialize a new vae if gradient checkpointing or model cpu offload is enabled.
+        if args.vae_gradient_checkpointing or args.low_vram:
+            vae = AutoencoderKLWan.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
+                additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
+            )
+            vae.eval()
+        # Initialize a new image encoder if model cpu offload is enabled.
+        if args.low_vram:
+            image_encoder_subpath = config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')
+            clip_image_encoder = CLIPModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, image_encoder_subpath),
+            )
+            clip_image_encoder.eval()
         pipeline = WanFunInpaintPipeline(
-            vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-            text_encoder=accelerator.unwrap_model(text_encoder),
+            vae=vae,
+            text_encoder=text_encoder,
             tokenizer=tokenizer,
             transformer=transformer3d_val,
             scheduler=scheduler,
@@ -116,20 +130,22 @@ def log_validation(
             pipeline.enable_model_cpu_offload()
         else:
             pipeline = pipeline.to(device=accelerator.device)
-        pipeline = merge_lora(
-            pipeline, None, 1, accelerator.device, state_dict=accelerator.unwrap_model(network).state_dict(), transformer_only=True
-        )
+        lora_state_dict = accelerator.unwrap_model(network).state_dict()
+        pipeline = merge_lora(pipeline, None, 1, accelerator.device, state_dict=lora_state_dict, transformer_only=True)
+        
         to_tensor = transforms.ToTensor()
         validation_loss, validation_reward = 0, 0
-
         for i in range(len(validation_prompts_idx)):
             validation_idx, validation_prompt = validation_prompts_idx[i]
             with torch.no_grad():
                 with torch.autocast("cuda", dtype=weight_dtype):
-                    video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1                    
+                    temporal_compression_ratio = vae.config.temporal_compression_ratio
+                    video_length = 1
+                    if args.video_length != 1:
+                        video_length += int((args.video_length - 1) // temporal_compression_ratio * temporal_compression_ratio)
                     sample_size = [args.validation_sample_height, args.validation_sample_width]
                     input_video, input_video_mask, clip_image = get_image_to_video_latent(
-                        None, None, video_length=args.video_length, sample_size=sample_size
+                        None, None, video_length=video_length, sample_size=sample_size
                     )
 
                     if args.seed is None:
@@ -139,19 +155,19 @@ def log_validation(
 
                     sample = pipeline(
                         validation_prompt,
-                        video_length = video_length,
+                        num_frames = video_length,
                         negative_prompt = "bad detailed",
-                        height      = args.validation_sample_height,
-                        width       = args.validation_sample_width,
-                        guidance_scale = 6,
-                        generator   = generator,
-
-                        video        = input_video,
-                        mask_video   = input_video_mask,
-                        clip_image   = clip_image,
-                    ).frames
-                    sample_saved_path = os.path.join(args.output_dir, f"validation_sample/sample-{global_step}-{validation_idx}.mp4")
-                    save_videos_grid(sample, sample_saved_path, fps=8)
+                        height = args.validation_sample_height,
+                        width = args.validation_sample_width,
+                        guidance_scale = 7,
+                        generator = generator,
+                        video = input_video,
+                        mask_video = input_video_mask,
+                        clip_image = clip_image,
+                    ).videos
+                    sample_saved_name = f"validation_sample/sample-{global_step}-{validation_idx}.mp4"
+                    sample_saved_path = os.path.join(args.output_dir, sample_saved_name)
+                    save_videos_grid(sample, sample_saved_path, fps=16)
 
                     num_sampled_frames = 4
                     sampled_frames_list = []
@@ -864,12 +880,13 @@ def main():
             low_cpu_mem_usage=True,
             torch_dtype=weight_dtype,
         )
-        text_encoder = text_encoder.eval()
+        text_encoder.eval()
         # Get Vae
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
+        vae.eval()
 
     # Get Transformer
     transformer3d = WanTransformer3DModel.from_pretrained(
@@ -881,11 +898,10 @@ def main():
     clip_image_encoder = CLIPModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
     )
-    clip_image_encoder = clip_image_encoder.eval()
+    clip_image_encoder.eval()
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
-    vae.eval()
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
     clip_image_encoder.requires_grad_(False)
@@ -1217,7 +1233,6 @@ def main():
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
                     target_shape[1]
                 )
-                print(latents.size(), seq_len)
 
                 # Denoising loop
                 if args.backprop:
@@ -1250,13 +1265,12 @@ def main():
                         dtype=latent_model_input.dtype
                     )
 
-                    # predict the noise residual
+                    # Whether to enable DRTune: https://arxiv.org/abs/2405.00760
                     if args.stop_latent_model_input_gradient:
-                        # See https://arxiv.org/abs/2405.00760
                         latent_model_input = latent_model_input.detach()
 
                     # predict noise model_output
-                    with torch.cuda.amp.autocast(dtype=weight_dtype):
+                    with accelerator.autocast():
                         noise_pred = transformer3d(
                             x=latent_model_input,
                             context=prompt_embeds,
@@ -1297,7 +1311,7 @@ def main():
                     save_videos_grid(
                         sampled_frames.to(torch.float32).detach().cpu(),
                         os.path.join(args.output_dir, "train_sample", saved_file),
-                        fps=8
+                        fps=16
                     )
                 
                 if args.num_sampled_frames is not None:
