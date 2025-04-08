@@ -33,7 +33,7 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_baseline_00000003.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/597d786b-66e1-4610-8ba0-01bd334dccb3" width="100%" controls autoplay loop></video>
         </td>
         <td>
             <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_hpsv2.1_00000003.mp4" width="100%" controls autoplay loop></video>
