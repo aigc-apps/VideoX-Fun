@@ -1,0 +1,52 @@
+FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+ENV DEBIAN_FRONTEND noninteractive
+
+RUN rm -r /etc/apt/sources.list.d/
+
+RUN apt-get update -y && apt-get install -y  \
+    libgl1 libglib2.0-0 google-perftools \
+    sudo wget git git-lfs vim tig pkg-config libcairo2-dev \
+    aria2 telnet curl net-tools iputils-ping jq \
+    python3-pip python-is-python3 python3.10-venv tzdata lsof zip tmux
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository ppa:ubuntuhandbook1/ffmpeg6 && \
+    apt-get update && \
+    apt-get install -y ffmpeg
+
+RUN pip3 install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple/
+
+# add all extensions
+RUN pip install wandb tqdm GitPython==3.1.32 Pillow==9.5.0 setuptools --upgrade -i https://mirrors.aliyun.com/pypi/simple/
+
+RUN pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu118
+RUN pip install xformers==0.0.27.post2 --index-url https://download.pytorch.org/whl/cu118
+
+# install vllm (video-caption)
+RUN pip install vllm==0.6.3
+
+# install requirements (video-caption)
+WORKDIR /root/
+COPY easyanimate/video_caption/requirements.txt /root/requirements-video_caption.txt
+RUN pip install -r /root/requirements-video_caption.txt
+RUN rm /root/requirements-video_caption.txt
+
+RUN pip install -U http://eas-data.oss-cn-shanghai.aliyuncs.com/sdk/allspark-0.15-py2.py3-none-any.whl 
+RUN pip install -e git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
+RUN pip install came-pytorch deepspeed pytorch_lightning==1.9.4 func_timeout -i https://mirrors.aliyun.com/pypi/simple/
+
+# install requirements
+RUN pip install bitsandbytes mamba-ssm causal-conv1d>=1.4.0 -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install ipykernel -i https://mirrors.aliyun.com/pypi/simple/
+COPY ./requirements.txt /root/requirements.txt
+RUN pip install -r /root/requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN rm -rf /root/requirements.txt
+
+# install package patches (video-caption)
+COPY easyanimate/video_caption/package_patches/easyocr_detection_patched.py /usr/local/lib/python3.10/dist-packages/easyocr/detection.py
+COPY easyanimate/video_caption/package_patches/vila_siglip_encoder_patched.py /usr/local/lib/python3.10/dist-packages/llava/model/multimodal_encoder/siglip_encoder.py
+
+ENV PYTHONUNBUFFERED 1
+ENV NVIDIA_DISABLE_REQUIRE 1
+
+WORKDIR /root/
