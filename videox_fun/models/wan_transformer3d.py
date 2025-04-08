@@ -332,7 +332,7 @@ class WanSelfAttention(nn.Module):
         q, k, v = qkv_fn(x)
         f, h, w = grid_sizes.tolist()[0]
         q = rope_apply(q, grid_sizes, freqs).to(dtype)
-        k=rope_apply(k, grid_sizes, freqs).to(dtype)
+        k = rope_apply(k, grid_sizes, freqs).to(dtype)
         v = v.to(dtype)
         
         qs = torch.tensor_split(q.to(torch.bfloat16), 2, 2)
