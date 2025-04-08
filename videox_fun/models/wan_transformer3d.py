@@ -771,6 +771,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         k = 6,
         L_test = 66,
     ):
+        device = self.freqs.device
         self.freqs = torch.cat(
             [
                 get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test),
@@ -778,9 +779,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 rope_params(1024, 2 * (self.d // 6))
             ],
             dim=1
-        )
+        ).to(device)
 
     def disable_riflex(self):
+        device = self.freqs.device
         self.freqs = torch.cat(
             [
                 rope_params(1024, self.d - 4 * (self.d // 6)),
@@ -788,7 +790,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 rope_params(1024, 2 * (self.d // 6))
             ],
             dim=1
-        )
+        ).to(device)
 
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
