@@ -352,7 +352,7 @@ class WanT2VSampler:
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
 
             if riflex_k > 0:
-                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
             # Apply lora
             if funmodels.get("lora_cache", False):
@@ -510,7 +510,7 @@ class WanI2VSampler:
             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
             if riflex_k > 0:
-                pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
+                pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
             # Apply lora
             if funmodels.get("lora_cache", False):

@@ -228,6 +228,7 @@ def get_1d_rotary_pos_embed_riflex(
     use_real=False,
     k: Optional[int] = None,
     L_test: Optional[int] = None,
+    L_test_scale: Optional[int] = None,
 ):
     """
     RIFLEx: Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
@@ -265,6 +266,8 @@ def get_1d_rotary_pos_embed_riflex(
     if k is not None:
         freqs[k-1] = 0.9 * 2 * torch.pi / L_test
     # === Riflex modification end ===
+    if L_test_scale is not None:
+        freqs[k-1] = freqs[k-1] / L_test_scale
 
     freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
     if use_real:
@@ -770,11 +773,12 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self,
         k = 6,
         L_test = 66,
+        L_test_scale = 4.886,
     ):
         device = self.freqs.device
         self.freqs = torch.cat(
             [
-                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test),
+                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test, L_test_scale=L_test_scale),
                 rope_params(1024, 2 * (self.d // 6)),
                 rope_params(1024, 2 * (self.d // 6))
             ],
