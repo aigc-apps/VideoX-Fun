@@ -202,7 +202,7 @@ with torch.no_grad():
     latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
 
     if enable_riflex:
-        pipeline.transformer.enable_riflex(k = riflex_k, L_test = video_length)
+        pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, validation_image_end, video_length=video_length, sample_size=sample_size)
 
