@@ -58,7 +58,7 @@ class Fun_Controller:
         config_path=None, ulysses_degree=1, ring_degree=1,
         enable_teacache=None, teacache_threshold=None, 
         num_skip_start_steps=None, teacache_offload=None,
-        enable_riflex=None, riflex_k=None, weight_dtype=None, 
+        enable_riflex=None, riflex_k=None, weight_dtype=None, savedir_sample=None,
     ):
         # config dirs
         self.basedir                    = os.getcwd()
@@ -66,9 +66,11 @@ class Fun_Controller:
         self.diffusion_transformer_dir  = os.path.join(self.basedir, "models", "Diffusion_Transformer")
         self.motion_module_dir          = os.path.join(self.basedir, "models", "Motion_Module")
         self.personalized_model_dir     = os.path.join(self.basedir, "models", "Personalized_Model")
-        self.savedir                    = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
-        self.savedir_sample             = os.path.join(self.savedir, "sample")
-        os.makedirs(self.savedir, exist_ok=True)
+        if savedir_sample is None:
+            self.savedir_sample         = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
+        else:
+            self.savedir_sample         = savedir_sample
+        os.makedirs(self.savedir_sample, exist_ok=True)
 
         self.GPU_memory_mode            = GPU_memory_mode
         self.model_name                 = model_name
@@ -344,10 +346,13 @@ def post_to_host(
 
 
 class Fun_Controller_Client:
-    def __init__(self, scheduler_dict):
+    def __init__(self, scheduler_dict, savedir_sample):
         self.basedir = os.getcwd()
-        self.savedir = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
-        self.savedir_sample = os.path.join(self.savedir, "sample")
+        if savedir_sample is None:
+            self.savedir_sample         = os.path.join(self.basedir, "samples", datetime.now().strftime("Gradio-%Y-%m-%dT%H-%M-%S"))
+        else:
+            self.savedir_sample         = savedir_sample
+        os.makedirs(self.savedir_sample, exist_ok=True)
         
         self.scheduler_dict = scheduler_dict
 
