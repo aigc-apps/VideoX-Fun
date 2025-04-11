@@ -363,3 +363,14 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 print(
                     f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
                 )
+        
+        model = cls(**filter_kwargs(cls, additional_kwargs))
+        if pretrained_model_path.endswith(".safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(pretrained_model_path)
+        else:
+            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m, u)
+        return model
