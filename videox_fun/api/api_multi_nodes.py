@@ -74,17 +74,19 @@ if ray is not None:
                 if start_image is not None:
                     if start_image.startswith('http'):
                         start_image = save_url_image(start_image)
+                        start_image = [Image.open(start_image)]
                     else:
                         start_image = base64.b64decode(start_image)
-                    start_image = [Image.open(BytesIO(start_image))]
+                        start_image = [Image.open(BytesIO(start_image))]
 
                 if end_image is not None:
                     if end_image.startswith('http'):
                         end_image = save_url_image(end_image)
+                        end_image = [Image.open(end_image)]
                     else:
                         end_image = base64.b64decode(end_image)
-                    end_image = [Image.open(BytesIO(end_image))]
-
+                        end_image = [Image.open(BytesIO(end_image))]
+                        
                 if validation_video is not None:
                     if validation_video.startswith('http'):
                         validation_video = save_url_video(validation_video)
