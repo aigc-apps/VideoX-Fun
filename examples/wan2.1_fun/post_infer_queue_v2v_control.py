@@ -4,7 +4,6 @@ import time
 import urllib.parse
 import requests
 
-
 def post_infer(
     generation_method, 
     length_slider, 
@@ -21,8 +20,20 @@ def post_infer(
     width_slider=672,
     height_slider=384,
     cfg_scale_slider=6,
-    seed_textbox=43
+    seed_textbox=43,
+    control_video=None
 ):
+    if control_video:
+        try:
+            if not control_video.startswith("http"):
+                with open(control_video, "rb") as file:
+                    video_data = file.read()
+
+                control_video = base64.b64encode(video_data).decode('utf-8')
+        except Exception as e:
+            print(f"Error processing control_video: {e}")
+            raise
+
     # Prepare the data payload
     datas = json.dumps({
         "base_model_path": base_model_path,
@@ -38,6 +49,7 @@ def post_infer(
         "length_slider": length_slider,
         "cfg_scale_slider": cfg_scale_slider,
         "seed_textbox": seed_textbox,
+        "control_video": control_video
     })
 
     # Initialize session and set headers
@@ -75,9 +87,10 @@ def post_infer(
     data = get_r.content.decode('utf-8')
     return data
 
+
 if __name__ == '__main__':
     # initiate time
-    time_start  = time.time()  
+    time_start = time.time()  
 
     # EAS队列配置
     EAS_URL = 'http://17xxxxxxxxx.pai-eas.aliyuncs.com/api/predict/xxxxxxxx'
@@ -85,25 +98,28 @@ if __name__ == '__main__':
     TOKEN   = 'xxxxxxxx'
         
     # "Video Generation" and "Image Generation"
-    generation_method   = "Video Generation"
+    generation_method = "Video Generation"
     # Video length
-    length_slider       = 81
+    length_slider = 81
     # Used in Lora models
-    lora_model_path     = "none"
-    lora_alpha_slider   = 0.55
+    lora_model_path = "none"
+    lora_alpha_slider = 0.55
     # Prompts
-    prompt_textbox      = "A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
+    prompt_textbox = "在这个阳光明媚的户外花园里，美女身穿一袭及膝的白色无袖连衣裙，裙摆在她轻盈的舞姿中轻柔地摆动，宛如一只翩翩起舞的蝴蝶。阳光透过树叶间洒下斑驳的光影，映衬出她柔和的脸庞和清澈的眼眸，显得格外优雅。仿佛每一个动作都在诉说着青春与活力，她在草地上旋转，裙摆随之飞扬，仿佛整个花园都因她的舞动而欢愉。周围五彩缤纷的花朵在微风中摇曳，玫瑰、菊花、百合，各自释放出阵阵香气，营造出一种轻松而愉快的氛围。"
     negative_prompt_textbox = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     # Sampler name
-    sampler_dropdown    = "Flow"
+    sampler_dropdown = "Flow"
     # Sampler steps
-    sample_step_slider  = 50
+    sample_step_slider = 50
     # height and width 
-    width_slider        = 832
-    height_slider       = 480
+    width_slider = 480
+    height_slider = 832
     # cfg scale
-    cfg_scale_slider    = 6
-    seed_textbox        = 43
+    cfg_scale_slider = 6
+    seed_textbox = 43
+
+    # 控制视频路径（可以是本地路径或 URL）
+    control_video_path = "asset/000000.mp4"  # 替换为实际的视频路径
 
     outputs = post_infer(
         generation_method, 
@@ -119,7 +135,8 @@ if __name__ == '__main__':
         cfg_scale_slider=cfg_scale_slider,
         seed_textbox=seed_textbox,
         url=EAS_URL, 
-        POST_TOKEN=TOKEN
+        POST_TOKEN=TOKEN,
+        control_video=control_video_path  # 传递控制视频路径
     )
     # Get decoded data
     outputs = json.loads(base64.b64decode(json.loads(outputs)[0]['data']))
