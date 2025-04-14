@@ -15,7 +15,7 @@ from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, WanTransformer3DModel)
 from ..models.cache_utils import get_teacache_coefficients
-from ..pipeline import WanFunInpaintPipeline, WanFunPipeline
+from ..pipeline import WanFunInpaintPipeline, WanFunPipeline, WanFunControlPipeline
 from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
@@ -104,7 +104,14 @@ class Wan_Fun_Controller(Fun_Controller):
                     scheduler=self.scheduler,
                 )
         else:
-            raise ValueError("Not support now")
+            self.pipeline = WanFunControlPipeline(
+                vae=self.vae,
+                tokenizer=self.tokenizer,
+                text_encoder=self.text_encoder,
+                transformer=self.transformer,
+                scheduler=self.scheduler,
+                clip_image_encoder=self.clip_image_encoder,
+            )
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             self.transformer.enable_multi_gpus_inference()
