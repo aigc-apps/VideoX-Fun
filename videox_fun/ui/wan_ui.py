@@ -187,7 +187,8 @@ class Wan_Controller(Fun_Controller):
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         
         if self.enable_riflex:
-            self.pipeline.transformer.enable_riflex(k = self.riflex_k, L_test = length_slider if not is_image else 1)
+            latent_frames = (int(length_slider) - 1) // self.vae.config.temporal_compression_ratio + 1
+            self.pipeline.transformer.enable_riflex(k = self.riflex_k, L_test = latent_frames if not is_image else 1)
 
         try:
             if self.model_type == "Inpaint":
