@@ -357,7 +357,7 @@ class WanFunT2VSampler:
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
 
             if riflex_k > 0:
-                latent_frames = (video_length - 1) // self.vae.config.temporal_compression_ratio + 1
+                latent_frames = (video_length - 1) // pipeline.vae.config.temporal_compression_ratio + 1
                 pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
             # Apply lora
@@ -533,7 +533,7 @@ class WanFunInpaintSampler:
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
 
             if riflex_k > 0:
-                latent_frames = (video_length - 1) // self.vae.config.temporal_compression_ratio + 1
+                latent_frames = (video_length - 1) // pipeline.vae.config.temporal_compression_ratio + 1
                 pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
@@ -720,7 +720,7 @@ class WanFunV2VSampler:
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
 
             if riflex_k > 0:
-                latent_frames = (video_length - 1) // self.vae.config.temporal_compression_ratio + 1
+                latent_frames = (video_length - 1) // pipeline.vae.config.temporal_compression_ratio + 1
                 pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
             if model_type == "Inpaint":
