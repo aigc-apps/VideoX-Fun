@@ -180,7 +180,7 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
             input_video = []
 
             original_fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_skip = 1 if fps is None else int(original_fps // fps)
+            frame_skip = 1 if fps is None else max(1,int(original_fps // fps))
 
             frame_count = 0
 
