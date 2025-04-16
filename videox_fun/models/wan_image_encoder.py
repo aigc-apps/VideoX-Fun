@@ -523,7 +523,7 @@ class CLIPModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
 
         # forward
-        with torch.cuda.amp.autocast(dtype=self.dtype):
+        with torch.amp.autocast("cuda", dtype=self.dtype):
             out = self.model.visual(videos, use_31_block=True)
             return out
 

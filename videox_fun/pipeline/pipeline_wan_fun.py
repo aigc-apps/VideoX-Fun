@@ -131,7 +131,7 @@ class WanFunPipeline(DiffusionPipeline):
         self.register_modules(
             tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, scheduler=scheduler
         )
-        self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
+        self.video_processor = VideoProcessor(vae_scale_factor=self.vae.config.spatial_compression_ratio)
 
     def _get_t5_prompt_embeds(
         self,
@@ -270,9 +270,9 @@ class WanFunPipeline(DiffusionPipeline):
         shape = (
             batch_size,
             num_channels_latents,
-            (num_frames - 1) // self.vae.temporal_compression_ratio + 1,
-            height // self.vae.spatial_compression_ratio,
-            width // self.vae.spatial_compression_ratio,
+            (num_frames - 1) // self.vae.config.temporal_compression_ratio + 1,
+            height // self.vae.config.spatial_compression_ratio,
+            width // self.vae.config.spatial_compression_ratio,
         )
 
         if latents is None:
@@ -493,7 +493,7 @@ class WanFunPipeline(DiffusionPipeline):
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        target_shape = (self.vae.latent_channels, (num_frames - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
+        target_shape = (self.vae.config.latent_channels, (num_frames - 1) // self.vae.config.temporal_compression_ratio + 1, width // self.vae.config.spatial_compression_ratio, height // self.vae.config.spatial_compression_ratio)
         seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
@@ -510,7 +510,7 @@ class WanFunPipeline(DiffusionPipeline):
                 timestep = t.expand(latent_model_input.shape[0])
                 
                 # predict noise model_output
-                with torch.cuda.amp.autocast(dtype=weight_dtype):
+                with torch.amp.autocast("cuda", dtype=weight_dtype):
                     noise_pred = self.transformer(
                         x=latent_model_input,
                         context=prompt_embeds,

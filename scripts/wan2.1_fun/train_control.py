@@ -1595,7 +1595,7 @@ def main():
                 )
 
                 # Predict the noise residual
-                with torch.cuda.amp.autocast(dtype=weight_dtype):
+                with torch.amp.autocast("cuda", dtype=weight_dtype):
                     noise_pred = transformer3d(
                         x=noisy_latents,
                         context=prompt_embeds,

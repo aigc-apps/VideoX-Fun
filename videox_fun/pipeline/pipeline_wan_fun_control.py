@@ -673,7 +673,7 @@ class WanFunControlPipeline(DiffusionPipeline):
                 timestep = t.expand(latent_model_input.shape[0])
                 
                 # predict noise model_output
-                with torch.cuda.amp.autocast(dtype=weight_dtype):
+                with torch.amp.autocast("cuda", dtype=weight_dtype):
                     noise_pred = self.transformer(
                         x=latent_model_input,
                         context=prompt_embeds,
