@@ -11,19 +11,21 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
-import torch.cuda.amp as amp
+import torch.amp as amp
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version, logging
 from torch import nn
 
+from .attention_utils import flex_attention, wan_sparse_head_placement, wan_hidden_states_placement
+from .cache_utils import TeaCache
 from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     xFuserLongContextAttention)
 from ..dist.wan_xfuser import usp_attn_forward
-from .cache_utils import TeaCache
 
 try:
     import flash_attn_interface
@@ -209,7 +211,7 @@ def sinusoidal_embedding_1d(dim, position):
     return x
 
 
-@amp.autocast(enabled=False)
+@amp.autocast("cuda", enabled=False)
 def rope_params(max_seq_len, dim, theta=10000):
     assert dim % 2 == 0
     freqs = torch.outer(
@@ -220,7 +222,7 @@ def rope_params(max_seq_len, dim, theta=10000):
     return freqs
 
 # modified from https://github.com/thu-ml/RIFLEx/blob/main/riflex_utils.py
-@amp.autocast(enabled=False)
+@amp.autocast("cuda", enabled=False)
 def get_1d_rotary_pos_embed_riflex(
     pos: Union[np.ndarray, int],
     dim: int,
@@ -279,7 +281,7 @@ def get_1d_rotary_pos_embed_riflex(
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
         return freqs_cis
 
-@amp.autocast(enabled=False)
+@amp.autocast("cuda", enabled=False)
 def rope_apply(x, grid_sizes, freqs):
     n, c = x.size(2), x.size(3) // 2
 
@@ -367,13 +369,15 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, dtype):
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
             seq_lens(Tensor): Shape [B]
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            dtype(torch.dtype): The dtype of the input tensor.
+            t(int): The timestep. A placeholder used to maintain consistency with WanSparseAttention.
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
@@ -392,6 +396,89 @@ class WanSelfAttention(nn.Module):
             v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size)
+        x = x.to(dtype)
+
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+
+class WanSparseSelfAttention(nn.Module):
+    """Sparse Self-Attention for Wan based on Sparse VideoGen: https://arxiv.org/abs/2502.01776.
+    """
+    def sample_mse(self, query, key, value):
+        assert len(self.attention_masks) == 2
+
+        cfg, num_heads, seq_len, dim = query.size()
+        num_sampled_rows = min(self.num_sampled_rows, seq_len)
+        sampled_rows = torch.randint(low=0, high=self.sample_mse_max_row, size=(num_sampled_rows,))
+        sampled_q = query[:, :, sampled_rows, :]
+        sampled_qk_scores = torch.matmul(sampled_q, key.transpose(-2, -1)) / (dim**0.5)
+    
+        sampled_attn_weights = F.softmax(sampled_qk_scores, dim=-1)
+        sampled_golden_hidden_states = torch.matmul(sampled_attn_weights, value)  # (1, seq_len, dim)
+
+        sampled_mses = torch.zeros(len(self.attention_masks), cfg, num_heads, device=query.device, dtype=query.dtype)
+
+        # Only have Tri-diagonal and Striped
+        for mask_idx, attn_mask in enumerate(self.attention_masks):
+            sampled_attention_mask = attn_mask[sampled_rows, :]
+            sampled_attention_scores = sampled_qk_scores.masked_fill(sampled_attention_mask == 0, float('-inf'))
+            sampled_attn_weights = F.softmax(sampled_attention_scores, dim=-1)
+            sampled_hidden_states = torch.matmul(sampled_attn_weights, value)
+            mse = torch.mean((sampled_hidden_states - sampled_golden_hidden_states) ** 2, dim=(2, 3))
+            sampled_mses[mask_idx] = mse
+
+        return sampled_mses
+
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, num_heads, C / num_heads]
+            seq_lens(Tensor): Shape [B]
+            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
+            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+        """
+        b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+
+        # query, key, value function
+        def qkv_fn(x):
+            q = self.norm_q(self.q(x.to(dtype))).view(b, s, n, d)
+            k = self.norm_k(self.k(x.to(dtype))).view(b, s, n, d)
+            v = self.v(x.to(dtype)).view(b, s, n, d)
+            return q, k, v
+
+        q, k, v = qkv_fn(x)
+
+        # Determine if we use Full Attention to calculate
+        full_attention_flag = False
+
+        if self.layer_idx < self.num_layers * self.first_layers_fp:
+            full_attention_flag = True
+        if t[0] > 1000 * (1 - self.first_times_fp):
+            full_attention_flag = True
+        
+        q = rope_apply(q, grid_sizes, freqs).to(dtype)
+        k = rope_apply(k, grid_sizes, freqs).to(dtype)
+        v = v.to(dtype)
+        if full_attention_flag:
+            x = attention(q=q, k=k, v=v, k_lens=seq_lens, window_size=self.window_size)
+        else:
+            # [cfg, seq_len, num_heads, head_dim] => [cfg, num_heads, seq_len, head_dim]
+            q, k, v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
+            sampled_mses = self.sample_mse(q, k, v)
+            best_mask_idx = torch.argmin(sampled_mses, dim=0)
+            output_hidden_states = torch.zeros_like(q)
+            query_out, key_out, value_out = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v)
+            wan_sparse_head_placement(
+                q, k, v, query_out, key_out, value_out, best_mask_idx, self.context_length, self.num_frame, self.frame_size
+            )
+            hidden_states = flex_attention(query_out, key_out, value_out, block_mask=self.block_mask)
+            wan_hidden_states_placement(hidden_states, output_hidden_states, best_mask_idx, self.context_length, self.num_frame, self.frame_size)
+            # [cfg, num_heads, seq_len, head_dim] => [cfg, seq_len, num_heads, head_dim]
+            x = output_hidden_states.permute(0, 2, 1, 3)
+
         x = x.to(dtype)
 
         # output
@@ -543,7 +630,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32
+        dtype=torch.float32,
+        t=0  # sparse attention relies on the timestep
     ):
         r"""
         Args:
@@ -559,7 +647,7 @@ class WanAttentionBlock(nn.Module):
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
         temp_x = temp_x.to(dtype)
 
-        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype)
+        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype, t=t)
         x = x + y * e[2]
 
         # cross-attention & ffn function
@@ -768,6 +856,55 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def disable_teacache(self):
         self.teacache = None
+    
+
+    def enable_sparse_attention(
+        self,
+        num_frame: int,
+        frame_size: int,
+        sparsity: float,
+        first_layers_fp: float,
+        first_times_fp: float,
+        context_length: int = 0,
+        num_sampled_rows: int = 64,
+        sample_mse_max_row: int = 10000
+    ):
+        from .attention_utils import prepare_flexattention, get_attention_mask, sparsity_to_width
+
+        dtype = self.patch_embedding.weight.dtype
+
+        cfg_size = 2
+        masks = ["spatial", "temporal"]
+        attention_masks = [
+            get_attention_mask(mask_name, sample_mse_max_row, context_length, num_frame, frame_size)
+            for mask_name in masks
+        ]
+        multiplier = diag_width = sparsity_to_width(sparsity, context_length, num_frame, frame_size)
+        block_mask = prepare_flexattention(
+            cfg_size, self.num_heads, self.d, dtype, "cuda", context_length, context_length, num_frame, frame_size, diag_width, multiplier
+        )
+        # print(block_mask)
+
+        for layer_idx, block in enumerate(self.blocks):
+            block.self_attn.__class__.forward = WanSparseSelfAttention.forward
+            block.self_attn.__class__.sample_mse = WanSparseSelfAttention.sample_mse
+
+            block.self_attn.layer_idx = layer_idx
+            block.self_attn.num_layers = self.num_layers
+            block.self_attn.num_sampled_rows = num_sampled_rows
+            block.self_attn.sample_mse_max_row = sample_mse_max_row
+            block.self_attn.attention_masks = attention_masks
+            block.self_attn.first_layers_fp = first_layers_fp
+            block.self_attn.first_times_fp = first_times_fp
+
+            block.self_attn.context_length = context_length
+            block.self_attn.num_frame = num_frame
+            block.self_attn.frame_size = frame_size
+            block.self_attn.block_mask = block_mask
+    
+    def disable_sparse_attention(self):
+        for block in self.blocks:
+            block.self_attn.__class__.forward = WanSelfAttention.forward
 
     def enable_riflex(
         self,
@@ -865,7 +1002,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         ])
 
         # time embeddings
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast("cuda", dtype=torch.float32):
             e = self.time_embedding(
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
@@ -943,6 +1080,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             context,
                             context_lens,
                             dtype,
+                            t=t  # sparse attention relies on the timestep
                             **ckpt_kwargs,
                         )
                     else:
@@ -954,7 +1092,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             freqs=self.freqs,
                             context=context,
                             context_lens=context_lens,
-                            dtype=dtype
+                            dtype=dtype,
+                            t=t  # sparse attention relies on the timestep
                         )
                         x = block(x, **kwargs)
                     
@@ -982,6 +1121,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         context,
                         context_lens,
                         dtype,
+                        t=t,  # sparse attention relies on the timestep
                         **ckpt_kwargs,
                     )
                 else:
@@ -993,7 +1133,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         freqs=self.freqs,
                         context=context,
                         context_lens=context_lens,
-                        dtype=dtype
+                        dtype=dtype,
+                        t=t  # sparse attention relies on the timestep
                     )
                     x = block(x, **kwargs)
 

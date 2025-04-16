@@ -1,5 +1,5 @@
 import torch
-import torch.cuda.amp as amp
+import torch.amp as amp
 
 try:
     import xfuser
@@ -29,7 +29,7 @@ def pad_freqs(original_tensor, target_len):
     padded_tensor = torch.cat([original_tensor, padding_tensor], dim=0)
     return padded_tensor
 
-@amp.autocast(enabled=False)
+@amp.autocast("cuda", enabled=False)
 def rope_apply(x, grid_sizes, freqs):
     """
     x:          [B, L, N, C].
@@ -74,7 +74,8 @@ def usp_attn_forward(self,
                      seq_lens,
                      grid_sizes,
                      freqs,
-                     dtype=torch.bfloat16):
+                     dtype=torch.bfloat16,
+                     t=0):
     b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
     half_dtypes = (torch.float16, torch.bfloat16)
 
