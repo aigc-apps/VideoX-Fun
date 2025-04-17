@@ -52,6 +52,18 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
+# Sparse Attention config
+enable_sparse_attention = True if torch.__version__ > "2.5.0" else False
+# Attention sparsity. The lower its value, the more significant the acceleration, but with the cost of quality degredation.
+# When sparsity=1, it is equivalent to the full attention. Set the value between [0, 1].
+sparsity            = 0.25
+# The proportion of layers to skip sparse attention. Set the value between [0, 1].
+# Recommended to be set 0.05 for 1.3B and 0.025 for 14B.
+first_layers_fp     = 0.05
+# The proportion of steps to skip sparse attention at the beginning of the inference process, which can
+# reduce the impact of sparse attention on generated video quality. Set the value between [0,1].
+first_times_fp      =  0.075
+
 # Riflex config
 enable_riflex       = False
 # Index of intrinsic frequency
@@ -178,14 +190,30 @@ if coefficients is not None:
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
 
+spatial_compression_ratio = vae.config.spatial_compression_ratio
+temporal_compression_ratio = vae.config.temporal_compression_ratio
+if enable_sparse_attention:
+    print(
+        f"Enable sparse attention with sparsity {sparsity}. "
+        f"Skip the {first_layers_fp} proportion of layers and the {first_times_fp} proportion of steps."
+    )
+    mod_value = spatial_compression_ratio * transformer.config.patch_size[1]
+    pipeline.transformer.enable_sparse_attention(
+        num_frame = 1 + video_length // (temporal_compression_ratio * transformer.config.patch_size[0]),
+        frame_size = int(sample_size[0] // mod_value) * int(sample_size[1] // mod_value),
+        sparsity = sparsity,
+        first_layers_fp = first_layers_fp,
+        first_times_fp = first_times_fp
+    )
+
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
 
 with torch.no_grad():
-    video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
-    latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
+    video_length = int((video_length - 1) // temporal_compression_ratio * temporal_compression_ratio) + 1 if video_length != 1 else 1
+    latent_frames = (video_length - 1) // temporal_compression_ratio + 1
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
