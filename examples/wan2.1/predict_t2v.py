@@ -22,6 +22,8 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, r
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
                                    save_videos_grid)
+from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
+from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -62,7 +64,7 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
-# Choose the sampler in "Flow"
+# Choose the sampler in "Flow", "unipc", "dpm++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
@@ -74,6 +76,7 @@ lora_path           = None
 sample_size         = [480, 832]
 video_length        = 81
 fps                 = 16
+shift               = 3 # Noise schedule shift parameter. Affects temporal dynamics. [NOTE]: If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -142,7 +145,11 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 # Get Scheduler
 Choosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
+    "unipc": FlowUniPCMultistepScheduler,
+    "dpm++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
+if sampler_name == "unipc" or sampler_name == "dpm++":
+    config['scheduler_kwargs']['shift'] = 1
 scheduler = Choosen_Scheduler(
     **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
@@ -199,6 +206,7 @@ with torch.no_grad():
         generator   = generator,
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
+        shift = shift,
     ).videos
 
 if lora_path is not None:
