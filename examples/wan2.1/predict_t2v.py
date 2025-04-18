@@ -53,7 +53,7 @@ num_skip_start_steps = 5
 teacache_offload    = False
 
 # Sparse Attention config
-enable_sparse_attention = True if torch.__version__ > "2.5.0" else False
+enable_sparse_attention = True if torch.__version__ >= "2.5.0" else False
 # Attention sparsity. The lower its value, the more significant the acceleration, but with the cost of quality degredation.
 # When sparsity=1, it is equivalent to the full attention. Set the value between [0, 1].
 sparsity            = 0.25

@@ -466,7 +466,7 @@ class WanSparseSelfAttention(nn.Module):
             x = attention(q=q, k=k, v=v, k_lens=seq_lens, window_size=self.window_size)
         else:
             # [cfg, seq_len, num_heads, head_dim] => [cfg, num_heads, seq_len, head_dim]
-            q, k, v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
+            q, k, v = q.permute(0, 2, 1, 3).contiguous(), k.permute(0, 2, 1, 3).contiguous(), v.permute(0, 2, 1, 3).contiguous()
             sampled_mses = self.sample_mse(q, k, v)
             best_mask_idx = torch.argmin(sampled_mses, dim=0)
             output_hidden_states = torch.zeros_like(q)
@@ -477,7 +477,7 @@ class WanSparseSelfAttention(nn.Module):
             hidden_states = flex_attention(query_out, key_out, value_out, block_mask=self.block_mask)
             wan_hidden_states_placement(hidden_states, output_hidden_states, best_mask_idx, self.context_length, self.num_frame, self.frame_size)
             # [cfg, num_heads, seq_len, head_dim] => [cfg, seq_len, num_heads, head_dim]
-            x = output_hidden_states.permute(0, 2, 1, 3)
+            x = output_hidden_states.permute(0, 2, 1, 3).contiguous()
 
         x = x.to(dtype)
 
@@ -871,6 +871,13 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     ):
         from .attention_utils import prepare_flexattention, get_attention_mask, sparsity_to_width
 
+        if sparsity < 0 or sparsity > 1:
+            raise ValueError(f"`sparsity` must be between 0 and 1 but is {sparsity}.")
+        if first_layers_fp < 0 or first_layers_fp > 1:
+            raise ValueError(f"`first_layers_fp` must be between 0 and 1 but is {first_layers_fp}.")
+        if first_times_fp < 0 or first_times_fp > 1:
+            raise ValueError(f"`first_times_fp` must be between 0 and 1 but is {first_times_fp}.")
+        
         dtype = self.patch_embedding.weight.dtype
 
         cfg_size = 2
