@@ -523,7 +523,7 @@ class CLIPModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
 
         # forward
-        with torch.cuda.amp.autocast(dtype=self.dtype):
+        with torch.amp.autocast("cuda", dtype=self.dtype):
             out = self.model.visual(videos, use_31_block=True)
             return out
 
@@ -541,7 +541,7 @@ class CLIPModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         tmp_state_dict = {} 
         for key in state_dict:
             tmp_state_dict["model." + key] = state_dict[key]

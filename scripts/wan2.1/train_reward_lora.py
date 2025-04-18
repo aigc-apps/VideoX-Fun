@@ -1171,7 +1171,7 @@ def main():
             timesteps = noise_scheduler.timesteps
 
             # Prepare latent variables
-            vae_scale_factor = vae.spacial_compression_ratio
+            vae_scale_factor = vae.spatial_compression_ratio
             latent_shape = [
                 args.train_batch_size,
                 vae.config.latent_channels,
@@ -1235,7 +1235,7 @@ def main():
                         latent_model_input = latent_model_input.detach()
 
                     # predict noise model_output
-                    with torch.cuda.amp.autocast(dtype=weight_dtype):
+                    with torch.amp.autocast("cuda", dtype=weight_dtype):
                         noise_pred = transformer3d(
                             x=latent_model_input,
                             context=prompt_embeds,

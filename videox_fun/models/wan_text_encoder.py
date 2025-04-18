@@ -331,7 +331,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     from safetensors.torch import load_file
                     state_dict = load_file(pretrained_model_path)
                 else:
-                    state_dict = torch.load(pretrained_model_path, map_location="cpu")
+                    state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
                 # move the params from meta device to cpu
                 missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
                 if len(missing_keys) > 0:
@@ -369,7 +369,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
         print(m, u)
