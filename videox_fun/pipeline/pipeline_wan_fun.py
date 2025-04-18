@@ -14,6 +14,9 @@ from diffusers.video_processor import VideoProcessor
 
 from ..models import (AutoencoderKLWan, AutoTokenizer,
                               WanT5EncoderModel, WanTransformer3DModel)
+from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
+                                get_sampling_sigmas)
+from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -405,6 +408,7 @@ class WanFunPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
+        shift: int = 5,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -467,6 +471,15 @@ class WanFunPipeline(DiffusionPipeline):
         # 4. Prepare timesteps
         if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps, mu=1)
+        elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
+            self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
+            timesteps = self.scheduler.timesteps
+        elif isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
+            sampling_sigmas = get_sampling_sigmas(num_inference_steps, shift)
+            timesteps, _ = retrieve_timesteps(
+                self.scheduler,
+                device=device,
+                sigmas=sampling_sigmas)
         else:
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         self._num_timesteps = len(timesteps)
