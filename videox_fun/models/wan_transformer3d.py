@@ -896,7 +896,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             if cond_flag:
                 modulated_inp = e0
                 skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
-                if self.teacache.cnt == 0 or self.teacache.cnt == self.teacache.num_steps - 1 or skip_flag:
+                if skip_flag:
                     should_calc = True
                     self.teacache.accumulated_rel_l1_distance = 0
                 else:
@@ -909,9 +909,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         should_calc = True
                         self.teacache.accumulated_rel_l1_distance = 0
                 self.teacache.previous_modulated_input = modulated_inp
-                self.teacache.cnt += 1
-                if self.teacache.cnt == self.teacache.num_steps:
-                    self.teacache.reset()
                 self.teacache.should_calc = should_calc
             else:
                 should_calc = self.teacache.should_calc
@@ -958,10 +955,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         )
                         x = block(x, **kwargs)
                     
-                    if cond_flag:
-                        self.teacache.previous_residual_cond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
-                    else:
-                        self.teacache.previous_residual_uncond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
+                if cond_flag:
+                    self.teacache.previous_residual_cond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
+                else:
+                    self.teacache.previous_residual_uncond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
         else:
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -1006,6 +1003,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
         x = torch.stack(x)
+        if self.teacache is not None:
+            self.teacache.cnt += 1
+            if self.teacache.cnt == self.teacache.num_steps:
+                self.teacache.reset()
         return x
 
 
