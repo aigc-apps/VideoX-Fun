@@ -14,7 +14,7 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.dist import set_multi_gpus_devices
+from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLCogVideoX,
                               CogVideoXTransformer3DModel, T5EncoderModel,
                               T5Tokenizer)
@@ -41,6 +41,7 @@ GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
 ulysses_degree      = 1
 ring_degree         = 1
+fsdp_dit            = False
 
 # Config and model path
 model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
@@ -85,7 +86,7 @@ device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
-    low_cpu_mem_usage=True,
+    low_cpu_mem_usage=True if not fsdp_dit else False,
     torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
 ).to(weight_dtype)
 
@@ -158,7 +159,11 @@ else:
         scheduler=scheduler,
     )
 if ulysses_degree > 1 or ring_degree > 1:
+    from functools import partial
     transformer.enable_multi_gpus_inference()
+    if fsdp_dit:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.transformer = shard_fn(pipeline.transformer)
 
 if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload(device=device)

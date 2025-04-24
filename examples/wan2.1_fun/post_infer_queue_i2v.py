@@ -28,11 +28,12 @@ def post_infer(
 ):
     if start_image:
         try:
-            image = Image.open(start_image)
-            # 将图片转换为 Base64 编码
-            buffered = BytesIO()
-            image.save(buffered, format=image.format)
-            start_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            if not start_image.startswith("http"):
+                image = Image.open(start_image)
+                # 将图片转换为 Base64 编码
+                buffered = BytesIO()
+                image.save(buffered, format=image.format)
+                start_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
         except Exception as e:
             print(f"Error processing start_image: {e}")
             raise
@@ -157,7 +158,7 @@ if __name__ == '__main__':
     # End of record time
     # The calculated time difference is the execution time of the program, expressed in seconds / s
     time_end = time.time()  
-    time_sum = (time_end - time_start) % 60 
+    time_sum = (time_end - time_start)
     print('# --------------------------------------------------------- #')
     print(f'#   Total expenditure: {time_sum}s')
     print('# --------------------------------------------------------- #')

@@ -1,21 +1,11 @@
 import torch
 import torch.cuda.amp as amp
 
-try:
-    import xfuser
-    from xfuser.core.distributed import (get_sequence_parallel_rank,
-                                         get_sequence_parallel_world_size,
-                                         get_sp_group,
-                                         init_distributed_environment,
-                                         initialize_model_parallel)
-    from xfuser.core.long_ctx_attention import xFuserLongContextAttention
-except Exception as ex:
-    get_sequence_parallel_world_size = None
-    get_sequence_parallel_rank = None
-    xFuserLongContextAttention = None
-    get_sp_group = None
-    init_distributed_environment = None
-    initialize_model_parallel = None
+from ..dist import (get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, get_sp_group,
+                    init_distributed_environment, initialize_model_parallel,
+                    xFuserLongContextAttention)
+
 
 def pad_freqs(original_tensor, target_len):
     seq_len, s1, s2 = original_tensor.shape

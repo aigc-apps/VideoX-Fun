@@ -188,6 +188,8 @@ class Wan_Fun_Controller(Fun_Controller):
             self.pipeline.transformer.enable_teacache(
                 coefficients, sample_step_slider, self.teacache_threshold, num_skip_start_steps=self.num_skip_start_steps, offload=self.teacache_offload
             )
+        else:
+            self.pipeline.transformer.disable_teacache()
 
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)

@@ -233,3 +233,16 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
             ref_image = torch.from_numpy(np.array(ref_image))
             ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
     return input_video, input_video_mask, ref_image, clip_image
+
+def get_image_latent(ref_image=None, sample_size=None):
+    if ref_image is not None:
+        if isinstance(ref_image, str):
+            ref_image = Image.open(ref_image).convert("RGB")
+            ref_image = ref_image.resize((sample_size[1], sample_size[0]))
+            ref_image = torch.from_numpy(np.array(ref_image))
+            ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
+        else:
+            ref_image = torch.from_numpy(np.array(ref_image))
+            ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
+
+    return ref_image

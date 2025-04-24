@@ -344,6 +344,8 @@ class WanT2VSampler:
             pipeline.transformer.enable_teacache(
                 coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
+        else:
+            pipeline.transformer.disable_teacache()
 
         generator= torch.Generator(device).manual_seed(seed)
         
@@ -503,6 +505,8 @@ class WanI2VSampler:
             pipeline.transformer.enable_teacache(
                 coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
+        else:
+            pipeline.transformer.disable_teacache()
 
         generator= torch.Generator(device).manual_seed(seed)
 

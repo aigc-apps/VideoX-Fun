@@ -137,7 +137,7 @@ if __name__ == '__main__':
     # End of record time
     # The calculated time difference is the execution time of the program, expressed in seconds / s
     time_end = time.time()  
-    time_sum = (time_end - time_start) % 60 
+    time_sum = (time_end - time_start)
     print('# --------------------------------------------------------- #')
     print(f'#   Total expenditure: {time_sum}s')
     print('# --------------------------------------------------------- #')

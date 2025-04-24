@@ -24,6 +24,7 @@ from ..dist import (get_sequence_parallel_rank,
                     xFuserLongContextAttention)
 from ..dist.wan_xfuser import usp_attn_forward
 from .cache_utils import TeaCache
+from .wan_camera_adapter import SimpleAdapter
 
 try:
     import flash_attn_interface
@@ -278,6 +279,24 @@ def get_1d_rotary_pos_embed_riflex(
         # lumina
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
         return freqs_cis
+
+# Similar to diffusers.pipelines.hunyuandit.pipeline_hunyuandit.get_resize_crop_region_for_grid
+def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
+    tw = tgt_width
+    th = tgt_height
+    h, w = src
+    r = h / w
+    if r > (th / tw):
+        resize_height = th
+        resize_width = int(round(th / h * w))
+    else:
+        resize_width = tw
+        resize_height = int(round(tw / w * h))
+
+    crop_top = int(round((th - resize_height) / 2.0))
+    crop_left = int(round((tw - resize_width) / 2.0))
+
+    return (crop_top, crop_left), (crop_top + resize_height, crop_left + resize_width)
 
 @amp.autocast(enabled=False)
 def rope_apply(x, grid_sizes, freqs):
@@ -654,6 +673,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         eps=1e-6,
         in_channels=16,
         hidden_size=2048,
+        add_control_adapter=False,
+        in_dim_control_adapter=24,
+        add_ref_conv=False,
+        in_dim_ref_conv=16,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -737,6 +760,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
         d = dim // num_heads
         self.d = d
+        self.dim = dim
         self.freqs = torch.cat(
             [
                 rope_params(1024, d - 4 * (d // 6)),
@@ -748,6 +772,16 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         if model_type == 'i2v':
             self.img_emb = MLPProj(1280, dim)
+        
+        if add_control_adapter:
+            self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
+        else:
+            self.control_adapter = None
+
+        if add_ref_conv:
+            self.ref_conv = nn.Conv2d(in_dim_ref_conv, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
+        else:
+            self.ref_conv = None
 
         self.teacache = None
         self.gradient_checkpointing = False
@@ -814,6 +848,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         seq_len,
         clip_fea=None,
         y=None,
+        y_camera=None,
+        full_ref=None,
         cond_flag=True,
     ):
         r"""
@@ -852,9 +888,21 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
+        # add control adapter
+        if self.control_adapter is not None and y_camera is not None:
+            y_camera = self.control_adapter(y_camera)
+            x = [u + v for u, v in zip(x, y_camera)]
+
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
+
         x = [u.flatten(2).transpose(1, 2) for u in x]
+        if self.ref_conv is not None and full_ref is not None:
+            full_ref = self.ref_conv(full_ref).flatten(2).transpose(1, 2)
+            grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
+            seq_len += full_ref.size(1)
+            x = [torch.concat([_full_ref.unsqueeze(0), u], dim=1) for _full_ref, u in zip(full_ref, x)]
+
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         if self.sp_world_size > 1:
             seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
@@ -999,6 +1047,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         if self.sp_world_size > 1:
             x = get_sp_group().all_gather(x, dim=1)
+
+        if self.ref_conv is not None and full_ref is not None:
+            full_ref_length = full_ref.size(1)
+            x = x[:, full_ref_length:]
+            grid_sizes = torch.stack([torch.tensor([u[0] - 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
 
         # head
         x = self.head(x, e)

@@ -15,14 +15,17 @@ for project_root in project_roots:
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                              WanT5EncoderModel, WanTransformer3DModel)
+                               WanT5EncoderModel, WanTransformer3DModel)
+from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import WanI2VPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
+from videox_fun.pipeline import WanFunControlPipeline, WanPipeline
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
+                                               convert_weight_dtype_wrapper,
+                                               replace_parameters_by_name)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent,
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 
 # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -54,7 +57,7 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
-# Skip some cfg steps in inference
+# Skip some cfg steps in inference for acceleration
 # Recommended to be set between 0.00 and 0.25
 cfg_skip_ratio      = 0
 
@@ -66,7 +69,7 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
+model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-Control"
 
 # Choose the sampler in "Flow"
 sampler_name        = "Flow"
@@ -77,24 +80,32 @@ vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [480, 832]
-video_length        = 81
+sample_size         = [832, 480]
+video_length        = 49
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
+control_video           = "asset/pose.mp4"
+control_camera_txt      = None
+start_image             = "asset/6.png"
+ref_image               = None
 
-# prompts
-prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
+# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
+# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+prompt              = "一位年轻女性穿着一件粉色的连衣裙，裙子上有白色的装饰和粉色的纽扣。她的头发是紫色的，头上戴着一个红色的大蝴蝶结，显得非常可爱和精致。她还戴着一个红色的领结，整体造型充满了少女感和活力。她的表情温柔，双手轻轻交叉放在身前，姿态优雅。背景是简单的灰色，没有任何多余的装饰，使得人物更加突出。她的妆容清淡自然，突显了她的清新气质。整体画面给人一种甜美、梦幻的感觉，仿佛置身于童话世界中。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-guidance_scale      = 6.0
-seed                = 43
-num_inference_steps = 50
-lora_weight         = 0.55
-save_path           = "samples/wan-videos-i2v"
+
+# Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
+# Adding words such as "quiet, solid" to the neg prompt can increase dynamism.
+# prompt                  = "A young woman with beautiful, clear eyes and blonde hair stands in the forest, wearing a white dress and a crown. Her expression is serene, reminiscent of a movie star, with fair and youthful skin. Her brown long hair flows in the wind. The video quality is very high, with a clear view. High quality, masterpiece, best quality, high resolution, ultra-fine, fantastical."
+# negative_prompt         = "Twisted body, limb deformities, text captions, comic, static, ugly, error, messy code."
+guidance_scale          = 6.0
+seed                    = 43
+num_inference_steps     = 50
+lora_weight             = 0.55
+save_path               = "samples/wan-videos-fun-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -165,7 +176,7 @@ scheduler = Choosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = WanI2VPipeline(
+pipeline = WanFunControlPipeline(
     transformer=transformer,
     vae=vae,
     tokenizer=tokenizer,
@@ -211,8 +222,27 @@ with torch.no_grad():
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
+    
+    if ref_image is not None:
+        clip_image = Image.open(ref_image).convert("RGB")
+    elif start_image is not None:
+        clip_image = Image.open(start_image).convert("RGB")
+    else:
+        clip_image = None
+    
+    if ref_image is not None:
+        ref_image = get_image_latent(ref_image, sample_size=sample_size)
+    
+    if start_image is not None:
+        start_image = get_image_latent(start_image, sample_size=sample_size)
 
-    input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, None, video_length=video_length, sample_size=sample_size)
+    if control_camera_txt is not None:
+        input_video, input_video_mask = None, None
+        control_camera_video = process_pose_file(control_camera_txt, sample_size[1], sample_size[0])
+        control_camera_video = control_camera_video[:video_length].permute([3, 0, 1, 2]).unsqueeze(0)
+    else:
+        input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        control_camera_video = None
 
     sample = pipeline(
         prompt, 
@@ -224,8 +254,10 @@ with torch.no_grad():
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
 
-        video      = input_video,
-        mask_video   = input_video_mask,
+        control_video = input_video,
+        control_camera_video = control_camera_video,
+        ref_image = ref_image,
+        start_image = start_image,
         clip_image = clip_image,
         cfg_skip_ratio = cfg_skip_ratio,
     ).videos

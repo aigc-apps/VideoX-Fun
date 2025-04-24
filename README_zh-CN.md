@@ -173,6 +173,52 @@ Linux 的详细信息：
 
 ### Wan2.1-Fun-14B-Control && Wan2.1-Fun-1.3B-Control
 
+Generic Control Video + Reference Image:
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          Reference Image
+      </td>
+      <td>
+          Control Video
+      </td>
+      <td>
+          Wan2.1-Fun-V1.1-14B-Control
+      </td>
+      <td>
+          Wan2.1-Fun-V1.1-1.3B-Control
+      </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+  <tr>
+</table>
+
+
+Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
@@ -207,6 +253,52 @@ Linux 的详细信息：
       </td>
        <td>
           <video src="https://github.com/user-attachments/assets/8411151e-f491-4264-8368-7fc3c5a6992b" width="100%" controls autoplay loop></video>
+     </td>
+  </tr>
+</table>
+
+### Wan2.1-Fun1.1-14B-Control-Camera && Wan2.1-Fun1.1-1.3B-Control-Camera
+
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          Pan Up
+      </td>
+      <td>
+          Pan Left
+      </td>
+       <td>
+          Pan Right
+     </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+  <tr>
+      <td>
+          Pan Down
+      </td>
+      <td>
+          Pan Up + Pan Left
+      </td>
+       <td>
+          Pan Up + Pan Right
+     </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/7a3fecc2-d41a-4de3-86cd-5e19aea34a0d" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/cb281259-28b6-448e-a76f-643c3465672e" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/44faf5b6-d83c-4646-9436-971b2b9c7216" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
@@ -432,6 +524,16 @@ CogVideoX-Fun可以查看[Readme Train](scripts/cogvideox_fun/README_TRAIN.md)�
 
 # 模型地址
 ## 1. Wan2.1-Fun
+
+V1.1:
+| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
+|--|--|--|--|--|
+| Wan2.1-Fun1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-InP) | Wan2.1-Fun1.1-1.3B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
+| Wan2.1-Fun1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-InP) | Wan2.1-Fun1.1-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
+| Wan2.1-Fun1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control)| Wan2.1-Fun1.1-1.3B视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control)| Wan2.1-Fun1.1-14B视视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control)| Wan2.1-Fun1.1-1.3B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control)| Wan2.1-Fun1.1-14B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
 
 V1.0:
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |

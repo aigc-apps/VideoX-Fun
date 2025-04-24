@@ -494,6 +494,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         clip_image: Image = None,
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
+        cfg_skip_ratio: int = None,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -551,7 +552,9 @@ class WanFunInpaintPipeline(DiffusionPipeline):
             device=device,
         )
         if do_classifier_free_guidance:
-            prompt_embeds = negative_prompt_embeds + prompt_embeds
+            in_prompt_embeds = negative_prompt_embeds + prompt_embeds
+        else:
+            in_prompt_embeds = prompt_embeds
 
         # 4. Prepare timesteps
         if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
@@ -664,6 +667,10 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                if cfg_skip_ratio is not None and i >= num_inference_steps * (1 - cfg_skip_ratio):
+                    do_classifier_free_guidance = False
+                    in_prompt_embeds = prompt_embeds
+
                 if self.interrupt:
                     continue
 
@@ -678,7 +685,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                 with torch.cuda.amp.autocast(dtype=weight_dtype):
                     noise_pred = self.transformer(
                         x=latent_model_input,
-                        context=prompt_embeds,
+                        context=in_prompt_embeds,
                         t=timestep,
                         seq_len=seq_len,
                         y=y,

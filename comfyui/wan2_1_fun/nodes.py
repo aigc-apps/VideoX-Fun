@@ -25,10 +25,11 @@ from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs,
+from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs, get_image_latent,
                                       get_video_to_video_latent,
                                       save_videos_grid)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.data.dataset_image_video import process_pose_params
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
 
 # Used in lora cache
@@ -46,7 +47,13 @@ class LoadWanFunModel:
                         'Wan2.1-Fun-1.3B-InP',
                         'Wan2.1-Fun-14B-InP',
                         'Wan2.1-Fun-1.3B-Control',
-                        'Wan2.1-Fun-14B-Control'
+                        'Wan2.1-Fun-14B-Control',
+                        'Wan2.1-Fun1.1-1.3B-InP',
+                        'Wan2.1-Fun1.1-14B-InP',
+                        'Wan2.1-Fun1.1-1.3B-Control',
+                        'Wan2.1-Fun1.1-14B-Control',
+                        'Wan2.1-Fun1.1-1.3B-Control-Camera',
+                        'Wan2.1-Fun1.1-14B-Control-Camera',
                     ],
                     {
                         "default": 'Wan2.1-Fun-1.3B-InP',
@@ -349,6 +356,8 @@ class WanFunT2VSampler:
             pipeline.transformer.enable_teacache(
                 coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
+        else:
+            pipeline.transformer.disable_teacache()
 
         generator= torch.Generator(device).manual_seed(seed)
         
@@ -526,6 +535,8 @@ class WanFunInpaintSampler:
             pipeline.transformer.enable_teacache(
                 coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
+        else:
+            pipeline.transformer.disable_teacache()
 
         generator= torch.Generator(device).manual_seed(seed)
 
@@ -654,7 +665,9 @@ class WanFunV2VSampler:
             "optional": {
                 "validation_video": ("IMAGE",),
                 "control_video": ("IMAGE",),
+                "start_image": ("IMAGE",),
                 "ref_image": ("IMAGE",),
+                "camera_conditions": ("STRING", {"forceInput": True}),
                 "riflex_k": ("RIFLEXT_ARGS",),
             },
         }
@@ -664,7 +677,7 @@ class WanFunV2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, ref_image=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
 
@@ -683,7 +696,7 @@ class WanFunV2VSampler:
 
         # Count most suitable height and width
         aspect_ratio_sample_size    = {key : [x / 512 * base_resolution for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-        if model_type == "Inpaint":
+        if model_type == "Inpaint": 
             if type(validation_video) is str:
                 original_width, original_height = Image.fromarray(cv2.VideoCapture(validation_video).read()[1]).size
             else:
@@ -701,6 +714,10 @@ class WanFunV2VSampler:
             if ref_image is not None:
                 ref_image = [to_pil(_ref_image) for _ref_image in ref_image]
                 original_width, original_height = ref_image[0].size if type(ref_image) is list else Image.open(ref_image).size
+            
+            if start_image is not None:
+                start_image = [to_pil(_start_image) for _start_image in start_image]
+                original_width, original_height = start_image[0].size if type(start_image) is list else Image.open(start_image).size
 
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
         height, width = [int(x / 16) * 16 for x in closest_size]
@@ -713,6 +730,8 @@ class WanFunV2VSampler:
             pipeline.transformer.enable_teacache(
                 coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
+        else:
+            pipeline.transformer.disable_teacache()
 
         generator= torch.Generator(device).manual_seed(seed)
 
@@ -726,7 +745,29 @@ class WanFunV2VSampler:
             if model_type == "Inpaint":
                 input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=ref_image[0] if ref_image is not None else ref_image)
             else:
-                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=ref_image[0] if ref_image is not None else ref_image)
+                if ref_image is not None:
+                    clip_image = ref_image[0].convert("RGB")
+                elif start_image is not None:
+                    clip_image = start_image[0].convert("RGB")
+                else:
+                    clip_image = None
+        
+                if ref_image is not None:
+                    ref_image = get_image_latent(ref_image[0] if ref_image is not None else ref_image, sample_size=(height, width))
+                
+                if start_image is not None:
+                    start_image = get_image_latent(start_image[0] if start_image is not None else start_image, sample_size=(height, width))
+
+                if camera_conditions is not None and len(camera_conditions) > 0: 
+                    poses      = json.loads(camera_conditions)
+                    cam_params = np.array([[float(x) for x in pose] for pose in poses])
+                    cam_params = np.concatenate([np.zeros_like(cam_params[:, :1]), cam_params], 1)
+                    control_camera_video = process_pose_params(cam_params, width=width, height=height)
+                    control_camera_video = control_camera_video[:video_length].permute([3, 0, 1, 2]).unsqueeze(0)
+                    input_video, input_video_mask = None, None
+                else:
+                    control_camera_video = None
+                    input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=None)
 
             # Apply lora
             if funmodels.get("lora_cache", False):
@@ -785,8 +826,10 @@ class WanFunV2VSampler:
                     num_inference_steps = steps,
 
                     ref_image = ref_image,
+                    start_image = start_image,
                     clip_image = clip_image,
                     control_video = input_video,
+                    control_camera_video = control_camera_video,
                     comfyui_progressbar = True,
                 ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")

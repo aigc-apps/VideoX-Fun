@@ -1,14 +1,25 @@
 import torch
 import torch.distributed as dist
 
+from .fsdp import shard_model
+
 try:
-    import xfuser
-    from xfuser.core.distributed import (get_sequence_parallel_rank,
-                                         get_sequence_parallel_world_size,
-                                         get_sp_group, get_world_group,
-                                         init_distributed_environment,
-                                         initialize_model_parallel)
-    from xfuser.core.long_ctx_attention import xFuserLongContextAttention
+    try:
+        import pai_fuser
+        from pai_fuser.core.distributed import (
+            get_sequence_parallel_rank, get_sequence_parallel_world_size,
+            get_sp_group, get_world_group, init_distributed_environment,
+            initialize_model_parallel)
+        from pai_fuser.core.long_ctx_attention import \
+            xFuserLongContextAttention
+    except Exception as ex:
+        import xfuser
+        from xfuser.core.distributed import (get_sequence_parallel_rank,
+                                             get_sequence_parallel_world_size,
+                                             get_sp_group, get_world_group,
+                                             init_distributed_environment,
+                                             initialize_model_parallel)
+        from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 except Exception as ex:
     get_sequence_parallel_world_size = None
     get_sequence_parallel_rank = None
@@ -17,6 +28,17 @@ except Exception as ex:
     get_world_group = None
     init_distributed_environment = None
     initialize_model_parallel = None
+
+try: 
+    from pai_fuser.core import parallel_magvit_vae
+except:
+    def parallel_magvit_vae(multi_gpus_overlap_scale, spatial_compression_ratio):
+        def decorator(func):
+            def wrapper(self, z, *args, **kwargs):
+                decoded = func(self, z, *args, **kwargs)
+                return decoded
+            return wrapper
+        return decorator
 
 def set_multi_gpus_devices(ulysses_degree, ring_degree):
     if ulysses_degree > 1 or ring_degree > 1:
