@@ -394,9 +394,9 @@ class WanSelfAttention(nn.Module):
         k = rope_apply(k, grid_sizes, freqs).to(dtype)
         v = v.to(dtype)
         
-        qs = torch.tensor_split(q.to(torch.bfloat16), 2, 2)
-        ks = torch.tensor_split(k.to(torch.bfloat16), 2, 2)
-        vs = torch.tensor_split(v.to(torch.bfloat16), 2, 2)
+        qs = torch.tensor_split(q.to(torch.bfloat16), 6, 2)
+        ks = torch.tensor_split(k.to(torch.bfloat16), 6, 2)
+        vs = torch.tensor_split(v.to(torch.bfloat16), 6, 2)
 
         new_querys = []
         new_keys = []
@@ -427,7 +427,7 @@ class WanSelfAttention(nn.Module):
             window_size=self.window_size
         )
 
-        hidden_states = torch.tensor_split(x, 2, 2)
+        hidden_states = torch.tensor_split(x, 6, 2)
         new_hidden_states = []
         for index, mode in enumerate(
             [
