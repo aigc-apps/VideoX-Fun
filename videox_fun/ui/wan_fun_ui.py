@@ -15,7 +15,7 @@ from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, WanTransformer3DModel)
 from ..models.cache_utils import get_teacache_coefficients
-from ..pipeline import WanFunInpaintPipeline, WanFunPipeline
+from ..pipeline import WanFunInpaintPipeline, WanFunPipeline, WanFunControlPipeline
 from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
@@ -104,7 +104,14 @@ class Wan_Fun_Controller(Fun_Controller):
                     scheduler=self.scheduler,
                 )
         else:
-            raise ValueError("Not support now")
+            self.pipeline = WanFunControlPipeline(
+                vae=self.vae,
+                tokenizer=self.tokenizer,
+                text_encoder=self.text_encoder,
+                transformer=self.transformer,
+                scheduler=self.scheduler,
+                clip_image_encoder=self.clip_image_encoder,
+            )
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             self.transformer.enable_multi_gpus_inference()
@@ -186,91 +193,32 @@ class Wan_Fun_Controller(Fun_Controller):
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         
+        if self.enable_riflex:
+            latent_frames = (int(length_slider) - 1) // self.vae.config.temporal_compression_ratio + 1
+            self.pipeline.transformer.enable_riflex(k = self.riflex_k, L_test = latent_frames if not is_image else 1)
+
         try:
             if self.model_type == "Inpaint":
                 if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                    if generation_method == "Long Video Generation":
-                        if validation_video is not None:
-                            raise gr.Error(f"Video to Video is not Support Long Video Generation now.")
-                        init_frames = 0
-                        last_frames = init_frames + partial_video_length
-                        while init_frames < length_slider:
-                            if last_frames >= length_slider:
-                                _partial_video_length = length_slider - init_frames
-                                _partial_video_length = int((_partial_video_length - 1) // self.vae.config.temporal_compression_ratio * self.vae.config.temporal_compression_ratio) + 1
-                                
-                                if _partial_video_length <= 0:
-                                    break
-                            else:
-                                _partial_video_length = partial_video_length
-
-                            if last_frames >= length_slider:
-                                input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=_partial_video_length, sample_size=(height_slider, width_slider))
-                            else:
-                                input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, None, video_length=_partial_video_length, sample_size=(height_slider, width_slider))
-
-                            with torch.no_grad():
-                                sample = self.pipeline(
-                                    prompt_textbox, 
-                                    negative_prompt     = negative_prompt_textbox,
-                                    num_inference_steps = sample_step_slider,
-                                    guidance_scale      = cfg_scale_slider,
-                                    width               = width_slider,
-                                    height              = height_slider,
-                                    num_frames          = _partial_video_length,
-                                    generator           = generator,
-
-                                    video        = input_video,
-                                    mask_video   = input_video_mask,
-                                    clip_image   = clip_image
-                                ).videos
-                            
-                            if init_frames != 0:
-                                mix_ratio = torch.from_numpy(
-                                    np.array([float(_index) / float(overlap_video_length) for _index in range(overlap_video_length)], np.float32)
-                                ).unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
-                                
-                                new_sample[:, :, -overlap_video_length:] = new_sample[:, :, -overlap_video_length:] * (1 - mix_ratio) + \
-                                    sample[:, :, :overlap_video_length] * mix_ratio
-                                new_sample = torch.cat([new_sample, sample[:, :, overlap_video_length:]], dim = 2)
-
-                                sample = new_sample
-                            else:
-                                new_sample = sample
-
-                            if last_frames >= length_slider:
-                                break
-
-                            start_image = [
-                                Image.fromarray(
-                                    (sample[0, :, _index].transpose(0, 1).transpose(1, 2) * 255).numpy().astype(np.uint8)
-                                ) for _index in range(-overlap_video_length, 0)
-                            ]
-
-                            init_frames = init_frames + _partial_video_length - overlap_video_length
-                            last_frames = init_frames + _partial_video_length
+                    if validation_video is not None:
+                        input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
                     else:
-                        if validation_video is not None:
-                            input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
-                            strength = denoise_strength
-                        else:
-                            input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
-                            strength = 1
+                        input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
 
-                        sample = self.pipeline(
-                            prompt_textbox,
-                            negative_prompt     = negative_prompt_textbox,
-                            num_inference_steps = sample_step_slider,
-                            guidance_scale      = cfg_scale_slider,
-                            width               = width_slider,
-                            height              = height_slider,
-                            num_frames          = length_slider if not is_image else 1,
-                            generator           = generator,
+                    sample = self.pipeline(
+                        prompt_textbox,
+                        negative_prompt     = negative_prompt_textbox,
+                        num_inference_steps = sample_step_slider,
+                        guidance_scale      = cfg_scale_slider,
+                        width               = width_slider,
+                        height              = height_slider,
+                        num_frames          = length_slider if not is_image else 1,
+                        generator           = generator,
 
-                            video        = input_video,
-                            mask_video   = input_video_mask,
-                            clip_image   = clip_image
-                        ).videos
+                        video        = input_video,
+                        mask_video   = input_video_mask,
+                        clip_image   = clip_image
+                    ).videos
                 else:
                     sample = self.pipeline(
                         prompt_textbox,
@@ -335,12 +283,14 @@ class Wan_Fun_Controller(Fun_Controller):
 Wan_Fun_Controller_Host = Wan_Fun_Controller
 Wan_Fun_Controller_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype, savedir_sample=None):
     controller = Wan_Fun_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
         enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
-        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, 
+        enable_riflex=enable_riflex, riflex_k=riflex_k, weight_dtype=weight_dtype, 
+        savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:
@@ -460,12 +410,14 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, weight_dtype):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype, savedir_sample=None):
     controller = Wan_Fun_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
         enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
-        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, 
+        enable_riflex=enable_riflex, riflex_k=riflex_k, weight_dtype=weight_dtype, 
+        savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:
@@ -575,8 +527,8 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             )
     return demo, controller
 
-def ui_client(scheduler_dict, model_name):
-    controller = Wan_Fun_Controller_Client(scheduler_dict)
+def ui_client(scheduler_dict, model_name, savedir_sample=None):
+    controller = Wan_Fun_Controller_Client(scheduler_dict, savedir_sample)
 
     with gr.Blocks(css=css) as demo:
         gr.Markdown(

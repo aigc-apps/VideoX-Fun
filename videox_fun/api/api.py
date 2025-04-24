@@ -1,15 +1,17 @@
-import io
-import gc
 import base64
-import torch
-import gradio as gr
-import tempfile
+import gc
 import hashlib
+import io
 import os
-
-from fastapi import FastAPI
+import tempfile
 from io import BytesIO
+
+import gradio as gr
+import requests
+import torch
+from fastapi import FastAPI
 from PIL import Image
+
 
 # Function to encode a file to Base64
 def encode_file_to_base64(file_path):
@@ -54,6 +56,15 @@ def update_diffusion_transformer_api(_: gr.Blocks, app: FastAPI, controller):
 
         return {"message": comment}
 
+def download_from_url(url, timeout=10):
+    try:
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()  # 检查请求是否成功
+        return response.content
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading from {url}: {e}")
+        return None
+
 def save_base64_video(base64_string):
     video_data = base64.b64decode(base64_string)
 
@@ -81,6 +92,18 @@ def save_base64_image(base64_string):
         video_file.write(video_data)
 
     return file_path
+
+def save_url_video(url):
+    video_data = download_from_url(url)
+    if video_data:
+        return save_base64_video(base64.b64encode(video_data))
+    return None
+
+def save_url_image(url):
+    image_data = download_from_url(url)
+    if image_data:
+        return save_base64_image(base64.b64encode(image_data))
+    return None
 
 def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
     @app.post("/videox_fun/infer_forward")
@@ -115,21 +138,38 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
         generation_method = "Image Generation" if is_image else generation_method
 
         if start_image is not None:
-            start_image = base64.b64decode(start_image)
-            start_image = [Image.open(BytesIO(start_image))]
-        
+            if start_image.startswith('http'):
+                start_image = save_url_image(start_image)
+                start_image = [Image.open(start_image)]
+            else:
+                start_image = base64.b64decode(start_image)
+                start_image = [Image.open(BytesIO(start_image))]
+
         if end_image is not None:
-            end_image = base64.b64decode(end_image)
-            end_image = [Image.open(BytesIO(end_image))]
+            if end_image.startswith('http'):
+                end_image = save_url_image(end_image)
+                end_image = [Image.open(end_image)]
+            else:
+                end_image = base64.b64decode(end_image)
+                end_image = [Image.open(BytesIO(end_image))]
 
         if validation_video is not None:
-            validation_video = save_base64_video(validation_video)
+            if validation_video.startswith('http'):
+                validation_video = save_url_video(validation_video)
+            else:
+                validation_video = save_base64_video(validation_video)
 
         if validation_video_mask is not None:
-            validation_video_mask = save_base64_image(validation_video_mask)
+            if validation_video_mask.startswith('http'):
+                validation_video_mask = save_url_image(validation_video_mask)
+            else:
+                validation_video_mask = save_base64_image(validation_video_mask)
 
         if control_video is not None:
-            control_video = save_base64_video(control_video)
+            if control_video.startswith('http'):
+                control_video = save_url_video(control_video)
+            else:
+                control_video = save_base64_video(control_video)
         
         try:
             save_sample_path, comment = controller.generate(

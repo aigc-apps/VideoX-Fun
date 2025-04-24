@@ -41,7 +41,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -89,7 +89,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -142,7 +142,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \

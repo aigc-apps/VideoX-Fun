@@ -33,13 +33,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_baseline_00000003.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/597d786b-66e1-4610-8ba0-01bd334dccb3" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_hpsv2.1_00000003.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/f0b14ac6-4b11-44df-a060-bc86bbd91d1e" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_mps_00000003.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/411b329f-6d63-4557-820d-80d56ded2005" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -51,13 +51,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_baseline_00000004.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/cb4ce6d1-1b70-480a-b3c1-e7d1c05cc93d" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_hpsv2.1_00000004.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/017203b3-1091-4ba9-95db-71ab62804b7a" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_mps_00000004.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/d4c7dc8e-57dc-4d08-aef6-d11a7bdb4972" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -69,13 +69,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_baseline_00000007.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/65bdd0dd-717d-4300-b566-a615ab1f81c2" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_hpsv2.1_00000007.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/07dca036-5b72-4d1e-9ed3-dc725a18f654" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_mps_00000007.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/e97b1158-e772-40f3-a28f-538bca5584e3" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -87,13 +87,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_baseline_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/6af00186-2ec4-43d7-9360-3b316e5240a8" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_hpsv2.1_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/3f9a5fb2-bfea-469b-8d07-c4289990ee66" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/1.3B_mps_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/db851428-0df7-4ae3-82eb-c85fe902fb96" width="100%" controls autoplay loop></video>
         </td>
     </tr>
 </table>
@@ -122,13 +122,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_baseline_00000001.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/7bfded69-54e5-4654-91e9-37aa61d5b5f3" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_hpsv2.1_00000001.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/07bb0403-bcd4-439d-a6a8-d97c266305a8" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_mps_00000001.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/15e13963-3020-4ffe-9b7b-35603435806f" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -140,13 +140,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_baseline_00000002.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/050f3bff-05c9-4931-9112-e9499b136435" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_hpsv2.1_00000002.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/9d1e09bd-0acb-4646-a2ef-2c2d582ba150" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_mps_00000002.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/f2f64228-dd4b-4c8a-9844-acaf44b6c83c" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -158,13 +158,13 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_baseline_00000005.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/f6b467db-5e0a-4be6-87a0-a1acce692b1b" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_hpsv2.1_00000005.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/487b0405-8e99-44bb-ae6d-009442849a94" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_mps_00000005.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/d581a5a2-1393-4d19-a13e-b669850a0754" width="100%" controls autoplay loop></video>
         </td>
     </tr>
     <tr>
@@ -176,16 +176,17 @@ For more details, please refer to our [GitHub repo](https://github.com/aigc-apps
             </details>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_baseline_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/b3228456-1ee9-4f4c-bfd2-03e13df980d7" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_hpsv2.1_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/4d85e13d-4741-437b-991a-195802cb9485" width="100%" controls autoplay loop></video>
         </td>
         <td>
-            <video src="https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/wan_fun/asset/v1.0/reward_lora/14B_mps_00000008.mp4" width="100%" controls autoplay loop></video>
+            <video src="https://github.com/user-attachments/assets/6dd31da7-4f1a-44b4-bdbb-14fe62e2796b" width="100%" controls autoplay loop></video>
         </td>
     </tr>
 </table>
+
 
 > [!NOTE]
 > The above test prompts are from <a href="https://github.com/KaiyueSun98/T2V-CompBench">T2V-CompBench</a> and expanded into detailed prompts by Llama-3.3.

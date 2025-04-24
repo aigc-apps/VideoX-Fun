@@ -9,7 +9,8 @@ import torch
 from fastapi import FastAPI, HTTPException
 from PIL import Image
 
-from .api import encode_file_to_base64, save_base64_image, save_base64_video
+from .api import (encode_file_to_base64, save_base64_image, save_base64_video,
+                  save_url_image, save_url_video)
 
 try:
     import ray
@@ -26,6 +27,7 @@ if ray is not None:
             config_path=None, ulysses_degree=1, ring_degree=1,
             enable_teacache=None, teacache_threshold=None, 
             num_skip_start_steps=None, teacache_offload=None, weight_dtype=None, 
+            savedir_sample=None,
         ):
             # Set PyTorch distributed environment variables
             os.environ["RANK"] = str(rank)
@@ -37,7 +39,7 @@ if ray is not None:
             self.controller = Controller(
                 GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
                 ulysses_degree=ulysses_degree, ring_degree=ring_degree, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, num_skip_start_steps=num_skip_start_steps, 
-                teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+                teacache_offload=teacache_offload, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
             )
 
         def generate(self, datas):
@@ -70,21 +72,38 @@ if ray is not None:
                 generation_method = "Image Generation" if is_image else generation_method
 
                 if start_image is not None:
-                    start_image = base64.b64decode(start_image)
-                    start_image = [Image.open(BytesIO(start_image))]
-                
-                if end_image is not None:
-                    end_image = base64.b64decode(end_image)
-                    end_image = [Image.open(BytesIO(end_image))]
+                    if start_image.startswith('http'):
+                        start_image = save_url_image(start_image)
+                        start_image = [Image.open(start_image)]
+                    else:
+                        start_image = base64.b64decode(start_image)
+                        start_image = [Image.open(BytesIO(start_image))]
 
+                if end_image is not None:
+                    if end_image.startswith('http'):
+                        end_image = save_url_image(end_image)
+                        end_image = [Image.open(end_image)]
+                    else:
+                        end_image = base64.b64decode(end_image)
+                        end_image = [Image.open(BytesIO(end_image))]
+                        
                 if validation_video is not None:
-                    validation_video = save_base64_video(validation_video)
+                    if validation_video.startswith('http'):
+                        validation_video = save_url_video(validation_video)
+                    else:
+                        validation_video = save_base64_video(validation_video)
 
                 if validation_video_mask is not None:
-                    validation_video_mask = save_base64_image(validation_video_mask)
+                    if validation_video_mask.startswith('http'):
+                        validation_video_mask = save_url_image(validation_video_mask)
+                    else:
+                        validation_video_mask = save_base64_image(validation_video_mask)
 
                 if control_video is not None:
-                    control_video = save_base64_video(control_video)
+                    if control_video.startswith('http'):
+                        control_video = save_url_video(control_video)
+                    else:
+                        control_video = save_base64_video(control_video)
                 
                 try:
                     save_sample_path, comment = self.controller.generate(
@@ -150,7 +169,8 @@ if ray is not None:
             teacache_threshold, 
             num_skip_start_steps, 
             teacache_offload, 
-            weight_dtype
+            weight_dtype,
+            savedir_sample
         ):
             # Ensure Ray is initialized
             if not ray.is_initialized():
@@ -162,7 +182,7 @@ if ray is not None:
                     rank, world_size, Controller, 
                     GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
                     ulysses_degree=ulysses_degree, ring_degree=ring_degree, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, num_skip_start_steps=num_skip_start_steps, 
-                    teacache_offload=teacache_offload, weight_dtype=weight_dtype, 
+                    teacache_offload=teacache_offload, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
                 )
                 for rank in range(num_workers)
             ]

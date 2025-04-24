@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import pickle
+import random
 import shutil
 import sys
 
@@ -61,18 +62,19 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                           ASPECT_RATIO_RANDOM_CROP_512,
-                                           ASPECT_RATIO_RANDOM_CROP_PROB,
-                                           AspectRatioBatchImageVideoSampler,
-                                           RandomSampler, get_closest_ratio)
+                                            ASPECT_RATIO_RANDOM_CROP_512,
+                                            ASPECT_RATIO_RANDOM_CROP_PROB,
+                                            AspectRatioBatchImageVideoSampler,
+                                            RandomSampler, get_closest_ratio)
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
-                                                ImageVideoSampler,
-                                                get_random_mask)
+                                                 ImageVideoSampler,
+                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
+                               WanTransformer3DModel)
 from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
+from videox_fun.utils.lora_utils import (create_network, merge_lora,
+                                         unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -84,38 +86,6 @@ def filter_kwargs(cls, kwargs):
     valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
-
-def get_random_downsample_ratio(sample_size, image_ratio=[],
-                                all_choices=False, rng=None):
-    def _create_special_list(length):
-        if length == 1:
-            return [1.0]
-        if length >= 2:
-            first_element = 0.75
-            remaining_sum = 1.0 - first_element
-            other_elements_value = remaining_sum / (length - 1)
-            special_list = [first_element] + [other_elements_value] * (length - 1)
-            return special_list
-            
-    if sample_size >= 1536:
-        number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
-    elif sample_size >= 1024:
-        number_list = [1, 1.25, 1.5, 2] + image_ratio
-    elif sample_size >= 768:
-        number_list = [1, 1.25, 1.5] + image_ratio
-    elif sample_size >= 512:
-        number_list = [1] + image_ratio
-    else:
-        number_list = [1]
-
-    if all_choices:
-        return number_list
-
-    number_list_prob = np.array(_create_special_list(len(number_list)))
-    if rng is None:
-        return np.random.choice(number_list, p = number_list_prob)
-    else:
-        return rng.choice(number_list, p = number_list_prob)
 
 def resize_mask(mask, latent, process_first_frame_only=True):
     latent_size = latent.size()
@@ -152,6 +122,19 @@ def resize_mask(mask, latent, process_first_frame_only=True):
             align_corners=False
         )
     return resized_mask
+
+def linear_decay(initial_value, final_value, total_steps, current_step):
+    if current_step >= total_steps:
+        return final_value
+    current_step = max(0, current_step)
+    step_size = (final_value - initial_value) / total_steps
+    current_value = initial_value + step_size * current_step
+    return current_value
+
+def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
+    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
+    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
+    return torch.clip(t.to(torch.int32), low, high - 1)
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
@@ -271,19 +254,6 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
         torch.cuda.ipc_collect()
         print(f"Eval error with info {e}")
         return None
-
-def linear_decay(initial_value, final_value, total_steps, current_step):
-    if current_step >= total_steps:
-        return final_value
-    current_step = max(0, current_step)
-    step_size = (final_value - initial_value) / total_steps
-    current_value = initial_value + step_size * current_step
-    return current_value
-
-def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
-    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
-    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
-    return torch.clip(t.to(torch.int32), low, high - 1)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -586,27 +556,21 @@ def parse_args():
         "--training_with_video_token_length", action="store_true", help="The training stage of the model in training.",
     )
     parser.add_argument(
-        "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
-    )
-    parser.add_argument(
-        "--noise_share_in_frames_ratio", type=float, default=0.5, help="Noise share ratio.",
-    )
-    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(
         "--motion_sub_loss_ratio", type=float, default=0.25, help="The ratio of motion sub loss."
     )
     parser.add_argument(
-        "--keep_all_node_same_token_length",
-        action="store_true", 
-        help="Reference of the length token.",
-    )
-    parser.add_argument(
         "--train_sampling_steps",
         type=int,
         default=1000,
         help="Run train_sampling_steps.",
+    )
+    parser.add_argument(
+        "--keep_all_node_same_token_length",
+        action="store_true", 
+        help="Reference of the length token.",
     )
     parser.add_argument(
         "--token_sample_size",
@@ -653,12 +617,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--image_repeat_in_forward",
-        type=int,
-        default=0,
-        help="Num of repeat image in forward.",
-    )
-    parser.add_argument(
         "--transformer_path",
         type=str,
         default=None,
@@ -675,7 +633,7 @@ def parse_args():
     parser.add_argument(
         '--tokenizer_max_length', 
         type=int,
-        default=226,
+        default=512,
         help='Max length of tokenizer'
     )
     parser.add_argument(
@@ -711,6 +669,12 @@ def parse_args():
         type=float,
         default=1.29,
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
+    )
+    parser.add_argument(
+        "--lora_skip_name",
+        type=str,
+        default=None,
+        help=("The module is not trained in loras. "),
     )
 
     args = parser.parse_args()
@@ -761,6 +725,12 @@ def main():
     else:
         zero_stage = 0
         print("DeepSpeed is not enabled.")
+    if zero_stage == 3:
+        accelerator_transformer3d = Accelerator(
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            mixed_precision=args.mixed_precision,
+            project_config=accelerator_project_config,
+        )
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir=logging_dir)
 
@@ -843,6 +813,7 @@ def main():
             low_cpu_mem_usage=True,
             torch_dtype=weight_dtype,
         )
+        text_encoder = text_encoder.eval()
         # Get Vae
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
@@ -877,7 +848,7 @@ def main():
         text_encoder,
         transformer3d,
         neuron_dropout=None,
-        add_lora_in_attn_temporal=True,
+        skip_name=args.lora_skip_name,
     )
     network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
 
@@ -1012,6 +983,14 @@ def main():
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
     )
+
+    def worker_init_fn(_seed):
+        _seed = _seed * 256
+        def _worker_init_fn(worker_id):
+            print(f"worker_init_fn with {_seed + worker_id}")
+            np.random.seed(_seed + worker_id)
+            random.seed(_seed + worker_id)
+        return _worker_init_fn
     
     if args.enable_bucket:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
@@ -1022,22 +1001,54 @@ def main():
             aspect_ratios=aspect_ratio_sample_size,
         )
 
-        def get_length_to_frame_num(token_length):
-            if args.image_sample_size > args.video_sample_size:
-                sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                if sample_sizes[-1] != args.image_sample_size:
-                    sample_sizes.append(args.image_sample_size)
-            else:
-                sample_sizes = [args.image_sample_size]
-            
-            length_to_frame_num = {
-                sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-            }
-
-            return length_to_frame_num
-
         def collate_fn(examples):
+            def get_length_to_frame_num(token_length):
+                if args.image_sample_size > args.video_sample_size:
+                    sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
+
+                    if sample_sizes[-1] != args.image_sample_size:
+                        sample_sizes.append(args.image_sample_size)
+                else:
+                    sample_sizes = [args.image_sample_size]
+                
+                length_to_frame_num = {
+                    sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+                }
+
+                return length_to_frame_num
+
+            def get_random_downsample_ratio(sample_size, image_ratio=[],
+                                            all_choices=False, rng=None):
+                def _create_special_list(length):
+                    if length == 1:
+                        return [1.0]
+                    if length >= 2:
+                        first_element = 0.90
+                        remaining_sum = 1.0 - first_element
+                        other_elements_value = remaining_sum / (length - 1)
+                        special_list = [first_element] + [other_elements_value] * (length - 1)
+                        return special_list
+                        
+                if sample_size >= 1536:
+                    number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
+                elif sample_size >= 1024:
+                    number_list = [1, 1.25, 1.5, 2] + image_ratio
+                elif sample_size >= 768:
+                    number_list = [1, 1.25, 1.5] + image_ratio
+                elif sample_size >= 512:
+                    number_list = [1] + image_ratio
+                else:
+                    number_list = [1]
+
+                if all_choices:
+                    return number_list
+
+                number_list_prob = np.array(_create_special_list(len(number_list)))
+                if rng is None:
+                    return np.random.choice(number_list, p = number_list_prob)
+                else:
+                    return rng.choice(number_list, p = number_list_prob)
+
             # Get token length
             target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
             length_to_frame_num = get_length_to_frame_num(target_token_length)
@@ -1058,7 +1069,7 @@ def main():
             data_type       = examples[0]["data_type"]
             f, h, w, c      = np.shape(pixel_value)
             if data_type == 'image':
-                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size], rng=rng)
+                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size])
 
                 aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
@@ -1072,15 +1083,11 @@ def main():
                         choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
                         if len(choice_list) == 0:
                             choice_list = list(length_to_frame_num.keys())
-                        if rng is None:
-                            local_video_sample_size = np.random.choice(choice_list)
-                        else:
-                            local_video_sample_size = rng.choice(choice_list)
+                        local_video_sample_size = np.random.choice(choice_list)
                         batch_video_length = length_to_frame_num[local_video_sample_size]
                         random_downsample_ratio = args.video_sample_size / local_video_sample_size
                     else:
-                        random_downsample_ratio = get_random_downsample_ratio(
-                                args.video_sample_size, rng=rng)
+                        random_downsample_ratio = get_random_downsample_ratio(args.video_sample_size)
                         batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
                 else:
                     random_downsample_ratio = 1
@@ -1092,14 +1099,9 @@ def main():
             closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
             closest_size = [int(x / 16) * 16 for x in closest_size]
             if args.random_ratio_crop:
-                if rng is None:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                else:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
 
             for example in examples:
@@ -1195,6 +1197,7 @@ def main():
             collate_fn=collate_fn,
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
     else:
         # DataLoaders creation:
@@ -1205,6 +1208,7 @@ def main():
             batch_sampler=batch_sampler, 
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
 
     # Scheduler and math around the number of training steps.
@@ -1225,7 +1229,10 @@ def main():
     network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         network, optimizer, train_dataloader, lr_scheduler
     )
-
+    if zero_stage == 3:
+        transformer3d = accelerator_transformer3d.prepare(
+            transformer3d
+        )
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device, dtype=weight_dtype)
     transformer3d.to(accelerator.device, dtype=weight_dtype)
@@ -1297,10 +1304,11 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            from safetensors.torch import load_file, safe_open
-            state_dict = load_file(os.path.join(os.path.join(args.output_dir, path), "lora_diffusion_pytorch_model.safetensors"))
-            m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
-            print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+            if zero_stage != 3:
+                from safetensors.torch import load_file, safe_open
+                state_dict = load_file(os.path.join(os.path.join(args.output_dir, path), "lora_diffusion_pytorch_model.safetensors"))
+                m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
+                print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
             accelerator.print(f"Resuming from checkpoint {path}")
             accelerator.load_state(os.path.join(args.output_dir, path))
@@ -1356,7 +1364,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length:
+                if args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1377,7 +1385,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length:
+                    if args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))

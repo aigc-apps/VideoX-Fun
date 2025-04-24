@@ -1,4 +1,4 @@
-## Lora Training Code
+## Training Code
 
 We can choose whether to use deep speed in Wan, which can save a lot of video memory. 
 
@@ -31,7 +31,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -39,7 +39,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -47,7 +47,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -60,8 +62,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_lora.py \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --train_mode="inpaint" \
-  --low_vram 
+  --low_vram \
+  --train_mode="normal" \
+  --trainable_modules "."
 ```
 
 Wan T2V with deepspeed zero-2:
@@ -76,7 +79,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -84,7 +87,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -92,7 +95,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -105,9 +110,10 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --low_vram \
   --use_deepspeed \
   --train_mode="inpaint" \
-  --low_vram
+  --trainable_modules "."
 ```
 
 Wan T2V with deepspeed zero-3:
@@ -127,14 +133,14 @@ export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
 accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage2.1_config.json --deepspeed_multinode_launcherr standard scripts/wan2.1/train.py \
-  --config_path="config/wan2.1_fun/wan_civitai.yaml" \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=1024 \
   --video_sample_size=256 \
   --token_sample_size=512 \
-  --video_sample_stride=3 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -142,7 +148,9 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -155,7 +163,8 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --low_vram \
   --use_deepspeed \
   --train_mode="inpaint" \
-  --low_vram
+  --trainable_modules "."
 ```

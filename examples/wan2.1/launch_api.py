@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--config_path', type=str, default="config/wan2.1/wan_civitai.yaml", help='Path to config file')
     parser.add_argument('--model_name', type=str, default="models/Diffusion_Transformer/Wan2.1-T2V-1.3B", help='Model path')
     parser.add_argument('--model_type', type=str, default="Inpaint", help='Model type (Inpaint/Control)')
+    parser.add_argument('--savedir_sample', type=str, default=None, help='The save directory for samples')
     args = parser.parse_args()
 
     weight_dtype = torch.float32
@@ -45,7 +46,7 @@ def main():
         world_size=args.world_size, Controller=Wan_Controller,
         GPU_memory_mode=args.gpu_memory_mode, scheduler_dict=flow_scheduler_dict, model_name=args.model_name, model_type=args.model_type, config_path=args.config_path, 
         ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, enable_teacache=args.enable_teacache, teacache_threshold=args.teacache_threshold, num_skip_start_steps=args.num_skip_start_steps, 
-        teacache_offload=args.teacache_offload, weight_dtype=weight_dtype, 
+        teacache_offload=args.teacache_offload, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
     )
     
     def gr_launch():

@@ -41,6 +41,7 @@ GPU_memory_mode     = "sequential_cpu_offload"
 ulysses_degree      = 1
 ring_degree         = 1
 
+# TeaCache config
 enable_teacache     = True
 # Recommended to be set between 0.05 and 0.20. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
@@ -51,10 +52,15 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
+# Riflex config
+enable_riflex       = False
+# Index of intrinsic frequency
+riflex_k            = 6
+
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-14B"
+model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
 # Choose the sampler in "Flow"
 sampler_name        = "Flow"
@@ -180,6 +186,9 @@ if lora_path is not None:
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
     latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
+
+    if enable_riflex:
+        pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     sample = pipeline(
         prompt, 

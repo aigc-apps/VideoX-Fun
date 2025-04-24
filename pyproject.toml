@@ -1,0 +1,15 @@
+[project]
+name = "videox-fun"
+description = "VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and Lora models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and Lora models to perform specific style transformations."
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["Pillow", "einops", "safetensors", "timm", "tomesd", "torch>=2.1.2", "torchdiffeq", "torchsde", "decord", "datasets", "numpy", "scikit-image", "opencv-python", "omegaconf", "SentencePiece", "albumentations", "imageio[ffmpeg]", "imageio[pyav]", "tensorboard", "beautifulsoup4", "ftfy", "func_timeout", "accelerate>=0.25.0", "gradio>=3.41.2,<=3.48.0", "diffusers>=0.30.1,<=0.31.0", "transformers>=4.46.2"]
+
+[project.urls]
+Repository = "https://github.com/aigc-apps/VideoX-Fun"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "bubbliiiing"
+DisplayName = "VideoX-Fun"
+Icon = ""

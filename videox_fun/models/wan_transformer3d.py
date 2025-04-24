@@ -5,10 +5,11 @@ import glob
 import json
 import math
 import os
-import warnings
-from typing import Any, Dict
 import types
+import warnings
+from typing import Any, Dict, Optional, Union
 
+import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -18,12 +19,11 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version, logging
 from torch import nn
 
-from .cache_utils import TeaCache
 from ..dist import (get_sequence_parallel_rank,
-                    get_sequence_parallel_world_size, 
-                    get_sp_group,
+                    get_sequence_parallel_world_size, get_sp_group,
                     xFuserLongContextAttention)
 from ..dist.wan_xfuser import usp_attn_forward
+from .cache_utils import TeaCache
 
 try:
     import flash_attn_interface
@@ -221,6 +221,65 @@ def rope_params(max_seq_len, dim, theta=10000):
     freqs = torch.polar(torch.ones_like(freqs), freqs)
     return freqs
 
+# modified from https://github.com/thu-ml/RIFLEx/blob/main/riflex_utils.py
+@amp.autocast(enabled=False)
+def get_1d_rotary_pos_embed_riflex(
+    pos: Union[np.ndarray, int],
+    dim: int,
+    theta: float = 10000.0,
+    use_real=False,
+    k: Optional[int] = None,
+    L_test: Optional[int] = None,
+    L_test_scale: Optional[int] = None,
+):
+    """
+    RIFLEx: Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
+
+    This function calculates a frequency tensor with complex exponentials using the given dimension 'dim' and the end
+    index 'end'. The 'theta' parameter scales the frequencies. The returned tensor contains complex values in complex64
+    data type.
+
+    Args:
+        dim (`int`): Dimension of the frequency tensor.
+        pos (`np.ndarray` or `int`): Position indices for the frequency tensor. [S] or scalar
+        theta (`float`, *optional*, defaults to 10000.0):
+            Scaling factor for frequency computation. Defaults to 10000.0.
+        use_real (`bool`, *optional*):
+            If True, return real part and imaginary part separately. Otherwise, return complex numbers.
+        k (`int`, *optional*, defaults to None): the index for the intrinsic frequency in RoPE
+        L_test (`int`, *optional*, defaults to None): the number of frames for inference
+    Returns:
+        `torch.Tensor`: Precomputed frequency tensor with complex exponentials. [S, D/2]
+    """
+    assert dim % 2 == 0
+
+    if isinstance(pos, int):
+        pos = torch.arange(pos)
+    if isinstance(pos, np.ndarray):
+        pos = torch.from_numpy(pos)  # type: ignore  # [S]
+
+    freqs = 1.0 / torch.pow(theta,
+        torch.arange(0, dim, 2).to(torch.float64).div(dim))
+
+    # === Riflex modification start ===
+    # Reduce the intrinsic frequency to stay within a single period after extrapolation (see Eq. (8)).
+    # Empirical observations show that a few videos may exhibit repetition in the tail frames.
+    # To be conservative, we multiply by 0.9 to keep the extrapolated length below 90% of a single period.
+    if k is not None:
+        freqs[k-1] = 0.9 * 2 * torch.pi / L_test
+    # === Riflex modification end ===
+    if L_test_scale is not None:
+        freqs[k-1] = freqs[k-1] / L_test_scale
+
+    freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
+    if use_real:
+        freqs_cos = freqs.cos().repeat_interleave(2, dim=1).float()  # [S, D]
+        freqs_sin = freqs.sin().repeat_interleave(2, dim=1).float()  # [S, D]
+        return freqs_cos, freqs_sin
+    else:
+        # lumina
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
+        return freqs_cis
 
 @amp.autocast(enabled=False)
 def rope_apply(x, grid_sizes, freqs):
@@ -324,9 +383,9 @@ class WanSelfAttention(nn.Module):
 
         # query, key, value function
         def qkv_fn(x):
-            q = self.norm_q(self.q(x)).view(b, s, n, d)
-            k = self.norm_k(self.k(x)).view(b, s, n, d)
-            v = self.v(x).view(b, s, n, d)
+            q = self.norm_q(self.q(x.to(dtype))).view(b, s, n, d)
+            k = self.norm_k(self.k(x.to(dtype))).view(b, s, n, d)
+            v = self.v(x.to(dtype)).view(b, s, n, d)
             return q, k, v
 
         q, k, v = qkv_fn(x)
@@ -385,7 +444,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens):
+    def forward(self, x, context, context_lens, dtype):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -395,12 +454,18 @@ class WanT2VCrossAttention(WanSelfAttention):
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
         # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
+        q = self.norm_q(self.q(x.to(dtype))).view(b, -1, n, d)
+        k = self.norm_k(self.k(context.to(dtype))).view(b, -1, n, d)
+        v = self.v(context.to(dtype)).view(b, -1, n, d)
 
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        x = attention(
+            q.to(dtype), 
+            k.to(dtype), 
+            v.to(dtype), 
+            k_lens=context_lens
+        )
+        x = x.to(dtype)
 
         # output
         x = x.flatten(2)
@@ -423,7 +488,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens):
+    def forward(self, x, context, context_lens, dtype):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -435,14 +500,27 @@ class WanI2VCrossAttention(WanSelfAttention):
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
         # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
-        k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = attention(q, k_img, v_img, k_lens=None)
+        q = self.norm_q(self.q(x.to(dtype))).view(b, -1, n, d)
+        k = self.norm_k(self.k(context.to(dtype))).view(b, -1, n, d)
+        v = self.v(context.to(dtype)).view(b, -1, n, d)
+        k_img = self.norm_k_img(self.k_img(context_img.to(dtype))).view(b, -1, n, d)
+        v_img = self.v_img(context_img.to(dtype)).view(b, -1, n, d)
+
+        img_x = attention(
+            q.to(dtype), 
+            k_img.to(dtype), 
+            v_img.to(dtype), 
+            k_lens=None
+        )
+        img_x = img_x.to(dtype)
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        x = attention(
+            q.to(dtype), 
+            k.to(dtype), 
+            v.to(dtype), 
+            k_lens=context_lens
+        )
+        x = x.to(dtype)
 
         # output
         x = x.flatten(2)
@@ -532,7 +610,10 @@ class WanAttentionBlock(nn.Module):
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens)
+            # cross-attention
+            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype)
+
+            # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
             temp_x = temp_x.to(dtype)
             
@@ -702,6 +783,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
         d = dim // num_heads
+        self.d = d
         self.freqs = torch.cat(
             [
                 rope_params(1024, d - 4 * (d // 6)),
@@ -731,8 +813,35 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
         )
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        self.gradient_checkpointing = value
+    def disable_teacache(self):
+        self.teacache = None
+
+    def enable_riflex(
+        self,
+        k = 6,
+        L_test = 66,
+        L_test_scale = 4.886,
+    ):
+        device = self.freqs.device
+        self.freqs = torch.cat(
+            [
+                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test, L_test_scale=L_test_scale),
+                rope_params(1024, 2 * (self.d // 6)),
+                rope_params(1024, 2 * (self.d // 6))
+            ],
+            dim=1
+        ).to(device)
+
+    def disable_riflex(self):
+        device = self.freqs.device
+        self.freqs = torch.cat(
+            [
+                rope_params(1024, self.d - 4 * (self.d // 6)),
+                rope_params(1024, 2 * (self.d // 6)),
+                rope_params(1024, 2 * (self.d // 6))
+            ],
+            dim=1
+        ).to(device)
 
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
@@ -740,6 +849,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        self.gradient_checkpointing = value
         
     def forward(
         self,
@@ -804,8 +916,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             e = self.time_embedding(
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            assert e.dtype == torch.float32 and e0.dtype == torch.float32
             # to bfloat16 for saving memeory
+            # assert e.dtype == torch.float32 and e0.dtype == torch.float32
             e0 = e0.to(dtype)
             e = e.to(dtype)
 
@@ -860,7 +972,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
 
                 for block in self.blocks:
-                    if self.training and self.gradient_checkpointing:
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
 
                         def create_custom_forward(module):
                             def custom_forward(*inputs):
@@ -899,7 +1011,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         self.teacache.previous_residual_uncond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
         else:
             for block in self.blocks:
-                if self.training and self.gradient_checkpointing:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
 
                     def create_custom_forward(module):
                         def custom_forward(*inputs):

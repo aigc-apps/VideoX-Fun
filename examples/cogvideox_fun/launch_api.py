@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--server_port', type=int, default=7860, help='Server Port')
     parser.add_argument('--model_name', type=str, default="models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP", help='Model path')
     parser.add_argument('--model_type', type=str, default="Inpaint", help='Model type (Inpaint/Control)')
+    parser.add_argument('--savedir_sample', type=str, default=None, help='The save directory for samples')
     args = parser.parse_args()
 
     weight_dtype = torch.float32
@@ -40,7 +41,7 @@ def main():
         world_size=args.world_size, Controller=CogVideoXFunController,
         GPU_memory_mode=args.gpu_memory_mode, scheduler_dict=flow_scheduler_dict, model_name=args.model_name, model_type=args.model_type, config_path=None, 
         ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, enable_teacache=False, teacache_threshold=0.1, num_skip_start_steps=5, 
-        teacache_offload=False, weight_dtype=weight_dtype, 
+        teacache_offload=False, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
     )
     
     def gr_launch():

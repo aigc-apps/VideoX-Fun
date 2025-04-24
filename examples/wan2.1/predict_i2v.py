@@ -53,6 +53,11 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
+# Riflex config
+enable_riflex       = False
+# Index of intrinsic frequency
+riflex_k            = 6
+
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
@@ -194,6 +199,9 @@ if lora_path is not None:
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
     latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
+
+    if enable_riflex:
+        pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, None, video_length=video_length, sample_size=sample_size)
 

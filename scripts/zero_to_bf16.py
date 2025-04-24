@@ -16,24 +16,31 @@
 #   python zero_to_bf16.py . output_dir/ --safe_serialization
 
 import argparse
-import torch
+import gc
 import glob
+import json
 import math
 import os
+import queue
 import re
-import gc
-import json
-import numpy as np
-from tqdm import tqdm
 from collections import OrderedDict
 from dataclasses import dataclass
+from threading import Thread
 
+import numpy as np
+import torch
+from deepspeed.checkpoint.constants import (BUFFER_NAMES, DS_VERSION,
+                                            FP32_FLAT_GROUPS,
+                                            FROZEN_PARAM_FRAGMENTS,
+                                            FROZEN_PARAM_SHAPES,
+                                            OPTIMIZER_STATE_DICT, PARAM_SHAPES,
+                                            PARTITION_COUNT,
+                                            SINGLE_PARTITION_OF_FP32_GROUPS,
+                                            ZERO_STAGE)
 # while this script doesn't use deepspeed to recover data, since the checkpoints are pickled with
 # DeepSpeed data structures it has to be available in the current python environment.
 from deepspeed.utils import logger
-from deepspeed.checkpoint.constants import (DS_VERSION, OPTIMIZER_STATE_DICT, SINGLE_PARTITION_OF_FP32_GROUPS,
-                                            FP32_FLAT_GROUPS, ZERO_STAGE, PARTITION_COUNT, PARAM_SHAPES, BUFFER_NAMES,
-                                            FROZEN_PARAM_SHAPES, FROZEN_PARAM_FRAGMENTS)
+from tqdm import tqdm
 
 
 @dataclass
@@ -516,17 +523,35 @@ def to_torch_tensor(state_dict, return_empty_tensor=False):
     """
     torch_state_dict = {}
     converted_tensors = {}
-    for name, tensor in state_dict.items():
-        tensor_id = id(tensor)
-        if tensor_id in converted_tensors:  # shared tensors
-            shared_tensor = torch_state_dict[converted_tensors[tensor_id]]
-            torch_state_dict[name] = shared_tensor
-        else:
-            converted_tensors[tensor_id] = name
-            if return_empty_tensor:
-                torch_state_dict[name] = torch.empty(tensor.shape, dtype=tensor.dtype)
+    def convert_tensor(qin):
+        while True:
+            name, tensor = qin.get()
+            if name is None:
+                return
+            tensor_id = id(tensor)
+            if tensor_id in converted_tensors:
+                shared_tensor = torch_state_dict[converted_tensors[tensor_id]]
+                torch_state_dict[name] = shared_tensor.to(torch.bfloat16)
             else:
-                torch_state_dict[name] = tensor.contiguous()
+                converted_tensors[tensor_id] = name
+                if return_empty_tensor:
+                    torch_state_dict[name] = torch.empty(tensor.shape, dtype=tensor.dtype).to(torch.bfloat16)
+                else:
+                    torch_state_dict[name] = tensor.contiguous().to(torch.bfloat16)
+    
+    num_threads = 32
+    qin = queue.Queue(num_threads)
+    threads = [Thread(target=convert_tensor, args=(qin, )) for _ in range(num_threads)]
+    [_.start() for _ in threads]
+    cnt = 0
+    for name, tensor in state_dict.items():
+        cnt += 1
+        qin.put([name, tensor])
+        if cnt % 1000 == 0:
+            print(f'{cnt} / {len(state_dict)}')
+    for _ in range(num_threads):
+        qin.put([None, None])
+    [_.join() for _ in threads]
     return torch_state_dict
 
 
@@ -655,7 +680,11 @@ def convert_zero_checkpoint_to_bf16_state_dict(checkpoint_dir,
     for shard_file, tensors in tqdm(filename_to_tensors, desc="Saving checkpoint shards"):
         shard_state_dict = {tensor_name: state_dict[tensor_name] for tensor_name in tensors}
         shard_state_dict = to_torch_tensor(shard_state_dict)
-        shard_state_dict = {tensor_name: shard_state_dict[tensor_name].to(torch.bfloat16) for tensor_name in shard_state_dict}
+        # to bf16
+        shard_state_dict = {
+            tensor_name: shard_state_dict[tensor_name].to(torch.bfloat16) for tensor_name in shard_state_dict
+        }
+        print('save shard_state_dict')
         output_path = os.path.join(output_dir, shard_file)
         if safe_serialization:
             save_file(shard_state_dict, output_path, metadata={"format": "pt"})
