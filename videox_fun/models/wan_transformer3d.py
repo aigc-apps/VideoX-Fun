@@ -404,7 +404,11 @@ class WanSelfAttention(nn.Module):
         for index, mode in enumerate(
             [
                 "bs (f h w) hn hd -> bs (h w f) hn hd", 
-                "bs (f h w) hn hd -> bs (w h f) hn hd"
+                "bs (f h w) hn hd -> bs (w h f) hn hd",
+                "bs (f h w) hn hd -> bs (h f w) hn hd", 
+                "bs (f h w) hn hd -> bs (w f h) hn hd",
+                "bs (f h w) hn hd -> bs (f h w) hn hd", 
+                "bs (f h w) hn hd -> bs (f w h) hn hd",
             ]
         ):
             
@@ -428,7 +432,11 @@ class WanSelfAttention(nn.Module):
         for index, mode in enumerate(
             [
                 "bs (h w f) hn hd -> bs (f h w) hn hd", 
-                "bs (w h f) hn hd -> bs (f h w) hn hd"
+                "bs (w h f) hn hd -> bs (f h w) hn hd",
+                "bs (h f w) hn hd -> bs (f h w) hn hd", 
+                "bs (w f h) hn hd -> bs (f h w) hn hd",
+                "bs (f h w) hn hd -> bs (f h w) hn hd", 
+                "bs (f w h) hn hd -> bs (f h w) hn hd",
             ]
         ):
             new_hidden_states.append(rearrange(hidden_states[index], mode, f=f, h=h, w=w))
