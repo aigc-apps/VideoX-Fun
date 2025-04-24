@@ -26,6 +26,7 @@ VideoX-Fun is a video generation pipeline that can be used to generate AI images
 We will support quick pull-ups from different platforms, refer to [Quick Start](#quick-start).
 
 What's New:
+- Update Wan2.1-Fun-V1.1: Support for 14B and 1.3B model Control + Reference Image models, support for camera control, and the Inpaint model has been retrained for improved performance. [2025.04.25]
 - Update Wan2.1-Fun-V1.0: Support I2V and Control models for 14B and 1.3B models, with support for start and end frame prediction. [2025.03.26]
 - Update CogVideoX-Fun-V1.5: Upload I2V model and related training/prediction code. [2024.12.16]
 - Reward Lora Support: Train Lora using reward backpropagation techniques to optimize generated videos, making them better aligned with human preferences. [More Information](scripts/README_TRAIN_REWARD.md). New version of the control model supports various control conditions such as Canny, Depth, Pose, MLSD, etc. [2024.11.21]
@@ -82,8 +83,8 @@ mkdir models/Personalized_Model
 # https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
 
 # Wan
-# https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP
-# https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP
+# https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP
+# https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP
 ```
 
 ### 2. Local install: Environment Check/Downloading/Installation
@@ -137,21 +138,21 @@ Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
 
 # Video Result
 
-### Wan2.1-Fun-14B-InP && Wan2.1-Fun-1.3B-InP
+### Wan2.1-Fun-V1.1-14B-InP && Wan2.1-Fun-V1.1-1.3B-InP
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          <video src="https://github.com/user-attachments/assets/bd72a276-e60e-4b5d-86c1-d0f67e7425b9" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/d6a46051-8fe6-4174-be12-95ee52c96298" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/cb7aef09-52c2-4973-80b4-b2fb63425044" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/8572c656-8548-4b1f-9ec8-8107c6236cb1" width="100%" controls autoplay loop></video>
      </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/4e10d491-f1cf-4b08-a7c5-1e01e5418140" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/d3411c95-483d-4e30-bc72-483c2b288918" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/f7e363a9-be09-4b72-bccf-cce9c9ebeb9b" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/b2f5addc-06bd-49d9-b925-973090a32800" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
@@ -159,22 +160,55 @@ Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          <video src="https://github.com/user-attachments/assets/28f3e720-8acc-4f22-a5d0-ec1c571e9466" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/747b6ab8-9617-4ba2-84a0-b51c0efbd4f8" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fb6e4cb9-270d-47cd-8501-caf8f3e91b5c" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/ae94dcda-9d5e-4bae-a86f-882c4282a367" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/989a4644-e33b-4f0c-b68e-2ff6ba37ac7e" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a4aa1a82-e162-4ab5-8f05-72f79568a191" width="100%" controls autoplay loop></video>
      </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/9c604fa7-8657-49d1-8066-b5bb198b28b6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/83c005b8-ccbc-44a0-a845-c0472763119c" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
 
-### Wan2.1-Fun-14B-Control && Wan2.1-Fun-1.3B-Control
+### Wan2.1-Fun-V1.1-14B-Control && Wan2.1-Fun-V1.1-1.3B-Control
 
+Generic Control Video + Reference Image:
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          Reference Image
+      </td>
+      <td>
+          Control Video
+      </td>
+      <td>
+          Wan2.1-Fun-V1.1-14B-Control
+      </td>
+      <td>
+          Wan2.1-Fun-V1.1-1.3B-Control
+      </td>
+  <tr>
+      <td>
+          <image src="https://github.com/user-attachments/assets/221f2879-3b1b-4fbd-84f9-c3e0b0b3533e" width="100%" controls autoplay loop></image>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/f361af34-b3b3-4be4-9d03-cd478cb3dfc5" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/85e2f00b-6ef0-4922-90ab-4364afb2c93d" width="100%" controls autoplay loop></video>
+     </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/1f3fe763-2754-4215-bc9a-ae804950d4b3" width="100%" controls autoplay loop></video>
+     </td>
+  <tr>
+</table>
+
+
+Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
@@ -209,6 +243,52 @@ Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
       </td>
        <td>
           <video src="https://github.com/user-attachments/assets/8411151e-f491-4264-8368-7fc3c5a6992b" width="100%" controls autoplay loop></video>
+     </td>
+  </tr>
+</table>
+
+### Wan2.1-Fun-V1.1-14B-Control-Camera && Wan2.1-Fun-V1.1-1.3B-Control-Camera
+
+<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          Pan Up
+      </td>
+      <td>
+          Pan Left
+      </td>
+       <td>
+          Pan Right
+     </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+     </td>
+  <tr>
+      <td>
+          Pan Down
+      </td>
+      <td>
+          Pan Up + Pan Left
+      </td>
+       <td>
+          Pan Up + Pan Right
+     </td>
+  <tr>
+      <td>
+          <video src="https://github.com/user-attachments/assets/7a3fecc2-d41a-4de3-86cd-5e19aea34a0d" width="100%" controls autoplay loop></video>
+      </td>
+      <td>
+          <video src="https://github.com/user-attachments/assets/cb281259-28b6-448e-a76f-643c3465672e" width="100%" controls autoplay loop></video>
+      </td>
+       <td>
+          <video src="https://github.com/user-attachments/assets/44faf5b6-d83c-4646-9436-971b2b9c7216" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
@@ -441,12 +521,12 @@ CogVideoX-Fun can be found in [Readme Train](scripts/cogvideox_fun/README_TRAIN.
 V1.1:
 | Name | Storage Size | Hugging Face | Model Scope | Description |
 |------|--------------|--------------|-------------|-------------|
-| Wan2.1-Fun1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-InP) | Wan2.1-Fun1.1-1.3B text-to-video generation weights, trained at multiple resolutions, supports start-end image prediction. |
-| Wan2.1-Fun1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-InP) | Wan2.1-Fun1.1-14B text-to-video generation weights, trained at multiple resolutions, supports start-end image prediction. |
-| Wan2.1-Fun1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control) | Wan2.1-Fun1.1-1.3B video control weights support various control conditions such as Canny, Depth, Pose, MLSD, etc., supports reference image + control condition-based control, and trajectory control. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
-| Wan2.1-Fun1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control) | Wan2.1-Fun1.1-14B video control weights support various control conditions such as Canny, Depth, Pose, MLSD, etc., supports reference image + control condition-based control, and trajectory control. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
-| Wan2.1-Fun1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control) | Wan2.1-Fun1.1-1.3B camera lens control weights. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
-| Wan2.1-Fun1.1-14B-Control-Camera | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control) | Wan2.1-Fun1.1-14B camera lens control weights. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
+| Wan2.1-Fun-V1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-InP) | Wan2.1-Fun-V1.1-1.3B text-to-video generation weights, trained at multiple resolutions, supports start-end image prediction. |
+| Wan2.1-Fun-V1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP) | Wan2.1-Fun-V1.1-14B text-to-video generation weights, trained at multiple resolutions, supports start-end image prediction. |
+| Wan2.1-Fun-V1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control) | Wan2.1-Fun-V1.1-1.3B video control weights support various control conditions such as Canny, Depth, Pose, MLSD, etc., supports reference image + control condition-based control, and trajectory control. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
+| Wan2.1-Fun-V1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control) | Wan2.1-Fun-V1.1-14B video control weights support various control conditions such as Canny, Depth, Pose, MLSD, etc., supports reference image + control condition-based control, and trajectory control. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
+| Wan2.1-Fun-V1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control) | Wan2.1-Fun-V1.1-1.3B camera lens control weights. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
+| Wan2.1-Fun-V1.1-14B-Control-Camera | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control) | Wan2.1-Fun-V1.1-14B camera lens control weights. Supports multi-resolution (512, 768, 1024) video prediction, trained with 81 frames at 16 FPS, supports multilingual prediction. |
 
 V1.0:
 | Name | Storage Space | Hugging Face | Model Scope | Description |

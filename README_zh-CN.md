@@ -26,6 +26,7 @@ VideoX-Fun是一个视频生成的pipeline，可用于生成AI图片与视频、
 我们会逐渐支持从不同平台快速启动，请参阅 [快速启动](#快速启动)。
 
 新特性：
+- 更新Wan2.1-Fun-V1.1版本：支持14B与1.3B模型Control+参考图模型，支持镜头控制，另外Inpaint模型重新训练，性能更佳。[2025.04.25]
 - 更新Wan2.1-Fun-V1.0版本：支持14B与1.3B模型的I2V和Control模型，支持首尾图预测。[2025.03.26]
 - 更新CogVideoX-Fun-V1.5版本：上传I2V模型与相关训练预测代码。[2024.12.16]
 - 奖励Lora支持：通过奖励反向传播技术训练Lora，以优化生成的视频，使其更好地与人类偏好保持一致，[更多信息](scripts/README_TRAIN_REWARD.md)。新版本的控制模型，支持不同的控制条件，如Canny、Depth、Pose、MLSD等。[2024.11.21]
@@ -80,8 +81,8 @@ mkdir models/Personalized_Model
 # https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
 
 # Wan
-# https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP
-# https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP
+# https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP
+# https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP
 ```
 
 ### 2. 本地安装: 环境检查/下载/安装
@@ -117,8 +118,8 @@ Linux 的详细信息：
 │   └── 📂 Fun_Models/
 │       ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
 │       ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
-│       ├── 📂 Wan2.1-Fun-14B-InP
-│       └── 📂 Wan2.1-Fun-1.3B-InP/
+│       ├── 📂 Wan2.1-Fun-V1.1-14B-InP
+│       └── 📂 Wan2.1-Fun-V1.1-1.3B-InP/
 ```
 
 **运行自身的python文件或ui界面**:
@@ -127,29 +128,29 @@ Linux 的详细信息：
 ├── 📂 Diffusion_Transformer/
 │   ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
 │   ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
-│   ├── 📂 Wan2.1-Fun-14B-InP
-│   └── 📂 Wan2.1-Fun-1.3B-InP/
+│   ├── 📂 Wan2.1-Fun-V1.1-14B-InP
+│   └── 📂 Wan2.1-Fun-V1.1-1.3B-InP/
 ├── 📂 Personalized_Model/
 │   └── your trained trainformer model / your trained lora model (for UI load)
 ```
 
 # 视频作品
 
-### Wan2.1-Fun-14B-InP && Wan2.1-Fun-1.3B-InP
+### Wan2.1-Fun-V1.1-14B-InP && Wan2.1-Fun-V1.1-1.3B-InP
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          <video src="https://github.com/user-attachments/assets/bd72a276-e60e-4b5d-86c1-d0f67e7425b9" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/d6a46051-8fe6-4174-be12-95ee52c96298" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/cb7aef09-52c2-4973-80b4-b2fb63425044" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/8572c656-8548-4b1f-9ec8-8107c6236cb1" width="100%" controls autoplay loop></video>
      </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/4e10d491-f1cf-4b08-a7c5-1e01e5418140" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/d3411c95-483d-4e30-bc72-483c2b288918" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/f7e363a9-be09-4b72-bccf-cce9c9ebeb9b" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/b2f5addc-06bd-49d9-b925-973090a32800" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
@@ -157,21 +158,21 @@ Linux 的详细信息：
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          <video src="https://github.com/user-attachments/assets/28f3e720-8acc-4f22-a5d0-ec1c571e9466" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/747b6ab8-9617-4ba2-84a0-b51c0efbd4f8" width="100%" controls autoplay loop></video>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/fb6e4cb9-270d-47cd-8501-caf8f3e91b5c" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/ae94dcda-9d5e-4bae-a86f-882c4282a367" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/989a4644-e33b-4f0c-b68e-2ff6ba37ac7e" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/a4aa1a82-e162-4ab5-8f05-72f79568a191" width="100%" controls autoplay loop></video>
      </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/9c604fa7-8657-49d1-8066-b5bb198b28b6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/83c005b8-ccbc-44a0-a845-c0472763119c" width="100%" controls autoplay loop></video>
      </td>
   </tr>
 </table>
 
-### Wan2.1-Fun-14B-Control && Wan2.1-Fun-1.3B-Control
+### Wan2.1-Fun-V1.1-14B-Control && Wan2.1-Fun-V1.1-1.3B-Control
 
 Generic Control Video + Reference Image:
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
@@ -190,29 +191,16 @@ Generic Control Video + Reference Image:
       </td>
   <tr>
       <td>
-          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
+          <image src="https://github.com/user-attachments/assets/221f2879-3b1b-4fbd-84f9-c3e0b0b3533e" width="100%" controls autoplay loop></image>
       </td>
       <td>
-          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/f361af34-b3b3-4be4-9d03-cd478cb3dfc5" width="100%" controls autoplay loop></video>
       </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/85e2f00b-6ef0-4922-90ab-4364afb2c93d" width="100%" controls autoplay loop></video>
      </td>
        <td>
-          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
-     </td>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/a88f81da-e263-4038-a5b3-77b26f79719e" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/e346c59d-7bca-4253-97fb-8cbabc484afb" width="100%" controls autoplay loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
-     </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/4de470d4-47b7-46e3-82d3-b714a2f6aef6" width="100%" controls autoplay loop></video>
+          <video src="https://github.com/user-attachments/assets/1f3fe763-2754-4215-bc9a-ae804950d4b3" width="100%" controls autoplay loop></video>
      </td>
   <tr>
 </table>
@@ -257,7 +245,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
   </tr>
 </table>
 
-### Wan2.1-Fun1.1-14B-Control-Camera && Wan2.1-Fun1.1-1.3B-Control-Camera
+### Wan2.1-Fun-V1.1-14B-Control-Camera && Wan2.1-Fun-V1.1-1.3B-Control-Camera
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
@@ -528,12 +516,12 @@ CogVideoX-Fun可以查看[Readme Train](scripts/cogvideox_fun/README_TRAIN.md)�
 V1.1:
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
-| Wan2.1-Fun1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-InP) | Wan2.1-Fun1.1-1.3B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-InP) | Wan2.1-Fun1.1-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control)| Wan2.1-Fun1.1-1.3B视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control)| Wan2.1-Fun1.1-14B视视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-1.3B-Control)| Wan2.1-Fun1.1-1.3B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun1.1-14B-Control)| Wan2.1-Fun1.1-14B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun-V1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-InP) | Wan2.1-Fun-V1.1-1.3B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
+| Wan2.1-Fun-V1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP) | Wan2.1-Fun-V1.1-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
+| Wan2.1-Fun-V1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control)| Wan2.1-Fun-V1.1-1.3B视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun-V1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control)| Wan2.1-Fun-V1.1-14B视视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun-V1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control)| Wan2.1-Fun-V1.1-1.3B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
+| Wan2.1-Fun-V1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control)| Wan2.1-Fun-V1.1-14B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
 
 V1.0:
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
