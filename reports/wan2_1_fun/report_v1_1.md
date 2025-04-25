@@ -19,9 +19,13 @@ To further enhance the usability of the control model, we developed a new contro
 
 We encode the reference image using VAE, then tile the latent representation and concatenate the tiled features with the video features for generation. To ensure that this does not interfere with the model's original functionality, during training, we randomly initialize the reference image latent as all zeros to simulate cases where no reference image is provided. The overall workflow of the model is shown in the figure below:
 
+![Control_Ref](https://github.com/user-attachments/assets/8987a3b5-e691-4c49-a83c-10cad0fe13f3)
+
 ## Camera Control Model
 Building upon Wan-Fun V1.0, we now support additional camera information inputs for camera control.
 
 Inspired by [CameraCtrl](https://github.com/hehao13/CameraCtrl) and [EasyAnimate](https://github.com/aigc-apps/EasyAnimate), instead of directly resizing inputs like EasyAnimate does to input camera trajectories, we first use PixelUnshuffle to convert temporal information into channel information. Then, using an adapter mechanism, we transform the camera trajectory into high-level semantic information before adding it to the video features post-Conv. This allows us to achieve precise control over the camera lens movement.
 
 The overall framework of the model is shown in the figure below:
+
+![Control_Camera](https://github.com/user-attachments/assets/0fdb129f-7c74-48e6-9fbd-9fef23ef446e)

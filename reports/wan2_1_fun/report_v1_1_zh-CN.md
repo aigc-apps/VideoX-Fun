@@ -19,6 +19,7 @@
 
 我们将参考图使用VAE Encode之后，将latent平铺，然后将平铺后的特征与视频特征进行concat实现生成，为了不影响模型的原功能，我们在训练中随机将参考图latent初始化为全0，代表没有参考图输入，整体模型的工作框架如图所示：
 
+![Control_Ref](https://github.com/user-attachments/assets/8987a3b5-e691-4c49-a83c-10cad0fe13f3)
 
 ## 镜头控制模型
 在原本Wan-Fun V1.0的基础上，我们支持进一步输入Camera信息，以进行镜头控制。
@@ -26,3 +27,5 @@
 参考[CameraCtrl](https://github.com/hehao13/CameraCtrl)与[EasyAnimate](https://github.com/aigc-apps/EasyAnimate)，我们没有选择类似于EasyAnimate那种直接Resize的方式输入相机镜头的控制轨迹，而是先使用PixelUnshuffle将时序信息转换成通道信息，然后使用Adapter的方式，将相机镜头的轨迹转换成高层语义信息后再与Conv in后的视频特征相加，从而实现了视频镜头的控制。
 
 整体模型的工作框架如图所示：
+
+![Control_Camera](https://github.com/user-attachments/assets/0fdb129f-7c74-48e6-9fbd-9fef23ef446e)
