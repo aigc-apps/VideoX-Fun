@@ -68,10 +68,10 @@ docker pull mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cud
 docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unconfined --shm-size 200g mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
 
 # clone code
-git clone https://github.com/aigc-apps/CogVideoX-Fun.git
+git clone https://github.com/aigc-apps/VideoX-Fun.git
 
-# enter CogVideoX-Fun's dir
-cd CogVideoX-Fun
+# enter VideoX-Fun's dir
+cd VideoX-Fun
 
 # download weights
 mkdir models/Diffusion_Transformer
