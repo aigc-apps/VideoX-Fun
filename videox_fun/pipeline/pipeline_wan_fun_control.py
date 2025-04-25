@@ -598,10 +598,6 @@ class WanFunControlPipeline(DiffusionPipeline):
             b, f, c, h, w = control_camera_latents.shape
             control_camera_latents = control_camera_latents.contiguous().view(b, f // 4, 4, c, h, w).transpose(2, 3)
             control_camera_latents = control_camera_latents.contiguous().view(b, f // 4, c * 4, h, w).transpose(1, 2)
-
-            control_camera_latents = (
-                torch.cat([control_camera_latents] * 2) if do_classifier_free_guidance else control_camera_latents
-            ).to(device, weight_dtype)
         elif control_video is not None:
             video_length = control_video.shape[2]
             control_video = self.image_processor.preprocess(rearrange(control_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
@@ -618,15 +614,9 @@ class WanFunControlPipeline(DiffusionPipeline):
                 generator,
                 do_classifier_free_guidance
             )[1]
-            control_latents = (
-                torch.cat([control_video_latents] * 2) if do_classifier_free_guidance else control_video_latents
-            ).to(device, weight_dtype)
             control_camera_latents = None
         else:
             control_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
-            control_latents = (
-                torch.cat([control_video_latents] * 2) if do_classifier_free_guidance else control_video_latents
-            ).to(device, weight_dtype)
             control_camera_latents = None
 
         if start_image is not None:
@@ -650,37 +640,17 @@ class WanFunControlPipeline(DiffusionPipeline):
             start_image_latentes_conv_in = torch.zeros_like(latents)
             if latents.size()[2] != 1:
                 start_image_latentes_conv_in[:, :, :1] = start_image_latentes
-            start_image_latentes_conv_in = (
-                torch.cat([start_image_latentes_conv_in] * 2) if do_classifier_free_guidance else start_image_latentes_conv_in
-            ).to(device, weight_dtype)
-            if control_latents is None:
-                control_latents = start_image_latentes_conv_in
-            else:
-                control_latents = torch.cat([control_latents, start_image_latentes_conv_in], dim = 1)
         else:
             start_image_latentes_conv_in = torch.zeros_like(latents)
-            start_image_latentes_conv_in = (
-                torch.cat([start_image_latentes_conv_in] * 2) if do_classifier_free_guidance else start_image_latentes_conv_in
-            ).to(device, weight_dtype)
-            if control_latents is None:
-                control_latents = start_image_latentes_conv_in
-            else:
-                control_latents = torch.cat([control_latents, start_image_latentes_conv_in], dim = 1)
 
         # Prepare clip latent variables
         if clip_image is not None:
             clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
             clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-            clip_context = (
-                torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-            )
         else:
             clip_image = Image.new("RGB", (512, 512), color=(0, 0, 0))  
             clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
             clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-            clip_context = (
-                torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-            )
             clip_context = torch.zeros_like(clip_context)
 
         if self.transformer.config.get("add_ref_conv", False):
@@ -701,20 +671,14 @@ class WanFunControlPipeline(DiffusionPipeline):
                     generator,
                     do_classifier_free_guidance
                 )[1]
-                ref_image_latentes_conv_in = (
-                    torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
-                ).to(device, weight_dtype)
-                full_ref = ref_image_latentes_conv_in[:, :, 0].clone()
+                ref_image_latentes = ref_image_latentes[:, :, 0]
             else:
                 ref_image_latentes = torch.zeros_like(latents)[:, :, 0]
-                full_ref = (
-                    torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
-                ).to(device, weight_dtype)
         else:
             if ref_image is not None:
                 raise ValueError("The add_ref_conv is False, but ref_image is not None")
             else:
-                full_ref = None
+                ref_image_latentes = None
 
         if comfyui_progressbar:
             pbar.update(1)
@@ -739,6 +703,35 @@ class WanFunControlPipeline(DiffusionPipeline):
                 if hasattr(self.scheduler, "scale_model_input"):
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                # Prepare mask latent variables
+                if control_camera_video is not None:
+                    control_latents_input = None
+                    control_camera_latents_input = (
+                        torch.cat([control_camera_latents] * 2) if do_classifier_free_guidance else control_camera_latents
+                    ).to(device, weight_dtype)
+                else:
+                    control_latents_input = (
+                        torch.cat([control_video_latents] * 2) if do_classifier_free_guidance else control_video_latents
+                    ).to(device, weight_dtype)
+                    control_camera_latents_input = None
+
+                start_image_latentes_conv_in_input = (
+                    torch.cat([start_image_latentes_conv_in] * 2) if do_classifier_free_guidance else start_image_latentes_conv_in
+                ).to(device, weight_dtype)
+                control_latents_input = start_image_latentes_conv_in_input if control_latents_input is None else \
+                    torch.cat([control_latents_input, start_image_latentes_conv_in_input], dim = 1)
+
+                clip_context_input = (
+                    torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
+                )
+
+                if ref_image_latentes is not None:
+                    full_ref = (
+                        torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
+                    ).to(device, weight_dtype)
+                else:
+                    full_ref = None
+
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
                 
@@ -749,10 +742,10 @@ class WanFunControlPipeline(DiffusionPipeline):
                         context=in_prompt_embeds,
                         t=timestep,
                         seq_len=seq_len,
-                        y=control_latents,
-                        y_camera=control_camera_latents, 
-                        clip_fea=clip_context,
+                        y=control_latents_input,
+                        y_camera=control_camera_latents_input, 
                         full_ref=full_ref,
+                        clip_fea=clip_context_input,
                     )
 
                 # perform guidance

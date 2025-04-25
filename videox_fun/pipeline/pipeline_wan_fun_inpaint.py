@@ -597,12 +597,6 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                     torch.zeros_like(latents)[:, :1].to(device, weight_dtype), [1, 4, 1, 1, 1]
                 )
                 masked_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
-
-                mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
-                masked_video_latents_input = (
-                    torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
-                )
-                y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
             else:
                 bs, _, video_length, height, width = video.size()
                 mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
@@ -633,27 +627,14 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                 mask_condition = mask_condition.transpose(1, 2)
                 mask_latents = resize_mask(1 - mask_condition, masked_video_latents, True).to(device, weight_dtype) 
 
-                mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
-                masked_video_latents_input = (
-                    torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
-                )
-
-                y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
-
         # Prepare clip latent variables
         if clip_image is not None:
             clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
             clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-            clip_context = (
-                torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-            )
         else:
             clip_image = Image.new("RGB", (512, 512), color=(0, 0, 0))  
             clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
             clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-            clip_context = (
-                torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-            )
             clip_context = torch.zeros_like(clip_context)
         if comfyui_progressbar:
             pbar.update(1)
@@ -678,6 +659,17 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                 if hasattr(self.scheduler, "scale_model_input"):
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                if init_video is not None:
+                    mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
+                    masked_video_latents_input = (
+                        torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
+                    )
+                    y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
+
+                clip_context_input = (
+                    torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
+                )
+
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
                 
@@ -689,7 +681,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                         t=timestep,
                         seq_len=seq_len,
                         y=y,
-                        clip_fea=clip_context,
+                        clip_fea=clip_context_input,
                     )
 
                 # perform guidance
