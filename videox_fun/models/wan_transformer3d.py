@@ -1111,7 +1111,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         _state_dict = load_file(_model_file_safetensors)
                         for key in _state_dict:
                             state_dict[key] = _state_dict[key]
-                model._convert_deprecated_attention_blocks(state_dict)
 
                 if diffusers_version >= "0.33.0":
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
@@ -1123,6 +1122,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         model_name_or_path=pretrained_model_path,
                     )
                 else:
+                    model._convert_deprecated_attention_blocks(state_dict)
                     # move the params from meta device to cpu
                     missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
                     if len(missing_keys) > 0:
