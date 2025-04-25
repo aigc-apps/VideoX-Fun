@@ -31,7 +31,7 @@ def main():
     parser.add_argument('--server_name', type=str, default="0.0.0.0", help='Server IP address')
     parser.add_argument('--server_port', type=int, default=7860, help='Server Port')
     parser.add_argument('--config_path', type=str, default="config/wan2.1/wan_civitai.yaml", help='Path to config file')
-    parser.add_argument('--model_name', type=str, default="models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP", help='Model path')
+    parser.add_argument('--model_name', type=str, default="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-InP", help='Model path')
     parser.add_argument('--model_type', type=str, default="Inpaint", help='Model type (Inpaint/Control)')
     parser.add_argument('--savedir_sample', type=str, default=None, help='The save directory for samples')
     args = parser.parse_args()

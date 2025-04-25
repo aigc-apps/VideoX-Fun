@@ -62,7 +62,7 @@ if __name__ == "__main__":
     config_path = "config/wan2.1/wan_civitai.yaml"
     # Params below is used when ui_mode = "host"
     # Model path of the pretrained model
-    model_name = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
+    model_name = "models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-InP"
     # "Inpaint" or "Control"
     model_type = "Inpaint"
 

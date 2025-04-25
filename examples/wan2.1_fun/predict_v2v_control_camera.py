@@ -69,7 +69,7 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-1.3B-Control-Camera"
+model_name          = "models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control-Camera"
 
 # Choose the sampler in "Flow"
 sampler_name        = "Flow"
