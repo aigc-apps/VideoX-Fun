@@ -1,6 +1,6 @@
 {
-  "last_node_id": 96,
-  "last_link_id": 60,
+  "last_node_id": 97,
+  "last_link_id": 65,
   "nodes": [
     {
       "id": 78,
@@ -135,7 +135,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            60
+            64
           ],
           "slot_index": 0,
           "shape": 3
@@ -188,15 +188,15 @@
       }
     },
     {
-      "id": 95,
-      "type": "LoadWanFunModel",
+      "id": 92,
+      "type": "FunTextBox",
       "pos": {
-        "0": 275,
-        "1": -309
+        "0": 254,
+        "1": -46
       },
       "size": {
-        "0": 435.2322082519531,
-        "1": 154
+        "0": 380.845703125,
+        "1": 157.68350219726562
       },
       "flags": {},
       "order": 5,
@@ -204,46 +204,10 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            59
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWanFunModel"
-      },
-      "widgets_values": [
-        "Wan2.1-Fun-1.3B-Control",
-        "Control",
-        "model_cpu_offload",
-        "wan2.1/wan_civitai.yaml",
-        "bf16"
-      ]
-    },
-    {
-      "id": 92,
-      "type": "FunTextBox",
-      "pos": {
-        "0": 254,
-        "1": -46
-      },
-      "size": [
-        380.84570316445,
-        157.68350713493612
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            57
+            62
           ],
           "slot_index": 0
         }
@@ -263,12 +227,12 @@
         "0": 258,
         "1": 178
       },
-      "size": [
-        368.5529492582,
-        159.40758916618609
-      ],
+      "size": {
+        "0": 368.5529479980469,
+        "1": 159.4075927734375
+      },
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -276,7 +240,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            58
+            63
           ],
           "slot_index": 0
         }
@@ -306,7 +270,7 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 54,
+          "link": 65,
           "slot_index": 0,
           "label": "图像",
           "shape": 7
@@ -369,16 +333,16 @@
       }
     },
     {
-      "id": 91,
+      "id": 97,
       "type": "WanFunV2VSampler",
       "pos": {
         "0": 792,
         "1": 11
       },
-      "size": {
-        "0": 428.4000244140625,
-        "1": 422
-      },
+      "size": [
+        428.4000244140625,
+        486
+      ],
       "flags": {},
       "order": 8,
       "mode": 0,
@@ -386,17 +350,17 @@
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 59
+          "link": 61
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 57
+          "link": 62
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 58
+          "link": 63
         },
         {
           "name": "validation_video",
@@ -407,13 +371,34 @@
         {
           "name": "control_video",
           "type": "IMAGE",
-          "link": 60,
+          "link": 64,
+          "shape": 7
+        },
+        {
+          "name": "start_image",
+          "type": "IMAGE",
+          "link": null,
           "shape": 7
         },
         {
           "name": "ref_image",
           "type": "IMAGE",
           "link": null,
+          "shape": 7
+        },
+        {
+          "name": "riflex_k",
+          "type": "RIFLEXT_ARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "camera_conditions",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "camera_conditions"
+          },
           "shape": 7
         }
       ],
@@ -422,7 +407,7 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            54
+            65
           ]
         }
       ],
@@ -430,73 +415,110 @@
         "Node name for S&R": "WanFunV2VSampler"
       },
       "widgets_values": [
-        49,
+        81,
         640,
         43,
         "fixed",
         50,
         6,
-        1,
+        1.0,
         "Flow",
         0.1,
         true,
         5,
-        true
+        true,
+        ""
+      ]
+    },
+    {
+      "id": 95,
+      "type": "LoadWanFunModel",
+      "pos": {
+        "0": 275,
+        "1": -309
+      },
+      "size": {
+        "0": 435.2322082519531,
+        "1": 154
+      },
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            61
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanFunModel"
+      },
+      "widgets_values": [
+        "Wan2.1-Fun-V1.1-1.3B-Control",
+        "Control",
+        "model_cpu_offload",
+        "wan2.1/wan_civitai.yaml",
+        "bf16"
       ]
     }
   ],
   "links": [
     [
-      54,
-      91,
-      0,
-      17,
-      0,
-      "IMAGE"
-    ],
-    [
-      57,
-      92,
-      0,
-      91,
-      1,
-      "STRING_PROMPT"
-    ],
-    [
-      58,
-      94,
-      0,
-      91,
-      2,
-      "STRING_PROMPT"
-    ],
-    [
-      59,
+      61,
       95,
       0,
-      91,
+      97,
       0,
       "FunModels"
     ],
     [
-      60,
+      62,
+      92,
+      0,
+      97,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      63,
+      94,
+      0,
+      97,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      64,
       85,
       0,
-      91,
+      97,
       4,
+      "IMAGE"
+    ],
+    [
+      65,
+      97,
+      0,
+      17,
+      0,
       "IMAGE"
     ]
   ],
   "groups": [
     {
-      "title": "Upload Your Video",
+      "title": "Prompts",
       "bounding": [
         218,
-        385,
-        487,
-        789
+        -127,
+        450,
+        483
       ],
-      "color": "#a1309b",
+      "color": "#3f789e",
       "font_size": 24,
       "flags": {}
     },
@@ -513,14 +535,14 @@
       "flags": {}
     },
     {
-      "title": "Prompts",
+      "title": "Upload Your Video",
       "bounding": [
         218,
-        -127,
-        450,
-        483
+        385,
+        487,
+        789
       ],
-      "color": "#3f789e",
+      "color": "#a1309b",
       "font_size": 24,
       "flags": {}
     }
@@ -528,10 +550,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.5644739300537773,
+      "scale": 0.6830134553650709,
       "offset": [
-        565.8477434839879,
-        453.10373146272065
+        249.86519634240904,
+        438.3739973625246
       ]
     },
     "workspace_info": {
@@ -539,7 +561,7 @@
     },
     "node_versions": {
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e",
-      "CogVideoX-Fun": "e054344e39c5030c23b0146ed4a1293bff2505ed"
+      "CogVideoX-Fun": "717f0629175ad192927dc51ec95c4376816a4212"
     }
   },
   "version": 0.4

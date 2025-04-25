@@ -1,6 +1,6 @@
 {
-  "last_node_id": 125,
-  "last_link_id": 280,
+  "last_node_id": 126,
+  "last_link_id": 287,
   "nodes": [
     {
       "id": 107,
@@ -97,7 +97,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            277
+            285
           ],
           "slot_index": 0,
           "shape": 3,
@@ -217,7 +217,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            279
+            282
           ]
         }
       ],
@@ -247,7 +247,7 @@
         {
           "name": "video_1",
           "type": "IMAGE",
-          "link": 274
+          "link": 287
         },
         {
           "name": "video_2",
@@ -305,7 +305,7 @@
           "links": [
             237,
             262,
-            276
+            284
           ],
           "slot_index": 0
         }
@@ -337,7 +337,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            278
+            283
           ],
           "slot_index": 0
         }
@@ -348,164 +348,6 @@
       },
       "widgets_values": [
         "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-      ]
-    },
-    {
-      "id": 106,
-      "type": "VHS_VideoCombine",
-      "pos": {
-        "0": 1400,
-        "1": 132
-      },
-      "size": [
-        390,
-        310
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 273,
-          "slot_index": 0,
-          "label": "图像",
-          "shape": 7
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "link": null,
-          "label": "音频",
-          "shape": 7
-        },
-        {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "link": null,
-          "label": "批次管理",
-          "shape": 7
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": null,
-          "shape": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "Filenames",
-          "type": "VHS_FILENAMES",
-          "links": null,
-          "slot_index": 0,
-          "shape": 3,
-          "label": "文件名"
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VHS_VideoCombine"
-      },
-      "widgets_values": {
-        "frame_rate": 16,
-        "loop_count": 0,
-        "filename_prefix": "Fun",
-        "format": "video/h264-mp4",
-        "pix_fmt": "yuv420p",
-        "crf": 22,
-        "save_metadata": true,
-        "pingpong": false,
-        "save_output": true,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "EasyAnimate_00105.mp4",
-            "subfolder": "",
-            "type": "output",
-            "format": "video/h264-mp4",
-            "frame_rate": 8
-          }
-        }
-      }
-    },
-    {
-      "id": 125,
-      "type": "WanFunV2VSampler",
-      "pos": {
-        "0": 907,
-        "1": 129
-      },
-      "size": {
-        "0": 428.4000244140625,
-        "1": 422
-      },
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 280
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 279
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 278
-        },
-        {
-          "name": "validation_video",
-          "type": "IMAGE",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "control_video",
-          "type": "IMAGE",
-          "link": 276,
-          "shape": 7
-        },
-        {
-          "name": "ref_image",
-          "type": "IMAGE",
-          "link": 277,
-          "shape": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            273,
-            274
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "WanFunV2VSampler"
-      },
-      "widgets_values": [
-        81,
-        640,
-        528242892655931,
-        "randomize",
-        50,
-        6,
-        1,
-        "Flow",
-        0.1,
-        true,
-        5,
-        true
       ]
     },
     {
@@ -817,6 +659,185 @@
       }
     },
     {
+      "id": 126,
+      "type": "WanFunV2VSampler",
+      "pos": {
+        "0": 902,
+        "1": 60
+      },
+      "size": [
+        428.4000244140625,
+        486
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 281
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 282
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 283
+        },
+        {
+          "name": "validation_video",
+          "type": "IMAGE",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "control_video",
+          "type": "IMAGE",
+          "link": 284,
+          "shape": 7
+        },
+        {
+          "name": "start_image",
+          "type": "IMAGE",
+          "link": 285,
+          "shape": 7
+        },
+        {
+          "name": "ref_image",
+          "type": "IMAGE",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "riflex_k",
+          "type": "RIFLEXT_ARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "camera_conditions",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "camera_conditions"
+          },
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            286,
+            287
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanFunV2VSampler"
+      },
+      "widgets_values": [
+        81,
+        640,
+        43,
+        "fixed",
+        50,
+        6,
+        1.0,
+        "Flow",
+        0.1,
+        true,
+        5,
+        true,
+        ""
+      ]
+    },
+    {
+      "id": 106,
+      "type": "VHS_VideoCombine",
+      "pos": {
+        "0": 1390,
+        "1": 61
+      },
+      "size": [
+        390,
+        310
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 286,
+          "slot_index": 0,
+          "label": "图像",
+          "shape": 7
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": null,
+          "label": "音频",
+          "shape": 7
+        },
+        {
+          "name": "meta_batch",
+          "type": "VHS_BatchManager",
+          "link": null,
+          "label": "批次管理",
+          "shape": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null,
+          "slot_index": 0,
+          "shape": 3,
+          "label": "文件名"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 16,
+        "loop_count": 0,
+        "filename_prefix": "Fun",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 22,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "EasyAnimate_00105.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 8
+          }
+        }
+      }
+    },
+    {
       "id": 123,
       "type": "LoadWanFunModel",
       "pos": {
@@ -836,7 +857,7 @@
           "name": "funmodels",
           "type": "FunModels",
           "links": [
-            280
+            281
           ],
           "slot_index": 0
         }
@@ -845,7 +866,7 @@
         "Node name for S&R": "LoadWanFunModel"
       },
       "widgets_values": [
-        "Wan2.1-Fun-1.3B-Control",
+        "Wan2.1-Fun-V1.1-1.3B-Control",
         "Control",
         "model_cpu_offload",
         "wan2.1/wan_civitai.yaml",
@@ -911,60 +932,60 @@
       "STRING"
     ],
     [
-      273,
-      125,
+      281,
+      123,
+      0,
+      126,
+      0,
+      "FunModels"
+    ],
+    [
+      282,
+      121,
+      0,
+      126,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      283,
+      122,
+      0,
+      126,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      284,
+      95,
+      0,
+      126,
+      4,
+      "IMAGE"
+    ],
+    [
+      285,
+      100,
+      0,
+      126,
+      5,
+      "IMAGE"
+    ],
+    [
+      286,
+      126,
       0,
       106,
       0,
       "IMAGE"
     ],
     [
-      274,
-      125,
+      287,
+      126,
       0,
       114,
       0,
       "IMAGE"
-    ],
-    [
-      276,
-      95,
-      0,
-      125,
-      4,
-      "IMAGE"
-    ],
-    [
-      277,
-      100,
-      0,
-      125,
-      5,
-      "IMAGE"
-    ],
-    [
-      278,
-      122,
-      0,
-      125,
-      2,
-      "STRING_PROMPT"
-    ],
-    [
-      279,
-      121,
-      0,
-      125,
-      1,
-      "STRING_PROMPT"
-    ],
-    [
-      280,
-      123,
-      0,
-      125,
-      0,
-      "FunModels"
     ]
   ],
   "groups": [
@@ -1020,17 +1041,16 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6209213230591555,
+      "scale": 0.6830134553650709,
       "offset": [
-        -272.6643790445752,
-        -176.47199796461615
+        198.78755142053404,
+        143.5866129875247
       ]
     },
     "node_versions": {
       "comfy-core": "v0.2.7-3-g8afb97c",
       "ComfyUI-KJNodes": "4c5c26a2c91de356212419ac8bc7fcf9869527e9",
-      "CogVideoX-Fun": "e054344e39c5030c23b0146ed4a1293bff2505ed",
-      "EasyAnimate": "c2a70d17daa1549a22129d0cd0e02053ecccd75c",
+      "CogVideoX-Fun": "717f0629175ad192927dc51ec95c4376816a4212",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
     }
   },
