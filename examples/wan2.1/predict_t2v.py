@@ -69,10 +69,10 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
-# Choose the sampler in "Flow", "unipc", "dpm++"
+# Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
-# Used when the sampler is in "unipc", "dpm++".
+# Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 # If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
 # If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
 shift               = 3 
@@ -154,10 +154,10 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 # Get Scheduler
 Choosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
-    "unipc": FlowUniPCMultistepScheduler,
-    "dpm++": FlowDPMSolverMultistepScheduler,
+    "Flow_Unipc": FlowUniPCMultistepScheduler,
+    "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
-if sampler_name == "unipc" or sampler_name == "dpm++":
+if sampler_name == "Flow_Unipc" or sampler_name == "Flow_DPM++":
     config['scheduler_kwargs']['shift'] = 1
 scheduler = Choosen_Scheduler(
     **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
