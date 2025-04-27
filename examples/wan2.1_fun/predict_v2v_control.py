@@ -47,6 +47,8 @@ GPU_memory_mode     = "sequential_cpu_offload"
 ulysses_degree      = 1
 ring_degree         = 1
 fsdp_dit            = False
+# Compile will give a speedup in fixed resolution. 
+compile_dit         = False
 
 # Support TeaCache.
 enable_teacache     = True
@@ -201,6 +203,12 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
+        print("Add FSDP")
+
+if compile_dit:
+    for i in range(len(pipeline.transformer.blocks)):
+        pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
+    print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)

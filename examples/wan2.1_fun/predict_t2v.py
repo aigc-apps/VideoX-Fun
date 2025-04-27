@@ -44,6 +44,8 @@ GPU_memory_mode     = "sequential_cpu_offload"
 ulysses_degree      = 1
 ring_degree         = 1
 fsdp_dit            = False
+# Compile will give a speedup in fixed resolution. 
+compile_dit         = False
 
 # Support TeaCache.
 enable_teacache     = True
