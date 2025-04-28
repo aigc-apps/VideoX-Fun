@@ -42,8 +42,10 @@ GPU_memory_mode     = "sequential_cpu_offload"
 # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
 ulysses_degree      = 1
 ring_degree         = 1
+# Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
-# Compile will give a speedup in fixed resolution. 
+# Compile will give a speedup in fixed resolution and need a little GPU memory. 
+# The compile_dit is not compatible with the fsdp_dit.
 compile_dit         = False
 
 # TeaCache config
