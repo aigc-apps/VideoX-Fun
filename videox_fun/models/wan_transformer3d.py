@@ -38,6 +38,27 @@ try:
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 
+try:
+    major, minor = torch.cuda.get_device_capability(0)
+    if f"{major}.{minor}" == "8.0":
+        from sageattention_sm80 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif f"{major}.{minor}" == "8.6":
+        from sageattention_sm86 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif f"{major}.{minor}" == "8.9":
+        from sageattention_sm89 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif major>=9:
+        from sageattention_sm90 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+except:
+    try:
+        from sageattention import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    except:
+        sageattn = None
+        SAGE_ATTENTION_AVAILABLE = False
 
 def flash_attention(
     q,
@@ -163,7 +184,23 @@ def attention(
     dtype=torch.bfloat16,
     fa_version=None,
 ):
-    if FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE:
+    attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
+    if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
+        if q_lens is not None or k_lens is not None:
+            warnings.warn(
+                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+            )
+        attn_mask = None
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        out = sageattn(
+            q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)
+
+        out = out.transpose(1, 2).contiguous()
+    elif attention_type == "FLASH_ATTENTION" and (FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE):
         return flash_attention(
             q=q,
             k=k,
