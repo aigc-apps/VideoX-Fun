@@ -20,24 +20,6 @@ def encode_file_to_base64(file_path):
         file_base64 = base64.b64encode(file.read())
         return file_base64
 
-def update_edition_api(_: gr.Blocks, app: FastAPI, controller):
-    @app.post("/videox_fun/update_edition")
-    def _update_edition_api(
-        datas: dict,
-    ):
-        edition = datas.get('edition', 'v2')
-
-        try:
-            controller.update_edition(
-                edition
-            )
-            comment = "Success"
-        except Exception as e:
-            torch.cuda.empty_cache()
-            comment = f"Error. error information is {str(e)}"
-
-        return {"message": comment}
-
 def update_diffusion_transformer_api(_: gr.Blocks, app: FastAPI, controller):
     @app.post("/videox_fun/update_diffusion_transformer")
     def _update_diffusion_transformer_api(

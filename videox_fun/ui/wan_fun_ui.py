@@ -42,6 +42,7 @@ from .ui import (create_cfg_and_seedbox, create_cfg_riflex_k,
 class Wan_Fun_Controller(Fun_Controller):
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
         print("Update diffusion transformer")
+        self.model_name = diffusion_transformer_dropdown
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
             return gr.update()
@@ -192,7 +193,7 @@ class Wan_Fun_Controller(Fun_Controller):
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
-        coefficients = get_teacache_coefficients(self.base_model_path) if enable_teacache else None
+        coefficients = get_teacache_coefficients(self.diffusion_transformer_dropdown) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
             self.pipeline.transformer.enable_teacache(

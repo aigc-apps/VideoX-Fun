@@ -69,8 +69,9 @@ class Fun_Controller:
             self.savedir_sample         = savedir_sample
         os.makedirs(self.savedir_sample, exist_ok=True)
 
-        self.GPU_memory_mode            = GPU_memory_mode
-        self.model_name                 = model_name
+        self.GPU_memory_mode                = GPU_memory_mode
+        self.model_name                     = model_name
+        self.diffusion_transformer_dropdown = model_name
         self.scheduler_dict             = scheduler_dict
         self.model_type                 = model_type
         if config_path is not None:
