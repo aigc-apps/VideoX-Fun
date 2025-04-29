@@ -292,6 +292,8 @@ def post_to_host(
     sampler_dropdown, sample_step_slider, resize_method, width_slider, height_slider,
     base_resolution, generation_method, length_slider, cfg_scale_slider, 
     start_image, end_image, validation_video, validation_video_mask, denoise_strength, seed_textbox,
+    ref_image = None, enable_teacache = None, teacache_threshold = None, num_skip_start_steps = None, 
+    teacache_offload = None, cfg_skip_ratio = None,enable_riflex = None, riflex_k = None, 
 ):
     if start_image is not None:
         with open(start_image, 'rb') as file:
@@ -315,7 +317,12 @@ def post_to_host(
         with open(validation_video_mask, 'rb') as file:
             file_content = file.read()
             validation_video_mask_encoded_content = base64.b64encode(file_content)
-            validation_video_mask = validation_video_mask_encoded_content.decode('utf-8')
+
+    if ref_image is not None:
+        with open(ref_image, 'rb') as file:
+            file_content = file.read()
+            ref_image_encoded_content = base64.b64encode(file_content)
+            ref_image = ref_image_encoded_content.decode('utf-8')
 
     datas = {
         "base_model_path": base_model_dropdown,
@@ -338,6 +345,15 @@ def post_to_host(
         "validation_video_mask": validation_video_mask,
         "denoise_strength": denoise_strength,
         "seed_textbox": seed_textbox,
+
+        "ref_image": ref_image,
+        "enable_teacache": enable_teacache,
+        "teacache_threshold": teacache_threshold,
+        "num_skip_start_steps": num_skip_start_steps,
+        "teacache_offload": teacache_offload,
+        "cfg_skip_ratio": cfg_skip_ratio,
+        "enable_riflex": enable_riflex,
+        "riflex_k": riflex_k,
     }
 
     session = requests.session()
@@ -383,6 +399,7 @@ class Fun_Controller_Client:
         validation_video_mask, 
         denoise_strength,
         seed_textbox,
+        ref_image = None,
         enable_teacache = None, 
         teacache_threshold = None, 
         num_skip_start_steps = None, 
@@ -400,7 +417,7 @@ class Fun_Controller_Client:
             sampler_dropdown, sample_step_slider, resize_method, width_slider, height_slider,
             base_resolution, generation_method, length_slider, cfg_scale_slider, 
             start_image, end_image, validation_video, validation_video_mask, denoise_strength, 
-            seed_textbox, enable_teacache = enable_teacache, teacache_threshold = teacache_threshold, 
+            seed_textbox, ref_image = ref_image, enable_teacache = enable_teacache, teacache_threshold = teacache_threshold, 
             num_skip_start_steps = num_skip_start_steps, teacache_offload = teacache_offload, 
             cfg_skip_ratio = cfg_skip_ratio, enable_riflex = enable_riflex, riflex_k = riflex_k, 
         )
