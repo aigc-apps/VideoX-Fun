@@ -188,6 +188,9 @@ class LoadCogVideoXFunModel:
             pipeline.enable_model_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.to(device=device)
         else:
             pipeline.to("cuda")
 

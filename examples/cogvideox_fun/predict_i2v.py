@@ -24,8 +24,11 @@ from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
-# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
+# 
+# model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
+# and the transformer model has been quantized to float8, which can save more GPU memory. 
 # 
 # model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
 # 
@@ -172,6 +175,9 @@ elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
+elif GPU_memory_mode == "model_full_load_and_qfloat8":
+    convert_weight_dtype_wrapper(transformer, weight_dtype)
+    pipeline.to(device=device)
 else:
     pipeline.to(device=device)
 

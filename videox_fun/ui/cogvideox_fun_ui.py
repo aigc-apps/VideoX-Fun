@@ -97,6 +97,9 @@ class CogVideoXFunController(Fun_Controller):
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload":
             self.pipeline.enable_model_cpu_offload(device=self.device)
+        elif self.GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
+            self.pipeline.enable_model_cpu_offload(device=self.device)
         else:
             self.pipeline.to(self.device)
         print("Update diffusion transformer done")

@@ -209,6 +209,10 @@ class LoadWanModel:
             pipeline.enable_model_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.to(device=device)
         else:
             pipeline.to("cuda")
 
