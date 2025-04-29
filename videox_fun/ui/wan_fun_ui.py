@@ -200,17 +200,14 @@ class Wan_Fun_Controller(Fun_Controller):
             )
         else:
             self.pipeline.transformer.disable_teacache()
-
-        if enable_riflex:
-            self.pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
-
+            
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         
-        if self.enable_riflex:
+        if enable_riflex:
             latent_frames = (int(length_slider) - 1) // self.vae.config.temporal_compression_ratio + 1
-            self.pipeline.transformer.enable_riflex(k = self.riflex_k, L_test = latent_frames if not is_image else 1)
+            self.pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames if not is_image else 1)
 
         try:
             if self.model_type == "Inpaint":
@@ -340,10 +337,12 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                 create_model_checkpoints(controller, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button = \
                 create_finetune_models_checkpoints(controller, visible=True)
-            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
-                create_teacache_params(True, 0.10, 1, False)
-            cfg_skip_ratio = create_cfg_skip_params(0)
-            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
+            
+            with gr.Row():
+                enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                    create_teacache_params(True, 0.10, 1, False)
+                cfg_skip_ratio = create_cfg_skip_params(0)
+                enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
 
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
@@ -474,10 +473,12 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             model_type = create_fake_model_type(visible=False)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
-            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
-                create_teacache_params(True, 0.10, 1, False)
-            cfg_skip_ratio = create_cfg_skip_params(0)
-            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
+
+            with gr.Row():
+                enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                    create_teacache_params(True, 0.10, 1, False)
+                cfg_skip_ratio = create_cfg_skip_params(0)
+                enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
         
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
@@ -595,10 +596,12 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
         with gr.Column(variant="panel"):
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
-            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
-                create_teacache_params(True, 0.10, 1, False)
-            cfg_skip_ratio = create_cfg_skip_params(0)
-            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
+
+            with gr.Row():
+                enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                    create_teacache_params(True, 0.10, 1, False)
+                cfg_skip_ratio = create_cfg_skip_params(0)
+                enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
         
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")

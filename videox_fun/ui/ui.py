@@ -141,27 +141,24 @@ def create_teacache_params(
     num_skip_start_steps = 1,
     teacache_offload = False,
 ):
-    with gr.Row():
-        enable_teacache = gr.Checkbox(label="Enable TeaCache", value=enable_teacache)
-        teacache_threshold = gr.Slider(0.00, 0.25, value=teacache_threshold, step=0.01, label="TeaCache Threshold")
-        num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=1, label="Number of Skip Start Steps")
-        teacache_offload = gr.Checkbox(label="Offload TeaCache to CPU", value=teacache_offload)
+    enable_teacache = gr.Checkbox(label="Enable TeaCache", value=enable_teacache)
+    teacache_threshold = gr.Slider(0.00, 0.25, value=teacache_threshold, step=0.01, label="TeaCache Threshold")
+    num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=1, label="Number of Skip Start Steps")
+    teacache_offload = gr.Checkbox(label="Offload TeaCache to CPU", value=teacache_offload)
     return enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload
 
 def create_cfg_skip_params(
     cfg_skip_ratio = 0
 ):
-    with gr.Row():
-        cfg_skip_ratio = gr.Slider(0.00, 0.50, value=cfg_skip_ratio, step=0.01, label="CFG Skip Ratio")
+    cfg_skip_ratio = gr.Slider(0.00, 0.50, value=cfg_skip_ratio, step=0.01, label="CFG Skip Ratio")
     return cfg_skip_ratio
 
 def create_cfg_riflex_k(
     enable_riflex = False,
     riflex_k = 6
 ):
-    with gr.Row():
-        enable_riflex = gr.Checkbox(label="Enable Riflex", value=enable_riflex)
-        riflex_k = gr.Slider(0, 10, value=riflex_k, step=1, label="Riflex Intrinsic Frequency Index")
+    enable_riflex = gr.Checkbox(label="Enable Riflex", value=enable_riflex)
+    riflex_k = gr.Slider(0, 10, value=riflex_k, step=1, label="Riflex Intrinsic Frequency Index")
     return enable_riflex, riflex_k
 
 def create_prompts(
