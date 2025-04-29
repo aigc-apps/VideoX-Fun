@@ -317,6 +317,7 @@ def post_to_host(
         with open(validation_video_mask, 'rb') as file:
             file_content = file.read()
             validation_video_mask_encoded_content = base64.b64encode(file_content)
+            validation_video_mask = validation_video_mask_encoded_content.decode('utf-8')
 
     if ref_image is not None:
         with open(ref_image, 'rb') as file:
@@ -421,6 +422,7 @@ class Fun_Controller_Client:
             num_skip_start_steps = num_skip_start_steps, teacache_offload = teacache_offload, 
             cfg_skip_ratio = cfg_skip_ratio, enable_riflex = enable_riflex, riflex_k = riflex_k, 
         )
+        print(outputs)
         try:
             base64_encoding = outputs["base64_encoding"]
         except:
