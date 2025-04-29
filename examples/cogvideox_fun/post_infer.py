@@ -64,7 +64,7 @@ def post_infer(
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request
-    post_r = session.post(f'{url}/cogvideox_fun/infer_forward', data=datas, timeout=timeout)
+    post_r = session.post(f'{url}/videox_fun/infer_forward', data=datas, timeout=timeout)
     
     data = post_r.content.decode('utf-8')
     return data

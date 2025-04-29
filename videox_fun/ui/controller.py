@@ -364,7 +364,7 @@ def post_to_host(
     session = requests.session()
     session.headers.update({"Authorization": os.environ.get("EAS_TOKEN")})
 
-    response = session.post(url=f'{os.environ.get("EAS_URL")}/cogvideox_fun/infer_forward', json=datas, timeout=300)
+    response = session.post(url=f'{os.environ.get("EAS_URL")}/videox_fun/infer_forward', json=datas, timeout=300)
 
     outputs = response.json()
     return outputs

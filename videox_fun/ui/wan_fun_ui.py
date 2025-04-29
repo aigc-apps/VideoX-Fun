@@ -195,7 +195,7 @@ class Wan_Fun_Controller(Fun_Controller):
         print(f"Load scheduler.")
         scheduler_config = self.pipeline.scheduler.config
         if sampler_dropdown == "Flow_Unipc" or sampler_dropdown == "Flow_DPM++":
-            scheduler_config['scheduler_kwargs']['shift'] = 1
+            scheduler_config['shift'] = 1
         self.pipeline.scheduler = self.scheduler_dict[sampler_dropdown].from_config(scheduler_config)
         print(f"Load scheduler down.")
 
