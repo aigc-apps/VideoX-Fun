@@ -66,6 +66,7 @@ if ray is not None:
                 denoise_strength = datas.get('denoise_strength', 0.70)
                 seed_textbox = datas.get("seed_textbox", 43)
         
+                ref_image = datas.get('ref_image', None)
                 enable_teacache = datas.get('enable_teacache', True)
                 teacache_threshold = datas.get('teacache_threshold', 0.10)
                 num_skip_start_steps = datas.get('num_skip_start_steps', 1)
@@ -110,6 +111,14 @@ if ray is not None:
                     else:
                         control_video = save_base64_video(control_video)
                 
+                if ref_image is not None:
+                    if ref_image.startswith('http'):
+                        ref_image = save_url_image(ref_image)
+                        ref_image = [Image.open(ref_image)]
+                    else:
+                        ref_image = base64.b64decode(ref_image)
+                        ref_image = [Image.open(BytesIO(ref_image))]
+
                 try:
                     save_sample_path, comment = self.controller.generate(
                         "",
@@ -136,6 +145,7 @@ if ray is not None:
                         control_video, 
                         denoise_strength,
                         seed_textbox,
+                        ref_image = ref_image,
                         enable_teacache = enable_teacache, 
                         teacache_threshold = teacache_threshold, 
                         num_skip_start_steps = num_skip_start_steps, 

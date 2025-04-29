@@ -21,7 +21,7 @@ from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (filter_kwargs, get_image_to_video_latent,
+from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent,
                            get_video_to_video_latent, save_videos_grid)
 from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
@@ -159,6 +159,7 @@ class Wan_Fun_Controller(Fun_Controller):
         control_video,
         denoise_strength,
         seed_textbox,
+        ref_image = None,
         enable_teacache = None, 
         teacache_threshold = None, 
         num_skip_start_steps = None, 
@@ -215,7 +216,7 @@ class Wan_Fun_Controller(Fun_Controller):
             if self.model_type == "Inpaint":
                 if self.transformer.config.in_channels != self.vae.config.latent_channels:
                     if validation_video is not None:
-                        input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
+                        input_video, input_video_mask, _, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
                     else:
                         input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
 
@@ -247,7 +248,20 @@ class Wan_Fun_Controller(Fun_Controller):
                         cfg_skip_ratio      = cfg_skip_ratio,
                     ).videos
             else:
-                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
+                if ref_image is not None:
+                    clip_image = Image.open(ref_image).convert("RGB")
+                elif start_image is not None:
+                    clip_image = Image.open(start_image).convert("RGB")
+                else:
+                    clip_image = None
+                
+                if ref_image is not None:
+                    ref_image = get_image_latent(ref_image, sample_size=(height_slider, width_slider))
+                
+                if start_image is not None:
+                    start_image = get_image_latent(start_image, sample_size=(height_slider, width_slider))
+
+                input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16, ref_image=None)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -259,8 +273,11 @@ class Wan_Fun_Controller(Fun_Controller):
                     num_frames          = length_slider if not is_image else 1,
                     generator           = generator,
 
-                    control_video       = input_video,
-                    cfg_skip_ratio      = cfg_skip_ratio,
+                    control_video = input_video,
+                    ref_image = ref_image,
+                    start_image = start_image,
+                    clip_image = clip_image,
+                    cfg_skip_ratio = cfg_skip_ratio,
                 ).videos
         except Exception as e:
             self.clear_cache()
@@ -346,7 +363,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                             maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -423,6 +440,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                     control_video,
                     denoise_strength, 
                     seed_textbox,
+                    None, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 
@@ -453,7 +471,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             """
         )
         with gr.Column(variant="panel"):
-            model_type = create_fake_model_type(visible=True)
+            model_type = create_fake_model_type(visible=False)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
             enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -479,7 +497,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                             maximum_video_length=81,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -548,6 +566,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                     control_video,
                     denoise_strength, 
                     seed_textbox,
+                    None, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 
@@ -661,6 +680,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                     validation_video_mask,
                     denoise_strength, 
                     seed_textbox,
+                    None, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 

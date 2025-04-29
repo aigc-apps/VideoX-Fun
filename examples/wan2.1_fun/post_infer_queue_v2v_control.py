@@ -2,7 +2,11 @@ import base64
 import json
 import time
 import urllib.parse
+from io import BytesIO
+
 import requests
+from PIL import Image
+
 
 def post_infer(
     generation_method, 
@@ -28,7 +32,8 @@ def post_infer(
     cfg_skip_ratio = None,
     enable_riflex = None, 
     riflex_k = None, 
-    control_video=None
+    control_video = None,
+    ref_image = None
 ):
     if control_video:
         try:
@@ -39,6 +44,18 @@ def post_infer(
                 control_video = base64.b64encode(video_data).decode('utf-8')
         except Exception as e:
             print(f"Error processing control_video: {e}")
+            raise
+
+    if ref_image:
+        try:
+            if not ref_image.startswith("http"):
+                image = Image.open(ref_image)
+                # 将图片转换为 Base64 编码
+                buffered = BytesIO()
+                image.save(buffered, format=image.format)
+                ref_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        except Exception as e:
+            print(f"Error processing ref_image: {e}")
             raise
 
     # Prepare the data payload
@@ -56,7 +73,8 @@ def post_infer(
         "length_slider": length_slider,
         "cfg_scale_slider": cfg_scale_slider,
         "seed_textbox": seed_textbox,
-        
+
+        "ref_image": ref_image,
         "enable_teacache": enable_teacache,
         "teacache_threshold": teacache_threshold,
         "num_skip_start_steps": num_skip_start_steps,
@@ -155,6 +173,8 @@ if __name__ == '__main__':
 
     # 控制视频路径（可以是本地路径或 URL）
     control_video_path = "asset/000000.mp4"  # 替换为实际的视频路径
+    # 参考图片路径
+    ref_image_path = None  # 替换为实际的图片路径
 
     outputs = post_infer(
         generation_method, 
@@ -178,7 +198,8 @@ if __name__ == '__main__':
         riflex_k = riflex_k, 
         url=EAS_URL, 
         POST_TOKEN=TOKEN,
-        control_video=control_video_path  # 传递控制视频路径
+        control_video=control_video_path,  # 传递控制视频路径
+        ref_image=ref_image_path  # 传递参考图片路径
     )
     # Get decoded data
     outputs = json.loads(base64.b64decode(json.loads(outputs)[0]['data']))

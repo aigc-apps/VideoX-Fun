@@ -31,7 +31,7 @@ def post_infer(
     cfg_skip_ratio = None,
     enable_riflex = None, 
     riflex_k = None, 
-    start_image=None 
+    start_image = None 
 ):
     if start_image:
         try:

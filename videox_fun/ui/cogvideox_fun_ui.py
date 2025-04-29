@@ -128,6 +128,7 @@ class CogVideoXFunController(Fun_Controller):
         control_video,
         denoise_strength,
         seed_textbox,
+        ref_image = None,
         enable_teacache = None, 
         teacache_threshold = None, 
         num_skip_start_steps = None, 
@@ -463,7 +464,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_deg
             """
         )
         with gr.Column(variant="panel"):
-            model_type = create_fake_model_type(visible=True)
+            model_type = create_fake_model_type(visible=False)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
         

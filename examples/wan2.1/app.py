@@ -48,11 +48,9 @@ if __name__ == "__main__":
     # Params below is used when ui_mode = "host"
     # Model path of the pretrained model
     model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
-    # "Inpaint" or "Control"
-    model_type = "Inpaint"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, 1, 1, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, "Inpaint", config_path, 1, 1, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(flow_scheduler_dict, model_name)
     else:
