@@ -140,9 +140,11 @@ class CogVideoXFunController(Fun_Controller):
     ):
         self.clear_cache()
 
-        self.input_check(
+        _, comment = self.input_check(
             resize_method, generation_method, start_image, end_image, validation_video,control_video, is_api
         )
+        if comment != "OK":
+            return "", comment
         is_image = True if generation_method == "Image Generation" else False
 
         if self.base_model_path != base_model_dropdown:

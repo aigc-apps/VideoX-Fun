@@ -155,7 +155,10 @@ class Fun_Controller:
         is_api = False,
     ):
         if self.transformer is None:
-            raise gr.Error(f"Please select a pretrained model path.")
+            if is_api:
+                return "", f"Please select a pretrained model path."
+            else:
+                raise gr.Error(f"Please select a pretrained model path.")
         
         if control_video is not None and self.model_type == "Inpaint":
             if is_api:
@@ -193,6 +196,7 @@ class Fun_Controller:
                 return "", f"If specifying the ending image of the video, please specify a starting image of the video."
             else:
                 raise gr.Error(f"If specifying the ending image of the video, please specify a starting image of the video.")
+        return "", "OK"
 
     def get_height_width_from_reference(
         self,
