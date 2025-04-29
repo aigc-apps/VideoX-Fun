@@ -26,7 +26,8 @@ from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
                          flow_scheduler_dict, gradio_version,
                          gradio_version_is_above_4)
-from .ui import (create_cfg_and_seedbox,
+from .ui import (create_cfg_and_seedbox, create_cfg_riflex_k,
+                 create_cfg_skip_params,
                  create_fake_finetune_models_checkpoints,
                  create_fake_height_width, create_fake_model_checkpoints,
                  create_fake_model_type, create_finetune_models_checkpoints,
@@ -34,7 +35,7 @@ from .ui import (create_cfg_and_seedbox,
                  create_generation_methods_and_video_length,
                  create_height_width, create_model_checkpoints,
                  create_model_type, create_prompts, create_samplers,
-                 create_ui_outputs)
+                 create_teacache_params, create_ui_outputs)
 
 
 class Wan_Controller(Fun_Controller):
@@ -150,6 +151,13 @@ class Wan_Controller(Fun_Controller):
         control_video,
         denoise_strength,
         seed_textbox,
+        enable_teacache = None, 
+        teacache_threshold = None, 
+        num_skip_start_steps = None, 
+        teacache_offload = None, 
+        cfg_skip_ratio = None,
+        enable_riflex = None, 
+        riflex_k = None, 
         is_api = False,
     ):
         self.clear_cache()
@@ -175,15 +183,18 @@ class Wan_Controller(Fun_Controller):
             # lora part
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
-        coefficients = get_teacache_coefficients(self.base_model_path) if self.enable_teacache else None
+        coefficients = get_teacache_coefficients(self.base_model_path) if enable_teacache else None
         if coefficients is not None:
-            print(f"Enable TeaCache with threshold {self.teacache_threshold} and skip the first {self.num_skip_start_steps} steps.")
+            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
             self.pipeline.transformer.enable_teacache(
-                coefficients, sample_step_slider, self.teacache_threshold, num_skip_start_steps=self.num_skip_start_steps, offload=self.teacache_offload
+                coefficients, sample_step_slider, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
         else:
             self.pipeline.transformer.disable_teacache()
-        
+
+        if enable_riflex:
+            self.pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
+
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
@@ -210,9 +221,10 @@ class Wan_Controller(Fun_Controller):
                         num_frames          = length_slider if not is_image else 1,
                         generator           = generator,
 
-                        video        = input_video,
-                        mask_video   = input_video_mask,
-                        clip_image   = clip_image
+                        video               = input_video,
+                        mask_video          = input_video_mask,
+                        clip_image          = clip_image,
+                        cfg_skip_ratio      = cfg_skip_ratio,
                     ).videos
                 else:
                     sample = self.pipeline(
@@ -223,7 +235,8 @@ class Wan_Controller(Fun_Controller):
                         width               = width_slider,
                         height              = height_slider,
                         num_frames          = length_slider if not is_image else 1,
-                        generator           = generator
+                        generator           = generator, 
+                        cfg_skip_ratio      = cfg_skip_ratio,
                     ).videos
             else:
                 input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16)
@@ -239,6 +252,7 @@ class Wan_Controller(Fun_Controller):
                     generator           = generator,
 
                     control_video = input_video,
+                    cfg_skip_ratio      = cfg_skip_ratio,
                 ).videos
         except Exception as e:
             self.clear_cache()
@@ -278,14 +292,11 @@ class Wan_Controller(Fun_Controller):
 Wan_Controller_Host = Wan_Controller
 Wan_Controller_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype, savedir_sample=None):
+def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
     controller = Wan_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
-        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, 
-        enable_riflex=enable_riflex, riflex_k=riflex_k, weight_dtype=weight_dtype, 
-        savedir_sample=savedir_sample,
+        weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:
@@ -300,6 +311,10 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                 create_model_checkpoints(controller, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button = \
                 create_finetune_models_checkpoints(controller, visible=True)
+            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                create_teacache_params(True, 0.10, 1, False)
+            cfg_skip_ratio = create_cfg_skip_params(0)
+            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
 
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
@@ -396,19 +411,23 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                     control_video,
                     denoise_strength, 
                     seed_textbox,
+                    enable_teacache, 
+                    teacache_threshold, 
+                    num_skip_start_steps, 
+                    teacache_offload, 
+                    cfg_skip_ratio,
+                    enable_riflex, 
+                    riflex_k, 
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype, savedir_sample=None):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
     controller = Wan_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
         config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, 
-        num_skip_start_steps=num_skip_start_steps, teacache_offload=teacache_offload, 
-        enable_riflex=enable_riflex, riflex_k=riflex_k, weight_dtype=weight_dtype, 
-        savedir_sample=savedir_sample,
+        weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:
@@ -421,6 +440,10 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             model_type = create_fake_model_type(visible=True)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                create_teacache_params(True, 0.10, 1, False)
+            cfg_skip_ratio = create_cfg_skip_params(0)
+            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
         
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
@@ -509,6 +532,13 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                     control_video,
                     denoise_strength, 
                     seed_textbox,
+                    enable_teacache, 
+                    teacache_threshold, 
+                    num_skip_start_steps, 
+                    teacache_offload, 
+                    cfg_skip_ratio,
+                    enable_riflex, 
+                    riflex_k, 
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
@@ -526,6 +556,10 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
         with gr.Column(variant="panel"):
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
+                create_teacache_params(True, 0.10, 1, False)
+            cfg_skip_ratio = create_cfg_skip_params(0)
+            enable_riflex, riflex_k = create_cfg_riflex_k(False, 6)
         
         with gr.Column(variant="panel"):
             prompt_textbox, negative_prompt_textbox = create_prompts(negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
@@ -607,6 +641,13 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                     validation_video_mask,
                     denoise_strength, 
                     seed_textbox,
+                    enable_teacache, 
+                    teacache_threshold, 
+                    num_skip_start_steps, 
+                    teacache_offload, 
+                    cfg_skip_ratio,
+                    enable_riflex, 
+                    riflex_k, 
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )

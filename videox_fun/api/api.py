@@ -134,6 +134,14 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
         control_video = datas.get('control_video', None)
         denoise_strength = datas.get('denoise_strength', 0.70)
         seed_textbox = datas.get("seed_textbox", 43)
+        
+        enable_teacache = datas.get('enable_teacache', True)
+        teacache_threshold = datas.get('teacache_threshold', 0.10)
+        num_skip_start_steps = datas.get('num_skip_start_steps', 1)
+        teacache_offload = datas.get('teacache_offload', False)
+        cfg_skip_ratio = datas.get('cfg_skip_ratio', 0)
+        enable_riflex = datas.get('enable_riflex', False)
+        riflex_k = datas.get('riflex_k', 6)
 
         generation_method = "Image Generation" if is_image else generation_method
 
@@ -197,6 +205,13 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
                 control_video, 
                 denoise_strength,
                 seed_textbox,
+                enable_teacache = enable_teacache, 
+                teacache_threshold = teacache_threshold, 
+                num_skip_start_steps = num_skip_start_steps, 
+                teacache_offload = teacache_offload,
+                cfg_skip_ratio = cfg_skip_ratio, 
+                enable_riflex = enable_riflex, 
+                riflex_k = riflex_k, 
                 is_api = True,
             )
         except Exception as e:

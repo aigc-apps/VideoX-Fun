@@ -21,7 +21,14 @@ def post_infer(
     width_slider=672,
     height_slider=384,
     cfg_scale_slider=6,
-    seed_textbox=43
+    seed_textbox=43,
+    enable_teacache = None, 
+    teacache_threshold = None, 
+    num_skip_start_steps = None, 
+    teacache_offload = None, 
+    cfg_skip_ratio = None,
+    enable_riflex = None, 
+    riflex_k = None, 
 ):
     # Prepare the data payload
     datas = json.dumps({
@@ -38,6 +45,14 @@ def post_infer(
         "length_slider": length_slider,
         "cfg_scale_slider": cfg_scale_slider,
         "seed_textbox": seed_textbox,
+        
+        "enable_teacache": enable_teacache,
+        "teacache_threshold": teacache_threshold,
+        "num_skip_start_steps": num_skip_start_steps,
+        "teacache_offload": teacache_offload,
+        "cfg_skip_ratio": cfg_skip_ratio,
+        "enable_riflex": enable_riflex,
+        "riflex_k": riflex_k,
     })
 
     # Initialize session and set headers
@@ -84,6 +99,26 @@ if __name__ == '__main__':
     # Use in EAS Queue
     TOKEN   = 'xxxxxxxx'
         
+    # Support TeaCache.
+    enable_teacache     = True
+    # Recommended to be set between 0.05 and 0.20. A larger threshold can cache more steps, speeding up the inference process, 
+    # but it may cause slight differences between the generated content and the original content.
+    teacache_threshold  = 0.10
+    # The number of steps to skip TeaCache at the beginning of the inference process, which can
+    # reduce the impact of TeaCache on generated video quality.
+    num_skip_start_steps = 5
+    # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
+    teacache_offload    = False
+
+    # Skip some cfg steps in inference
+    # Recommended to be set between 0.00 and 0.25
+    cfg_skip_ratio      = 0
+
+    # Riflex config
+    enable_riflex       = False
+    # Index of intrinsic frequency
+    riflex_k            = 6
+        
     # "Video Generation" and "Image Generation"
     generation_method   = "Video Generation"
     # Video length
@@ -118,6 +153,13 @@ if __name__ == '__main__':
         height_slider=height_slider,
         cfg_scale_slider=cfg_scale_slider,
         seed_textbox=seed_textbox,
+        enable_teacache = enable_teacache, 
+        teacache_threshold = teacache_threshold, 
+        num_skip_start_steps = num_skip_start_steps, 
+        teacache_offload = teacache_offload,
+        cfg_skip_ratio = cfg_skip_ratio, 
+        enable_riflex = enable_riflex, 
+        riflex_k = riflex_k, 
         url=EAS_URL, 
         POST_TOKEN=TOKEN
     )

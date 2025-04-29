@@ -35,24 +35,9 @@ if __name__ == "__main__":
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "sequential_cpu_offload"
 
-    # Support TeaCache.
-    enable_teacache     = True
-    # Recommended to be set between 0.05 and 0.20. A larger threshold can cache more steps, speeding up the inference process, 
-    # but it may cause slight differences between the generated content and the original content.
-    teacache_threshold  = 0.10
-    # The number of steps to skip TeaCache at the beginning of the inference process, which can
-    # reduce the impact of TeaCache on generated video quality.
-    num_skip_start_steps = 5
-    # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
-    teacache_offload    = False
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
     weight_dtype = torch.bfloat16
-
-    # Riflex config
-    enable_riflex       = False
-    # Index of intrinsic frequency
-    riflex_k            = 6
 
     # Server ip
     server_name = "0.0.0.0"
@@ -67,11 +52,11 @@ if __name__ == "__main__":
     model_type = "Inpaint"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, 1, 1, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, model_type, config_path, 1, 1, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(flow_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, 1, 1, enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload, enable_riflex, riflex_k, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, 1, 1, weight_dtype)
 
     def gr_launch():
         # launch gradio

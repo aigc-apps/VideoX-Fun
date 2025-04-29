@@ -55,10 +55,7 @@ all_cheduler_dict = {**ddpm_scheduler_dict, **flow_scheduler_dict}
 class Fun_Controller:
     def __init__(
         self, GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        config_path=None, ulysses_degree=1, ring_degree=1,
-        enable_teacache=None, teacache_threshold=None, 
-        num_skip_start_steps=None, teacache_offload=None,
-        enable_riflex=None, riflex_k=None, weight_dtype=None, savedir_sample=None,
+        config_path=None, ulysses_degree=1, ring_degree=1, weight_dtype=None, savedir_sample=None,
     ):
         # config dirs
         self.basedir                    = os.getcwd()
@@ -80,12 +77,6 @@ class Fun_Controller:
             self.config = OmegaConf.load(config_path)
         self.ulysses_degree             = ulysses_degree
         self.ring_degree                = ring_degree
-        self.enable_teacache            = enable_teacache
-        self.teacache_threshold         = teacache_threshold
-        self.num_skip_start_steps       = num_skip_start_steps
-        self.teacache_offload           = teacache_offload
-        self.enable_riflex              = enable_riflex
-        self.riflex_k                   = riflex_k
         self.weight_dtype               = weight_dtype
         self.device                     = set_multi_gpus_devices(self.ulysses_degree, self.ring_degree)
 
@@ -277,6 +268,13 @@ class Fun_Controller:
         control_video,
         denoise_strength,
         seed_textbox,
+        enable_teacache = None, 
+        teacache_threshold = None, 
+        num_skip_start_steps = None, 
+        teacache_offload = None, 
+        cfg_skip_ratio = None,
+        enable_riflex = None, 
+        riflex_k = None, 
         is_api = False,
     ):
         pass
@@ -378,7 +376,14 @@ class Fun_Controller_Client:
         validation_video, 
         validation_video_mask, 
         denoise_strength,
-        seed_textbox
+        seed_textbox,
+        enable_teacache = None, 
+        teacache_threshold = None, 
+        num_skip_start_steps = None, 
+        teacache_offload = None, 
+        cfg_skip_ratio = None,
+        enable_riflex = None, 
+        riflex_k = None, 
     ):
         is_image = True if generation_method == "Image Generation" else False
 
@@ -389,7 +394,9 @@ class Fun_Controller_Client:
             sampler_dropdown, sample_step_slider, resize_method, width_slider, height_slider,
             base_resolution, generation_method, length_slider, cfg_scale_slider, 
             start_image, end_image, validation_video, validation_video_mask, denoise_strength, 
-            seed_textbox
+            seed_textbox, enable_teacache = enable_teacache, teacache_threshold = teacache_threshold, 
+            num_skip_start_steps = num_skip_start_steps, teacache_offload = teacache_offload, 
+            cfg_skip_ratio = cfg_skip_ratio, enable_riflex = enable_riflex, riflex_k = riflex_k, 
         )
         try:
             base64_encoding = outputs["base64_encoding"]

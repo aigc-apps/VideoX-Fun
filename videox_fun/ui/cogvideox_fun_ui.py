@@ -128,6 +128,13 @@ class CogVideoXFunController(Fun_Controller):
         control_video,
         denoise_strength,
         seed_textbox,
+        enable_teacache = None, 
+        teacache_threshold = None, 
+        num_skip_start_steps = None, 
+        teacache_offload = None, 
+        cfg_skip_ratio = None,
+        enable_riflex = None, 
+        riflex_k = None, 
         is_api = False,
     ):
         self.clear_cache()

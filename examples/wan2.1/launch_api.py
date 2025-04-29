@@ -23,10 +23,6 @@ def main():
     parser.add_argument('--gpu_memory_mode', type=str, default="model_full_load", help='GPU memory mode')
     parser.add_argument('--ulysses_degree', type=int, default=4, help='Degree of Ulysses configuration')
     parser.add_argument('--ring_degree', type=int, default=2, help='Degree of Ring configuration')
-    parser.add_argument('--enable_teacache', type=bool, default=True, help='Enable TeaCache')
-    parser.add_argument('--teacache_threshold', type=float, default=0.10, help='TeaCache Threshold')
-    parser.add_argument('--num_skip_start_steps', type=int, default=5, help='Number of steps to skip at the start')
-    parser.add_argument('--teacache_offload', type=bool, default=False, help='Offload TeaCache to CPU')
     parser.add_argument('--weight_dtype', type=str, default='bf16', help='Weight data type')
     parser.add_argument('--server_name', type=str, default="0.0.0.0", help='Server IP address')
     parser.add_argument('--server_port', type=int, default=7860, help='Server Port')
@@ -45,8 +41,7 @@ def main():
     engine = MultiNodesEngine(
         world_size=args.world_size, Controller=Wan_Controller,
         GPU_memory_mode=args.gpu_memory_mode, scheduler_dict=flow_scheduler_dict, model_name=args.model_name, model_type=args.model_type, config_path=args.config_path, 
-        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, enable_teacache=args.enable_teacache, teacache_threshold=args.teacache_threshold, num_skip_start_steps=args.num_skip_start_steps, 
-        teacache_offload=args.teacache_offload, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
+        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
     )
     
     def gr_launch():

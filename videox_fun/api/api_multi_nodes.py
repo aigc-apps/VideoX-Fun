@@ -24,9 +24,7 @@ if ray is not None:
         def __init__(
             self, rank: int, world_size: int, Controller,
             GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-            config_path=None, ulysses_degree=1, ring_degree=1,
-            enable_teacache=None, teacache_threshold=None, 
-            num_skip_start_steps=None, teacache_offload=None, weight_dtype=None, 
+            config_path=None, ulysses_degree=1, ring_degree=1, weight_dtype=None, 
             savedir_sample=None,
         ):
             # Set PyTorch distributed environment variables
@@ -38,8 +36,7 @@ if ray is not None:
             self.rank = rank
             self.controller = Controller(
                 GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
-                ulysses_degree=ulysses_degree, ring_degree=ring_degree, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, num_skip_start_steps=num_skip_start_steps, 
-                teacache_offload=teacache_offload, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
+                ulysses_degree=ulysses_degree, ring_degree=ring_degree, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
             )
 
         def generate(self, datas):
@@ -68,6 +65,14 @@ if ray is not None:
                 control_video = datas.get('control_video', None)
                 denoise_strength = datas.get('denoise_strength', 0.70)
                 seed_textbox = datas.get("seed_textbox", 43)
+        
+                enable_teacache = datas.get('enable_teacache', True)
+                teacache_threshold = datas.get('teacache_threshold', 0.10)
+                num_skip_start_steps = datas.get('num_skip_start_steps', 1)
+                teacache_offload = datas.get('teacache_offload', False)
+                cfg_skip_ratio = datas.get('cfg_skip_ratio', 0)
+                enable_riflex = datas.get('enable_riflex', False)
+                riflex_k = datas.get('riflex_k', 6)
 
                 generation_method = "Image Generation" if is_image else generation_method
 
@@ -131,6 +136,13 @@ if ray is not None:
                         control_video, 
                         denoise_strength,
                         seed_textbox,
+                        enable_teacache = enable_teacache, 
+                        teacache_threshold = teacache_threshold, 
+                        num_skip_start_steps = num_skip_start_steps, 
+                        teacache_offload = teacache_offload, 
+                        cfg_skip_ratio = cfg_skip_ratio,
+                        enable_riflex = enable_riflex, 
+                        riflex_k = riflex_k, 
                         is_api = True,
                     )
                 except Exception as e:
@@ -165,10 +177,6 @@ if ray is not None:
             config_path,
             ulysses_degree, 
             ring_degree, 
-            enable_teacache, 
-            teacache_threshold, 
-            num_skip_start_steps, 
-            teacache_offload, 
             weight_dtype,
             savedir_sample
         ):
@@ -181,8 +189,7 @@ if ray is not None:
                 MultiNodesGenerator.remote(
                     rank, world_size, Controller, 
                     GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
-                    ulysses_degree=ulysses_degree, ring_degree=ring_degree, enable_teacache=enable_teacache, teacache_threshold=teacache_threshold, num_skip_start_steps=num_skip_start_steps, 
-                    teacache_offload=teacache_offload, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
+                    ulysses_degree=ulysses_degree, ring_degree=ring_degree, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
                 )
                 for rank in range(num_workers)
             ]

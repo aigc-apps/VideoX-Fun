@@ -135,6 +135,35 @@ def create_fake_finetune_models_checkpoints(visible):
         
     return base_model_dropdown, lora_model_dropdown, lora_alpha_slider
 
+def create_teacache_params(
+    enable_teacache = True,
+    teacache_threshold = 0.10,
+    num_skip_start_steps = 1,
+    teacache_offload = False,
+):
+    with gr.Row():
+        enable_teacache = gr.Checkbox(label="Enable TeaCache", value=enable_teacache)
+        teacache_threshold = gr.Slider(0.00, 0.25, value=teacache_threshold, step=0.01, label="TeaCache Threshold")
+        num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=1, label="Number of Skip Start Steps")
+        teacache_offload = gr.Checkbox(label="Offload TeaCache to CPU", value=teacache_offload)
+    return enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload
+
+def create_cfg_skip_params(
+    cfg_skip_ratio = 0
+):
+    with gr.Row():
+        cfg_skip_ratio = gr.Slider(0.00, 0.50, value=cfg_skip_ratio, step=0.01, label="CFG Skip Ratio")
+    return cfg_skip_ratio
+
+def create_cfg_riflex_k(
+    enable_riflex = False,
+    riflex_k = 6
+):
+    with gr.Row():
+        enable_riflex = gr.Checkbox(label="Enable Riflex", value=enable_riflex)
+        riflex_k = gr.Slider(0, 10, value=riflex_k, step=1, label="Riflex Intrinsic Frequency Index")
+    return enable_riflex, riflex_k
+
 def create_prompts(
     prompt="A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic.",
     negative_prompt="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. "
