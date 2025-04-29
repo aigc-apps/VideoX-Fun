@@ -78,7 +78,7 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
-sampler_name        = "Flow"
+sampler_name        = "Flow_Unipc"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 # If you want to generate a 480p video, it is recommended to set the shift value to 3.0.

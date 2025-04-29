@@ -99,7 +99,7 @@ if __name__ == '__main__':
     prompt_textbox      = "A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
     negative_prompt_textbox = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion."
     # Sampler name
-    sampler_dropdown    = "Flow"
+    sampler_dropdown    = "Flow_Unipc"
     # Sampler steps
     sample_step_slider  = 50
     # height and width 

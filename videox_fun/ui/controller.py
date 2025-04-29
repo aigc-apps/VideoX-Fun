@@ -24,6 +24,8 @@ from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
 from ..utils.utils import save_videos_grid
+from ..utils.fm_solvers import FlowDPMSolverMultistepScheduler
+from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ..dist import set_multi_gpus_devices
 
 gradio_version = pkg_resources.get_distribution("gradio").version
@@ -49,6 +51,8 @@ ddpm_scheduler_dict = {
 }
 flow_scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
+    "Flow_Unipc": FlowUniPCMultistepScheduler,
+    "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }
 all_cheduler_dict = {**ddpm_scheduler_dict, **flow_scheduler_dict}
 

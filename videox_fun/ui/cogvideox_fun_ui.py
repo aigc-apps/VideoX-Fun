@@ -17,7 +17,7 @@ from ..pipeline import (CogVideoXFunControlPipeline,
                         CogVideoXFunInpaintPipeline, CogVideoXFunPipeline)
 from ..utils.fp8_optimization import convert_weight_dtype_wrapper
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (get_image_to_video_latent,
+from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, timer,
                            get_video_to_video_latent, save_videos_grid)
 from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
@@ -105,6 +105,7 @@ class CogVideoXFunController(Fun_Controller):
         print("Update diffusion transformer done")
         return gr.update()
 
+    @timer
     def generate(
         self,
         diffusion_transformer_dropdown,
@@ -143,9 +144,11 @@ class CogVideoXFunController(Fun_Controller):
     ):
         self.clear_cache()
 
+        print(f"Input checking.")
         _, comment = self.input_check(
             resize_method, generation_method, start_image, end_image, validation_video,control_video, is_api
         )
+        print(f"Input checking down")
         if comment != "OK":
             return "", comment
         is_image = True if generation_method == "Image Generation" else False
@@ -156,21 +159,29 @@ class CogVideoXFunController(Fun_Controller):
         if self.lora_model_path != lora_model_dropdown:
             self.update_lora_model(lora_model_dropdown)
 
+        print(f"Load scheduler.")
         self.pipeline.scheduler = self.scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
+        print(f"Load scheduler down.")
 
         if resize_method == "Resize according to Reference":
+            print(f"Calculate height and width according to Reference.")
             height_slider, width_slider = self.get_height_width_from_reference(
                 base_resolution, start_image, validation_video, control_video,
             )
-        if self.lora_model_path != "none":
-            # lora part
-            self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
 
+        if self.lora_model_path != "none":
+            print(f"Merge Lora.")
+            self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
+            print(f"Merge Lora done.")
+
+        print(f"Generate seed.")
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
+        print(f"Generate seed done.")
         
         try:
+            print(f"Generation.")
             if self.model_type == "Inpaint":
                 if self.transformer.config.in_channels != self.vae.config.latent_channels:
                     if generation_method == "Long Video Generation":
@@ -294,11 +305,15 @@ class CogVideoXFunController(Fun_Controller):
         self.clear_cache()
         # lora part
         if self.lora_model_path != "none":
+            print(f"Unmerge Lora.")
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
+            print(f"Unmerge Lora done.")
 
+        print(f"Saving outputs.")
         save_sample_path = self.save_outputs(
             is_image, length_slider, sample, fps=8
         )
+        print(f"Saving outputs done.")
 
         if is_image or length_slider == 1:
             if is_api:

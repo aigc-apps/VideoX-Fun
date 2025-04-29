@@ -954,10 +954,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             e = self.time_embedding(
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            # to bfloat16 for saving memeory
+
             # assert e.dtype == torch.float32 and e0.dtype == torch.float32
-            e0 = e0.to(dtype)
-            e = e.to(dtype)
+            # e0 = e0.to(dtype)
+            # e = e.to(dtype)
 
         # context
         context_lens = None

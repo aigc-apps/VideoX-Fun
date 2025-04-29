@@ -21,7 +21,7 @@ from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent,
+from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, timer,
                            get_video_to_video_latent, save_videos_grid)
 from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
@@ -138,6 +138,7 @@ class Wan_Fun_Controller(Fun_Controller):
         print("Update diffusion transformer done")
         return gr.update()
 
+    @timer
     def generate(
         self,
         diffusion_transformer_dropdown,
@@ -176,9 +177,11 @@ class Wan_Fun_Controller(Fun_Controller):
     ):
         self.clear_cache()
 
+        print(f"Input checking.")
         _, comment = self.input_check(
             resize_method, generation_method, start_image, end_image, validation_video,control_video, is_api
         )
+        print(f"Input checking down")
         if comment != "OK":
             return "", comment
         is_image = True if generation_method == "Image Generation" else False
@@ -189,15 +192,23 @@ class Wan_Fun_Controller(Fun_Controller):
         if self.lora_model_path != lora_model_dropdown:
             self.update_lora_model(lora_model_dropdown)
 
-        self.pipeline.scheduler = self.scheduler_dict[sampler_dropdown].from_config(self.pipeline.scheduler.config)
+        print(f"Load scheduler.")
+        scheduler_config = self.pipeline.scheduler.config
+        if sampler_dropdown == "Flow_Unipc" or sampler_dropdown == "Flow_DPM++":
+            scheduler_config['scheduler_kwargs']['shift'] = 1
+        self.pipeline.scheduler = self.scheduler_dict[sampler_dropdown].from_config(scheduler_config)
+        print(f"Load scheduler down.")
 
         if resize_method == "Resize according to Reference":
+            print(f"Calculate height and width according to Reference.")
             height_slider, width_slider = self.get_height_width_from_reference(
                 base_resolution, start_image, validation_video, control_video,
             )
+
         if self.lora_model_path != "none":
-            # lora part
+            print(f"Merge Lora.")
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
+            print(f"Merge Lora done.")
 
         coefficients = get_teacache_coefficients(self.diffusion_transformer_dropdown) if enable_teacache else None
         if coefficients is not None:
@@ -206,17 +217,22 @@ class Wan_Fun_Controller(Fun_Controller):
                 coefficients, sample_step_slider, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
         else:
+            print(f"Disable TeaCache.")
             self.pipeline.transformer.disable_teacache()
             
+        print(f"Generate seed.")
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
+        print(f"Generate seed done.")
         
         if enable_riflex:
+            print(f"Enable riflex")
             latent_frames = (int(length_slider) - 1) // self.vae.config.temporal_compression_ratio + 1
             self.pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames if not is_image else 1)
 
         try:
+            print(f"Generation.")
             if self.model_type == "Inpaint":
                 if self.transformer.config.in_channels != self.vae.config.latent_channels:
                     if validation_video is not None:
@@ -283,6 +299,7 @@ class Wan_Fun_Controller(Fun_Controller):
                     clip_image = clip_image,
                     cfg_skip_ratio = cfg_skip_ratio,
                 ).videos
+            print(f"Generation done.")
         except Exception as e:
             self.clear_cache()
             print(f"Error. error information is {str(e)}")
@@ -296,11 +313,15 @@ class Wan_Fun_Controller(Fun_Controller):
         self.clear_cache()
         # lora part
         if self.lora_model_path != "none":
+            print(f"Unmerge Lora.")
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
+            print(f"Unmerge Lora done.")
 
+        print(f"Saving outputs.")
         save_sample_path = self.save_outputs(
             is_image, length_slider, sample, fps=16
         )
+        print(f"Saving outputs done.")
 
         if is_image or length_slider == 1:
             if is_api:

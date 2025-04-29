@@ -4,6 +4,7 @@ import imageio
 import inspect
 import numpy as np
 import torch
+import time
 import torchvision
 import cv2
 from einops import rearrange
@@ -246,3 +247,12 @@ def get_image_latent(ref_image=None, sample_size=None):
             ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
 
     return ref_image
+
+def timer(func):
+    def wrapper(*args, **kwargs):
+        start_time  = time.time()
+        result      = func(*args, **kwargs)
+        end_time    = time.time()
+        print(f"function {func.__name__} running for {end_time - start_time} seconds")
+        return result
+    return wrapper
