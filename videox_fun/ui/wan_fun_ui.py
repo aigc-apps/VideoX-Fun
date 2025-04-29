@@ -361,8 +361,8 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                             default_video_length=81,
                             maximum_video_length=81,
                         )
-                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox
+                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox, support_ref_image=True
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -439,7 +439,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                     control_video,
                     denoise_strength, 
                     seed_textbox,
-                    None, 
+                    ref_image, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 
@@ -497,8 +497,8 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                             default_video_length=81,
                             maximum_video_length=81,
                         )
-                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
-                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox
+                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
+                        ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox, support_ref_image=True
                     )
                     cfg_scale_slider, seed_textbox, seed_button = create_cfg_and_seedbox(gradio_version_is_above_4)
 
@@ -567,7 +567,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                     control_video,
                     denoise_strength, 
                     seed_textbox,
-                    None, 
+                    ref_image, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 
@@ -620,7 +620,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                             default_video_length=81,
                             maximum_video_length=81,
                         )
-                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video = create_generation_method(
+                    image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
                         ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
                     )
 
@@ -683,7 +683,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                     validation_video_mask,
                     denoise_strength, 
                     seed_textbox,
-                    None, 
+                    ref_image, 
                     enable_teacache, 
                     teacache_threshold, 
                     num_skip_start_steps, 

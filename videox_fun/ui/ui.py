@@ -224,7 +224,7 @@ def create_generation_methods_and_video_length(
                     
     return generation_method, length_slider, overlap_video_length, partial_video_length
 
-def create_generation_method(source_method_options, prompt_textbox, support_end_image=True):
+def create_generation_method(source_method_options, prompt_textbox, support_end_image=True, support_ref_image=False):
     source_method = gr.Radio(
         source_method_options,
         value="Text to Video (文本到视频)",
@@ -289,7 +289,11 @@ def create_generation_method(source_method_options, prompt_textbox, support_end_
             label="The control video (用于提供控制信号的video)",  show_label=True, 
             elem_id="v2v_control", sources="upload", 
         )
-    return image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video
+        ref_image = gr.Image(
+            label="The reference image for control video (控制视频的参考图片)",  show_label=True, 
+            elem_id="ref_image", sources="upload", type="filepath", visible=support_ref_image
+        )
+    return image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image
 
 def create_cfg_and_seedbox(gradio_version_is_above_4):
     cfg_scale_slider  = gr.Slider(label="CFG Scale (引导系数)",        value=6.0, minimum=0,   maximum=20)
