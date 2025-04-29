@@ -10,8 +10,7 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.api.api import (infer_forward_api,
-                               update_diffusion_transformer_api,
-                               update_edition_api)
+                               update_diffusion_transformer_api)
 from videox_fun.ui.controller import ddpm_scheduler_dict
 from videox_fun.ui.cogvideox_fun_ui import ui, ui_client, ui_host
 
@@ -65,7 +64,6 @@ if __name__ == "__main__":
     # launch api
     infer_forward_api(None, app, controller)
     update_diffusion_transformer_api(None, app, controller)
-    update_edition_api(None, app, controller)
     
     # not close the python
     while True:
