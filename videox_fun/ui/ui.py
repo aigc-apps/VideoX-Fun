@@ -190,7 +190,7 @@ def create_height_width(default_height, default_width, maximum_height, maximum_w
     )
     width_slider     = gr.Slider(label="Width (视频宽度)", value=default_width, minimum=128, maximum=maximum_width, step=16)
     height_slider    = gr.Slider(label="Height (视频高度)", value=default_height, minimum=128, maximum=maximum_height, step=16)
-    base_resolution  = gr.Radio(label="Base Resolution of Pretrained Models", value=512, choices=[512, 768, 960], visible=False)
+    base_resolution  = gr.Radio(label="Base Resolution of Pretrained Models", value=512, choices=[512, 640, 768, 896, 960, 1024], visible=False)
 
     return resize_method, width_slider, height_slider, base_resolution
 
@@ -202,7 +202,7 @@ def create_fake_height_width(default_height, default_width, maximum_height, maxi
     )
     width_slider     = gr.Slider(label="Width (视频宽度)", value=default_width, minimum=128, maximum=maximum_width, step=16, interactive=False)
     height_slider    = gr.Slider(label="Height (视频高度)", value=default_height, minimum=128, maximum=maximum_height, step=16, interactive=False)
-    base_resolution  = gr.Radio(label="Base Resolution of Pretrained Models", value=512, choices=[512, 768, 960], interactive=False, visible=False)
+    base_resolution  = gr.Radio(label="Base Resolution of Pretrained Models", value=512, choices=[512, 640, 768, 896, 960, 1024], interactive=False, visible=False)
 
     return resize_method, width_slider, height_slider, base_resolution
 
