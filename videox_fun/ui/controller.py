@@ -114,11 +114,12 @@ class Fun_Controller:
 
     def update_base_model(self, base_model_dropdown):
         self.base_model_path = base_model_dropdown
-        print("Update base model")
+        print(f"Update base model: {base_model_dropdown}")
         if base_model_dropdown == "none":
             return gr.update()
         if self.transformer is None:
             gr.Info(f"Please select a pretrained model path.")
+            print(f"Please select a pretrained model path.")
             return gr.update(value=None)
         else:
             base_model_dropdown = os.path.join(self.personalized_model_dir, base_model_dropdown)
@@ -127,11 +128,11 @@ class Fun_Controller:
                 for key in f.keys():
                     base_model_state_dict[key] = f.get_tensor(key)
             self.transformer.load_state_dict(base_model_state_dict, strict=False)
-            print("Update base done")
+            print("Update base model done")
             return gr.update()
 
     def update_lora_model(self, lora_model_dropdown):
-        print("Update lora model")
+        print(f"Update lora model: {lora_model_dropdown}")
         if lora_model_dropdown == "none":
             self.lora_model_path = "none"
             return gr.update()

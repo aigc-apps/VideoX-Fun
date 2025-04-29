@@ -40,7 +40,7 @@ from .ui import (create_cfg_and_seedbox, create_cfg_riflex_k,
 
 class Wan_Controller(Fun_Controller):
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
-        print("Update diffusion transformer")
+        print(f"Update diffusion transformer: {diffusion_transformer_dropdown}")
         self.model_name = diffusion_transformer_dropdown
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
@@ -271,6 +271,7 @@ class Wan_Controller(Fun_Controller):
                 ).videos
         except Exception as e:
             self.clear_cache()
+            print(f"Error. error information is {str(e)}")
             if self.lora_model_path != "none":
                 self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
             if is_api:
