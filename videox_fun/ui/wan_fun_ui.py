@@ -361,7 +361,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
                             default_video_length=81,
-                            maximum_video_length=81,
+                            maximum_video_length=161,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
                         ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox, support_ref_image=True
@@ -380,7 +380,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return [gr.update(visible=True, maximum=81, value=81, interactive=True), gr.update(visible=False), gr.update(visible=False)]
+                    return [gr.update(visible=True, maximum=161, value=81, interactive=True), gr.update(visible=False), gr.update(visible=False)]
                 elif generation_method == "Image Generation":
                     return [gr.update(minimum=1, maximum=1, value=1, interactive=False), gr.update(visible=False), gr.update(visible=False)]
                 else:
@@ -497,7 +497,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
                             default_video_length=81,
-                            maximum_video_length=81,
+                            maximum_video_length=161,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
                         ["Text to Video (文本到视频)", "Image to Video (图片到视频)", "Video Control (视频控制)"], prompt_textbox, support_ref_image=True
@@ -510,7 +510,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return gr.update(visible=True, minimum=1, maximum=81, value=81, interactive=True)
+                    return gr.update(visible=True, minimum=1, maximum=161, value=81, interactive=True)
                 elif generation_method == "Image Generation":
                     return gr.update(minimum=1, maximum=1, value=1, interactive=False)
             generation_method.change(
@@ -620,7 +620,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                         create_generation_methods_and_video_length(
                             ["Video Generation", "Image Generation"],
                             default_video_length=81,
-                            maximum_video_length=81,
+                            maximum_video_length=161,
                         )
                     image_to_video_col, video_to_video_col, control_video_col, source_method, start_image, template_gallery, end_image, validation_video, validation_video_mask, denoise_strength, control_video, ref_image = create_generation_method(
                         ["Text to Video (文本到视频)", "Image to Video (图片到视频)"], prompt_textbox
@@ -634,7 +634,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
 
             def upload_generation_method(generation_method):
                 if generation_method == "Video Generation":
-                    return gr.update(visible=True, minimum=5, maximum=81, value=49, interactive=True)
+                    return gr.update(visible=True, minimum=5, maximum=161, value=49, interactive=True)
                 elif generation_method == "Image Generation":
                     return gr.update(minimum=1, maximum=1, value=1, interactive=False)
             generation_method.change(
