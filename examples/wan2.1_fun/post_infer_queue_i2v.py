@@ -36,10 +36,10 @@ def post_infer(
     if start_image:
         try:
             if not start_image.startswith("http"):
-                image = Image.open(start_image)
+                image = Image.open(start_image).convert("RGB")
                 # 将图片转换为 Base64 编码
                 buffered = BytesIO()
-                image.save(buffered, format=image.format)
+                image.save(buffered, format="JPEG")
                 start_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
         except Exception as e:
             print(f"Error processing start_image: {e}")
