@@ -61,6 +61,8 @@ def post_infer(
 
     # Initialize session and set headers
     session = requests.session()
+    if url[-1] == "/":
+        url = url[:-1]
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request

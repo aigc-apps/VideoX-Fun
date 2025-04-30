@@ -36,10 +36,10 @@ def post_infer(
     if start_image:
         try:
             if not start_image.startswith("http"):
-                image = Image.open(start_image)
+                image = Image.open(start_image).convert("RGB")
                 # 将图片转换为 Base64 编码
                 buffered = BytesIO()
-                image.save(buffered, format=image.format)
+                image.save(buffered, format="JPEG")
                 start_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
         except Exception as e:
             print(f"Error processing start_image: {e}")
@@ -76,6 +76,8 @@ def post_infer(
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request
+    if url[-1] == "/":
+        url = url[:-1]
     post_r = session.post(f'{url}/videox_fun/infer_forward', data=datas, timeout=timeout)
 
     # Extract request ID from POST response headers
@@ -105,7 +107,6 @@ def post_infer(
     # Decode and return the response content
     data = get_r.content.decode('utf-8')
     return data
-
 
 if __name__ == '__main__':
     # initiate time

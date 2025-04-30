@@ -212,9 +212,9 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
             torch.cuda.ipc_collect()
             save_sample_path = ""
             comment = f"Error. error information is {str(e)}"
-            return {"message": comment}
+            return {"message": comment, "save_sample_path": None, "base64_encoding": None}
         
         if save_sample_path != "":
             return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
         else:
-            return {"message": comment, "save_sample_path": save_sample_path}
+            return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}

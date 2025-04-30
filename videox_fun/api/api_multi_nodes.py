@@ -161,18 +161,18 @@ if ray is not None:
                     torch.cuda.ipc_collect()
                     save_sample_path = ""
                     comment = f"Error. error information is {str(e)}"
-                    return {"message": comment}
+                    return {"message": comment, "save_sample_path": None, "base64_encoding": None}
                 
                 import torch.distributed as dist
                 if dist.get_rank() == 0:
                     if save_sample_path != "":
                         return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
                     else:
-                        return {"message": comment, "save_sample_path": save_sample_path}
+                        return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}
                 return None
 
             except Exception as e:
-                self.logger.error(f"Error generating image: {str(e)}")
+                print(f"Error generating image: {str(e)}")
                 raise HTTPException(status_code=500, detail=str(e))
 
     class MultiNodesEngine:

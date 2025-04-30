@@ -60,6 +60,8 @@ def post_infer(
     session.headers.update({"Authorization": POST_TOKEN})
 
     # Send POST request
+    if url[-1] == "/":
+        url = url[:-1]
     post_r = session.post(f'{url}/videox_fun/infer_forward', data=datas, timeout=timeout)
 
     # Extract request ID from POST response headers
