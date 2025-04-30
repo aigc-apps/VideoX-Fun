@@ -31,10 +31,14 @@ def save_base64_video_dist(base64_string):
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, filename)
 
-    if dist.get_rank() == 0:
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
+            with open(file_path, 'wb') as video_file:
+                video_file.write(video_data)
+        dist.barrier()
+    else:
         with open(file_path, 'wb') as video_file:
             video_file.write(video_data)
-    dist.barrier()
     return file_path
 
 def save_base64_image_dist(base64_string):
@@ -46,10 +50,14 @@ def save_base64_image_dist(base64_string):
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, filename)
 
-    if dist.get_rank() == 0:
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
+            with open(file_path, 'wb') as video_file:
+                video_file.write(video_data)
+        dist.barrier()
+    else:
         with open(file_path, 'wb') as video_file:
             video_file.write(video_data)
-    dist.barrier()
     return file_path
 
 def save_url_video_dist(url):
@@ -126,18 +134,18 @@ if ray is not None:
                 if start_image is not None:
                     if start_image.startswith('http'):
                         start_image = save_url_image_dist(start_image)
-                        start_image = [Image.open(start_image)]
+                        start_image = [Image.open(start_image).convert("RGB")]
                     else:
                         start_image = base64.b64decode(start_image)
-                        start_image = [Image.open(BytesIO(start_image))]
+                        start_image = [Image.open(BytesIO(start_image)).convert("RGB")]
 
                 if end_image is not None:
                     if end_image.startswith('http'):
                         end_image = save_url_image_dist(end_image)
-                        end_image = [Image.open(end_image)]
+                        end_image = [Image.open(end_image).convert("RGB")]
                     else:
                         end_image = base64.b64decode(end_image)
-                        end_image = [Image.open(BytesIO(end_image))]
+                        end_image = [Image.open(BytesIO(end_image)).convert("RGB")]
                         
                 if validation_video is not None:
                     if validation_video.startswith('http'):
@@ -160,10 +168,10 @@ if ray is not None:
                 if ref_image is not None:
                     if ref_image.startswith('http'):
                         ref_image = save_url_image_dist(ref_image)
-                        ref_image = [Image.open(ref_image)]
+                        ref_image = [Image.open(ref_image).convert("RGB")]
                     else:
                         ref_image = base64.b64decode(ref_image)
-                        ref_image = [Image.open(BytesIO(ref_image))]
+                        ref_image = [Image.open(BytesIO(ref_image)).convert("RGB")]
 
                 try:
                     save_sample_path, comment = self.controller.generate(

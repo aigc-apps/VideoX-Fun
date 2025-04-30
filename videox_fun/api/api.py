@@ -131,18 +131,18 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
         if start_image is not None:
             if start_image.startswith('http'):
                 start_image = save_url_image(start_image)
-                start_image = [Image.open(start_image)]
+                start_image = [Image.open(start_image).convert("RGB")]
             else:
                 start_image = base64.b64decode(start_image)
-                start_image = [Image.open(BytesIO(start_image))]
+                start_image = [Image.open(BytesIO(start_image)).convert("RGB")]
 
         if end_image is not None:
             if end_image.startswith('http'):
                 end_image = save_url_image(end_image)
-                end_image = [Image.open(end_image)]
+                end_image = [Image.open(end_image).convert("RGB")]
             else:
                 end_image = base64.b64decode(end_image)
-                end_image = [Image.open(BytesIO(end_image))]
+                end_image = [Image.open(BytesIO(end_image)).convert("RGB")]
 
         if validation_video is not None:
             if validation_video.startswith('http'):
@@ -165,10 +165,10 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
         if ref_image is not None:
             if ref_image.startswith('http'):
                 ref_image = save_url_image(ref_image)
-                ref_image = [Image.open(ref_image)]
+                ref_image = [Image.open(ref_image).convert("RGB")]
             else:
                 ref_image = base64.b64decode(ref_image)
-                ref_image = [Image.open(BytesIO(ref_image))]
+                ref_image = [Image.open(BytesIO(ref_image)).convert("RGB")]
         
         try:
             save_sample_path, comment = controller.generate(
