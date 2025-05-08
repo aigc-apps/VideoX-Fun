@@ -230,6 +230,10 @@ if coefficients is not None:
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
 
+if cfg_skip_ratio is not None:
+    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
+
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
@@ -257,7 +261,6 @@ with torch.no_grad():
 
             video        = input_video,
             mask_video   = input_video_mask,
-            cfg_skip_ratio = cfg_skip_ratio,
             shift = shift,
         ).videos
     else:
@@ -270,7 +273,6 @@ with torch.no_grad():
             generator   = generator,
             guidance_scale = guidance_scale,
             num_inference_steps = num_inference_steps,
-            cfg_skip_ratio = cfg_skip_ratio,
             shift = shift,
         ).videos
 

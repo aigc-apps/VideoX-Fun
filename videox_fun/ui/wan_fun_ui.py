@@ -119,6 +119,11 @@ class Wan_Fun_Controller(Fun_Controller):
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             self.transformer.enable_multi_gpus_inference()
 
+        if self.compile_dit:
+            for i in range(len(self.pipeline.transformer.blocks)):
+                self.pipeline.transformer.blocks[i] = torch.compile(self.pipeline.transformer.blocks[i])
+            print("Add Compile")
+
         if self.GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(self.transformer, ["modulation",], device=self.device)
             self.transformer.freqs = self.transformer.freqs.to(device=self.device)
@@ -219,7 +224,11 @@ class Wan_Fun_Controller(Fun_Controller):
         else:
             print(f"Disable TeaCache.")
             self.pipeline.transformer.disable_teacache()
-            
+
+        if cfg_skip_ratio is not None and cfg_skip_ratio >= 0:
+            print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+            self.pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, sample_step_slider)
+
         print(f"Generate seed.")
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
@@ -253,7 +262,6 @@ class Wan_Fun_Controller(Fun_Controller):
                         video               = input_video,
                         mask_video          = input_video_mask,
                         clip_image          = clip_image,
-                        cfg_skip_ratio      = cfg_skip_ratio,
                     ).videos
                 else:
                     sample = self.pipeline(
@@ -265,7 +273,6 @@ class Wan_Fun_Controller(Fun_Controller):
                         height              = height_slider,
                         num_frames          = length_slider if not is_image else 1,
                         generator           = generator,
-                        cfg_skip_ratio      = cfg_skip_ratio,
                     ).videos
             else:
                 if ref_image is not None:
@@ -297,7 +304,6 @@ class Wan_Fun_Controller(Fun_Controller):
                     ref_image = ref_image,
                     start_image = start_image,
                     clip_image = clip_image,
-                    cfg_skip_ratio = cfg_skip_ratio,
                 ).videos
             print(f"Generation done.")
         except Exception as e:
@@ -343,10 +349,10 @@ class Wan_Fun_Controller(Fun_Controller):
 Wan_Fun_Controller_Host = Wan_Fun_Controller
 Wan_Fun_Controller_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
+def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, savedir_sample=None):
     controller = Wan_Fun_Controller(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        config_path=config_path, compile_dit=compile_dit,
         weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
@@ -481,10 +487,10 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, ulysses_degree, ring_degree
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path, compile_dit, weight_dtype, savedir_sample=None):
     controller = Wan_Fun_Controller_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
-        config_path=config_path, ulysses_degree=ulysses_degree, ring_degree=ring_degree,
+        config_path=config_path, compile_dit=compile_dit,
         weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 

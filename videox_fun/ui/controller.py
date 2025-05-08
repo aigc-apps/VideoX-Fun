@@ -59,7 +59,8 @@ all_cheduler_dict = {**ddpm_scheduler_dict, **flow_scheduler_dict}
 class Fun_Controller:
     def __init__(
         self, GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        config_path=None, ulysses_degree=1, ring_degree=1, weight_dtype=None, savedir_sample=None,
+        config_path=None, ulysses_degree=1, ring_degree=1, compile_dit=False, 
+        weight_dtype=None, savedir_sample=None,
     ):
         # config dirs
         self.basedir                    = os.getcwd()
@@ -82,6 +83,7 @@ class Fun_Controller:
             self.config = OmegaConf.load(config_path)
         self.ulysses_degree             = ulysses_degree
         self.ring_degree                = ring_degree
+        self.compile_dit                = compile_dit
         self.weight_dtype               = weight_dtype
         self.device                     = set_multi_gpus_devices(self.ulysses_degree, self.ring_degree)
 

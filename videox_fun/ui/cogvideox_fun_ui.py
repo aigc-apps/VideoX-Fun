@@ -335,12 +335,10 @@ class CogVideoXFunController(Fun_Controller):
 CogVideoXFunController_Host = CogVideoXFunController
 CogVideoXFunController_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
+def ui(GPU_memory_mode, scheduler_dict, weight_dtype, savedir_sample=None):
     controller = CogVideoXFunController(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
-        savedir_sample=savedir_sample,
+        weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:
@@ -466,12 +464,10 @@ def ui(GPU_memory_mode, scheduler_dict, ulysses_degree, ring_degree, weight_dtyp
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, ulysses_degree, ring_degree, weight_dtype, savedir_sample=None):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, weight_dtype, savedir_sample=None):
     controller = CogVideoXFunController_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
-        ulysses_degree=ulysses_degree, ring_degree=ring_degree,
-        config_path=None, enable_teacache=None, teacache_threshold=None, weight_dtype=weight_dtype, 
-        savedir_sample=savedir_sample,
+        weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
     with gr.Blocks(css=css) as demo:

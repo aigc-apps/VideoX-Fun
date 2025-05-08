@@ -40,8 +40,7 @@ def main():
     engine = MultiNodesEngine(
         world_size=args.world_size, Controller=CogVideoXFunController,
         GPU_memory_mode=args.gpu_memory_mode, scheduler_dict=flow_scheduler_dict, model_name=args.model_name, model_type=args.model_type, config_path=None, 
-        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, enable_teacache=False, teacache_threshold=0.1, num_skip_start_steps=5, 
-        teacache_offload=False, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
+        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
     )
     
     def gr_launch():

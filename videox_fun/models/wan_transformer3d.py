@@ -23,7 +23,7 @@ from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     xFuserLongContextAttention)
 from ..dist.wan_xfuser import usp_attn_forward
-from .cache_utils import TeaCache
+from .cache_utils import TeaCache, cfg_skip, disable_cfg_skip, enable_cfg_skip
 from .wan_camera_adapter import SimpleAdapter
 
 try:
@@ -821,6 +821,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.ref_conv = None
 
         self.teacache = None
+        self.cfg_skip_ratio = None
+        self.current_steps = 0
+        self.num_inference_steps = None
         self.gradient_checkpointing = False
         self.sp_world_size = 1
         self.sp_world_rank = 0
@@ -839,6 +842,23 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def disable_teacache(self):
         self.teacache = None
+
+    @enable_cfg_skip()
+    def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
+        if cfg_skip_ratio != 0:
+            self.cfg_skip_ratio = cfg_skip_ratio
+            self.current_steps = 0
+            self.num_inference_steps = num_steps
+        else:
+            self.cfg_skip_ratio = None
+            self.current_steps = 0
+            self.num_inference_steps = None
+
+    @disable_cfg_skip()
+    def disable_cfg_skip(self):
+        self.cfg_skip_ratio = None
+        self.current_steps = 0
+        self.num_inference_steps = None
 
     def enable_riflex(
         self,
@@ -876,7 +896,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
-        
+
+    @cfg_skip()
     def forward(
         self,
         x,
@@ -982,25 +1003,25 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 modulated_inp = e0
                 skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
                 if skip_flag:
-                    should_calc = True
+                    self.should_calc = True
                     self.teacache.accumulated_rel_l1_distance = 0
                 else:
                     if cond_flag:
                         rel_l1_distance = self.teacache.compute_rel_l1_distance(self.teacache.previous_modulated_input, modulated_inp)
                         self.teacache.accumulated_rel_l1_distance += self.teacache.rescale_func(rel_l1_distance)
                     if self.teacache.accumulated_rel_l1_distance < self.teacache.rel_l1_thresh:
-                        should_calc = False
+                        self.should_calc = False
                     else:
-                        should_calc = True
+                        self.should_calc = True
                         self.teacache.accumulated_rel_l1_distance = 0
                 self.teacache.previous_modulated_input = modulated_inp
-                self.teacache.should_calc = should_calc
+                self.teacache.should_calc = self.should_calc
             else:
-                should_calc = self.teacache.should_calc
+                self.should_calc = self.teacache.should_calc
         
         # TeaCache
         if self.teacache is not None:
-            if not should_calc:
+            if not self.should_calc:
                 previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
                 x = x + previous_residual.to(x.device)
             else:

@@ -78,7 +78,7 @@ if ray is not None:
         def __init__(
             self, rank: int, world_size: int, Controller,
             GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
-            config_path=None, ulysses_degree=1, ring_degree=1, weight_dtype=None, 
+            config_path=None, ulysses_degree=1, ring_degree=1, compile_dit=False, weight_dtype=None, 
             savedir_sample=None,
         ):
             # Set PyTorch distributed environment variables
@@ -90,7 +90,7 @@ if ray is not None:
             self.rank = rank
             self.controller = Controller(
                 GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
-                ulysses_degree=ulysses_degree, ring_degree=ring_degree, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
+                ulysses_degree=ulysses_degree, ring_degree=ring_degree, compile_dit=compile_dit, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
             )
 
         def generate(self, datas):
@@ -238,10 +238,11 @@ if ray is not None:
             model_name, 
             model_type, 
             config_path,
-            ulysses_degree, 
-            ring_degree, 
-            weight_dtype,
-            savedir_sample
+            ulysses_degree=1, 
+            ring_degree=1, 
+            compile_dit=False,
+            weight_dtype=torch.bfloat16,
+            savedir_sample="samples"
         ):
             # Ensure Ray is initialized
             if not ray.is_initialized():
@@ -252,7 +253,7 @@ if ray is not None:
                 MultiNodesGenerator.remote(
                     rank, world_size, Controller, 
                     GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, config_path=config_path, 
-                    ulysses_degree=ulysses_degree, ring_degree=ring_degree, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
+                    ulysses_degree=ulysses_degree, ring_degree=ring_degree, compile_dit=compile_dit, weight_dtype=weight_dtype, savedir_sample=savedir_sample,
                 )
                 for rank in range(num_workers)
             ]

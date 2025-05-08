@@ -33,6 +33,9 @@ if __name__ == "__main__":
     # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "sequential_cpu_offload"
+    # Compile will give a speedup in fixed resolution and need a little GPU memory. 
+    # The compile_dit is not compatible with the fsdp_dit.
+    compile_dit = False
 
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -49,11 +52,11 @@ if __name__ == "__main__":
     model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, "Inpaint", config_path, 1, 1, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, flow_scheduler_dict, model_name, "Inpaint", config_path, compile_dit, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(flow_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, 1, 1, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, flow_scheduler_dict, config_path, compile_dit, weight_dtype)
 
     def gr_launch():
         # launch gradio

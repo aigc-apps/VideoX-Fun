@@ -496,7 +496,6 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         clip_image: Image = None,
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
-        cfg_skip_ratio: int = None,
         shift: int = 5,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
@@ -658,11 +657,10 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+        self.transformer.num_inference_steps = num_inference_steps
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                if cfg_skip_ratio is not None and i >= num_inference_steps * (1 - cfg_skip_ratio):
-                    do_classifier_free_guidance = False
-                    in_prompt_embeds = prompt_embeds
+                self.transformer.current_steps = i
 
                 if self.interrupt:
                     continue

@@ -48,11 +48,11 @@ if __name__ == "__main__":
     model_type = "Inpaint"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, ddpm_scheduler_dict, model_name, model_type, 1, 1, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, ddpm_scheduler_dict, model_name, model_type, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(ddpm_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, ddpm_scheduler_dict, 1, 1, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, ddpm_scheduler_dict, weight_dtype)
 
     # launch gradio
     app, _, _ = demo.queue(status_update_rate=1).launch(
