@@ -20,7 +20,20 @@ from videox_fun.ui.cogvideox_fun_ui import CogVideoXFunController
 def main():
     parser = argparse.ArgumentParser(description='xDiT HTTP Service')
     parser.add_argument('--world_size', type=int, default=8, help='Number of parallel workers')
-    parser.add_argument('--gpu_memory_mode', type=str, default="model_full_load", help='GPU memory mode')
+    parser.add_argument(
+        '--gpu_memory_mode', type=str, default="model_full_load", help='''
+GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+model_full_load means that the entire model will be moved to the GPU.
+
+model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
+and the transformer model has been quantized to float8, which can save more GPU memory. 
+
+model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
+
+model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
+and the transformer model has been quantized to float8, which can save more GPU memory. 
+        '''
+    )
     parser.add_argument('--ulysses_degree', type=int, default=4, help='Degree of Ulysses configuration')
     parser.add_argument('--ring_degree', type=int, default=2, help='Degree of Ring configuration')
     parser.add_argument('--weight_dtype', type=str, default='bf16', help='Weight data type')

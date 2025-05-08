@@ -174,7 +174,7 @@ elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
