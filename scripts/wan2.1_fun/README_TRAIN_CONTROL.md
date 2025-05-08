@@ -38,8 +38,179 @@ Some parameters in the sh file can be confusing, and they are explained in this 
     - At 1024x1024 resolution, the number of video frames is 9 (~= 512 * 512 * 49 / 1024 / 1024).
     - These resolutions combined with their corresponding lengths allow the model to generate videos of different sizes.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
+- `train_mode` is used to set the training mode. 
+  - The models named `Wan2.1-Fun-*-Control` are trained in the `control_ref` mode. 
+  - The models named `Wan2.1-Fun-*-Control-Camera` are trained in the `control_ref_camera` mode.
+- `control_ref_image` is used to specify the type of control image. The available options are `first_frame` and `random`. 
+ - `first_frame` is used in V1.0 because V1.0 supports using a specified start frame as the control image. The Control-Camera models use the first frame as the control image.
+ - `random` is used in V1.1 because V1.1 supports both using a specified start frame and a reference image as the control image.
+- `add_full_ref_image_in_self_attention` determines whether to include the reference image in self-attention. This option is used in V1.1, as it supports using a reference image as the control image. It should not be used in V1.0 and Control-Camera models.
 
-Wan-Fun-Control without deepspeed:
+When train model with multi machines, please set the params as follows:
+```sh
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/wan2.1_fun/xxx.py
+```
+ 
+Wan-Fun-Control-V1.1 without deepspeed:
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=1024 \
+  --video_sample_size=256 \
+  --token_sample_size=512 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --low_vram \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_full_ref_image_in_self_attention \
+  --trainable_modules "."
+```
+
+Wan-Fun-Control-V1.1 with deepspeed:
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train_control.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=1024 \
+  --video_sample_size=256 \
+  --token_sample_size=512 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --low_vram \
+  --use_deepspeed \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_full_ref_image_in_self_attention \
+  --trainable_modules "."
+```
+
+Wan-Fun-Control-V1.1 with deepspeed zero-3:
+
+Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
+```sh
+python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
+```
+
+Training shell command is as follows:
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage2.1_config.json --deepspeed_multinode_launcherr standard scripts/wan2.1_fun/train_control.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=1024 \
+  --video_sample_size=256 \
+  --token_sample_size=512 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --low_vram \
+  --use_deepspeed \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_full_ref_image_in_self_attention \
+  --trainable_modules "."
+```
+
+<details>
+  <summary>(Obsolete) V1.0:</summary>
+
+Wan-Fun-Control-V1.0 without deepspeed:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -48,7 +219,6 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-# When train model with multi machines, use "--config_file accelerate.yaml" instead of "--mixed_precision='bf16'".
 accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -86,7 +256,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --trainable_modules "."
 ```
 
-Wan-Fun with deepspeed:
+Wan-Fun-Control-V1.0 with deepspeed:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -95,7 +265,6 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-# When train model with multi machines, use "--config_file accelerate.yaml" instead of "--mixed_precision='bf16'".
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -134,7 +303,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --trainable_modules "."
 ```
 
-Wan T2V with deepspeed zero-3:
+Wan-Fun-Control-V1.0 with deepspeed zero-3:
 
 Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
 ```sh
@@ -187,3 +356,4 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --control_ref_image="first_frame" \
   --trainable_modules "."
 ```
+</details>

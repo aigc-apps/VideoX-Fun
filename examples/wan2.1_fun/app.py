@@ -34,7 +34,7 @@ if __name__ == "__main__":
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "sequential_cpu_offload"
     # Compile will give a speedup in fixed resolution and need a little GPU memory. 
-    # The compile_dit is not compatible with the fsdp_dit.
+    # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
     compile_dit = False
 
     # Use torch.float16 if GPU does not support torch.bfloat16

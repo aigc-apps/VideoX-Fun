@@ -24,7 +24,7 @@ Wan T2V without deepspeed:
 
 Wan without DeepSpeed is more suitable for 1.3B Wan, as using it with 14B Wan may result in insufficient GPU memory.
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1
@@ -69,7 +69,7 @@ Wan T2V with deepspeed zero-2:
 Wan with DeepSpeed Zero-2 is suitable for training 1.3B Wan and 14B Wan at low resolutions, but training 14B Wan at high resolutions may still result in insufficient GPU memory.
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1
@@ -119,7 +119,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 
 Training shell command is as follows:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1

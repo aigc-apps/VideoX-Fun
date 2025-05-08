@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-1.3B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-InP"
 export TRAIN_PROMPT_PATH="MovieGenVideoBench_train.txt"
 # Performing validation simultaneously with training will increase time and GPU memory usage.
 export VALIDATION_PROMPT_PATH="MovieGenVideoBench_val.txt"

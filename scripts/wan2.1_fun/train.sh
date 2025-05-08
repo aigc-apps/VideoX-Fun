@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1
@@ -41,7 +41,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train.py \
   --trainable_modules "."
 
 # # Training command for T2V
-# export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-InP"
+# export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
 # export DATASET_NAME="datasets/internal_datasets/"
 # export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_IB_DISABLE=1

@@ -407,6 +407,9 @@ Wan2.1のパラメータが非常に大きいため、GPUメモリを節約し�
 詳細は[ComfyUI README](comfyui/README.md)をご覧ください。
 
 #### c. Pythonファイルを実行する
+
+##### i. 単一GPUでの推論:
+
 - ステップ1: 対応する[重み](#model-zoo)をダウンロードし、`models`フォルダに配置します。
 - ステップ2: 異なる重みと予測目標に基づいて、異なるファイルを使用して予測を行います。現在、このライブラリはCogVideoX-Fun、Wan2.1、およびWan2.1-Funをサポートしています。`examples`フォルダ内のフォルダ名で区別され、異なるモデルがサポートする機能が異なりますので、状況に応じて区別してください。以下はCogVideoX-Funを例として説明します。
   - テキストからビデオ:
@@ -425,6 +428,27 @@ Wan2.1のパラメータが非常に大きいため、GPUメモリを節約し�
     - `control_video`は、Canny、Pose、Depthなどの演算子で抽出された制御用ビデオです。以下のデモビデオを使用して実行できます：[デモビデオ](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4)
     - 次に、`examples/cogvideox_fun/predict_v2v_control.py`ファイルを実行し、結果が生成されるのを待ちます。結果は`samples/cogvideox-fun-videos_v2v_control`フォルダに保存されます。
 - ステップ3: 自分でトレーニングした他のバックボーンやLoraを組み合わせたい場合は、必要に応じて`examples/{model_name}/predict_t2v.py`や`examples/{model_name}/predict_i2v.py`、`lora_path`を修正します。
+
+##### ii. 複数GPUでの推論:
+
+`ulysses_degree` と `ring_degree` の積が使用する GPU 数と一致することを確認してください。たとえば、8つのGPUを使用する場合、`ulysses_degree=2` と `ring_degree=4`、または `ulysses_degree=4` と `ring_degree=2` を設定することができます。
+
+- `ulysses_degree` はヘッド（head）に分割した後の並列化を行います。
+- `ring_degree` はシーケンスに分割した後の並列化を行います。
+
+`ring_degree` は `ulysses_degree` よりも通信コストが高いため、これらのパラメータを設定する際には、シーケンス長とモデルのヘッド数を考慮する必要があります。
+
+8GPUでの並列推論を例に挙げます：
+
+- **Wan2.1-Fun-V1.1-14B-InP** はヘッド数が40あります。この場合、`ulysses_degree` は40で割り切れる値（例：2, 4, 8など）に設定する必要があります。したがって、8GPUを使用して並列推論を行う場合、`ulysses_degree=8` と `ring_degree=1` を設定できます。
+
+- **Wan2.1-Fun-V1.1-1.3B-InP** はヘッド数が12あります。この場合、`ulysses_degree` は12で割り切れる値（例：2, 4など）に設定する必要があります。したがって、8GPUを使用して並列推論を行う場合、`ulysses_degree=4` と `ring_degree=2` を設定できます。
+
+パラメータの設定が完了したら、以下のコマンドで並列推論を実行してください：
+
+```sh
+torchrun --nproc-per-node=8 examples/wan2.1_fun/predict_t2v.py
+```
 
 #### d. UIインターフェースを使用する
 

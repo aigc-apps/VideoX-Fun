@@ -405,6 +405,9 @@ qfloat8会部分降低模型的性能，但可以节省更多的显存。如果�
 具体查看[ComfyUI README](comfyui/README.md)。
 
 #### c、运行python文件
+
+##### i、单卡运行:
+
 - 步骤1：下载对应[权重](#model-zoo)放入models文件夹。
 - 步骤2：根据不同的权重与预测目标使用不同的文件进行预测。当前该库支持CogVideoX-Fun、Wan2.1和Wan2.1-Fun，在examples文件夹下用文件夹名以区分，不同模型支持的功能不同，请视具体情况予以区分。以CogVideoX-Fun为例。
   - 文生视频：
@@ -423,6 +426,21 @@ qfloat8会部分降低模型的性能，但可以节省更多的显存。如果�
     - control_video是控制生视频的控制视频，是使用Canny、Pose、Depth等算子提取后的视频。您可以使用以下视频运行演示：[演示视频](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4)
     - 而后运行examples/cogvideox_fun/predict_v2v_control.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_v2v_control文件夹中。
 - 步骤3：如果想结合自己训练的其他backbone与Lora，则看情况修改examples/{model_name}/predict_t2v.py中的examples/{model_name}/predict_i2v.py和lora_path。
+
+##### ii、多卡运行:
+
+请确保ulysses_degree和ring_degree的乘积等于使用的GPU数量。例如，如果您使用8个GPU，则可以设置ulysses_degree=2和ring_degree=4，也可以设置ulysses_degree=4和ring_degree=2。
+
+ulysses_degree是在head进行切分后并行生成，ring_degree是在sequence上进行切分后并行生成。ring_degree相比ulysses_degree有更大的通信成本，在设置参数时需要结合序列长度和模型的head数进行设置。
+
+以8卡并行预测为例。
+- 以Wan2.1-Fun-V1.1-14B-InP为例，其head数为40，ulysses_degree需要设置为其可以整除的数如2、4、8等。因此在使用8卡并行预测时，可以设置ulysses_degree=8和ring_degree=1.
+- 以Wan2.1-Fun-V1.1-1.3B-InP为例，其head数为12，ulysses_degree需要设置为其可以整除的数如2、4等。因此在使用8卡并行预测时，可以设置ulysses_degree=4和ring_degree=2.
+
+设置完成后，使用如下指令进行并行预测：
+```sh
+torchrun --nproc-per-node=8 examples/wan2.1_fun/predict_t2v.py
+```
 
 #### d、通过ui界面
 

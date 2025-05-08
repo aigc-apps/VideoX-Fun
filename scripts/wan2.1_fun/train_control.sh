@@ -1,11 +1,10 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-Control"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-# When train model with multi machines, use "--config_file accelerate.yaml" instead of "--mixed_precision='bf16'".
 accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -38,6 +37,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --train_mode="control_object" \
-  --control_ref_image="first_frame" \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_full_ref_image_in_self_attention \
   --trainable_modules "."

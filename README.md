@@ -407,6 +407,9 @@ Since Wan2.1 has a very large number of parameters, we need to consider memory o
 For details, refer to [ComfyUI README](comfyui/README.md).
 
 #### c. Running Python Files
+
+##### i. Single-GPU Inference:
+
 - **Step 1**: Download the corresponding [weights](#model-zoo) and place them in the `models` folder.
 - **Step 2**: Use different files for prediction based on the weights and prediction goals. This library currently supports CogVideoX-Fun, Wan2.1, and Wan2.1-Fun. Different models are distinguished by folder names under the `examples` folder, and their supported features vary. Use them accordingly. Below is an example using CogVideoX-Fun:
   - **Text-to-Video**:
@@ -425,6 +428,27 @@ For details, refer to [ComfyUI README](comfyui/README.md).
     - `control_video` is the control video extracted using operators such as Canny, Pose, or Depth. You can use the following demo video: [Demo Video](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4).
     - Run the file `examples/cogvideox_fun/predict_v2v_control.py` and wait for the results. The generated videos will be saved in the folder `samples/cogvideox-fun-videos_v2v_control`.
 - **Step 3**: If you want to integrate other backbones or Loras trained by yourself, modify `lora_path` and relevant paths in `examples/{model_name}/predict_t2v.py` or `examples/{model_name}/predict_i2v.py` as needed.
+
+##### ii. Multi-GPU Inference:
+
+Please ensure that the product of `ulysses_degree` and `ring_degree` equals the number of GPUs being used. For example, if you are using 8 GPUs, you can set `ulysses_degree=2` and `ring_degree=4`, or alternatively `ulysses_degree=4` and `ring_degree=2`.
+
+- `ulysses_degree` performs parallelization after splitting across the heads.
+- `ring_degree` performs parallelization after splitting across the sequence.
+
+Compared to `ulysses_degree`, `ring_degree` incurs higher communication costs. Therefore, when setting these parameters, you should take into account both the sequence length and the number of heads in the model.
+
+Let’s take 8-GPU parallel inference as an example:
+
+- **For Wan2.1-Fun-V1.1-14B-InP**, which has 40 heads, `ulysses_degree` should be set to a divisor of 40 (e.g., 2, 4, 8, etc.). Thus, when using 8 GPUs for parallel inference, you can set `ulysses_degree=8` and `ring_degree=1`.
+
+- **For Wan2.1-Fun-V1.1-1.3B-InP**, which has 12 heads, `ulysses_degree` should be set to a divisor of 12 (e.g., 2, 4, etc.). Thus, when using 8 GPUs for parallel inference, you can set `ulysses_degree=4` and `ring_degree=2`.
+
+After setting the parameters, run the following command for parallel inference:
+
+```sh
+torchrun --nproc-per-node=8 examples/wan2.1_fun/predict_t2v.py
+```
 
 #### d. Using the Web UI
 The web UI supports text-to-video, image-to-video, video-to-video, and controlled video generation (Canny, Pose, Depth, etc.). This library currently supports CogVideoX-Fun, Wan2.1, and Wan2.1-Fun. Different models are distinguished by folder names under the `examples` folder, and their supported features vary. Use them accordingly. Below is an example using CogVideoX-Fun:

@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-14B-Control"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export NCCL_IB_DISABLE=1
@@ -35,5 +35,6 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control_lora
   --enable_bucket \
   --uniform_sampling \
   --train_mode="control_ref" \
-  --control_ref_image="first_frame" \
+  --control_ref_image="random" \
+  --add_full_ref_image_in_self_attention \
   --low_vram 
