@@ -12,6 +12,7 @@ try:
             initialize_model_parallel)
         from pai_fuser.core.long_ctx_attention import \
             xFuserLongContextAttention
+        print("Enable PAI DiT Turbo")
     except Exception as ex:
         import xfuser
         from xfuser.core.distributed import (get_sequence_parallel_rank,
@@ -31,6 +32,7 @@ except Exception as ex:
 
 try: 
     from pai_fuser.core import parallel_magvit_vae
+    print("Enable PAI VAE Turbo")
 except:
     def parallel_magvit_vae(multi_gpus_overlap_scale, spatial_compression_ratio):
         def decorator(func):

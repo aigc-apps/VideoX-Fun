@@ -19,6 +19,7 @@ def replace_parameters_by_name(module, name_keywords, device):
 if importlib.util.find_spec("pai_fuser") is not None:
     from pai_fuser.core import (convert_model_weight_to_float8,
                                 convert_weight_dtype_wrapper)
+    print("Enable PAI Quantization Turbo")
 else:
     def convert_model_weight_to_float8(model, exclude_module_name=['embed_tokens']):
         for name, module in model.named_modules():

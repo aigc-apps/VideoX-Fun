@@ -428,6 +428,11 @@ qfloat8会部分降低模型的性能，但可以节省更多的显存。如果�
 - 步骤3：如果想结合自己训练的其他backbone与Lora，则看情况修改examples/{model_name}/predict_t2v.py中的examples/{model_name}/predict_i2v.py和lora_path。
 
 ##### ii、多卡运行:
+在使用多卡预测时请注意安装xfuser仓库，推荐安装xfuser==0.4.2和yunchang==0.6.2。
+```
+pip install xfuser==0.4.2 --progress-bar off -i https://mirrors.aliyun.com/pypi/simple/
+pip install yunchang==0.6.2 --progress-bar off -i https://mirrors.aliyun.com/pypi/simple/
+```
 
 请确保ulysses_degree和ring_degree的乘积等于使用的GPU数量。例如，如果您使用8个GPU，则可以设置ulysses_degree=2和ring_degree=4，也可以设置ulysses_degree=4和ring_degree=2。
 
