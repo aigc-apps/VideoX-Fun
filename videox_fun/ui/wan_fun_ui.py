@@ -317,7 +317,11 @@ class Wan_Fun_Controller(Fun_Controller):
                 ).videos
             print(f"Generation done.")
         except Exception as e:
+            self.auto_model_clear_cache(self.pipeline.transformer)
+            self.auto_model_clear_cache(self.pipeline.text_encoder)
+            self.auto_model_clear_cache(self.pipeline.vae)
             self.clear_cache()
+
             print(f"Error. error information is {str(e)}")
             if self.lora_model_path != "none":
                 self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)

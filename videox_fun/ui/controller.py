@@ -153,6 +153,14 @@ class Fun_Controller:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
+    def auto_model_clear_cache(self, model):
+        origin_device = model.device
+        model = model.to("cpu")
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        model = model.to(origin_device)
     
     def input_check(self,
         resize_method,

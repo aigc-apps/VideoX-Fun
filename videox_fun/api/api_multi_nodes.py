@@ -216,16 +216,14 @@ if ray is not None:
                     gc.collect()
                     torch.cuda.empty_cache()
                     torch.cuda.ipc_collect()
+                    save_sample_path = ""
+                    comment = f"Error. error information is {str(e)}"
                     if dist.is_initialized():
                         if dist.get_rank() == 0:
-                            save_sample_path = ""
-                            comment = f"Error. error information is {str(e)}"
                             return {"message": comment, "save_sample_path": None, "base64_encoding": None}
                         else:
                             return None
                     else:
-                        save_sample_path = ""
-                        comment = f"Error. error information is {str(e)}"
                         return {"message": comment, "save_sample_path": None, "base64_encoding": None}
 
 
@@ -234,18 +232,25 @@ if ray is not None:
                         if save_sample_path != "":
                             return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
                         else:
-                            return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}
+                            return {"message": comment, "save_sample_path": None, "base64_encoding": None}
                     else:
                         return None
                 else:
                     if save_sample_path != "":
                         return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
                     else:
-                        return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}
+                        return {"message": comment, "save_sample_path": None, "base64_encoding": None}
 
             except Exception as e:
-                print(f"Error generating image: {str(e)}")
-                raise HTTPException(status_code=500, detail=str(e))
+                print(f"Error generating: {str(e)}")
+                comment = f"Error generating: {str(e)}"
+                if dist.is_initialized():
+                    if dist.get_rank() == 0:
+                        return {"message": comment, "save_sample_path": None, "base64_encoding": None}
+                    else:
+                        return None
+                else:
+                    return {"message": comment, "save_sample_path": None, "base64_encoding": None}
 
     class MultiNodesEngine:
         def __init__(
