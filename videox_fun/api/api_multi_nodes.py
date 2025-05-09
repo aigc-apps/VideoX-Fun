@@ -216,18 +216,32 @@ if ray is not None:
                     gc.collect()
                     torch.cuda.empty_cache()
                     torch.cuda.ipc_collect()
-                    if dist.get_rank() == 0:
+                    if dist.is_initialized():
+                        if dist.get_rank() == 0:
+                            save_sample_path = ""
+                            comment = f"Error. error information is {str(e)}"
+                            return {"message": comment, "save_sample_path": None, "base64_encoding": None}
+                        else:
+                            return None
+                    else:
                         save_sample_path = ""
                         comment = f"Error. error information is {str(e)}"
                         return {"message": comment, "save_sample_path": None, "base64_encoding": None}
-                    return None
 
-                if dist.get_rank() == 0:
+
+                if dist.is_initialized():
+                    if dist.get_rank() == 0:
+                        if save_sample_path != "":
+                            return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
+                        else:
+                            return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}
+                    else:
+                        return None
+                else:
                     if save_sample_path != "":
                         return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": encode_file_to_base64(save_sample_path)}
                     else:
                         return {"message": comment, "save_sample_path": save_sample_path, "base64_encoding": None}
-                return None
 
             except Exception as e:
                 print(f"Error generating image: {str(e)}")
