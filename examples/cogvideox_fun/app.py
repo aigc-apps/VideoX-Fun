@@ -33,6 +33,9 @@ if __name__ == "__main__":
     # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
     # resulting in slower speeds but saving a large amount of GPU memory.
     GPU_memory_mode = "model_cpu_offload_and_qfloat8"
+    # Compile will give a speedup in fixed resolution and need a little GPU memory. 
+    # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
+    compile_dit = False
 
     # Use torch.float16 if GPU does not support torch.bfloat16
     # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -48,11 +51,11 @@ if __name__ == "__main__":
     model_type = "Inpaint"
 
     if ui_mode == "host":
-        demo, controller = ui_host(GPU_memory_mode, ddpm_scheduler_dict, model_name, model_type, weight_dtype)
+        demo, controller = ui_host(GPU_memory_mode, ddpm_scheduler_dict, model_name, model_type, compile_dit, weight_dtype)
     elif ui_mode == "client":
         demo, controller = ui_client(ddpm_scheduler_dict, model_name)
     else:
-        demo, controller = ui(GPU_memory_mode, ddpm_scheduler_dict, weight_dtype)
+        demo, controller = ui(GPU_memory_mode, ddpm_scheduler_dict, compile_dit, weight_dtype)
 
     # launch gradio
     app, _, _ = demo.queue(status_update_rate=1).launch(

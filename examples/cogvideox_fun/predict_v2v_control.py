@@ -21,7 +21,8 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
                               T5Tokenizer)
 from videox_fun.pipeline import (CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
+                                              convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_video_to_video_latent, save_videos_grid
 from videox_fun.dist import set_multi_gpus_devices, shard_model
@@ -46,7 +47,12 @@ GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
 ulysses_degree      = 1
 ring_degree         = 1
+# Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
+fsdp_text_encoder   = True
+# Compile will give a speedup in fixed resolution and need a little GPU memory. 
+# The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
+compile_dit         = False
 
 # model path
 model_name          = "models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-Pose"
@@ -85,7 +91,7 @@ transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True if not fsdp_dit else False,
-    torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
+    torch_dtype=weight_dtype,
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -153,15 +159,27 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
+        print("Add FSDP DIT")
+    if fsdp_text_encoder:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
+        print("Add FSDP TEXT ENCODER")
+
+if compile_dit:
+    for i in range(len(pipeline.transformer.transformer_blocks)):
+        pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
+    print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+    convert_model_weight_to_float8(transformer, exclude_module_name=[], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
+    convert_model_weight_to_float8(transformer, exclude_module_name=[], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:

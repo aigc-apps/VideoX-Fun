@@ -36,6 +36,7 @@ from .ui import (create_cfg_and_seedbox, create_cfg_riflex_k,
                  create_height_width, create_model_checkpoints,
                  create_model_type, create_prompts, create_samplers,
                  create_teacache_params, create_ui_outputs)
+from ..dist import set_multi_gpus_devices, shard_model
 
 
 class Wan_Controller(Fun_Controller):
@@ -109,7 +110,16 @@ class Wan_Controller(Fun_Controller):
             raise ValueError("Not support now")
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
+            from functools import partial
             self.transformer.enable_multi_gpus_inference()
+            if self.fsdp_dit:
+                shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
+                self.pipeline.transformer = shard_fn(self.pipeline.transformer)
+                print("Add FSDP DIT")
+            if self.fsdp_text_encoder:
+                shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
+                self.pipeline.text_encoder = shard_fn(self.pipeline.text_encoder)
+                print("Add FSDP TEXT ENCODER")
 
         if self.compile_dit:
             for i in range(len(self.pipeline.transformer.blocks)):
@@ -121,13 +131,13 @@ class Wan_Controller(Fun_Controller):
             self.transformer.freqs = self.transformer.freqs.to(device=self.device)
             self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
+            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
             convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload":
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",])
+            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
             convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
             self.pipeline.to(self.device)
         else:

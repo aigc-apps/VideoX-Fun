@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--world_size', type=int, default=8, help='Number of parallel workers')
     parser.add_argument(
         '--gpu_memory_mode', type=str, default="model_full_load", help='''
-GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8].
 model_full_load means that the entire model will be moved to the GPU.
 
 model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -36,7 +36,15 @@ and the transformer model has been quantized to float8, which can save more GPU 
     )
     parser.add_argument('--ulysses_degree', type=int, default=4, help='Degree of Ulysses configuration')
     parser.add_argument('--ring_degree', type=int, default=2, help='Degree of Ring configuration')
-    parser.add_argument('--compile_dit', action='store_true', help="Enable compile dit")
+    parser.add_argument(
+        '--compile_dit', action='store_true', help='''
+Enable compile dit. 
+Compile will give a speedup in fixed resolution and need a little GPU memory. 
+The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
+        '''
+    )
+    parser.add_argument('--fsdp_dit', action='store_true', help="Use DIT FSDP to save more GPU memory in multi gpus.")
+    parser.add_argument('--fsdp_text_encoder', action='store_true', help="Use Text Encoder FSDP to save more GPU memory in multi gpus.")
     parser.add_argument('--weight_dtype', type=str, default='bf16', help='Weight data type')
     parser.add_argument('--server_name', type=str, default="0.0.0.0", help='Server IP address')
     parser.add_argument('--server_port', type=int, default=7860, help='Server Port')
@@ -55,7 +63,9 @@ and the transformer model has been quantized to float8, which can save more GPU 
     engine = MultiNodesEngine(
         world_size=args.world_size, Controller=Wan_Fun_Controller,
         GPU_memory_mode=args.gpu_memory_mode, scheduler_dict=flow_scheduler_dict, model_name=args.model_name, model_type=args.model_type, config_path=args.config_path, 
-        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, compile_dit=args.compile_dit, weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
+        ulysses_degree=args.ulysses_degree, ring_degree=args.ring_degree, 
+        fsdp_dit=args.fsdp_dit, fsdp_text_encoder=args.fsdp_text_encoder, compile_dit=args.compile_dit, 
+        weight_dtype=weight_dtype, savedir_sample=args.savedir_sample,
     )
     
     def gr_launch():

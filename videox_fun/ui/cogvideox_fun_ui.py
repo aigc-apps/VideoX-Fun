@@ -15,7 +15,8 @@ from ..models import (AutoencoderKLCogVideoX, CogVideoXTransformer3DModel,
                       T5EncoderModel, T5Tokenizer)
 from ..pipeline import (CogVideoXFunControlPipeline,
                         CogVideoXFunInpaintPipeline, CogVideoXFunPipeline)
-from ..utils.fp8_optimization import convert_weight_dtype_wrapper
+from ..utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
+                                    convert_weight_dtype_wrapper)
 from ..utils.lora_utils import merge_lora, unmerge_lora
 from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, timer,
                            get_video_to_video_latent, save_videos_grid)
@@ -32,6 +33,7 @@ from .ui import (create_cfg_and_seedbox,
                  create_height_width, create_model_checkpoints,
                  create_model_type, create_prompts, create_samplers,
                  create_ui_outputs)
+from ..dist import set_multi_gpus_devices, shard_model
 
 
 class CogVideoXFunController(Fun_Controller):
@@ -88,16 +90,32 @@ class CogVideoXFunController(Fun_Controller):
             )
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
+            from functools import partial
             self.transformer.enable_multi_gpus_inference()
+            if self.fsdp_dit:
+                shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
+                self.pipeline.transformer = shard_fn(self.pipeline.transformer)
+                print("Add FSDP DIT")
+            if self.fsdp_text_encoder:
+                shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
+                self.pipeline.text_encoder = shard_fn(self.pipeline.text_encoder)
+                print("Add FSDP TEXT ENCODER")
+
+        if self.compile_dit:
+            for i in range(len(self.pipeline.transformer.transformer_blocks)):
+                self.pipeline.transformer.transformer_blocks[i] = torch.compile(self.pipeline.transformer.transformer_blocks[i])
+            print("Add Compile")
 
         if self.GPU_memory_mode == "sequential_cpu_offload":
             self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+            convert_model_weight_to_float8(self.pipeline.transformer, exclude_module_name=[], device=self.device)
             convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload":
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_model_weight_to_float8(self.pipeline.transformer, exclude_module_name=[], device=self.device)
             convert_weight_dtype_wrapper(self.pipeline.transformer, self.weight_dtype)
             self.pipeline.to(self.device)
         else:
@@ -335,9 +353,10 @@ class CogVideoXFunController(Fun_Controller):
 CogVideoXFunController_Host = CogVideoXFunController
 CogVideoXFunController_Client = Fun_Controller_Client
 
-def ui(GPU_memory_mode, scheduler_dict, weight_dtype, savedir_sample=None):
+def ui(GPU_memory_mode, scheduler_dict, compile_dit, weight_dtype, savedir_sample=None):
     controller = CogVideoXFunController(
         GPU_memory_mode, scheduler_dict, model_name=None, model_type="Inpaint", 
+        compile_dit=compile_dit,
         weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 
@@ -464,9 +483,10 @@ def ui(GPU_memory_mode, scheduler_dict, weight_dtype, savedir_sample=None):
             )
     return demo, controller
 
-def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, weight_dtype, savedir_sample=None):
+def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, compile_dit, weight_dtype, savedir_sample=None):
     controller = CogVideoXFunController_Host(
         GPU_memory_mode, scheduler_dict, model_name=model_name, model_type=model_type, 
+        compile_dit=compile_dit,
         weight_dtype=weight_dtype, savedir_sample=savedir_sample,
     )
 

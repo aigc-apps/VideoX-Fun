@@ -21,7 +21,7 @@ if importlib.util.find_spec("pai_fuser") is not None:
                                 convert_weight_dtype_wrapper)
     print("Enable PAI Quantization Turbo")
 else:
-    def convert_model_weight_to_float8(model, exclude_module_name=['embed_tokens']):
+    def convert_model_weight_to_float8(model, exclude_module_name=['embed_tokens'], device=None):
         for name, module in model.named_modules():
             flag = False
             for _exclude_module_name in exclude_module_name:

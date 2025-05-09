@@ -48,6 +48,7 @@ ulysses_degree      = 1
 ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
+fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
@@ -198,7 +199,11 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        print("Add FSDP")
+        print("Add FSDP DIT")
+    if fsdp_text_encoder:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
+        print("Add FSDP TEXT ENCODER")
 
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
@@ -210,13 +215,13 @@ if GPU_memory_mode == "sequential_cpu_offload":
     transformer.freqs = transformer.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
