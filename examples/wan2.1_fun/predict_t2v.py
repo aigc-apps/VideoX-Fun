@@ -64,6 +64,21 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
+# Sparse Attention config
+enable_sparse_attention = False
+if enable_sparse_attention and torch.__version__ < "2.5.0":
+    print("Please upgrade torch 2.5.0 or above to use sparse attention.")
+    enable_sparse_attention = False
+# Attention sparsity. The lower its value, the more significant the acceleration, but with the cost of quality degredation.
+# When sparsity=1, it is equivalent to the full attention. Set the value between [0, 1].
+sparsity            = 0.25
+# The ratio of layers to skip sparse attention. Set the value between [0, 1].
+# Recommended to be set 0.05 for 1.3B and 0.025 for 14B.
+sparse_attention_layer_skip_ratio = 0.05
+# The ratio of steps to skip sparse attention at the beginning of the inference process, which can
+# reduce the impact of sparse attention on generated video quality. Set the value between [0,1].
+sparse_attention_step_skip_ratio = 0.075
+
 # Skip some cfg steps in inference
 # Recommended to be set between 0.00 and 0.25
 cfg_skip_ratio      = 0
@@ -239,6 +254,22 @@ if coefficients is not None:
     print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+    )
+
+spatial_compression_ratio = vae.config.spacial_compression_ratio
+temporal_compression_ratio = vae.config.temporal_compression_ratio
+if enable_sparse_attention:
+    print(
+        f"Enable sparse attention with sparsity {sparsity}. Skip the {sparse_attention_layer_skip_ratio} ratio of layers. "
+        f"and the {sparse_attention_step_skip_ratio} ratio of steps."
+    )
+    mod_value = spatial_compression_ratio * transformer.config.patch_size[1]
+    pipeline.transformer.enable_sparse_attention(
+        num_frame = 1 + video_length // (temporal_compression_ratio * transformer.config.patch_size[0]),
+        frame_size = int(sample_size[0] // mod_value) * int(sample_size[1] // mod_value),
+        sparsity = sparsity,
+        sparse_attention_layer_skip_ratio = sparse_attention_layer_skip_ratio,
+        sparse_attention_step_skip_ratio = sparse_attention_step_skip_ratio
     )
 
 if cfg_skip_ratio is not None:

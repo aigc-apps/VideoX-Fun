@@ -423,7 +423,7 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, dtype):
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -599,7 +599,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32
+        dtype=torch.float32,
+        t=0  # sparse attention relies on the timestep
     ):
         r"""
         Args:
@@ -615,7 +616,7 @@ class WanAttentionBlock(nn.Module):
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
         temp_x = temp_x.to(dtype)
 
-        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype)
+        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype, t=t)
         x = x + y * e[2]
 
         # cross-attention & ffn function
@@ -842,6 +843,27 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def disable_teacache(self):
         self.teacache = None
+    
+    def enable_sparse_attention(
+        self, 
+        num_frame: int,
+        frame_size: int,
+        sparsity: float,
+        sparse_attention_layer_skip_ratio: float,
+        sparse_attention_step_skip_ratio: float
+    ):
+        try:
+            from pai_fuser.core import enable_wan_sparse_attention
+            enable_wan_sparse_attention(
+                self, num_frame, frame_size, sparsity, sparse_attention_layer_skip_ratio, sparse_attention_step_skip_ratio
+            )
+            print("Enable PAI Sparse Attention.")
+        except Exception as e:
+            print(f"PAI Sparse Attention is not supported in your environment. Error is {e}.")
+
+    def disable_sparse_attention(self):
+        for block in self.blocks:
+            block.self_attn.__class__.forward = WanSelfAttention.forward
 
     @enable_cfg_skip()
     def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
@@ -1046,6 +1068,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             context,
                             context_lens,
                             dtype,
+                            t=t,  # sparse attention relies on the timestep
                             **ckpt_kwargs,
                         )
                     else:
@@ -1057,7 +1080,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             freqs=self.freqs,
                             context=context,
                             context_lens=context_lens,
-                            dtype=dtype
+                            dtype=dtype,
+                            t=t  # sparse attention relies on the timestep
                         )
                         x = block(x, **kwargs)
                     
@@ -1085,6 +1109,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         context,
                         context_lens,
                         dtype,
+                        t=t,  # sparse attention relies on the timestep
                         **ckpt_kwargs,
                     )
                 else:
@@ -1096,7 +1121,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         freqs=self.freqs,
                         context=context,
                         context_lens=context_lens,
-                        dtype=dtype
+                        dtype=dtype,
+                        t=t  # sparse attention relies on the timestep
                     )
                     x = block(x, **kwargs)
 
