@@ -25,6 +25,7 @@ from ..dist import (get_sequence_parallel_rank,
 from ..dist.wan_xfuser import usp_attn_forward
 from .cache_utils import TeaCache, cfg_skip, disable_cfg_skip, enable_cfg_skip
 from .wan_camera_adapter import SimpleAdapter
+from pai_fuser.core.attention import wan_sparse_attention_wrapper
 
 try:
     import flash_attn_interface
@@ -423,7 +424,8 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, dtype):
+    @wan_sparse_attention_wrapper()
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -458,7 +460,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens, dtype):
+    def forward(self, x, context, context_lens, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -502,7 +504,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens, dtype):
+    def forward(self, x, context, context_lens, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -599,7 +601,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32
+        dtype=torch.float32,
+        t=0,
     ):
         r"""
         Args:
@@ -615,13 +618,13 @@ class WanAttentionBlock(nn.Module):
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
         temp_x = temp_x.to(dtype)
 
-        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype)
+        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype, t=t)
         x = x + y * e[2]
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             # cross-attention
-            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype)
+            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype, t=t)
 
             # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
@@ -789,6 +792,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                               window_size, qk_norm, cross_attn_norm, eps)
             for _ in range(num_layers)
         ])
+        for layer_idx, block in enumerate(self.blocks):
+            block.self_attn.layer_idx = layer_idx
+            block.self_attn.num_layers = self.num_layers
 
         # head
         self.head = Head(dim, out_dim, patch_size, eps)
@@ -893,6 +899,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
+            
+    def set_env(self, x):
+        os.environ['CONTEXT_LENGTH'] = str(0)
+        os.environ['NUM_FRAME'] = str(x[0].size()[1])
+        os.environ['FRAME_SIZE'] = str(x[0].size()[2] * x[0].size()[3] / self.patch_size[1] / self.patch_size[2])
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
@@ -938,6 +949,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # params
         device = self.patch_embedding.weight.device
         dtype = x.dtype
+        self.set_env(x)
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
@@ -1046,6 +1058,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             context,
                             context_lens,
                             dtype,
+                            t=t,
                             **ckpt_kwargs,
                         )
                     else:
@@ -1057,7 +1070,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             freqs=self.freqs,
                             context=context,
                             context_lens=context_lens,
-                            dtype=dtype
+                            dtype=dtype,
+                            t=t  
                         )
                         x = block(x, **kwargs)
                     
@@ -1085,6 +1099,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         context,
                         context_lens,
                         dtype,
+                        t=t,  
                         **ckpt_kwargs,
                     )
                 else:
@@ -1096,7 +1111,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         freqs=self.freqs,
                         context=context,
                         context_lens=context_lens,
-                        dtype=dtype
+                        dtype=dtype,
+                        t=t  
                     )
                     x = block(x, **kwargs)
 

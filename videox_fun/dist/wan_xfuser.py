@@ -5,6 +5,7 @@ from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     init_distributed_environment, initialize_model_parallel,
                     xFuserLongContextAttention)
+from pai_fuser.core.attention import wan_usp_sparse_attention_wrapper
 
 
 def pad_freqs(original_tensor, target_len):
@@ -59,12 +60,14 @@ def rope_apply(x, grid_sizes, freqs):
         output.append(x_i)
     return torch.stack(output)
 
+@wan_usp_sparse_attention_wrapper()
 def usp_attn_forward(self,
                      x,
                      seq_lens,
                      grid_sizes,
                      freqs,
-                     dtype=torch.bfloat16):
+                     dtype=torch.bfloat16, 
+                     t=0):
     b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
     half_dtypes = (torch.float16, torch.bfloat16)
 
