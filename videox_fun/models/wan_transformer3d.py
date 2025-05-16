@@ -23,9 +23,10 @@ from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     xFuserLongContextAttention)
 from ..dist.wan_xfuser import usp_attn_forward
-from .cache_utils import TeaCache, cfg_skip, disable_cfg_skip, enable_cfg_skip
+from ..utils import cfg_skip
+from .cache_utils import TeaCache
 from .wan_camera_adapter import SimpleAdapter
-from pai_fuser.core.attention import wan_sparse_attention_wrapper
+
 
 try:
     import flash_attn_interface
@@ -424,7 +425,6 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    @wan_sparse_attention_wrapper()
     def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t):
         r"""
         Args:
@@ -849,7 +849,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def disable_teacache(self):
         self.teacache = None
 
-    @enable_cfg_skip()
     def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
         if cfg_skip_ratio != 0:
             self.cfg_skip_ratio = cfg_skip_ratio
@@ -860,7 +859,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.current_steps = 0
             self.num_inference_steps = None
 
-    @disable_cfg_skip()
     def disable_cfg_skip(self):
         self.cfg_skip_ratio = None
         self.current_steps = 0
@@ -899,11 +897,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
-            
-    def set_env(self, x):
-        os.environ['CONTEXT_LENGTH'] = str(0)
-        os.environ['NUM_FRAME'] = str(x[0].size()[1])
-        os.environ['FRAME_SIZE'] = str(x[0].size()[2] * x[0].size()[3] / self.patch_size[1] / self.patch_size[2])
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
@@ -949,7 +942,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # params
         device = self.patch_embedding.weight.device
         dtype = x.dtype
-        self.set_env(x)
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 

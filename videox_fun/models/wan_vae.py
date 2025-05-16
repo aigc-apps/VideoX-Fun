@@ -549,7 +549,6 @@ class AutoencoderKLWan_(nn.Module):
         self.clear_cache()
         return x
 
-    @parallel_magvit_vae(0.2, 8)
     def decode(self, z, scale):
         self.clear_cache()
         # z: [b,c,t,h,w]
