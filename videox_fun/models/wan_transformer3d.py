@@ -1023,7 +1023,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if self.teacache is not None:
             if not self.should_calc:
                 previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
-                x = x + previous_residual.to(x.device)
+                x = x + previous_residual.to(x.device)[-x.size()[0]:,]
             else:
                 ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
 

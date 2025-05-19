@@ -103,8 +103,13 @@ if __name__ == '__main__':
         
     # Support TeaCache.
     enable_teacache     = True
-    # Recommended to be set between 0.05 and 0.20. A larger threshold can cache more steps, speeding up the inference process, 
+    # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
     # but it may cause slight differences between the generated content and the original content.
+    # # --------------------------------------------------------------------------------------------------- #
+    # | Model Name          | threshold | Model Name          | threshold | Model Name          | threshold |
+    # | Wan2.1-T2V-1.3B     | 0.05~0.10 | Wan2.1-T2V-14B      | 0.10~0.15 | Wan2.1-I2V-14B-720P | 0.20~0.30 |
+    # | Wan2.1-I2V-14B-480P | 0.20~0.25 | Wan2.1-Fun-*-1.3B-* | 0.05~0.10 | Wan2.1-Fun-*-14B-*  | 0.20~0.30 |
+    # # --------------------------------------------------------------------------------------------------- #
     teacache_threshold  = 0.10
     # The number of steps to skip TeaCache at the beginning of the inference process, which can
     # reduce the impact of TeaCache on generated video quality.

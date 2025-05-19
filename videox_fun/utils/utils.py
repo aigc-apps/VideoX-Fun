@@ -256,3 +256,55 @@ def timer(func):
         print(f"function {func.__name__} running for {end_time - start_time} seconds")
         return result
     return wrapper
+
+def timer_record(model_name=""):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            torch.cuda.synchronize()
+            start_time = time.time()
+            result      = func(*args, **kwargs)
+            torch.cuda.synchronize()
+            end_time = time.time()
+            import torch.distributed as dist
+            if dist.is_initialized():
+                if dist.get_rank() == 0:
+                    time_sum  = end_time - start_time
+                    print('# --------------------------------------------------------- #')
+                    print(f'#   {model_name} time: {time_sum}s')
+                    print('# --------------------------------------------------------- #')
+                    _write_to_excel(model_name, time_sum)
+            else:
+                time_sum  = end_time - start_time
+                print('# --------------------------------------------------------- #')
+                print(f'#   {model_name} time: {time_sum}s')
+                print('# --------------------------------------------------------- #')
+                _write_to_excel(model_name, time_sum)
+            return result
+        return wrapper
+    return decorator
+
+def _write_to_excel(model_name, time_sum):
+    import pandas as pd
+    import os
+
+    row_env = os.environ.get(f"{model_name}_EXCEL_ROW", "1")  # 默认第1行
+    col_env = os.environ.get(f"{model_name}_EXCEL_COL", "1")  # 默认第A列
+    file_path = os.environ.get(f"EXCEL_FILE", "timing_records.xlsx")  # 默认文件名
+
+    try:
+        df = pd.read_excel(file_path, sheet_name="Sheet1", header=None)
+    except FileNotFoundError:
+        df = pd.DataFrame()
+
+    row_idx = int(row_env)
+    col_idx = int(col_env)
+
+    if row_idx >= len(df):
+        df = pd.concat([df, pd.DataFrame([ [None] * (len(df.columns) if not df.empty else 0) ] * (row_idx - len(df) + 1))], ignore_index=True)
+
+    if col_idx >= len(df.columns):
+        df = pd.concat([df, pd.DataFrame(columns=range(len(df.columns), col_idx + 1))], axis=1)
+
+    df.iloc[row_idx, col_idx] = time_sum
+
+    df.to_excel(file_path, index=False, header=False, sheet_name="Sheet1")
