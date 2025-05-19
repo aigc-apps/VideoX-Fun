@@ -21,12 +21,10 @@ from torch import nn
 
 from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
-                    xFuserLongContextAttention)
-from ..dist.wan_xfuser import usp_attn_forward
+                    usp_attn_forward, xFuserLongContextAttention)
 from ..utils import cfg_skip
 from .cache_utils import TeaCache
 from .wan_camera_adapter import SimpleAdapter
-
 
 try:
     import flash_attn_interface
