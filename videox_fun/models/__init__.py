@@ -16,7 +16,14 @@ if importlib.util.find_spec("pai_fuser") is not None:
     AutoencoderKLWan_.decode = parallel_magvit_vae(0.2, 8)(AutoencoderKLWan_.decode)
 
     from pai_fuser.core.attention import wan_sparse_attention_wrapper
-    WanSelfAttention.forward = wan_sparse_attention_wrapper()(WanSelfAttention.forward)
+    import torch
+    
+    # The simple_wrapper is used to solve the problem about conflicts between cython and torch.compile
+    def simple_wrapper(func):
+        def inner(*args, **kwargs):
+            return func(*args, **kwargs)
+        return inner
+    WanSelfAttention.forward = simple_wrapper(wan_sparse_attention_wrapper()(WanSelfAttention.forward))
     
     import os
     from pai_fuser.core import (cfg_skip_turbo, enable_cfg_skip, 

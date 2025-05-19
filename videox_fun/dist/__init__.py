@@ -14,6 +14,13 @@ if importlib.util.find_spec("pai_fuser") is not None:
     from pai_fuser.core import parallel_magvit_vae
     from pai_fuser.core.attention import wan_usp_sparse_attention_wrapper
     from . import wan_xfuser
-    wan_xfuser.usp_attn_forward = wan_usp_sparse_attention_wrapper()(wan_xfuser.usp_attn_forward)
-    usp_attn_forward = wan_xfuser.usp_attn_forward
+    
+    # The simple_wrapper is used to solve the problem about conflicts between cython and torch.compile
+    def simple_wrapper(func):
+        def inner(*args, **kwargs):
+            return func(*args, **kwargs)
+        return inner
+
+    wan_xfuser.usp_attn_forward = simple_wrapper(wan_usp_sparse_attention_wrapper()(wan_xfuser.usp_attn_forward))
+    usp_attn_forward = simple_wrapper(wan_xfuser.usp_attn_forward)
     print("Enable PAI VAE Turbo and Sparse Attention")
