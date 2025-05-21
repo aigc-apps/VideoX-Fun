@@ -1049,7 +1049,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             context,
                             context_lens,
                             dtype,
-                            t=t,
+                            t,
                             **ckpt_kwargs,
                         )
                     else:
@@ -1090,7 +1090,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         context,
                         context_lens,
                         dtype,
-                        t=t,  
+                        t,
                         **ckpt_kwargs,
                     )
                 else:
