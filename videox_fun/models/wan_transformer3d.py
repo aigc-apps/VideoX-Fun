@@ -336,6 +336,7 @@ def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
     return (crop_top, crop_left), (crop_top + resize_height, crop_left + resize_width)
 
 @amp.autocast(enabled=False)
+@torch.compiler.disable()
 def rope_apply(x, grid_sizes, freqs):
     n, c = x.size(2), x.size(3) // 2
 

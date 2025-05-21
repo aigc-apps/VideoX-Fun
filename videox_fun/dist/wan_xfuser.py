@@ -20,6 +20,7 @@ def pad_freqs(original_tensor, target_len):
     return padded_tensor
 
 @amp.autocast(enabled=False)
+@torch.compiler.disable()
 def rope_apply(x, grid_sizes, freqs):
     """
     x:          [B, L, N, C].
