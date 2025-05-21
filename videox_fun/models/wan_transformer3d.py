@@ -185,7 +185,10 @@ def attention(
     fa_version=None,
 ):
     attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
-    if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE and not torch.is_grad_enabled():
+    if torch.is_grad_enabled() and attention_type == "SAGE_ATTENTION":
+        attention_type = "FLASH_ATTENTION"
+
+    if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
         if q_lens is not None or k_lens is not None:
             warnings.warn(
                 'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
