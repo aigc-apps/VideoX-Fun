@@ -117,7 +117,7 @@ config = OmegaConf.load(config_path)
 transformer = WanTransformer3DModel.from_pretrained(
     os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
     transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-    low_cpu_mem_usage=True if not fsdp_dit else False,
+    low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
 

@@ -370,6 +370,12 @@ def rope_apply(x, grid_sizes, freqs):
     return torch.stack(output).float()
 
 
+def rope_apply_qk(q, k, grid_sizes, freqs):
+    q = rope_apply(q, grid_sizes, freqs)
+    k = rope_apply(k, grid_sizes, freqs)
+    return q, k
+
+
 class WanRMSNorm(nn.Module):
 
     def __init__(self, dim, eps=1e-5):
@@ -446,9 +452,11 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
+        q, k = rope_apply_qk(q, k, grid_sizes, freqs)
+
         x = attention(
-            q=rope_apply(q, grid_sizes, freqs).to(dtype),
-            k=rope_apply(k, grid_sizes, freqs).to(dtype),
+            q.to(dtype), 
+            k.to(dtype), 
             v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size)

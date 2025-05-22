@@ -23,4 +23,11 @@ if importlib.util.find_spec("pai_fuser") is not None:
 
     wan_xfuser.usp_attn_forward = simple_wrapper(wan_usp_sparse_attention_wrapper()(wan_xfuser.usp_attn_forward))
     usp_attn_forward = simple_wrapper(wan_xfuser.usp_attn_forward)
-    print("Enable PAI VAE Turbo and Sparse Attention")
+    print("Import PAI VAE Turbo and Sparse Attention")
+
+    from pai_fuser.core.rope import ENABLE_KERNEL, usp_fast_rope_apply_qk
+
+    if ENABLE_KERNEL:
+        wan_xfuser.rope_apply_qk = usp_fast_rope_apply_qk
+        rope_apply_qk = usp_fast_rope_apply_qk
+        print("Import PAI Fast rope")

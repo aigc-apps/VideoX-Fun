@@ -60,6 +60,11 @@ def rope_apply(x, grid_sizes, freqs):
         output.append(x_i)
     return torch.stack(output)
 
+def rope_apply_qk(q, k, grid_sizes, freqs):
+    q = rope_apply(q, grid_sizes, freqs)
+    k = rope_apply(k, grid_sizes, freqs)
+    return q, k
+
 def usp_attn_forward(self,
                      x,
                      seq_lens,
@@ -81,8 +86,7 @@ def usp_attn_forward(self,
         return q, k, v
 
     q, k, v = qkv_fn(x)
-    q = rope_apply(q, grid_sizes, freqs)
-    k = rope_apply(k, grid_sizes, freqs)
+    q, k = rope_apply_qk(q, k, grid_sizes, freqs)
 
     # TODO: We should use unpaded q,k,v for attention.
     # k_lens = seq_lens // get_sequence_parallel_world_size()

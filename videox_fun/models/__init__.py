@@ -24,6 +24,7 @@ if importlib.util.find_spec("pai_fuser") is not None:
             return func(*args, **kwargs)
         return inner
     WanSelfAttention.forward = simple_wrapper(wan_sparse_attention_wrapper()(WanSelfAttention.forward))
+    print("Import Sparse Attention")
     
     import os
     from pai_fuser.core import (cfg_skip_turbo, enable_cfg_skip, 
@@ -42,3 +43,11 @@ if importlib.util.find_spec("pai_fuser") is not None:
     WanTransformer3DModel.enable_cfg_skip = enable_cfg_skip()(WanTransformer3DModel.enable_cfg_skip)
     WanTransformer3DModel.disable_cfg_skip = disable_cfg_skip()(WanTransformer3DModel.disable_cfg_skip)
     WanTransformer3DModel.forward = set_env()(WanTransformer3DModel.forward)
+    print("Import CFG Skip Turbo")
+
+    from pai_fuser.core.rope import ENABLE_KERNEL, fast_rope_apply_qk
+
+    if ENABLE_KERNEL:
+        wan_transformer3d.rope_apply_qk = fast_rope_apply_qk
+        rope_apply_qk = fast_rope_apply_qk
+        print("Import PAI Fast rope")

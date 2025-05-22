@@ -22,11 +22,11 @@ if importlib.util.find_spec("pai_fuser") is not None:
     fp8_optimization.convert_weight_dtype_wrapper = convert_weight_dtype_wrapper
     convert_model_weight_to_float8 = fp8_optimization.convert_model_weight_to_float8
     convert_weight_dtype_wrapper = fp8_optimization.convert_weight_dtype_wrapper
-    print("Enable PAI Quantization Turbo")
+    print("Import PAI Quantization Turbo")
 
     from pai_fuser.core import (cfg_skip_turbo, enable_cfg_skip, 
                                 disable_cfg_skip)
     from . import cfg_optimization
     cfg_optimization.cfg_skip = cfg_skip_turbo
     cfg_skip = cfg_skip_turbo
-    print("Enable CFG Skip Turbo")
+    print("Import CFG Skip Turbo")
