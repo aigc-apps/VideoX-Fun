@@ -1,7 +1,7 @@
 import torch
 import torch.cuda.amp as amp
 
-from ..dist import (get_sequence_parallel_rank,
+from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     init_distributed_environment, initialize_model_parallel,
                     xFuserLongContextAttention)
@@ -20,6 +20,7 @@ def pad_freqs(original_tensor, target_len):
     return padded_tensor
 
 @amp.autocast(enabled=False)
+@torch.compiler.disable()
 def rope_apply(x, grid_sizes, freqs):
     """
     x:          [B, L, N, C].
@@ -59,12 +60,18 @@ def rope_apply(x, grid_sizes, freqs):
         output.append(x_i)
     return torch.stack(output)
 
+def rope_apply_qk(q, k, grid_sizes, freqs):
+    q = rope_apply(q, grid_sizes, freqs)
+    k = rope_apply(k, grid_sizes, freqs)
+    return q, k
+
 def usp_attn_forward(self,
                      x,
                      seq_lens,
                      grid_sizes,
                      freqs,
-                     dtype=torch.bfloat16):
+                     dtype=torch.bfloat16, 
+                     t=0):
     b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
     half_dtypes = (torch.float16, torch.bfloat16)
 
@@ -79,8 +86,7 @@ def usp_attn_forward(self,
         return q, k, v
 
     q, k, v = qkv_fn(x)
-    q = rope_apply(q, grid_sizes, freqs)
-    k = rope_apply(k, grid_sizes, freqs)
+    q, k = rope_apply_qk(q, k, grid_sizes, freqs)
 
     # TODO: We should use unpaded q,k,v for attention.
     # k_lens = seq_lens // get_sequence_parallel_world_size()

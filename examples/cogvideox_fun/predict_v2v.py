@@ -94,7 +94,7 @@ device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
-    low_cpu_mem_usage=True if not fsdp_dit else False,
+    low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 ).to(weight_dtype)
 
