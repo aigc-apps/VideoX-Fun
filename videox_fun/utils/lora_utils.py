@@ -369,7 +369,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
     if state_dict is None:
-        state_dict = load_file(lora_path, device=device)
+        state_dict = load_file(lora_path)
     else:
         state_dict = state_dict
     updates = defaultdict(dict)
@@ -447,7 +447,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
-    state_dict = load_file(lora_path, device=device)
+    state_dict = load_file(lora_path)
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():

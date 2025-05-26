@@ -21,9 +21,9 @@ from torch import nn
 
 from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
-                    xFuserLongContextAttention)
-from ..dist.wan_xfuser import usp_attn_forward
-from .cache_utils import TeaCache, cfg_skip, disable_cfg_skip, enable_cfg_skip
+                    usp_attn_forward, xFuserLongContextAttention)
+from ..utils import cfg_skip
+from .cache_utils import TeaCache
 from .wan_camera_adapter import SimpleAdapter
 
 try:
@@ -185,6 +185,9 @@ def attention(
     fa_version=None,
 ):
     attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
+    if torch.is_grad_enabled() and attention_type == "SAGE_ATTENTION":
+        attention_type = "FLASH_ATTENTION"
+
     if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
         if q_lens is not None or k_lens is not None:
             warnings.warn(
@@ -336,6 +339,7 @@ def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
     return (crop_top, crop_left), (crop_top + resize_height, crop_left + resize_width)
 
 @amp.autocast(enabled=False)
+@torch.compiler.disable()
 def rope_apply(x, grid_sizes, freqs):
     n, c = x.size(2), x.size(3) // 2
 
@@ -364,6 +368,12 @@ def rope_apply(x, grid_sizes, freqs):
         # append to collection
         output.append(x_i)
     return torch.stack(output).float()
+
+
+def rope_apply_qk(q, k, grid_sizes, freqs):
+    q = rope_apply(q, grid_sizes, freqs)
+    k = rope_apply(k, grid_sizes, freqs)
+    return q, k
 
 
 class WanRMSNorm(nn.Module):
@@ -423,7 +433,7 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, dtype):
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -442,9 +452,11 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
+        q, k = rope_apply_qk(q, k, grid_sizes, freqs)
+
         x = attention(
-            q=rope_apply(q, grid_sizes, freqs).to(dtype),
-            k=rope_apply(k, grid_sizes, freqs).to(dtype),
+            q.to(dtype), 
+            k.to(dtype), 
             v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size)
@@ -458,7 +470,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens, dtype):
+    def forward(self, x, context, context_lens, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -502,7 +514,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens, dtype):
+    def forward(self, x, context, context_lens, dtype, t):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -599,7 +611,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32
+        dtype=torch.float32,
+        t=0,
     ):
         r"""
         Args:
@@ -615,13 +628,13 @@ class WanAttentionBlock(nn.Module):
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
         temp_x = temp_x.to(dtype)
 
-        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype)
+        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype, t=t)
         x = x + y * e[2]
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             # cross-attention
-            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype)
+            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype, t=t)
 
             # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
@@ -789,6 +802,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                               window_size, qk_norm, cross_attn_norm, eps)
             for _ in range(num_layers)
         ])
+        for layer_idx, block in enumerate(self.blocks):
+            block.self_attn.layer_idx = layer_idx
+            block.self_attn.num_layers = self.num_layers
 
         # head
         self.head = Head(dim, out_dim, patch_size, eps)
@@ -843,7 +859,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def disable_teacache(self):
         self.teacache = None
 
-    @enable_cfg_skip()
     def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
         if cfg_skip_ratio != 0:
             self.cfg_skip_ratio = cfg_skip_ratio
@@ -854,7 +869,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.current_steps = 0
             self.num_inference_steps = None
 
-    @disable_cfg_skip()
     def disable_cfg_skip(self):
         self.cfg_skip_ratio = None
         self.current_steps = 0
@@ -1046,6 +1060,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             context,
                             context_lens,
                             dtype,
+                            t,
                             **ckpt_kwargs,
                         )
                     else:
@@ -1057,7 +1072,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             freqs=self.freqs,
                             context=context,
                             context_lens=context_lens,
-                            dtype=dtype
+                            dtype=dtype,
+                            t=t  
                         )
                         x = block(x, **kwargs)
                     
@@ -1085,6 +1101,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         context,
                         context_lens,
                         dtype,
+                        t,
                         **ckpt_kwargs,
                     )
                 else:
@@ -1096,7 +1113,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         freqs=self.freqs,
                         context=context,
                         context_lens=context_lens,
-                        dtype=dtype
+                        dtype=dtype,
+                        t=t  
                     )
                     x = block(x, **kwargs)
 

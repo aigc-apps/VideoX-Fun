@@ -14,8 +14,6 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
 
-from ..dist import parallel_magvit_vae
-
 
 CACHE_T = 2
 
@@ -549,7 +547,6 @@ class AutoencoderKLWan_(nn.Module):
         self.clear_cache()
         return x
 
-    @parallel_magvit_vae(0.2, 8)
     def decode(self, z, scale):
         self.clear_cache()
         # z: [b,c,t,h,w]

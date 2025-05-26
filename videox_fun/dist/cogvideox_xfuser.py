@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from diffusers.models.attention import Attention
 from diffusers.models.embeddings import apply_rotary_emb
 
-from ..dist import (get_sequence_parallel_rank,
+from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     init_distributed_environment, initialize_model_parallel,
                     xFuserLongContextAttention)
