@@ -14,8 +14,6 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
 
-from ..dist import parallel_magvit_vae
-
 
 CACHE_T = 2
 
