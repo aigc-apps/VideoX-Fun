@@ -143,7 +143,7 @@ def create_teacache_params(
 ):
     enable_teacache = gr.Checkbox(label="Enable TeaCache", value=enable_teacache)
     teacache_threshold = gr.Slider(0.00, 0.25, value=teacache_threshold, step=0.01, label="TeaCache Threshold")
-    num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=1, label="Number of Skip Start Steps")
+    num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=5, label="Number of Skip Start Steps")
     teacache_offload = gr.Checkbox(label="Offload TeaCache to CPU", value=teacache_offload)
     return enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload
 
