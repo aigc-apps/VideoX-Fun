@@ -29,20 +29,9 @@ if importlib.util.find_spec("pai_fuser") is not None:
     import os
     from pai_fuser.core import (cfg_skip_turbo, enable_cfg_skip, 
                                 disable_cfg_skip)
-    def set_env():
-        def decorator(func):
-            def wrapper(self, x, *args, **kwargs):
-                os.environ['CONTEXT_LENGTH'] = str(0)
-                os.environ['NUM_FRAME'] = str(x[0].size()[1])
-                os.environ['FRAME_SIZE'] = str(x[0].size()[2] * x[0].size()[3] / self.patch_size[1] / self.patch_size[2])
-                result = func(self, x, *args, **kwargs)
-                return result
-            return wrapper
-        return decorator
 
     WanTransformer3DModel.enable_cfg_skip = enable_cfg_skip()(WanTransformer3DModel.enable_cfg_skip)
     WanTransformer3DModel.disable_cfg_skip = disable_cfg_skip()(WanTransformer3DModel.disable_cfg_skip)
-    WanTransformer3DModel.forward = set_env()(WanTransformer3DModel.forward)
     print("Import CFG Skip Turbo")
 
     from pai_fuser.core.rope import ENABLE_KERNEL, fast_rope_apply_qk
