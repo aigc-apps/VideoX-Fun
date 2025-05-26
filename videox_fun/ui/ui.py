@@ -83,7 +83,7 @@ def create_finetune_models_checkpoints(controller, visible):
     with gr.Row(visible=visible):
         base_model_dropdown = gr.Dropdown(
             label="Select base Dreambooth model (选择基模型[非必需])",
-            choices=controller.personalized_model_list,
+            choices=["none"] + controller.personalized_model_list,
             value="none",
             interactive=True,
         )
