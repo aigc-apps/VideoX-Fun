@@ -367,7 +367,7 @@ def rope_apply(x, grid_sizes, freqs):
 
         # append to collection
         output.append(x_i)
-    return torch.stack(output).float()
+    return torch.stack(output).to(x.dtype)
 
 
 def rope_apply_qk(q, k, grid_sizes, freqs):
@@ -389,10 +389,10 @@ class WanRMSNorm(nn.Module):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return self._norm(x.float()).type_as(x) * self.weight
+        return self._norm(x)* self.weight
 
     def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps).to(x.dtype)
 
 
 class WanLayerNorm(nn.LayerNorm):
@@ -405,8 +405,7 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x.float()).type_as(x)
-
+        return super().forward(x)
 
 class WanSelfAttention(nn.Module):
 
@@ -562,6 +561,29 @@ WAN_CROSSATTENTION_CLASSES = {
 }
 
 
+def sample_by_sample(func):
+    # To save memeory when using batch size > 1
+    def wrapped_forward(self, x, *args, **kwargs):
+        if not torch.is_grad_enabled():
+            B = x.shape[0]
+            outputs = []
+
+            for i in range(B):
+                x_i = x[i:i+1]
+
+                args_i = [arg[i:i+1] if (isinstance(arg, torch.Tensor) or isinstance(arg, list) or isinstance(arg, tuple)) and len(arg) == B else arg for arg in args]
+                kwargs_i = {k: (v[i:i+1] if (isinstance(v, torch.Tensor) or isinstance(v, list) or isinstance(v, tuple)) and len(v) == B else v) for k, v in kwargs.items()}
+
+                out_i = func(self, x_i, *args_i, **kwargs_i)
+                outputs.append(out_i)
+
+            return torch.cat(outputs, dim=0)
+        else:
+            outputs = func(self, x, *args, **kwargs)
+            return outputs
+    return wrapped_forward
+
+
 class WanAttentionBlock(nn.Module):
 
     def __init__(self,
@@ -602,6 +624,7 @@ class WanAttentionBlock(nn.Module):
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
+    @sample_by_sample
     def forward(
         self,
         x,
