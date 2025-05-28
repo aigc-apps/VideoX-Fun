@@ -561,29 +561,6 @@ WAN_CROSSATTENTION_CLASSES = {
 }
 
 
-def sample_by_sample(func):
-    # To save memeory when using batch size > 1
-    def wrapped_forward(self, x, *args, **kwargs):
-        if not torch.is_grad_enabled():
-            B = x.shape[0]
-            outputs = []
-
-            for i in range(B):
-                x_i = x[i:i+1]
-
-                args_i = [arg[i:i+1] if (isinstance(arg, torch.Tensor) or isinstance(arg, list) or isinstance(arg, tuple)) and len(arg) == B else arg for arg in args]
-                kwargs_i = {k: (v[i:i+1] if (isinstance(v, torch.Tensor) or isinstance(v, list) or isinstance(v, tuple)) and len(v) == B else v) for k, v in kwargs.items()}
-
-                out_i = func(self, x_i, *args_i, **kwargs_i)
-                outputs.append(out_i)
-
-            return torch.cat(outputs, dim=0)
-        else:
-            outputs = func(self, x, *args, **kwargs)
-            return outputs
-    return wrapped_forward
-
-
 class WanAttentionBlock(nn.Module):
 
     def __init__(self,
@@ -624,7 +601,6 @@ class WanAttentionBlock(nn.Module):
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
-    @sample_by_sample
     def forward(
         self,
         x,
@@ -1155,7 +1131,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
         x = torch.stack(x)
-        if self.teacache is not None:
+        if self.teacache is not None and cond_flag:
             self.teacache.cnt += 1
             if self.teacache.cnt == self.teacache.num_steps:
                 self.teacache.reset()
