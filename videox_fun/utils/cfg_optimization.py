@@ -5,8 +5,8 @@ import torch
 def cfg_skip():
     def decorator(func):
         def wrapper(self, x, *args, **kwargs):
-            if self.cfg_skip_ratio is not None and self.current_steps >= self.num_inference_steps * (1 - self.cfg_skip_ratio):
-                bs = len(x)
+            bs = len(x)
+            if bs >= 2 and self.cfg_skip_ratio is not None and self.current_steps >= self.num_inference_steps * (1 - self.cfg_skip_ratio):
                 bs_half = int(bs // 2)
 
                 new_x = x[bs_half:]
@@ -31,7 +31,7 @@ def cfg_skip():
 
             result = func(self, new_x, *new_args, **new_kwargs)
 
-            if self.cfg_skip_ratio is not None and self.current_steps >= self.num_inference_steps * (1 - self.cfg_skip_ratio):
+            if bs >= 2 and self.cfg_skip_ratio is not None and self.current_steps >= self.num_inference_steps * (1 - self.cfg_skip_ratio):
                 result = torch.cat([result, result], dim=0)
 
             return result
