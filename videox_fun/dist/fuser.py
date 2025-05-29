@@ -13,7 +13,7 @@ try:
             initialize_model_parallel)
         from pai_fuser.core.long_ctx_attention import \
             xFuserLongContextAttention
-        print("Enable PAI DiT Turbo")
+        print("Import PAI DiT Turbo")
     else:
         import xfuser
         from xfuser.core.distributed import (get_sequence_parallel_rank,

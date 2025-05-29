@@ -367,7 +367,7 @@ def rope_apply(x, grid_sizes, freqs):
 
         # append to collection
         output.append(x_i)
-    return torch.stack(output).float()
+    return torch.stack(output).to(x.dtype)
 
 
 def rope_apply_qk(q, k, grid_sizes, freqs):
@@ -389,10 +389,10 @@ class WanRMSNorm(nn.Module):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return self._norm(x.float()).type_as(x) * self.weight
+        return self._norm(x) * self.weight
 
     def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps).to(x.dtype)
 
 
 class WanLayerNorm(nn.LayerNorm):
@@ -405,8 +405,7 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x.float()).type_as(x)
-
+        return super().forward(x)
 
 class WanSelfAttention(nn.Module):
 
@@ -1132,7 +1131,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
         x = torch.stack(x)
-        if self.teacache is not None:
+        if self.teacache is not None and cond_flag:
             self.teacache.cnt += 1
             if self.teacache.cnt == self.teacache.num_steps:
                 self.teacache.reset()
