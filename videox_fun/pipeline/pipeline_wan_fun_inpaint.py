@@ -24,6 +24,7 @@ from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from ..utils.utils import timer_record
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -466,6 +467,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
     def interrupt(self):
         return self._interrupt
 
+    @timer_record("TOTAL")
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
@@ -658,72 +660,82 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self.transformer.num_inference_steps = num_inference_steps
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                self.transformer.current_steps = i
 
-                if self.interrupt:
-                    continue
+        @timer_record("DIT")
+        def dit_forward(latents):
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for i, t in enumerate(timesteps):
+                    self.transformer.current_steps = i
 
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                if hasattr(self.scheduler, "scale_model_input"):
-                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                    if self.interrupt:
+                        continue
 
-                if init_video is not None:
-                    mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
-                    masked_video_latents_input = (
-                        torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
-                    )
-                    y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
+                    latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                    if hasattr(self.scheduler, "scale_model_input"):
+                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                clip_context_input = (
-                    torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-                )
+                    if init_video is not None:
+                        mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
+                        masked_video_latents_input = (
+                            torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
+                        )
+                        y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
 
-                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latent_model_input.shape[0])
-                
-                # predict noise model_output
-                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
-                    noise_pred = self.transformer(
-                        x=latent_model_input,
-                        context=in_prompt_embeds,
-                        t=timestep,
-                        seq_len=seq_len,
-                        y=y,
-                        clip_fea=clip_context_input,
+                    clip_context_input = (
+                        torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
                     )
 
-                # perform guidance
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-
-                if callback_on_step_end is not None:
-                    callback_kwargs = {}
-                    for k in callback_on_step_end_tensor_inputs:
-                        callback_kwargs[k] = locals()[k]
-                    callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
-
-                    latents = callback_outputs.pop("latents", latents)
-                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+                    # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+                    timestep = t.expand(latent_model_input.shape[0])
                     
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
-                if comfyui_progressbar:
-                    pbar.update(1)
+                    # predict noise model_output
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
+                        noise_pred = self.transformer(
+                            x=latent_model_input,
+                            context=in_prompt_embeds,
+                            t=timestep,
+                            seq_len=seq_len,
+                            y=y,
+                            clip_fea=clip_context_input,
+                        )
 
-        if output_type == "numpy":
-            video = self.decode_latents(latents)
-        elif not output_type == "latent":
-            video = self.decode_latents(latents)
-            video = self.video_processor.postprocess_video(video=video, output_type=output_type)
-        else:
-            video = latents
+                    # perform guidance
+                    if do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+                    if callback_on_step_end is not None:
+                        callback_kwargs = {}
+                        for k in callback_on_step_end_tensor_inputs:
+                            callback_kwargs[k] = locals()[k]
+                        callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
+
+                        latents = callback_outputs.pop("latents", latents)
+                        prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
+                        negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+                        
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+                    if comfyui_progressbar:
+                        pbar.update(1)
+            return latents
+
+        latents = dit_forward(latents)
+
+        @timer_record("VAE")
+        def vae_forward(latents):
+            if output_type == "numpy":
+                video = self.decode_latents(latents)
+            elif not output_type == "latent":
+                video = self.decode_latents(latents)
+                video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+            else:
+                video = latents
+            return video
+        video = vae_forward(latents)
 
         # Offload all models
         self.maybe_free_model_hooks()
