@@ -399,24 +399,27 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer: {layer}')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -472,24 +475,27 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer: {layer}')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
