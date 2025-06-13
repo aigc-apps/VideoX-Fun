@@ -397,6 +397,12 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--selective_ac",
+        type=float,
+        default=0,
+        help="Rate for transformer block apply checkpointing.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
@@ -1039,6 +1045,11 @@ def main():
 
     if args.gradient_checkpointing:
         transformer3d.enable_gradient_checkpointing()
+    elif args.selective_ac > 0:
+        from videox_fun.utils.ac_handle import apply_checkpointing, partial
+        from videox_fun.models.wan_transformer3d import WanAttentionBlock
+        apply_selective_ac = partial(apply_checkpointing, block=WanAttentionBlock)
+        apply_selective_ac(transformer3d, p=args.selective_ac)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
