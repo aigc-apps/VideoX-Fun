@@ -29,13 +29,16 @@ if importlib.util.find_spec("pai_fuser") is not None:
 
     if ENABLE_KERNEL:
         import torch
+        import types
         from .wan_xfuser import rope_apply
 
+        def deepcopy_function(f):
+            return types.FunctionType(f.__code__, f.__globals__, name=f.__name__, argdefs=f.__defaults__,closure=f.__closure__)
+
+        local_rope_apply_qk = deepcopy_function(wan_xfuser.rope_apply_qk)
         def adaptive_fast_usp_rope_apply_qk(q, k, grid_sizes, freqs):
             if torch.is_grad_enabled():
-                q = rope_apply(q, grid_sizes, freqs)
-                k = rope_apply(k, grid_sizes, freqs)
-                return q, k
+                return local_rope_apply_qk(q, k, grid_sizes, freqs)
             else:
                 return usp_fast_rope_apply_qk(q, k, grid_sizes, freqs)
             

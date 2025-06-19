@@ -334,17 +334,17 @@ def resize_frame(frame, target_short_side):
 
 class ImageVideoDataset(Dataset):
     def __init__(
-            self,
-            ann_path, data_root=None,
-            video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
-            image_sample_size=512,
-            video_repeat=0,
-            text_drop_ratio=0.1,
-            enable_bucket=False,
-            video_length_drop_start=0.0, 
-            video_length_drop_end=1.0,
-            enable_inpaint=False,
-        ):
+        self,
+        ann_path, data_root=None,
+        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        image_sample_size=512,
+        video_repeat=0,
+        text_drop_ratio=0.1,
+        enable_bucket=False,
+        video_length_drop_start=0.0, 
+        video_length_drop_end=1.0,
+        enable_inpaint=False,
+    ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         if ann_path.endswith('.csv'):
@@ -356,15 +356,18 @@ class ImageVideoDataset(Dataset):
         self.data_root = data_root
 
         # It's used to balance num of images and videos.
-        self.dataset = []
-        for data in dataset:
-            if data.get('type', 'image') != 'video':
-                self.dataset.append(data)
         if video_repeat > 0:
+            self.dataset = []
+            for data in dataset:
+                if data.get('type', 'image') != 'video':
+                    self.dataset.append(data)
+                    
             for _ in range(video_repeat):
                 for data in dataset:
                     if data.get('type', 'image') == 'video':
                         self.dataset.append(data)
+        else:
+            self.dataset = dataset
         del dataset
 
         self.length = len(self.dataset)
@@ -503,11 +506,6 @@ class ImageVideoDataset(Dataset):
             clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
             sample["clip_pixel_values"] = clip_pixel_values
 
-            ref_pixel_values = sample["pixel_values"][0].unsqueeze(0)
-            if (mask == 1).all():
-                ref_pixel_values = torch.ones_like(ref_pixel_values) * -1
-            sample["ref_pixel_values"] = ref_pixel_values
-
         return sample
 
 class ImageVideoControlDataset(Dataset):
@@ -535,15 +533,18 @@ class ImageVideoControlDataset(Dataset):
         self.data_root = data_root
 
         # It's used to balance num of images and videos.
-        self.dataset = []
-        for data in dataset:
-            if data.get('type', 'image') != 'video':
-                self.dataset.append(data)
         if video_repeat > 0:
+            self.dataset = []
+            for data in dataset:
+                if data.get('type', 'image') != 'video':
+                    self.dataset.append(data)
+                    
             for _ in range(video_repeat):
                 for data in dataset:
                     if data.get('type', 'image') == 'video':
                         self.dataset.append(data)
+        else:
+            self.dataset = dataset
         del dataset
 
         self.length = len(self.dataset)
@@ -766,10 +767,5 @@ class ImageVideoControlDataset(Dataset):
             clip_pixel_values = sample["pixel_values"][0].permute(1, 2, 0).contiguous()
             clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
             sample["clip_pixel_values"] = clip_pixel_values
-
-            ref_pixel_values = sample["pixel_values"][0].unsqueeze(0)
-            if (mask == 1).all():
-                ref_pixel_values = torch.ones_like(ref_pixel_values) * -1
-            sample["ref_pixel_values"] = ref_pixel_values
 
         return sample

@@ -912,6 +912,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
@@ -1132,7 +1133,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     x = block(x, **kwargs)
 
         if self.sp_world_size > 1:
-            x = get_sp_group().all_gather(x, dim=1)
+            x = self.all_gather(x, dim=1)
 
         if self.ref_conv is not None and full_ref is not None:
             full_ref_length = full_ref.size(1)

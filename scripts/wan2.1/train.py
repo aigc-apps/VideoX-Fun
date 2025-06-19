@@ -606,7 +606,12 @@ def parse_args():
         "--image_sample_size",
         type=int,
         default=512,
-        help="Sample size of the video.",
+        help="Sample size of the image.",
+    )
+    parser.add_argument(
+        "--fix_sample_size", 
+        nargs=2, type=int, default=None,
+        help="Fix Sample size [height, width] when using bucket and collate_fn."
     )
     parser.add_argument(
         "--video_sample_stride",
@@ -1120,6 +1125,11 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     
+    if args.fix_sample_size is not None and args.enable_bucket:
+        args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.image_sample_size = max(max(args.image_sample_size), args.image_sample_size)
+
+    # Get the dataset
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
@@ -1204,9 +1214,9 @@ def main():
                 aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            closest_size = [int(x / 16) * 16 for x in closest_size]
-            if args.random_ratio_crop:
+            if args.fix_sample_size is not None:
+                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+            elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
@@ -1216,9 +1226,24 @@ def main():
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+            else:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                closest_size = [int(x / 16) * 16 for x in closest_size]
 
             for example in examples:
-                if args.random_ratio_crop:
+                if args.fix_sample_size is not None:
+                    # To 0~1
+                    pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                    pixel_values = pixel_values / 255.
+
+                    # Get adapt hw for resize
+                    fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
+                    transform = transforms.Compose([
+                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                        transforms.CenterCrop(fix_sample_size),
+                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                    ])
+                elif args.random_ratio_crop:
                     # To 0~1
                     pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                     pixel_values = pixel_values / 255.
@@ -1341,6 +1366,12 @@ def main():
         transformer3d, optimizer, train_dataloader, lr_scheduler
     )
 
+    if fsdp_stage != 0:
+        from functools import partial
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        text_encoder = shard_fn(text_encoder)
+
     if args.use_ema:
         ema_transformer3d.to(accelerator.device)
 
@@ -1365,6 +1396,7 @@ def main():
         tracker_config.pop("validation_prompts")
         tracker_config.pop("trainable_modules")
         tracker_config.pop("trainable_modules_low_learning_rate")
+        tracker_config.pop("fix_sample_size")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
