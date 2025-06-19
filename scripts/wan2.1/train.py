@@ -1127,6 +1127,8 @@ def main():
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
         args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
+        args.training_with_video_token_length = False
+        args.random_hw_adapt = False
 
     # Get the dataset
     train_dataset = ImageVideoDataset(
@@ -1496,7 +1498,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length and not zero_stage == 3:
+                if args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1517,7 +1519,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length and not zero_stage == 3:
+                    if args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
