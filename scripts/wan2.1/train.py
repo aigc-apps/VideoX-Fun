@@ -1127,7 +1127,7 @@ def main():
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
-        args.image_sample_size = max(max(args.image_sample_size), args.image_sample_size)
+        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
 
     # Get the dataset
     train_dataset = ImageVideoDataset(
