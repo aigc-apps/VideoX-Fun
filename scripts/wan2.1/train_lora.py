@@ -715,6 +715,12 @@ def parse_args():
         default=1.29,
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
+    parser.add_argument(
+        "--lora_skip_name",
+        type=str,
+        default=None,
+        help=("The module is not trained in loras. "),
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -900,7 +906,7 @@ def main():
         text_encoder,
         transformer3d,
         neuron_dropout=None,
-        add_lora_in_attn_temporal=True,
+        skip_name=args.lora_skip_name,
     )
     network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
 
