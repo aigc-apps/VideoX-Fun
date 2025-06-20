@@ -944,7 +944,7 @@ def main():
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=False,
+        enable_bucket=args.enable_bucket, 
     )
     
     if args.enable_bucket:
@@ -1629,10 +1629,10 @@ def main():
         if args.use_ema:
             ema_transformer3d.copy_to(transformer3d.parameters())
 
-        if args.use_deepspeed or accelerator.is_main_process:
-            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(save_path)
-            logger.info(f"Saved state to {save_path}")
+    if args.use_deepspeed or accelerator.is_main_process:
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

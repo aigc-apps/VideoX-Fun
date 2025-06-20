@@ -576,7 +576,12 @@ def parse_args():
         "--image_sample_size",
         type=int,
         default=512,
-        help="Sample size of the video.",
+        help="Sample size of the image.",
+    )
+    parser.add_argument(
+        "--fix_sample_size", 
+        nargs=2, type=int, default=None,
+        help="Fix Sample size [height, width] when using bucket and collate_fn."
     )
     parser.add_argument(
         "--video_sample_stride",
@@ -738,6 +743,9 @@ def main():
         print(f"Using DeepSpeed Zero stage: {zero_stage}")
 
         args.use_deepspeed = True
+        if zero_stage == 3:
+            print(f"Auto set save_state to True because zero_stage == 3")
+            args.save_state = True
     elif fsdp_plugin is not None:
         from torch.distributed.fsdp import ShardingStrategy
         zero_stage = 0
@@ -752,6 +760,9 @@ def main():
         print(f"Using FSDP stage: {fsdp_stage}")
 
         args.use_fsdp = True
+        if fsdp_stage == 3:
+            print(f"Auto set save_state to True because fsdp_stage == 3")
+            args.save_state = True
     else:
         zero_stage = 0
         fsdp_stage = 0
@@ -845,19 +856,19 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
+        vae.eval()
+        # Get Clip Image Encoder
+        if args.train_mode != "normal":
+            clip_image_encoder = CLIPModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
+            )
+            clip_image_encoder = clip_image_encoder.eval()
             
     # Get Transformer
     transformer3d = WanTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
-
-    if args.train_mode != "normal":
-        # Get Clip Image Encoder
-        clip_image_encoder = CLIPModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
-        )
-        clip_image_encoder = clip_image_encoder.eval()
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
@@ -1090,6 +1101,13 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     
+    if args.fix_sample_size is not None and args.enable_bucket:
+        args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
+        args.training_with_video_token_length = False
+        args.random_hw_adapt = False
+
+    # Get the dataset
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
@@ -1210,16 +1228,36 @@ def main():
                 aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            closest_size = [int(x / 16) * 16 for x in closest_size]
-            if args.random_ratio_crop:
-                random_sample_size = aspect_ratio_random_crop_sample_size[
-                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                ]
+            if args.fix_sample_size is not None:
+                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+            elif args.random_ratio_crop:
+                if rng is None:
+                    random_sample_size = aspect_ratio_random_crop_sample_size[
+                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                    ]
+                else:
+                    random_sample_size = aspect_ratio_random_crop_sample_size[
+                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                    ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+            else:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                closest_size = [int(x / 16) * 16 for x in closest_size]
 
             for example in examples:
-                if args.random_ratio_crop:
+                if args.fix_sample_size is not None:
+                    # To 0~1
+                    pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                    pixel_values = pixel_values / 255.
+
+                    # Get adapt hw for resize
+                    fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
+                    transform = transforms.Compose([
+                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                        transforms.CenterCrop(fix_sample_size),
+                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                    ])
+                elif args.random_ratio_crop:
                     # To 0~1
                     pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                     pixel_values = pixel_values / 255.
@@ -1344,6 +1382,12 @@ def main():
         transformer3d, optimizer, train_dataloader, lr_scheduler
     )
 
+    if fsdp_stage != 0:
+        from functools import partial
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        text_encoder = shard_fn(text_encoder)
+
     if args.use_ema:
         ema_transformer3d.to(accelerator.device)
 
@@ -1368,6 +1412,7 @@ def main():
         tracker_config.pop("validation_prompts")
         tracker_config.pop("trainable_modules")
         tracker_config.pop("trainable_modules_low_learning_rate")
+        tracker_config.pop("fix_sample_size")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1865,10 +1910,10 @@ def main():
         if args.use_ema:
             ema_transformer3d.copy_to(transformer3d.parameters())
 
-        if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(save_path)
-            logger.info(f"Saved state to {save_path}")
+    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

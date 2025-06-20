@@ -3,7 +3,7 @@
 import torch
 
 class DiscreteSampling:
-    def __init__(self, num_idx, uniform_sampling=False):
+    def __init__(self, num_idx, uniform_sampling=False, sp_size=1):
         self.num_idx = num_idx
         self.uniform_sampling = uniform_sampling
         self.is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
@@ -21,6 +21,8 @@ class DiscreteSampling:
                     break
             assert self.group_num > 0 
             assert world_size % self.group_num == 0 
+            if self.group_num >= sp_size:
+                self.group_num = self.group_num // sp_size
             # the number of rank in one group 
             self.group_width = world_size // self.group_num  
             self.sigma_interval = self.num_idx // self.group_num
