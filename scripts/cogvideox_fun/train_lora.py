@@ -1697,11 +1697,12 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-        accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-        save_model(safetensor_save_path, accelerator.unwrap_model(network))
-        if args.save_state:
+    if args.use_deepspeed or accelerator.is_main_process:
+        if not args.save_state:
+            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+            save_model(safetensor_save_path, accelerator.unwrap_model(network))
+        else:
+            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)
         logger.info(f"Saved state to {accelerator_save_path}")
 

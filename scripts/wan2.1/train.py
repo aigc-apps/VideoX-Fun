@@ -773,6 +773,9 @@ def main():
         print(f"Using DeepSpeed Zero stage: {zero_stage}")
 
         args.use_deepspeed = True
+        if zero_stage == 3:
+            print(f"Auto set save_state to True because zero_stage == 3")
+            args.save_state = True
     elif fsdp_plugin is not None:
         from torch.distributed.fsdp import ShardingStrategy
         zero_stage = 0
@@ -787,6 +790,9 @@ def main():
         print(f"Using FSDP stage: {fsdp_stage}")
 
         args.use_fsdp = True
+        if fsdp_stage == 3:
+            print(f"Auto set save_state to True because fsdp_stage == 3")
+            args.save_state = True
     else:
         zero_stage = 0
         fsdp_stage = 0
@@ -1889,10 +1895,10 @@ def main():
         if args.use_ema:
             ema_transformer3d.copy_to(transformer3d.parameters())
 
-        if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(save_path)
-            logger.info(f"Saved state to {save_path}")
+    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 
