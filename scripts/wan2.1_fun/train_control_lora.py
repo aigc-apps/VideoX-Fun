@@ -786,6 +786,7 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
+        vae.eval()
         # Get Clip Image Encoder
         if args.train_mode != "normal":
             clip_image_encoder = CLIPModel.from_pretrained(

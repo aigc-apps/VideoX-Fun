@@ -879,11 +879,13 @@ def main():
             low_cpu_mem_usage=True,
             torch_dtype=weight_dtype,
         )
+        text_encoder = text_encoder.eval()
         # Get Vae
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
+        vae.eval()
         # Get Clip Image Encoder
         if args.train_mode != "normal":
             clip_image_encoder = CLIPModel.from_pretrained(
