@@ -1403,7 +1403,7 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            if zero_stage != 3:
+            if zero_stage != 3 and not args.use_fsdp:
                 from safetensors.torch import load_file
                 state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
                 m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
