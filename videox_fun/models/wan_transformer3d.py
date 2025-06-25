@@ -1132,6 +1132,18 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     )
                     x = block(x, **kwargs)
 
+        # head
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
+        else:
+            x = self.head(x, e)
+
         if self.sp_world_size > 1:
             x = self.all_gather(x, dim=1)
 
@@ -1144,9 +1156,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             subject_ref_length = subject_ref[0].size(1)
             x = x[:, :-subject_ref_length]
             grid_sizes = torch.stack([torch.tensor([u[0] - subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-
-        # head
-        x = self.head(x, e)
 
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
