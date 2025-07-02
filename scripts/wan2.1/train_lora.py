@@ -1873,7 +1873,7 @@ def main():
         else:
             accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)
-        logger.info(f"Saved state to {accelerator_save_path}")
+            logger.info(f"Saved state to {accelerator_save_path}")
 
     accelerator.end_training()
 
