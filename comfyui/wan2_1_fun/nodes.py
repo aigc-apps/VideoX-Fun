@@ -325,6 +325,9 @@ class WanFunT2VSampler:
                 "teacache_offload":(
                     [False, True],  {"default": True,}
                 ),
+                "cfg_skip_ratio":(
+                    "FLOAT", {"default": 0, "min": 0, "max": 1, "step": 0.01}
+                ),
             },
             "optional": {
                 "riflex_k": ("RIFLEXT_ARGS",),
@@ -336,7 +339,7 @@ class WanFunT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -362,6 +365,10 @@ class WanFunT2VSampler:
             )
         else:
             pipeline.transformer.disable_teacache()
+
+        if cfg_skip_ratio is not None:
+            print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+            pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, steps)
 
         generator= torch.Generator(device).manual_seed(seed)
         
@@ -495,6 +502,9 @@ class WanFunInpaintSampler:
                 "teacache_offload":(
                     [False, True],  {"default": True,}
                 ),
+                "cfg_skip_ratio":(
+                    "FLOAT", {"default": 0, "min": 0, "max": 1, "step": 0.01}
+                ),
             },
             "optional": {
                 "start_img": ("IMAGE",),
@@ -508,7 +518,7 @@ class WanFunInpaintSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, start_img=None, end_img=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -541,6 +551,10 @@ class WanFunInpaintSampler:
             )
         else:
             pipeline.transformer.disable_teacache()
+
+        if cfg_skip_ratio is not None:
+            print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+            pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, steps)
 
         generator= torch.Generator(device).manual_seed(seed)
 
@@ -665,6 +679,9 @@ class WanFunV2VSampler:
                 "teacache_offload":(
                     [False, True],  {"default": True,}
                 ),
+                "cfg_skip_ratio":(
+                    "FLOAT", {"default": 0, "min": 0, "max": 1, "step": 0.01}
+                ),
             },
             "optional": {
                 "validation_video": ("IMAGE",),
@@ -681,7 +698,7 @@ class WanFunV2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
 
@@ -736,6 +753,10 @@ class WanFunV2VSampler:
             )
         else:
             pipeline.transformer.disable_teacache()
+
+        if cfg_skip_ratio is not None:
+            print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+            pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, steps)
 
         generator= torch.Generator(device).manual_seed(seed)
 
