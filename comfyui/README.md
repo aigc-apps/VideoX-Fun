@@ -23,6 +23,9 @@ git clone https://github.com/aigc-apps/VideoX-Fun.git
 # Git clone the video outout node
 git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
 
+# Git clone the KJ Nodes
+git clone https://github.com/kijai/ComfyUI-KJNodes.git
+
 cd VideoX-Fun/
 python install.py
 ```
