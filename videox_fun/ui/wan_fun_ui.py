@@ -188,6 +188,7 @@ class Wan_Fun_Controller(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        fps = None,
         is_api = False,
     ):
         self.clear_cache()
@@ -338,8 +339,10 @@ class Wan_Fun_Controller(Fun_Controller):
             print(f"Unmerge Lora done.")
 
         print(f"Saving outputs.")
+        if fps == None:
+            fps = 16
         save_sample_path = self.save_outputs(
-            is_image, length_slider, sample, fps=16
+            is_image, length_slider, sample, fps=fps
         )
         print(f"Saving outputs done.")
 
@@ -375,7 +378,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -513,7 +516,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -637,7 +640,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """

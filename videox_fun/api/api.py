@@ -125,6 +125,7 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
         cfg_skip_ratio = datas.get('cfg_skip_ratio', 0)
         enable_riflex = datas.get('enable_riflex', False)
         riflex_k = datas.get('riflex_k', 6)
+        fps = datas.get('fps', None)
 
         generation_method = "Image Generation" if is_image else generation_method
 
@@ -204,6 +205,7 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
                 cfg_skip_ratio = cfg_skip_ratio, 
                 enable_riflex = enable_riflex, 
                 riflex_k = riflex_k, 
+                fps = fps,
                 is_api = True,
             )
         except Exception as e:

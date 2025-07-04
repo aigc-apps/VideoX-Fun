@@ -180,6 +180,7 @@ class Wan_Controller(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        fps = None,
         is_api = False,
     ):
         self.clear_cache()
@@ -330,8 +331,10 @@ class Wan_Controller(Fun_Controller):
             print(f"Unmerge Lora done.")
 
         print(f"Saving outputs.")
+        if fps == None:
+            fps = 16
         save_sample_path = self.save_outputs(
-            is_image, length_slider, sample, fps=16
+            is_image, length_slider, sample, fps=fps
         )
         print(f"Saving outputs done.")
 
