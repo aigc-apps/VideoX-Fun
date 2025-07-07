@@ -87,6 +87,314 @@ if is_wandb_available():
     import wandb
 
 
+class BucketCollator:
+    def __init__(
+        self,
+        args,
+        tokenizer=None,
+        text_encoder=None,
+        rng=None,
+        aspect_ratio_512=None,
+        aspect_ratio_random_crop_512=None,
+        aspect_ratio_random_crop_prob=None,
+        sample_n_frames_bucket_interval=None,
+    ):
+        assert args.enable_text_encoder_in_dataloader == False
+        
+        self.args = args
+        self.tokenizer = tokenizer
+        self.text_encoder = text_encoder
+        self.rng = rng if rng is not None else np.random.default_rng()
+        
+        self.ASPECT_RATIO_512 = aspect_ratio_512
+        self.ASPECT_RATIO_RANDOM_CROP_512 = aspect_ratio_random_crop_512
+        self.ASPECT_RATIO_RANDOM_CROP_PROB = aspect_ratio_random_crop_prob
+        self.sample_n_frames_bucket_interval = sample_n_frames_bucket_interval
+
+
+    def get_length_to_frame_num(self, token_length):
+        if self.args.image_sample_size > self.args.video_sample_size:
+            sample_sizes = list(range(self.args.video_sample_size, self.args.image_sample_size + 1, 128))
+
+            if sample_sizes[-1] != self.args.image_sample_size:
+                sample_sizes.append(self.args.image_sample_size)
+        else:
+            sample_sizes = [self.args.image_sample_size]
+        
+        length_to_frame_num = {
+            sample_size: min(token_length / sample_size / sample_size, self.args.video_sample_n_frames) // self.sample_n_frames_bucket_interval * self.sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+        }
+
+        return length_to_frame_num
+    
+    def _create_special_list(self, length):
+        if length == 1:
+            return [1.0]
+        if length >= 2:
+            first_element = 0.90
+            remaining_sum = 1.0 - first_element
+            other_elements_value = remaining_sum / (length - 1)
+            special_list = [first_element] + [other_elements_value] * (length - 1)
+            return special_list
+    
+    def get_random_downsample_ratio(self, sample_size, image_ratio=[],
+                                    all_choices=False, rng=None):  
+        if sample_size >= 1536:
+            number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
+        elif sample_size >= 1024:
+            number_list = [1, 1.25, 1.5, 2] + image_ratio
+        elif sample_size >= 768:
+            number_list = [1, 1.25, 1.5] + image_ratio
+        elif sample_size >= 512:
+            number_list = [1] + image_ratio
+        else:
+            number_list = [1]
+
+        if all_choices:
+            return number_list
+
+        number_list_prob = np.array(self._create_special_list(len(number_list)))
+        if rng is None:
+            return np.random.choice(number_list, p = number_list_prob)
+        else:
+            return rng.choice(number_list, p = number_list_prob)
+    
+
+    def __call__(self, examples):
+        # Get token length
+        target_token_length = self.args.video_sample_n_frames * self.args.token_sample_size * self.args.token_sample_size
+        length_to_frame_num = self.get_length_to_frame_num(target_token_length)
+
+        # Create new output
+        new_examples                 = {}
+        new_examples["target_token_length"] = target_token_length
+        new_examples["pixel_values"] = []
+        new_examples["text"]         = []
+        # Used in Control Mode
+        new_examples["control_pixel_values"] = []
+        # Used in Control Ref Mode
+        if self.args.train_mode != "control":
+            new_examples["ref_pixel_values"] = []
+            new_examples["clip_pixel_values"] = []
+            new_examples["clip_idx"] = []
+        # Used in Control Camera Ref Mode
+        if self.args.train_mode == "control_camera_ref":
+            new_examples["control_camera_values"] = []
+
+        # Get downsample ratio in image and videos
+        pixel_value     = examples[0]["pixel_values"]
+        data_type       = examples[0]["data_type"]
+        f, h, w, c      = np.shape(pixel_value)
+        if data_type == 'image':
+            random_downsample_ratio = 1 if not self.args.random_hw_adapt else self.get_random_downsample_ratio(self.args.image_sample_size, image_ratio=[self.args.image_sample_size / self.args.video_sample_size])
+
+            aspect_ratio_sample_size = {key : [x / 512 * self.args.image_sample_size / random_downsample_ratio for x in self.ASPECT_RATIO_512[key]] for key in self.ASPECT_RATIO_512.keys()}
+            aspect_ratio_random_crop_sample_size = {key : [x / 512 * self.args.image_sample_size / random_downsample_ratio for x in self.ASPECT_RATIO_RANDOM_CROP_512[key]] for key in self.ASPECT_RATIO_RANDOM_CROP_512.keys()}
+            
+            batch_video_length = self.args.video_sample_n_frames + self.sample_n_frames_bucket_interval
+        else:
+            if self.args.random_hw_adapt:
+                if self.args.training_with_video_token_length:
+                    local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
+
+                    def get_random_downsample_probability(choice_list, token_sample_size):
+                        length = len(choice_list)
+                        if length == 1:
+                            return [1.0]  # If there's only one element, it gets all the probability
+                        
+                        # Find the index of the closest value to token_sample_size
+                        closest_index = min(range(length), key=lambda i: abs(choice_list[i] - token_sample_size))
+                        
+                        # Assign 50% to the closest index
+                        first_element = 0.50
+                        remaining_sum = 1.0 - first_element
+                        
+                        # Distribute the remaining 50% evenly among the other elements
+                        other_elements_value = remaining_sum / (length - 1) if length > 1 else 0.0
+                        
+                        # Construct the probability distribution
+                        probability_list = [other_elements_value] * length
+                        probability_list[closest_index] = first_element
+                        
+                        return probability_list
+
+                    choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
+                    if len(choice_list) == 0:
+                        choice_list = list(length_to_frame_num.keys())
+                    probabilities = get_random_downsample_probability(choice_list, self.args.token_sample_size)
+                    local_video_sample_size = np.random.choice(choice_list, p=probabilities)
+
+                    random_downsample_ratio = self.args.video_sample_size / local_video_sample_size
+                    batch_video_length = length_to_frame_num[local_video_sample_size]
+                else:
+                    random_downsample_ratio = self.get_random_downsample_ratio(self.args.video_sample_size)
+                    batch_video_length = self.args.video_sample_n_frames + self.sample_n_frames_bucket_interval
+            else:
+                random_downsample_ratio = 1
+                batch_video_length = self.args.video_sample_n_frames + self.sample_n_frames_bucket_interval
+
+            aspect_ratio_sample_size = {key : [x / 512 * self.args.video_sample_size / random_downsample_ratio for x in self.ASPECT_RATIO_512[key]] for key in self.ASPECT_RATIO_512.keys()}
+            aspect_ratio_random_crop_sample_size = {key : [x / 512 * self.args.video_sample_size / random_downsample_ratio for x in self.ASPECT_RATIO_RANDOM_CROP_512[key]] for key in self.ASPECT_RATIO_RANDOM_CROP_512.keys()}
+
+        if self.args.fix_sample_size is not None:
+            fix_sample_size = [int(x / 16) * 16 for x in self.args.fix_sample_size]
+        elif self.args.random_ratio_crop:
+            if self.rng is None:
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = self.ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
+            else:
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    self.rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = self.ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
+            random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+        else:
+            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+            closest_size = [int(x / 16) * 16 for x in closest_size]
+
+        for example in examples:
+            # To 0~1
+            pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+            pixel_values = pixel_values / 255.
+
+            control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
+            control_pixel_values = control_pixel_values / 255.
+
+            if self.args.fix_sample_size is not None:
+                # Get adapt hw for resize
+                fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
+                transform = transforms.Compose([
+                    transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(fix_sample_size),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+
+                transform_no_normalize = transforms.Compose([
+                    transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(fix_sample_size),
+                ])
+            elif self.args.random_ratio_crop:
+                # Get adapt hw for resize
+                b, c, h, w = pixel_values.size()
+                th, tw = random_sample_size
+                if th / tw > h / w:
+                    nh = int(th)
+                    nw = int(w / h * nh)
+                else:
+                    nw = int(tw)
+                    nh = int(h / w * nw)
+                
+                transform = transforms.Compose([
+                    transforms.Resize([nh, nw]),
+                    transforms.CenterCrop([int(x) for x in random_sample_size]),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+
+                transform_no_normalize = transforms.Compose([
+                    transforms.Resize([nh, nw]),
+                    transforms.CenterCrop([int(x) for x in random_sample_size]),
+                ])
+            else:
+                # Get adapt hw for resize
+                closest_size = list(map(lambda x: int(x), closest_size))
+                if closest_size[0] / h > closest_size[1] / w:
+                    resize_size = closest_size[0], int(w * closest_size[0] / h)
+                else:
+                    resize_size = int(h * closest_size[1] / w), closest_size[1]
+                
+                transform = transforms.Compose([
+                    transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(closest_size),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+
+                transform_no_normalize = transforms.Compose([
+                    transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(closest_size),
+                ])
+
+            new_examples["pixel_values"].append(transform(pixel_values))
+            new_examples["control_pixel_values"].append(transform(control_pixel_values))
+        
+            if self.args.train_mode == "control_camera_ref":
+                control_camera_values = example.get("control_camera_values", None)
+                if control_camera_values is None:
+                    control_camera_values_size = (
+                        new_examples["control_pixel_values"][-1].size()[0], 
+                        6, 
+                        new_examples["control_pixel_values"][-1].size()[2], 
+                        new_examples["control_pixel_values"][-1].size()[3]
+                    )
+                    local_control_camera_values = torch.zeros(control_camera_values_size)
+                    new_examples["control_camera_values"].append(local_control_camera_values)
+                else:
+                    local_control_camera_values = process_pose_params(example["control_camera_values"], height=resize_size[0], width=resize_size[1]).permute(0, 3, 1, 2).contiguous()
+                    new_examples["control_camera_values"].append(transform_no_normalize(local_control_camera_values))
+            
+            new_examples["text"].append(example["text"])
+            # Magvae needs the number of frames to be 4n + 1.
+            batch_video_length = int(
+                min(
+                    batch_video_length,
+                    (len(pixel_values) - 1) // self.sample_n_frames_bucket_interval * self.sample_n_frames_bucket_interval + 1, 
+                )
+            )
+            if batch_video_length == 0:
+                batch_video_length = 1
+
+            if self.args.train_mode != "control":
+                if self.args.control_ref_image == "first_frame":
+                    clip_index = 0
+                else:
+                    def _create_special_list(length):
+                        if length == 1:
+                            return [1.0]
+                        if length >= 2:
+                            first_element = 0.40
+                            remaining_sum = 1.0 - first_element
+                            other_elements_value = remaining_sum / (length - 1)
+                            special_list = [first_element] + [other_elements_value] * (length - 1)
+                            return special_list
+                    number_list_prob = np.array(_create_special_list(len(new_examples["pixel_values"][-1])))
+                    clip_index = np.random.choice(list(range(len(new_examples["pixel_values"][-1]))), p = number_list_prob)
+                new_examples["clip_idx"].append(clip_index)
+
+                ref_pixel_values = new_examples["pixel_values"][-1][clip_index].unsqueeze(0)
+                new_examples["ref_pixel_values"].append(ref_pixel_values)
+
+                clip_pixel_values = new_examples["pixel_values"][-1][clip_index].permute(1, 2, 0).contiguous()
+                clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
+                new_examples["clip_pixel_values"].append(clip_pixel_values)
+
+        # Limit the number of frames to the same
+        new_examples["pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["pixel_values"]])
+        new_examples["control_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_pixel_values"]])
+        if self.args.train_mode != "control":
+            new_examples["ref_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["ref_pixel_values"]])
+            new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
+            new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
+        if self.args.train_mode == "control_camera_ref":
+            new_examples["control_camera_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_camera_values"]])
+
+        # Encode prompts when enable_text_encoder_in_dataloader=True
+        if self.args.enable_text_encoder_in_dataloader:
+            prompt_ids = self.tokenizer(
+                new_examples['text'], 
+                max_length=self.args.tokenizer_max_length, 
+                padding="max_length", 
+                add_special_tokens=True, 
+                truncation=True, 
+                return_tensors="pt"
+            )
+            encoder_hidden_states = self.text_encoder(
+                prompt_ids.input_ids
+            )[0]
+            new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
+            new_examples['encoder_hidden_states'] = encoder_hidden_states
+
+        return new_examples
+
+
 def filter_kwargs(cls, kwargs):
     import inspect
     sig = inspect.signature(cls.__init__)
@@ -998,293 +1306,20 @@ def main():
             batch_size=args.train_batch_size, train_folder = args.train_data_dir, drop_last=True,
             aspect_ratios=aspect_ratio_sample_size,
         )
-
-        def collate_fn(examples):
-            def get_length_to_frame_num(token_length):
-                if args.image_sample_size > args.video_sample_size:
-                    sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                    if sample_sizes[-1] != args.image_sample_size:
-                        sample_sizes.append(args.image_sample_size)
-                else:
-                    sample_sizes = [args.image_sample_size]
-                
-                length_to_frame_num = {
-                    sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-                }
-
-                return length_to_frame_num
-
-            def get_random_downsample_ratio(sample_size, image_ratio=[],
-                                            all_choices=False, rng=None):
-                def _create_special_list(length):
-                    if length == 1:
-                        return [1.0]
-                    if length >= 2:
-                        first_element = 0.90
-                        remaining_sum = 1.0 - first_element
-                        other_elements_value = remaining_sum / (length - 1)
-                        special_list = [first_element] + [other_elements_value] * (length - 1)
-                        return special_list
-                        
-                if sample_size >= 1536:
-                    number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
-                elif sample_size >= 1024:
-                    number_list = [1, 1.25, 1.5, 2] + image_ratio
-                elif sample_size >= 768:
-                    number_list = [1, 1.25, 1.5] + image_ratio
-                elif sample_size >= 512:
-                    number_list = [1] + image_ratio
-                else:
-                    number_list = [1]
-
-                if all_choices:
-                    return number_list
-
-                number_list_prob = np.array(_create_special_list(len(number_list)))
-                if rng is None:
-                    return np.random.choice(number_list, p = number_list_prob)
-                else:
-                    return rng.choice(number_list, p = number_list_prob)
-
-            # Get token length
-            target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
-            length_to_frame_num = get_length_to_frame_num(target_token_length)
-
-            # Create new output
-            new_examples                 = {}
-            new_examples["target_token_length"] = target_token_length
-            new_examples["pixel_values"] = []
-            new_examples["text"]         = []
-            # Used in Control Mode
-            new_examples["control_pixel_values"] = []
-            # Used in Control Ref Mode
-            if args.train_mode != "control":
-                new_examples["ref_pixel_values"] = []
-                new_examples["clip_pixel_values"] = []
-                new_examples["clip_idx"] = []
-            # Used in Control Camera Ref Mode
-            if args.train_mode == "control_camera_ref":
-                new_examples["control_camera_values"] = []
-
-            # Get downsample ratio in image and videos
-            pixel_value     = examples[0]["pixel_values"]
-            data_type       = examples[0]["data_type"]
-            f, h, w, c      = np.shape(pixel_value)
-            if data_type == 'image':
-                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size])
-
-                aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
-                
-                batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-            else:
-                if args.random_hw_adapt:
-                    if args.training_with_video_token_length:
-                        local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
-
-                        def get_random_downsample_probability(choice_list, token_sample_size):
-                            length = len(choice_list)
-                            if length == 1:
-                                return [1.0]  # If there's only one element, it gets all the probability
-                            
-                            # Find the index of the closest value to token_sample_size
-                            closest_index = min(range(length), key=lambda i: abs(choice_list[i] - token_sample_size))
-                            
-                            # Assign 50% to the closest index
-                            first_element = 0.50
-                            remaining_sum = 1.0 - first_element
-                            
-                            # Distribute the remaining 50% evenly among the other elements
-                            other_elements_value = remaining_sum / (length - 1) if length > 1 else 0.0
-                            
-                            # Construct the probability distribution
-                            probability_list = [other_elements_value] * length
-                            probability_list[closest_index] = first_element
-                            
-                            return probability_list
-
-                        choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
-                        if len(choice_list) == 0:
-                            choice_list = list(length_to_frame_num.keys())
-                        probabilities = get_random_downsample_probability(choice_list, args.token_sample_size)
-                        local_video_sample_size = np.random.choice(choice_list, p=probabilities)
-
-                        random_downsample_ratio = args.video_sample_size / local_video_sample_size
-                        batch_video_length = length_to_frame_num[local_video_sample_size]
-                    else:
-                        random_downsample_ratio = get_random_downsample_ratio(args.video_sample_size)
-                        batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-                else:
-                    random_downsample_ratio = 1
-                    batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-
-                aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
-
-            if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
-            elif args.random_ratio_crop:
-                if rng is None:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                else:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
-            else:
-                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
-
-            for example in examples:
-                # To 0~1
-                pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
-                pixel_values = pixel_values / 255.
-
-                control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
-                control_pixel_values = control_pixel_values / 255.
-
-                if args.fix_sample_size is not None:
-                    # Get adapt hw for resize
-                    fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
-                    transform = transforms.Compose([
-                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(fix_sample_size),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-
-                    transform_no_normalize = transforms.Compose([
-                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(fix_sample_size),
-                    ])
-                elif args.random_ratio_crop:
-                    # Get adapt hw for resize
-                    b, c, h, w = pixel_values.size()
-                    th, tw = random_sample_size
-                    if th / tw > h / w:
-                        nh = int(th)
-                        nw = int(w / h * nh)
-                    else:
-                        nw = int(tw)
-                        nh = int(h / w * nw)
-                    
-                    transform = transforms.Compose([
-                        transforms.Resize([nh, nw]),
-                        transforms.CenterCrop([int(x) for x in random_sample_size]),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-    
-                    transform_no_normalize = transforms.Compose([
-                        transforms.Resize([nh, nw]),
-                        transforms.CenterCrop([int(x) for x in random_sample_size]),
-                    ])
-                else:
-                    # Get adapt hw for resize
-                    closest_size = list(map(lambda x: int(x), closest_size))
-                    if closest_size[0] / h > closest_size[1] / w:
-                        resize_size = closest_size[0], int(w * closest_size[0] / h)
-                    else:
-                        resize_size = int(h * closest_size[1] / w), closest_size[1]
-                    
-                    transform = transforms.Compose([
-                        transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(closest_size),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-    
-                    transform_no_normalize = transforms.Compose([
-                        transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(closest_size),
-                    ])
-    
-                new_examples["pixel_values"].append(transform(pixel_values))
-                new_examples["control_pixel_values"].append(transform(control_pixel_values))
-            
-                if args.train_mode == "control_camera_ref":
-                    control_camera_values = example.get("control_camera_values", None)
-                    if control_camera_values is None:
-                        control_camera_values_size = (
-                            new_examples["control_pixel_values"][-1].size()[0], 
-                            6, 
-                            new_examples["control_pixel_values"][-1].size()[2], 
-                            new_examples["control_pixel_values"][-1].size()[3]
-                        )
-                        local_control_camera_values = torch.zeros(control_camera_values_size)
-                        new_examples["control_camera_values"].append(local_control_camera_values)
-                    else:
-                        local_control_camera_values = process_pose_params(example["control_camera_values"], height=resize_size[0], width=resize_size[1]).permute(0, 3, 1, 2).contiguous()
-                        new_examples["control_camera_values"].append(transform_no_normalize(local_control_camera_values))
-                
-                new_examples["text"].append(example["text"])
-                # Magvae needs the number of frames to be 4n + 1.
-                batch_video_length = int(
-                    min(
-                        batch_video_length,
-                        (len(pixel_values) - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1, 
-                    )
-                )
-                if batch_video_length == 0:
-                    batch_video_length = 1
-
-                if args.train_mode != "control":
-                    if args.control_ref_image == "first_frame":
-                        clip_index = 0
-                    else:
-                        def _create_special_list(length):
-                            if length == 1:
-                                return [1.0]
-                            if length >= 2:
-                                first_element = 0.40
-                                remaining_sum = 1.0 - first_element
-                                other_elements_value = remaining_sum / (length - 1)
-                                special_list = [first_element] + [other_elements_value] * (length - 1)
-                                return special_list
-                        number_list_prob = np.array(_create_special_list(len(new_examples["pixel_values"][-1])))
-                        clip_index = np.random.choice(list(range(len(new_examples["pixel_values"][-1]))), p = number_list_prob)
-                    new_examples["clip_idx"].append(clip_index)
-
-                    ref_pixel_values = new_examples["pixel_values"][-1][clip_index].unsqueeze(0)
-                    new_examples["ref_pixel_values"].append(ref_pixel_values)
-
-                    clip_pixel_values = new_examples["pixel_values"][-1][clip_index].permute(1, 2, 0).contiguous()
-                    clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
-                    new_examples["clip_pixel_values"].append(clip_pixel_values)
-
-            # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["pixel_values"]])
-            new_examples["control_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_pixel_values"]])
-            if args.train_mode != "control":
-                new_examples["ref_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["ref_pixel_values"]])
-                new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
-                new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
-            if args.train_mode == "control_camera_ref":
-                new_examples["control_camera_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_camera_values"]])
-
-            # Encode prompts when enable_text_encoder_in_dataloader=True
-            if args.enable_text_encoder_in_dataloader:
-                prompt_ids = tokenizer(
-                    new_examples['text'], 
-                    max_length=args.tokenizer_max_length, 
-                    padding="max_length", 
-                    add_special_tokens=True, 
-                    truncation=True, 
-                    return_tensors="pt"
-                )
-                encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
-                )[0]
-                new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
-                new_examples['encoder_hidden_states'] = encoder_hidden_states
-
-            return new_examples
         
         # DataLoaders creation:
+        collator = BucketCollator(
+            args=args,
+            rng=rng,
+            aspect_ratio_512=ASPECT_RATIO_512,
+            aspect_ratio_random_crop_512=ASPECT_RATIO_RANDOM_CROP_512,
+            aspect_ratio_random_crop_prob=ASPECT_RATIO_RANDOM_CROP_PROB,
+            sample_n_frames_bucket_interval=sample_n_frames_bucket_interval
+        )
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_sampler=batch_sampler,
-            collate_fn=collate_fn,
+            collate_fn=collator,
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
             worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
