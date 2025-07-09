@@ -17,12 +17,15 @@ class DiscreteSampling:
                 if world_size % i != 0 or num_idx % (world_size // i) != 0:
                     i += 1
                 else: 
-                    self.group_num = world_size // i
+                    if i >= sp_size:
+                        self.group_num = world_size // i
+                    elif sp_size > world_size:
+                        self.group_num = 1
+                    else:
+                        self.group_num = world_size // sp_size
                     break
             assert self.group_num > 0 
             assert world_size % self.group_num == 0 
-            if self.group_num >= sp_size:
-                self.group_num = self.group_num // sp_size
             # the number of rank in one group 
             self.group_width = world_size // self.group_num  
             self.sigma_interval = self.num_idx // self.group_num
