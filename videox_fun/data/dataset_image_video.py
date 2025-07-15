@@ -498,7 +498,7 @@ class ImageVideoDataset(Dataset):
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size())
-            mask_pixel_values = pixel_values * (1 - mask) + torch.ones_like(pixel_values) * -1 * mask
+            mask_pixel_values = pixel_values * (1 - mask) + torch.ones_like(pixel_values) * mask
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
