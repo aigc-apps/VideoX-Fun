@@ -193,6 +193,9 @@ class CogVideoXFunController(Fun_Controller):
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
             print(f"Merge Lora done.")
 
+        if fps is None:
+            fps = 8
+
         print(f"Generate seed.")
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
         else: seed_textbox = np.random.randint(0, 1e10)
@@ -265,7 +268,7 @@ class CogVideoXFunController(Fun_Controller):
                             last_frames = init_frames + _partial_video_length
                     else:
                         if validation_video is not None:
-                            input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=8)
+                            input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=fps)
                             strength = denoise_strength
                         else:
                             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
@@ -297,7 +300,7 @@ class CogVideoXFunController(Fun_Controller):
                         generator           = generator
                     ).videos
             else:
-                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=8)
+                input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(control_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=fps)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -333,8 +336,6 @@ class CogVideoXFunController(Fun_Controller):
             print(f"Unmerge Lora done.")
 
         print(f"Saving outputs.")
-        if fps == None:
-            fps = 16
         save_sample_path = self.save_outputs(
             is_image, length_slider, sample, fps=fps
         )
