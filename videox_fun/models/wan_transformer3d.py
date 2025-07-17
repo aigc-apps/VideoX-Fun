@@ -49,8 +49,11 @@ try:
     elif f"{major}.{minor}" == "8.9":
         from sageattention_sm89 import sageattn
         SAGE_ATTENTION_AVAILABLE = True
-    elif major>=9:
+    elif f"{major}.{minor}" == "9.0":
         from sageattention_sm90 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif major>9:
+        from sageattention_sm120 import sageattn
         SAGE_ATTENTION_AVAILABLE = True
 except:
     try:
