@@ -56,6 +56,7 @@ class FunCompile:
     def INPUT_TYPES(s):
         return {
             "required": {
+                "cache_size_limit": ("INT", {"default": 64, "min": 0, "max": 10086}),
                 "funmodels": ("FunModels",)
             }
         }
@@ -64,14 +65,15 @@ class FunCompile:
     FUNCTION = "compile"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def compile(self, funmodels):
+    def compile(self, cache_size_limit, funmodels):
+        torch._dynamo.config.cache_size_limit = cache_size_limit
         if hasattr(funmodels["pipeline"].transformer, "blocks"):
             for i in range(len(funmodels["pipeline"].transformer.blocks)):
-                funmodels["pipeline"].transformer.blocks[i].forward = torch.compile(funmodels["pipeline"].transformer.blocks[i].forward)
+                funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
         
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
                 for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
-                    funmodels["pipeline"].transformer.transformer_blocks[i].forward = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i].forward)
+                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
