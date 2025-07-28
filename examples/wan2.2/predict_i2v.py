@@ -241,7 +241,6 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
-transformer_2 = transformer_2.to(device=device)
 
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
 if coefficients is not None:

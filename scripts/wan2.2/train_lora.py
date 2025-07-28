@@ -68,9 +68,9 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
-from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
+from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                               Wan2_2Transformer3DModel)
-from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
+from videox_fun.pipeline import WanPipeline, WanI2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -159,7 +159,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, network, config, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config, args, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
 
@@ -173,16 +173,15 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
         )
         
         if args.train_mode != "normal":
-            pipeline = Wan2_2I2VPipeline(
+            pipeline = WanI2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
                 scheduler=scheduler,
-                clip_image_encoder=clip_image_encoder,
             )
         else:
-            pipeline = Wan2_2Pipeline(
+            pipeline = WanPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -894,12 +893,6 @@ def main():
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
         vae.eval()
-        # Get Clip Image Encoder
-        if args.train_mode != "normal":
-            clip_image_encoder = CLIPModel.from_pretrained(
-                os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
-            )
-            clip_image_encoder = clip_image_encoder.eval()
             
     # Get Transformer
     sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer') \
@@ -913,8 +906,6 @@ def main():
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
-    if args.train_mode != "normal":
-        clip_image_encoder.requires_grad_(False)
 
     # Lora will work with this...
     network = create_network(
@@ -1345,8 +1336,6 @@ def main():
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device)
-    if args.train_mode != "normal":
-        clip_image_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1539,17 +1528,14 @@ def main():
                             batch['text'] = batch['text'] * 2
                 
                 if args.train_mode != "normal":
-                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
                     if args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
                         elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
                             mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
@@ -1622,8 +1608,6 @@ def main():
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
-                    if args.train_mode != "normal":
-                        clip_image_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
 
@@ -1665,14 +1649,6 @@ def main():
 
                         inpaint_latents = torch.concat([mask, mask_latents], dim=1)
                         inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
-
-                        clip_context = []
-                        for clip_pixel_value in clip_pixel_values:
-                            clip_image = Image.fromarray(np.uint8(clip_pixel_value.float().cpu().numpy()))
-                            clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(clip_image_encoder.device, weight_dtype)
-                            _clip_context = clip_image_encoder([clip_image[:, None, :, :]])
-                            clip_context.append(_clip_context)
-                        clip_context = torch.cat(clip_context)
                         
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1680,8 +1656,6 @@ def main():
 
                 if args.low_vram:
                     vae.to('cpu')
-                    if args.train_mode != "normal":
-                        clip_image_encoder.to('cpu')
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
@@ -1762,7 +1736,6 @@ def main():
                         t=timesteps,
                         seq_len=seq_len,
                         y=inpaint_latents if args.train_mode != "normal" else None,
-                        clip_fea=clip_context if args.train_mode != "normal" else None,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1842,7 +1815,6 @@ def main():
                             vae,
                             text_encoder,
                             tokenizer,
-                            clip_image_encoder,
                             transformer3d,
                             network,
                             config,
@@ -1864,7 +1836,6 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
-                    clip_image_encoder,
                     transformer3d,
                     network,
                     config,

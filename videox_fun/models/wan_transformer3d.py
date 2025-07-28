@@ -1472,6 +1472,10 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
             WanAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
                               cross_attn_norm, eps) for _ in range(num_layers)
         ])
+        for layer_idx, block in enumerate(self.blocks):
+            block.self_attn.layer_idx = layer_idx
+            block.self_attn.num_layers = self.num_layers
+
         # head
         self.head = Head(dim, out_dim, patch_size, eps)
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
