@@ -69,8 +69,8 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
-from videox_fun.pipeline import WanPipeline, WanI2VPipeline
+                              Wan2_2Transformer3DModel)
+from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -163,7 +163,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = WanTransformer3DModel.from_pretrained(
+        transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         ).to(weight_dtype)
@@ -173,7 +173,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
         )
         
         if args.train_mode != "normal":
-            pipeline = WanI2VPipeline(
+            pipeline = Wan2_2I2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -182,7 +182,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                 clip_image_encoder=clip_image_encoder,
             )
         else:
-            pipeline = WanPipeline(
+            pipeline = Wan2_2Pipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -904,7 +904,7 @@ def main():
     # Get Transformer
     sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer') \
         if args.boundary_type == "low" else config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
-    transformer3d = WanTransformer3DModel.from_pretrained(
+    transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
