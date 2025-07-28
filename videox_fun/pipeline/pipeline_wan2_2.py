@@ -533,7 +533,6 @@ class Wan2_2Pipeline(DiffusionPipeline):
                 if self.transformer_2 is not None:
                     if t >= boundary * self.scheduler.config.num_train_timesteps:
                         local_transformer = self.transformer_2
-                        print(i)
                     else:
                         local_transformer = self.transformer
                 else:
