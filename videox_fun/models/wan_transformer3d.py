@@ -554,9 +554,31 @@ class WanI2VCrossAttention(WanSelfAttention):
         return x
 
 
+class WanCrossAttention(WanSelfAttention):
+    def forward(self, x, context, context_lens, dtype, t):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L1, C]
+            context(Tensor): Shape [B, L2, C]
+            context_lens(Tensor): Shape [B]
+        """
+        b, n, d = x.size(0), self.num_heads, self.head_dim
+        # compute query, key, value
+        q = self.norm_q(self.q(x)).view(b, -1, n, d)
+        k = self.norm_k(self.k(context)).view(b, -1, n, d)
+        v = self.v(context).view(b, -1, n, d)
+        # compute attention
+        x = attention(q, k, v, k_lens=context_lens)
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+
 WAN_CROSSATTENTION_CLASSES = {
     't2v_cross_attn': WanT2VCrossAttention,
     'i2v_cross_attn': WanI2VCrossAttention,
+    'cross_attn': WanCrossAttention,
 }
 
 
@@ -841,6 +863,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.gradient_checkpointing = False
         self.sp_world_size = 1
         self.sp_world_rank = 0
+        self.init_weights()
 
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
@@ -952,8 +975,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
-        if self.model_type == 'i2v':
-            assert clip_fea is not None and y is not None
+        # Wan2.2 don't need a clip.
+        # if self.model_type == 'i2v':
+        #     assert clip_fea is not None and y is not None
         # params
         device = self.patch_embedding.weight.device
         dtype = x.dtype
@@ -1353,3 +1377,111 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         
         model = model.to(torch_dtype)
         return model
+
+
+class Wan2_2Transformer3DModel(WanTransformer3DModel):
+    r"""
+    Wan diffusion backbone supporting both text-to-video and image-to-video.
+    """
+
+    # ignore_for_config = [
+    #     'patch_size', 'cross_attn_norm', 'qk_norm', 'text_dim', 'window_size'
+    # ]
+    # _no_split_modules = ['WanAttentionBlock']
+    _supports_gradient_checkpointing = True
+    
+    @register_to_config
+    def __init__(self,
+                 model_type='t2v',
+                 patch_size=(1, 2, 2),
+                 text_len=512,
+                 in_dim=16,
+                 dim=2048,
+                 ffn_dim=8192,
+                 freq_dim=256,
+                 text_dim=4096,
+                 out_dim=16,
+                 num_heads=16,
+                 num_layers=32,
+                 window_size=(-1, -1),
+                 qk_norm=True,
+                 cross_attn_norm=True,
+                 eps=1e-6):
+        r"""
+        Initialize the diffusion model backbone.
+        Args:
+            model_type (`str`, *optional*, defaults to 't2v'):
+                Model variant - 't2v' (text-to-video) or 'i2v' (image-to-video)
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                3D patch dimensions for video embedding (t_patch, h_patch, w_patch)
+            text_len (`int`, *optional*, defaults to 512):
+                Fixed length for text embeddings
+            in_dim (`int`, *optional*, defaults to 16):
+                Input video channels (C_in)
+            dim (`int`, *optional*, defaults to 2048):
+                Hidden dimension of the transformer
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Intermediate dimension in feed-forward network
+            freq_dim (`int`, *optional*, defaults to 256):
+                Dimension for sinusoidal time embeddings
+            text_dim (`int`, *optional*, defaults to 4096):
+                Input dimension for text embeddings
+            out_dim (`int`, *optional*, defaults to 16):
+                Output video channels (C_out)
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer blocks
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for local attention (-1 indicates global attention)
+            qk_norm (`bool`, *optional*, defaults to True):
+                Enable query/key normalization
+            cross_attn_norm (`bool`, *optional*, defaults to False):
+                Enable cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon value for normalization layers
+        """
+        super().__init__()
+        assert model_type in ['t2v', 'i2v', 'ti2v']
+        self.model_type = model_type
+        self.patch_size = patch_size
+        self.text_len = text_len
+        self.in_dim = in_dim
+        self.dim = dim
+        self.ffn_dim = ffn_dim
+        self.freq_dim = freq_dim
+        self.text_dim = text_dim
+        self.out_dim = out_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.window_size = window_size
+        self.qk_norm = qk_norm
+        self.cross_attn_norm = cross_attn_norm
+        self.eps = eps
+        # embeddings
+        self.patch_embedding = nn.Conv3d(
+            in_dim, dim, kernel_size=patch_size, stride=patch_size)
+        self.text_embedding = nn.Sequential(
+            nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
+            nn.Linear(dim, dim))
+        self.time_embedding = nn.Sequential(
+            nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+        # blocks
+        self.blocks = nn.ModuleList([
+            WanAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
+                              cross_attn_norm, eps) for _ in range(num_layers)
+        ])
+        # head
+        self.head = Head(dim, out_dim, patch_size, eps)
+        # buffers (don't use register_buffer otherwise dtype will be changed in to())
+        assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
+        d = dim // num_heads
+        self.freqs = torch.cat([
+            rope_params(1024, d - 4 * (d // 6)),
+            rope_params(1024, 2 * (d // 6)),
+            rope_params(1024, 2 * (d // 6))
+        ],
+        dim=1)
+        # initialize weights
+        self.init_weights()

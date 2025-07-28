@@ -6,7 +6,8 @@ from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .wan_image_encoder import CLIPModel
 from .wan_text_encoder import WanT5EncoderModel
-from .wan_transformer3d import WanSelfAttention, WanTransformer3DModel
+from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention,
+                                WanTransformer3DModel)
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
