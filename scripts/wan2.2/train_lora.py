@@ -70,7 +70,7 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                               Wan2_2Transformer3DModel)
-from videox_fun.pipeline import WanPipeline, WanI2VPipeline
+from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -173,7 +173,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
         )
         
         if args.train_mode != "normal":
-            pipeline = WanI2VPipeline(
+            pipeline = Wan2_2I2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -181,7 +181,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                 scheduler=scheduler,
             )
         else:
-            pipeline = WanPipeline(
+            pipeline = Wan2_2Pipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
