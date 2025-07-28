@@ -112,7 +112,7 @@ class Wan2_2Pipeline(DiffusionPipeline):
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
     """
 
-    _optional_components = []
+    _optional_components = ["transformer_2"]
     model_cpu_offload_seq = "text_encoder->transformer->transformer_2->vae"
 
     _callback_tensor_inputs = [
