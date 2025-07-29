@@ -1487,7 +1487,7 @@ def main():
         start_num_idx = 0
         train_sampling_steps = args.train_sampling_steps
 
-    idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, sp_size=args.sp_size, uniform_sampling=args.uniform_sampling)
+    idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
