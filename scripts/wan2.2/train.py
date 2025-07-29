@@ -32,7 +32,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import torchvision.transforms.functional as TF
 import transformers
-from accelerate import Accelerator
+from accelerate import Accelerator, FullyShardedDataParallelPlugin
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
@@ -47,6 +47,8 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullOptimStateDictConfig, FullStateDictConfig, ShardedStateDictConfig, ShardedOptimStateDictConfig)
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -60,6 +62,7 @@ current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
+
 from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                            ASPECT_RATIO_RANDOM_CROP_512,
                                            ASPECT_RATIO_RANDOM_CROP_PROB,
@@ -70,9 +73,8 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                               Wan2_2Transformer3DModel)
-from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
+from videox_fun.pipeline import WanPipeline, WanI2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -159,10 +161,10 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
-
+            
         transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -171,9 +173,9 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
         scheduler = FlowMatchEulerDiscreteScheduler(
             **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
         )
-        
+
         if args.train_mode != "normal":
-            pipeline = Wan2_2I2VPipeline(
+            pipeline = WanI2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -181,7 +183,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                 scheduler=scheduler,
             )
         else:
-            pipeline = Wan2_2Pipeline(
+            pipeline = WanPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
@@ -190,15 +192,12 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
             )
         pipeline = pipeline.to(accelerator.device)
 
-        pipeline = merge_lora(
-            pipeline, None, 1, accelerator.device, state_dict=accelerator.unwrap_model(network).state_dict(), transformer_only=True
-        )
-
         if args.seed is None:
             generator = None
         else:
             generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
 
+        images = []
         for i in range(len(args.validation_prompts)):
             with torch.no_grad():
                 if args.train_mode != "normal":
@@ -239,7 +238,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                 else:
                     with torch.autocast("cuda", dtype=weight_dtype):
                         sample = pipeline(
-                            args.validation_prompts[i], 
+                            args.validation_prompts[i],
                             num_frames = args.video_sample_n_frames,
                             negative_prompt = "bad detailed",
                             height      = args.video_sample_size,
@@ -265,6 +264,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
+        return images
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
@@ -477,6 +478,9 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--report_model_info", action="store_true", help="Whether or not to report more info about model (such as norm, grad)."
+    )
+    parser.add_argument(
         "--mixed_precision",
         type=str,
         default=None,
@@ -545,23 +549,6 @@ def parse_args():
     )
     
     parser.add_argument(
-        "--rank",
-        type=int,
-        default=128,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--network_alpha",
-        type=int,
-        default=64,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--train_text_encoder",
-        action="store_true",
-        help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
-    )
-    parser.add_argument(
         "--snr_loss", action="store_true", help="Whether or not to use snr_loss."
     )
     parser.add_argument(
@@ -586,27 +573,21 @@ def parse_args():
         "--training_with_video_token_length", action="store_true", help="The training stage of the model in training.",
     )
     parser.add_argument(
-        "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
-    )
-    parser.add_argument(
-        "--noise_share_in_frames_ratio", type=float, default=0.5, help="Noise share ratio.",
-    )
-    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(
         "--motion_sub_loss_ratio", type=float, default=0.25, help="The ratio of motion sub loss."
     )
     parser.add_argument(
-        "--keep_all_node_same_token_length",
-        action="store_true", 
-        help="Reference of the length token.",
-    )
-    parser.add_argument(
         "--train_sampling_steps",
         type=int,
         default=1000,
         help="Run train_sampling_steps.",
+    )
+    parser.add_argument(
+        "--keep_all_node_same_token_length",
+        action="store_true", 
+        help="Reference of the length token.",
     )
     parser.add_argument(
         "--token_sample_size",
@@ -669,8 +650,18 @@ def parse_args():
         default=None,
         help=("If you want to load the weight from other vaes, input its path."),
     )
-    parser.add_argument("--save_state", action="store_true", help="Whether or not to save state.")
 
+    parser.add_argument(
+        '--trainable_modules', 
+        nargs='+', 
+        help='Enter a list of trainable modules'
+    )
+    parser.add_argument(
+        '--trainable_modules_low_learning_rate', 
+        nargs='+', 
+        default=[],
+        help='Enter a list of trainable modules with lower learning rate'
+    )
     parser.add_argument(
         '--tokenizer_max_length', 
         type=int,
@@ -704,6 +695,22 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--abnormal_norm_clip_start",
+        type=int,
+        default=1000,
+        help=(
+            'When do we start doing additional processing on abnormal gradients. '
+        ),
+    )
+    parser.add_argument(
+        "--initial_grad_norm_ratio",
+        type=int,
+        default=5,
+        help=(
+            'The initial gradient is relative to the multiple of the max_grad_norm. '
+        ),
+    )
+    parser.add_argument(
         "--weighting_scheme",
         type=str,
         default="none",
@@ -721,12 +728,6 @@ def parse_args():
         type=float,
         default=1.29,
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
-    )
-    parser.add_argument(
-        "--lora_skip_name",
-        type=str,
-        default=None,
-        help=("The module is not trained in loras. "),
     )
 
     args = parser.parse_args()
@@ -907,18 +908,6 @@ def main():
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
 
-    # Lora will work with this...
-    network = create_network(
-        1.0,
-        args.rank,
-        args.network_alpha,
-        text_encoder,
-        transformer3d,
-        neuron_dropout=None,
-        skip_name=args.lora_skip_name,
-    )
-    network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
-
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
         if args.transformer_path.endswith("safetensors"):
@@ -944,6 +933,32 @@ def main():
         m, u = vae.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
+    
+    # A good trainable modules is showed below now.
+    # For 3D Patch: trainable_modules = ['ff.net', 'pos_embed', 'attn2', 'proj_out', 'timepositionalencoding', 'h_position', 'w_position']
+    # For 2D Patch: trainable_modules = ['ff.net', 'attn2', 'timepositionalencoding', 'h_position', 'w_position']
+    transformer3d.train()
+    if accelerator.is_main_process:
+        accelerator.print(
+            f"Trainable modules '{args.trainable_modules}'."
+        )
+    for name, param in transformer3d.named_parameters():
+        for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                param.requires_grad = True
+                break
+
+    # Create EMA for the transformer3d.
+    if args.use_ema:
+        if zero_stage == 3:
+            raise NotImplementedError("FSDP does not support EMA.")
+
+        ema_transformer3d = Wan2_2Transformer3DModel.from_pretrained(
+            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
+            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        ).to(weight_dtype)
+
+        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=Wan2_2Transformer3DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -954,13 +969,8 @@ def main():
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
 
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    network_state_dict = {}
-                    for key in accelerate_state_dict:
-                        if "network" in key:
-                            network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key]
-
-                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+                    safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
+                    save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
@@ -974,6 +984,7 @@ def main():
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
 
         elif zero_stage == 3:
+            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
@@ -987,18 +998,47 @@ def main():
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
         else:
+            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
+                    if args.use_ema:
+                        ema_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
+
+                    models[0].save_pretrained(os.path.join(output_dir, "transformer"))
                     if not args.use_deepspeed:
-                        for _ in range(len(weights)):
-                            weights.pop()
+                        weights.pop()
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
             def load_model_hook(models, input_dir):
+                if args.use_ema:
+                    ema_path = os.path.join(input_dir, "transformer_ema")
+                    _, ema_kwargs = Wan2_2Transformer3DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = Wan2_2Transformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer_ema",
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs'])
+                    )
+                    load_model = EMAModel(load_model.parameters(), model_cls=Wan2_2Transformer3DModel, model_config=load_model.config)
+                    load_model.load_state_dict(ema_kwargs)
+
+                    ema_transformer3d.load_state_dict(load_model.state_dict())
+                    ema_transformer3d.to(accelerator.device)
+                    del load_model
+
+                for i in range(len(models)):
+                    # pop models so that they are not loaded again
+                    model = models.pop()
+
+                    # load diffusers style into model
+                    load_model = Wan2_2Transformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer"
+                    )
+                    model.register_to_config(**load_model.config)
+
+                    model.load_state_dict(load_model.state_dict())
+                    del load_model
+
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -1044,9 +1084,33 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    logging.info("Add network parameters")
-    trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
-    trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+    trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
+    trainable_params_optim = [
+        {'params': [], 'lr': args.learning_rate},
+        {'params': [], 'lr': args.learning_rate / 2},
+    ]
+    in_already = []
+    for name, param in transformer3d.named_parameters():
+        high_lr_flag = False
+        if name in in_already:
+            continue
+        for trainable_module_name in args.trainable_modules:
+            if trainable_module_name in name:
+                in_already.append(name)
+                high_lr_flag = True
+                trainable_params_optim[0]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate}")
+                break
+        if high_lr_flag:
+            continue
+        for trainable_module_name in args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                in_already.append(name)
+                trainable_params_optim[1]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                break
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1080,8 +1144,7 @@ def main():
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, 
-        enable_inpaint=True if args.train_mode != "normal" else False,
+        enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
     )
     
     if args.enable_bucket:
@@ -1308,22 +1371,9 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    if fsdp_stage != 0:
-        transformer3d.network = network
-        transformer3d = transformer3d.to(weight_dtype)
-        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            transformer3d, optimizer, train_dataloader, lr_scheduler
-        )
-    else:
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            network, optimizer, train_dataloader, lr_scheduler
-        )
-
-    if zero_stage == 3:
-        from functools import partial
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-        transformer3d = shard_fn(transformer3d)
+    transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        transformer3d, optimizer, train_dataloader, lr_scheduler
+    )
 
     if fsdp_stage != 0:
         from functools import partial
@@ -1331,11 +1381,13 @@ def main():
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
 
+    if args.use_ema:
+        ema_transformer3d.to(accelerator.device)
+
     # Move text_encode and vae to gpu and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
-    transformer3d.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device)
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1349,6 +1401,8 @@ def main():
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
         tracker_config.pop("validation_prompts")
+        tracker_config.pop("trainable_modules")
+        tracker_config.pop("trainable_modules_low_learning_rate")
         tracker_config.pop("fix_sample_size")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
@@ -1393,8 +1447,7 @@ def main():
 
             initial_global_step = global_step
 
-            checkpoint_folder_path = os.path.join(args.output_dir, path)
-            pkl_path = os.path.join(checkpoint_folder_path, "sampler_pos_start.pkl")
+            pkl_path = os.path.join(os.path.join(args.output_dir, path), "sampler_pos_start.pkl")
             if os.path.exists(pkl_path):
                 with open(pkl_path, 'rb') as file:
                     _, first_epoch = pickle.load(file)
@@ -1402,71 +1455,10 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            if zero_stage != 3 and not args.use_fsdp:
-                from safetensors.torch import load_file
-                state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
-                m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
-                print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-
-                optimizer_file_pt = os.path.join(checkpoint_folder_path, "optimizer.pt")
-                optimizer_file_bin = os.path.join(checkpoint_folder_path, "optimizer.bin")
-                optimizer_file_to_load = None
-
-                if os.path.exists(optimizer_file_pt):
-                    optimizer_file_to_load = optimizer_file_pt
-                elif os.path.exists(optimizer_file_bin):
-                    optimizer_file_to_load = optimizer_file_bin
-
-                if optimizer_file_to_load:
-                    try:
-                        accelerator.print(f"Loading optimizer state from {optimizer_file_to_load}")
-                        optimizer_state = torch.load(optimizer_file_to_load, map_location=accelerator.device)
-                        optimizer.load_state_dict(optimizer_state)
-                        accelerator.print("Optimizer state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load optimizer state from {optimizer_file_to_load}: {e}")
-
-                scheduler_file_pt = os.path.join(checkpoint_folder_path, "scheduler.pt")
-                scheduler_file_bin = os.path.join(checkpoint_folder_path, "scheduler.bin")
-                scheduler_file_to_load = None
-
-                if os.path.exists(scheduler_file_pt):
-                    scheduler_file_to_load = scheduler_file_pt
-                elif os.path.exists(scheduler_file_bin):
-                    scheduler_file_to_load = scheduler_file_bin
-
-                if scheduler_file_to_load:
-                    try:
-                        accelerator.print(f"Loading scheduler state from {scheduler_file_to_load}")
-                        scheduler_state = torch.load(scheduler_file_to_load, map_location=accelerator.device)
-                        lr_scheduler.load_state_dict(scheduler_state)
-                        accelerator.print("Scheduler state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load scheduler state from {scheduler_file_to_load}: {e}")
-
-                if hasattr(accelerator, 'scaler') and accelerator.scaler is not None:
-                    scaler_file = os.path.join(checkpoint_folder_path, "scaler.pt")
-                    if os.path.exists(scaler_file):
-                        try:
-                            accelerator.print(f"Loading GradScaler state from {scaler_file}")
-                            scaler_state = torch.load(scaler_file, map_location=accelerator.device)
-                            accelerator.scaler.load_state_dict(scaler_state)
-                            accelerator.print("GradScaler state loaded successfully.")
-                        except Exception as e:
-                            accelerator.print(f"Failed to load GradScaler state: {e}")
-
-            else:
-                accelerator.load_state(checkpoint_folder_path)
-                accelerator.print("accelerator.load_state() completed for zero_stage 3.")
-
+            accelerator.print(f"Resuming from checkpoint {path}")
+            accelerator.load_state(os.path.join(args.output_dir, path))
     else:
         initial_global_step = 0
-
-    # function for saving/removing
-    def save_model(ckpt_file, unwrapped_nw):
-        os.makedirs(args.output_dir, exist_ok=True)
-        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
-        unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -1495,12 +1487,13 @@ def main():
         start_num_idx = 0
         train_sampling_steps = args.train_sampling_steps
 
-    idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
+    idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, sp_size=args.sp_size, uniform_sampling=args.uniform_sampling)
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
+            # Data batch sanity check
             if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
@@ -1660,7 +1653,7 @@ def main():
 
                         inpaint_latents = torch.concat([mask, mask_latents], dim=1)
                         inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
-                        
+                                                
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
@@ -1739,6 +1732,7 @@ def main():
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
                     target_shape[1]
                 )
+
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
@@ -1778,13 +1772,36 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                    if not args.use_deepspeed and not args.use_fsdp:
+                        trainable_params_grads = [p.grad for p in trainable_params if p.grad is not None]
+                        trainable_params_total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in trainable_params_grads]), 2)
+                        max_grad_norm = linear_decay(args.max_grad_norm * args.initial_grad_norm_ratio, args.max_grad_norm, args.abnormal_norm_clip_start, global_step)
+                        if trainable_params_total_norm / max_grad_norm > 5 and global_step > args.abnormal_norm_clip_start:
+                            actual_max_grad_norm = max_grad_norm / min((trainable_params_total_norm / max_grad_norm), 10)
+                        else:
+                            actual_max_grad_norm = max_grad_norm
+                    else:
+                        actual_max_grad_norm = args.max_grad_norm
+
+                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
+                        if trainable_params_total_norm > 1 and global_step > args.abnormal_norm_clip_start:
+                            for name, param in transformer3d.named_parameters():
+                                if param.requires_grad:
+                                    writer.add_scalar(f'gradients/before_clip_norm/{name}', param.grad.norm(), global_step=global_step)
+
+                    norm_sum = accelerator.clip_grad_norm_(trainable_params, actual_max_grad_norm)
+                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
+                        writer.add_scalar(f'gradients/norm_sum', norm_sum, global_step=global_step)
+                        writer.add_scalar(f'gradients/actual_max_grad_norm', actual_max_grad_norm, global_step=global_step)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
+
+                if args.use_ema:
+                    ema_transformer3d.step(transformer3d.parameters())
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
@@ -1811,29 +1828,31 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
-                        if not args.save_state:
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
+                        logger.info(f"Saved state to {save_path}")
 
                 if accelerator.is_main_process:
                     if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                        if args.use_ema:
+                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                            ema_transformer3d.store(transformer3d.parameters())
+                            ema_transformer3d.copy_to(transformer3d.parameters())
                         log_validation(
                             vae,
                             text_encoder,
                             tokenizer,
                             transformer3d,
-                            network,
-                            config,
                             args,
+                            config,
                             accelerator,
                             weight_dtype,
                             global_step,
                         )
+                        if args.use_ema:
+                            # Switch back to the original transformer3d parameters.
+                            ema_transformer3d.restore(transformer3d.parameters())
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1843,29 +1862,36 @@ def main():
 
         if accelerator.is_main_process:
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+                if args.use_ema:
+                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                    ema_transformer3d.store(transformer3d.parameters())
+                    ema_transformer3d.copy_to(transformer3d.parameters())
                 log_validation(
                     vae,
                     text_encoder,
                     tokenizer,
                     transformer3d,
-                    network,
-                    config,
                     args,
+                    config,
                     accelerator,
                     weight_dtype,
                     global_step,
                 )
+                if args.use_ema:
+                    # Switch back to the original transformer3d parameters.
+                    ema_transformer3d.restore(transformer3d.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        transformer3d = unwrap_model(transformer3d)
+        if args.use_ema:
+            ema_transformer3d.copy_to(transformer3d.parameters())
+
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-        if not args.save_state:
-            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-        else:
-            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(accelerator_save_path)
-            logger.info(f"Saved state to {accelerator_save_path}")
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 
