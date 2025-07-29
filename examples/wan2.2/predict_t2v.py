@@ -91,9 +91,14 @@ sampler_name        = "Flow_Unipc"
 shift               = 12
 
 # Load pretrained model if need
-transformer_path    = None
-vae_path            = None
-lora_path           = None
+# The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
+transformer_path        = None
+transformer_high_path   = None
+vae_path                = None
+# Load lora model if need
+# The lora_path is used for low noise model, the lora_high_path is used for high noise model.
+lora_path               = None
+lora_high_path          = None
 
 # Other params
 sample_size         = [480, 832]
@@ -108,7 +113,9 @@ negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字
 guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
+# The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
+lora_high_weight    = 0.55
 save_path           = "samples/wan-videos-t2v"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
@@ -139,6 +146,18 @@ if transformer_path is not None:
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
     m, u = transformer.load_state_dict(state_dict, strict=False)
+    print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+
+if transformer_high_path is not None:
+    print(f"From checkpoint: {transformer_high_path}")
+    if transformer_high_path.endswith("safetensors"):
+        from safetensors.torch import load_file, safe_open
+        state_dict = load_file(transformer_high_path)
+    else:
+        state_dict = torch.load(transformer_high_path, map_location="cpu")
+    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+
+    m, u = transformer_2.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
@@ -244,7 +263,8 @@ if coefficients is not None:
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
     pipeline.transformer_2.enable_teacache(
-        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload,
+        transformer=pipeline.transformer
     )
 
 if cfg_skip_ratio is not None:
@@ -256,6 +276,7 @@ generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -280,6 +301,7 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):

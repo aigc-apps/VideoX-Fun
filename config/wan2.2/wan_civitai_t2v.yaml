@@ -30,7 +30,7 @@ text_encoder_kwargs:
 scheduler_kwargs:
   scheduler_subpath: null
   num_train_timesteps: 1000
-  shift: 5.0
+  shift: 12.0
   use_dynamic_shifting: false
   base_shift: 0.5
   max_shift: 1.15

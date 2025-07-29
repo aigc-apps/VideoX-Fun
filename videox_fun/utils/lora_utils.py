@@ -365,7 +365,7 @@ def create_network(
     )
     return network
 
-def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False):
+def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
     if state_dict is None:
@@ -393,7 +393,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                 curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
@@ -446,7 +446,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     return pipeline
 
 # TODO: Refactor with merge_lora.
-def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32):
+def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32, sub_transformer_name="transformer"):
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -469,7 +469,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))

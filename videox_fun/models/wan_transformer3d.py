@@ -879,11 +879,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         num_steps: int,
         rel_l1_thresh: float,
         num_skip_start_steps: int = 0,
-        offload: bool = True
+        offload: bool = True,
+        transformer = None,
     ):
-        self.teacache = TeaCache(
-            coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
-        )
+        if transformer is None:
+            self.teacache = TeaCache(
+                coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
+            )
+        else:
+            self.teacache = transformer.teacache
 
     def disable_teacache(self):
         self.teacache = None
