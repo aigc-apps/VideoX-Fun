@@ -187,6 +187,8 @@ class Wan2_2_Controller(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        base_model_2_dropdown=None,
+        lora_model_2_dropdown=None, 
         fps = None,
         is_api = False,
     ):
@@ -203,9 +205,13 @@ class Wan2_2_Controller(Fun_Controller):
 
         if self.base_model_path != base_model_dropdown:
             self.update_base_model(base_model_dropdown)
+        if self.base_model_2_path != base_model_2_dropdown:
+            self.update_lora_model(base_model_2_dropdown, is_checkpoint_2=True)
 
         if self.lora_model_path != lora_model_dropdown:
             self.update_lora_model(lora_model_dropdown)
+        if self.lora_model_2_path != lora_model_2_dropdown:
+            self.update_lora_model(lora_model_2_dropdown, is_checkpoint_2=True)
 
         print(f"Load scheduler.")
         scheduler_config = self.pipeline.scheduler.config
@@ -223,6 +229,7 @@ class Wan2_2_Controller(Fun_Controller):
         if self.lora_model_path != "none":
             print(f"Merge Lora.")
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
+            self.pipeline = merge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             print(f"Merge Lora done.")
 
         coefficients = get_teacache_coefficients(self.diffusion_transformer_dropdown) if enable_teacache else None
@@ -231,9 +238,7 @@ class Wan2_2_Controller(Fun_Controller):
             self.pipeline.transformer.enable_teacache(
                 coefficients, sample_step_slider, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
-            self.pipeline.transformer_2.share_teacache(
-                self.pipeline.transformer
-            )
+            self.pipeline.transformer_2.share_teacache(self.pipeline.transformer)
         else:
             print(f"Disable TeaCache.")
             self.pipeline.transformer.disable_teacache()
@@ -329,7 +334,7 @@ class Wan2_2_Controller(Fun_Controller):
             print(f"Error. error information is {str(e)}")
             if self.lora_model_path != "none":
                 self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
-                self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
+                self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             if is_api:
                 return "", f"Error. error information is {str(e)}"
             else:
@@ -340,7 +345,7 @@ class Wan2_2_Controller(Fun_Controller):
         if self.lora_model_path != "none":
             print(f"Unmerge Lora.")
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
-            self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
+            self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             print(f"Unmerge Lora done.")
 
         print(f"Saving outputs.")
@@ -387,7 +392,9 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
             diffusion_transformer_dropdown, diffusion_transformer_refresh_button = \
                 create_model_checkpoints(controller, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button = \
-                create_finetune_models_checkpoints(controller, visible=True)
+                create_finetune_models_checkpoints(controller, visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
 
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -498,6 +505,8 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
@@ -519,7 +528,10 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
         with gr.Column(variant="panel"):
             model_type = create_fake_model_type(visible=False)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
-            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = \
+                create_fake_finetune_models_checkpoints(visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
 
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -622,6 +634,8 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
@@ -638,7 +652,10 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
         )
         with gr.Column(variant="panel"):
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
-            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = \
+                create_fake_finetune_models_checkpoints(visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
 
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -734,6 +751,8 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )

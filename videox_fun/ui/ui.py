@@ -79,7 +79,7 @@ def create_fake_model_checkpoints(model_name, visible):
         )
     return diffusion_transformer_dropdown
 
-def create_finetune_models_checkpoints(controller, visible):
+def create_finetune_models_checkpoints(controller, visible, add_checkpoint_2=False):
     with gr.Row(visible=visible):
         base_model_dropdown = gr.Dropdown(
             label="Select base Dreambooth model (选择基模型[非必需])",
@@ -87,6 +87,13 @@ def create_finetune_models_checkpoints(controller, visible):
             value="none",
             interactive=True,
         )
+        if add_checkpoint_2:
+            base_model_2_dropdown = gr.Dropdown(
+                label="Select base Dreambooth model (选择第二个基模型[非必需])",
+                choices=["none"] + controller.personalized_model_list,
+                value="none",
+                interactive=True,
+            )
         
         lora_model_dropdown = gr.Dropdown(
             label="Select LoRA model (选择LoRA模型[非必需])",
@@ -94,6 +101,13 @@ def create_finetune_models_checkpoints(controller, visible):
             value="none",
             interactive=True,
         )
+        if add_checkpoint_2:
+            lora_model_2_dropdown = gr.Dropdown(
+            label="Select LoRA model (选择LoRA模型[非必需])",
+                choices=["none"] + controller.personalized_model_list,
+                value="none",
+                interactive=True,
+            )
 
         lora_alpha_slider = gr.Slider(label="LoRA alpha (LoRA权重)", value=0.55, minimum=0, maximum=2, interactive=True)
         
@@ -106,7 +120,11 @@ def create_finetune_models_checkpoints(controller, visible):
             ]
         personalized_refresh_button.click(fn=update_personalized_model, inputs=[], outputs=[base_model_dropdown, lora_model_dropdown])
 
-    return base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button
+    if not add_checkpoint_2:
+        return base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button
+    else:
+        return [base_model_dropdown, base_model_2_dropdown], [lora_model_dropdown, lora_model_2_dropdown], \
+            lora_alpha_slider, personalized_refresh_button
 
 def create_fake_finetune_models_checkpoints(visible):
     with gr.Row():
