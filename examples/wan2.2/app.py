@@ -20,7 +20,7 @@ if __name__ == "__main__":
     # "host" represents the hosting mode, where the model is loaded directly at startup and can be accessed via 
     #        the API to return generation results. 
     # "client" represents the client mode, offering a simple UI that sends requests to a remote API for generation.
-    ui_mode = "host"
+    ui_mode = "normal"
     
     # GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
     # model_full_load means that the entire model will be moved to the GPU.
