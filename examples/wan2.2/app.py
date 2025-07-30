@@ -42,7 +42,7 @@ if __name__ == "__main__":
     weight_dtype = torch.bfloat16
 
     # Server ip
-    server_name = "127.0.0.1"
+    server_name = "0.0.0.0"
     server_port = 7860
 
     # Config path
