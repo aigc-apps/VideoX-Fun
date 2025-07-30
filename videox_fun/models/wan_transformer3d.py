@@ -747,6 +747,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         in_dim_control_adapter=24,
         add_ref_conv=False,
         in_dim_ref_conv=16,
+        cross_attn_type=None,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -786,7 +787,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         super().__init__()
 
-        assert model_type in ['t2v', 'i2v']
+        assert model_type in ['t2v', 'i2v', 'ti2v']
         self.model_type = model_type
 
         self.patch_size = patch_size
@@ -816,7 +817,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
 
         # blocks
-        cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
+        if cross_attn_type is None:
+            cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
             WanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
                               window_size, qk_norm, cross_attn_norm, eps)
@@ -1404,7 +1406,6 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
     # _no_split_modules = ['WanAttentionBlock']
     _supports_gradient_checkpointing = True
     
-    @register_to_config
     def __init__(
         self,
         model_type='t2v',
@@ -1463,66 +1464,30 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
             eps (`float`, *optional*, defaults to 1e-6):
                 Epsilon value for normalization layers
         """
-        super().__init__()
-        assert model_type in ['t2v', 'i2v', 'ti2v']
-        self.model_type = model_type
-        self.patch_size = patch_size
-        self.text_len = text_len
-        self.in_dim = in_dim
-        self.dim = dim
-        self.ffn_dim = ffn_dim
-        self.freq_dim = freq_dim
-        self.text_dim = text_dim
-        self.out_dim = out_dim
-        self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.window_size = window_size
-        self.qk_norm = qk_norm
-        self.cross_attn_norm = cross_attn_norm
-        self.eps = eps
-
-        # embeddings
-        self.patch_embedding = nn.Conv3d(
-            in_dim, dim, kernel_size=patch_size, stride=patch_size)
-        self.text_embedding = nn.Sequential(
-            nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
-            nn.Linear(dim, dim))
-        self.time_embedding = nn.Sequential(
-            nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
-        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-        # blocks
-        self.blocks = nn.ModuleList([
-            WanAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
-                              cross_attn_norm, eps) for _ in range(num_layers)
-        ])
-        for layer_idx, block in enumerate(self.blocks):
-            block.self_attn.layer_idx = layer_idx
-            block.self_attn.num_layers = self.num_layers
-
-        # head
-        self.head = Head(dim, out_dim, patch_size, eps)
-        # buffers (don't use register_buffer otherwise dtype will be changed in to())
-        assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
-        d = dim // num_heads
-        self.freqs = torch.cat([
-            rope_params(1024, d - 4 * (d // 6)),
-            rope_params(1024, 2 * (d // 6)),
-            rope_params(1024, 2 * (d // 6))
-        ],
-        dim=1)
-        
-        if add_control_adapter:
-            self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
-        else:
-            self.control_adapter = None
-
-        if add_ref_conv:
-            self.ref_conv = nn.Conv2d(in_dim_ref_conv, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
-        else:
-            self.ref_conv = None
+        super().__init__(
+            model_type=model_type,
+            patch_size=patch_size,
+            text_len=text_len,
+            in_dim=in_dim,
+            dim=dim,
+            ffn_dim=ffn_dim,
+            freq_dim=freq_dim,
+            text_dim=text_dim,
+            out_dim=out_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            window_size=window_size,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            add_control_adapter=add_control_adapter,
+            in_dim_control_adapter=in_dim_control_adapter,
+            add_ref_conv=add_ref_conv,
+            in_dim_ref_conv=in_dim_ref_conv,
+            cross_attn_type="cross_attn"
+        )
         
         if hasattr(self, "img_emb"):
             del self.img_emb
-
-        # initialize weights
-        self.init_weights()
