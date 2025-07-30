@@ -81,6 +81,7 @@ class Fun_Controller:
         self.diffusion_transformer_dropdown = model_name
         self.scheduler_dict             = scheduler_dict
         self.model_type                 = model_type
+        self.config_path                = os.path.realpath(config_path)
         if config_path is not None:
             self.config = OmegaConf.load(config_path)
         self.ulysses_degree             = ulysses_degree
@@ -94,6 +95,7 @@ class Fun_Controller:
         self.diffusion_transformer_list = []
         self.motion_module_list         = []
         self.personalized_model_list    = []
+        self.config_list                = []
 
         # config models
         self.tokenizer             = None
@@ -107,10 +109,20 @@ class Fun_Controller:
         self.lora_model_path       = "none"
         self.lora_model_2_path     = "none"
         
+        self.refresh_config()
         self.refresh_diffusion_transformer()
         self.refresh_personalized_model()
         if model_name != None:
             self.update_diffusion_transformer(model_name)
+
+    def refresh_config(self):
+        config_list = []
+        for root, dirs, files in os.walk(self.config_dir):
+            for file in files:
+                if file.endswith(('.yaml', '.yml')):
+                    full_path = os.path.join(root, file)
+                    config_list.append(full_path)
+        self.config_list = config_list
 
     def refresh_diffusion_transformer(self):
         self.diffusion_transformer_list = sorted(glob(os.path.join(self.diffusion_transformer_dir, "*/")))
@@ -121,6 +133,11 @@ class Fun_Controller:
 
     def update_model_type(self, model_type):
         self.model_type = model_type
+
+    def update_config(self, config_dropdown):
+        self.config_path = config_dropdown
+        self.config = OmegaConf.load(config_dropdown)
+        print(f"Update config: {config_dropdown}")
 
     def update_diffusion_transformer(self, diffusion_transformer_dropdown):
         pass

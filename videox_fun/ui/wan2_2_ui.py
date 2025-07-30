@@ -35,7 +35,7 @@ from .ui import (create_cfg_and_seedbox, create_cfg_riflex_k,
                  create_generation_methods_and_video_length,
                  create_height_width, create_model_checkpoints,
                  create_model_type, create_prompts, create_samplers,
-                 create_teacache_params, create_ui_outputs)
+                 create_teacache_params, create_ui_outputs, create_config)
 from ..dist import set_multi_gpus_devices, shard_model
 
 
@@ -388,6 +388,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
             """
         )
         with gr.Column(variant="panel"):
+            config_dropdown, config_refresh_button = create_config(controller)
             model_type = create_model_type(visible=False)
             diffusion_transformer_dropdown, diffusion_transformer_refresh_button = \
                 create_model_checkpoints(controller, visible=True)
@@ -427,6 +428,12 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
                     generate_button = gr.Button(value="Generate (生成)", variant='primary')
                     
                 result_image, result_video, infer_progress = create_ui_outputs()
+
+            config_dropdown.change(
+                fn=controller.update_config, 
+                inputs=[config_dropdown], 
+                outputs=[]
+            )
 
             model_type.change(
                 fn=controller.update_model_type, 

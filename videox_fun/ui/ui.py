@@ -336,3 +336,23 @@ def create_ui_outputs():
             interactive=False
     )
     return result_image, result_video, infer_progress
+
+def create_config(controller):
+    gr.Markdown(
+        """
+        ### Config Path (配置文件路径)
+        """
+    )
+    with gr.Row():
+        config_dropdown = gr.Dropdown(
+            label="Config Path (配置文件路径)",
+            choices=controller.config_list,
+            value=controller.config_path,
+            interactive=True,
+        )
+        config_refresh_button = gr.Button(value="\U0001F503", elem_classes="toolbutton")
+        def refresh_config():
+            controller.refresh_config()
+            return gr.update(choices=controller.config_list)
+        config_refresh_button.click(fn=refresh_config, inputs=[], outputs=[config_dropdown])
+    return config_dropdown, config_refresh_button
