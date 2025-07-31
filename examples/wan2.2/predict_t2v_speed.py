@@ -70,10 +70,14 @@ def parse_args():
                         help="Noise schedule shift parameter for Flow_Unipc/Flow_DPM++.")
     parser.add_argument("--transformer_path", type=str, default=None,
                         help="Path to pre-trained transformer checkpoint.")
+    parser.add_argument("--transformer_high_path", type=str, default=None,
+                        help="Path to pre-trained high noise transformer checkpoint.")
     parser.add_argument("--vae_path", type=str, default=None,
                         help="Path to pre-trained VAE checkpoint.")
     parser.add_argument("--lora_path", type=str, default=None,
                         help="Path to LoRA weights.")
+    parser.add_argument("--lora_high_path", type=str, default=None,
+                        help="Path to high noise LoRA weights.")
     parser.add_argument("--sample_size", nargs=2, type=int, default=[480, 832],
                         help="Sample size [height, width].")
     parser.add_argument("--video_length", type=int, default=81,
@@ -95,6 +99,8 @@ def parse_args():
                         help="Number of inference steps.")
     parser.add_argument("--lora_weight", type=float, default=0.55,
                         help="LoRA weight scaling factor.")
+    parser.add_argument("--lora_high_weight", type=float, default=0.55,
+                        help="High noise LoRA weight scaling factor.")
     parser.add_argument("--save_path", type=str, default="samples/wan-videos-t2v",
                         help="Directory to save generated videos.")
     return parser.parse_args()
