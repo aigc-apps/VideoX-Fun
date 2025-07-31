@@ -188,6 +188,7 @@ class Wan_Fun_Controller(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        fps = None,
         is_api = False,
     ):
         self.clear_cache()
@@ -244,6 +245,9 @@ class Wan_Fun_Controller(Fun_Controller):
         else: seed_textbox = np.random.randint(0, 1e10)
         generator = torch.Generator(device=self.device).manual_seed(int(seed_textbox))
         print(f"Generate seed done.")
+
+        if fps is None:
+            fps = 16
         
         if enable_riflex:
             print(f"Enable riflex")
@@ -255,7 +259,7 @@ class Wan_Fun_Controller(Fun_Controller):
             if self.model_type == "Inpaint":
                 if self.transformer.config.in_channels != self.vae.config.latent_channels:
                     if validation_video is not None:
-                        input_video, input_video_mask, _, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=16)
+                        input_video, input_video_mask, _, clip_image = get_video_to_video_latent(validation_video, length_slider if not is_image else 1, sample_size=(height_slider, width_slider), validation_video_mask=validation_video_mask, fps=fps)
                     else:
                         input_video, input_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, length_slider if not is_image else 1, sample_size=(height_slider, width_slider))
 
@@ -298,7 +302,7 @@ class Wan_Fun_Controller(Fun_Controller):
                 if start_image is not None:
                     start_image = get_image_latent(start_image, sample_size=(height_slider, width_slider))
 
-                input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=16, ref_image=None)
+                input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=length_slider if not is_image else 1, sample_size=(height_slider, width_slider), fps=fps, ref_image=None)
 
                 sample = self.pipeline(
                     prompt_textbox,
@@ -339,7 +343,7 @@ class Wan_Fun_Controller(Fun_Controller):
 
         print(f"Saving outputs.")
         save_sample_path = self.save_outputs(
-            is_image, length_slider, sample, fps=16
+            is_image, length_slider, sample, fps=fps
         )
         print(f"Saving outputs done.")
 
@@ -375,7 +379,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -513,7 +517,7 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """
@@ -637,7 +641,7 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
             """
             # Wan-Fun:
 
-            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 6 seconds, and fps 8 (frames 1 to 81), as well as image generated videos. 
+            A Wan with more flexible generation conditions, capable of producing videos of different resolutions, around 5 seconds, and fps 16 (frames 1 to 81), as well as image generated videos. 
 
             [Github](https://github.com/aigc-apps/CogVideoX-Fun/)
             """

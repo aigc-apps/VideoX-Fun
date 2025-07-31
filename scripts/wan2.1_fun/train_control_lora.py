@@ -478,6 +478,9 @@ def parse_args():
         "--training_with_video_token_length", action="store_true", help="The training stage of the model in training.",
     )
     parser.add_argument(
+        "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
+    )
+    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(
@@ -510,7 +513,12 @@ def parse_args():
         "--image_sample_size",
         type=int,
         default=512,
-        help="Sample size of the video.",
+        help="Sample size of the image.",
+    )
+    parser.add_argument(
+        "--fix_sample_size", 
+        nargs=2, type=int, default=None,
+        help="Fix Sample size [height, width] when using bucket and collate_fn."
     )
     parser.add_argument(
         "--video_sample_stride",
@@ -560,6 +568,9 @@ def parse_args():
     )
     parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
+    )
+    parser.add_argument(
+        "--use_fsdp", action="store_true", help="Whether or not to use fsdp."
     )
     parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
@@ -656,19 +667,40 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
-    deepspeed_plugin = accelerator.state.deepspeed_plugin
+
+    deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
+    fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
     if deepspeed_plugin is not None:
         zero_stage = int(deepspeed_plugin.zero_stage)
+        fsdp_stage = 0
         print(f"Using DeepSpeed Zero stage: {zero_stage}")
+
+        args.use_deepspeed = True
+        if zero_stage == 3:
+            print(f"Auto set save_state to True because zero_stage == 3")
+            args.save_state = True
+    elif fsdp_plugin is not None:
+        from torch.distributed.fsdp import ShardingStrategy
+        zero_stage = 0
+        if fsdp_plugin.sharding_strategy is ShardingStrategy.FULL_SHARD:
+            fsdp_stage = 3
+        elif fsdp_plugin.sharding_strategy is None: # The fsdp_plugin.sharding_strategy is None in FSDP 2.
+            fsdp_stage = 3
+        elif fsdp_plugin.sharding_strategy is ShardingStrategy.SHARD_GRAD_OP:
+            fsdp_stage = 2
+        else:
+            fsdp_stage = 0
+        print(f"Using FSDP stage: {fsdp_stage}")
+
+        args.use_fsdp = True
+        if fsdp_stage == 3:
+            print(f"Auto set save_state to True because fsdp_stage == 3")
+            args.save_state = True
     else:
         zero_stage = 0
+        fsdp_stage = 0
         print("DeepSpeed is not enabled.")
-    if zero_stage == 3:
-        accelerator_transformer3d = Accelerator(
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            mixed_precision=args.mixed_precision,
-            project_config=accelerator_project_config,
-        )
+
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir=logging_dir)
 
@@ -757,19 +789,19 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
+        vae.eval()
+        # Get Clip Image Encoder
+        if args.train_mode != "normal":
+            clip_image_encoder = CLIPModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
+            )
+            clip_image_encoder = clip_image_encoder.eval()
             
     # Get Transformer
     transformer3d = WanTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
-
-    if args.train_mode != "normal":
-        # Get Clip Image Encoder
-        clip_image_encoder = CLIPModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
-        )
-        clip_image_encoder = clip_image_encoder.eval()
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
@@ -817,7 +849,45 @@ def main():
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        if zero_stage != 3:
+        if fsdp_stage != 0:
+            def save_model_hook(models, weights, output_dir):
+                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                if accelerator.is_main_process:
+                    from safetensors.torch import save_file
+
+                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
+                    network_state_dict = {}
+                    for key in accelerate_state_dict:
+                        if "network" in key:
+                            network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key]
+
+                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+
+        elif zero_stage == 3:
+            def save_model_hook(models, weights, output_dir):
+                if accelerator.is_main_process:
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+        else:
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
@@ -836,20 +906,6 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-        else:
-            def save_model_hook(models, weights, output_dir):
-                if accelerator.is_main_process:
-                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
-
-            def load_model_hook(models, input_dir):
-                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-                if os.path.exists(pkl_path):
-                    with open(pkl_path, 'rb') as file:
-                        loaded_number, _ = pickle.load(file)
-                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -913,13 +969,19 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     
+    if args.fix_sample_size is not None and args.enable_bucket:
+        args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
+        args.training_with_video_token_length = False
+        args.random_hw_adapt = False
+
     # Get the dataset
     train_dataset = ImageVideoControlDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=False,
+        enable_bucket=args.enable_bucket, 
         enable_camera_info=args.train_mode == "control_camera_ref"
     )
 
@@ -1063,13 +1125,21 @@ def main():
                 aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            closest_size = [int(x / 16) * 16 for x in closest_size]
-            if args.random_ratio_crop:
-                random_sample_size = aspect_ratio_random_crop_sample_size[
-                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                ]
+            if args.fix_sample_size is not None:
+                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+            elif args.random_ratio_crop:
+                if rng is None:
+                    random_sample_size = aspect_ratio_random_crop_sample_size[
+                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                    ]
+                else:
+                    random_sample_size = aspect_ratio_random_crop_sample_size[
+                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                    ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+            else:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                closest_size = [int(x / 16) * 16 for x in closest_size]
 
             for example in examples:
                 # To 0~1
@@ -1079,7 +1149,20 @@ def main():
                 control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 control_pixel_values = control_pixel_values / 255.
 
-                if args.random_ratio_crop:
+                if args.fix_sample_size is not None:
+                    # Get adapt hw for resize
+                    fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
+                    transform = transforms.Compose([
+                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                        transforms.CenterCrop(fix_sample_size),
+                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                    ])
+
+                    transform_no_normalize = transforms.Compose([
+                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                        transforms.CenterCrop(fix_sample_size),
+                    ])
+                elif args.random_ratio_crop:
                     # Get adapt hw for resize
                     b, c, h, w = pixel_values.size()
                     th, tw = random_sample_size
@@ -1236,13 +1319,28 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        network, optimizer, train_dataloader, lr_scheduler
-    )
-    if zero_stage == 3:
-        transformer3d = accelerator_transformer3d.prepare(
-            transformer3d
+    if fsdp_stage != 0:
+        transformer3d.network = network
+        transformer3d = transformer3d.to(weight_dtype)
+        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            transformer3d, optimizer, train_dataloader, lr_scheduler
         )
+    else:
+        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            network, optimizer, train_dataloader, lr_scheduler
+        )
+
+    if zero_stage == 3:
+        from functools import partial
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        transformer3d = shard_fn(transformer3d)
+
+    if fsdp_stage != 0:
+        from functools import partial
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device, dtype=weight_dtype)
@@ -1264,6 +1362,7 @@ def main():
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
         tracker_config.pop("validation_prompts")
+        tracker_config.pop("fix_sample_size")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1316,7 +1415,7 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            if zero_stage != 3:
+            if zero_stage != 3 and not args.use_fsdp:
                 from safetensors.torch import load_file
                 state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
                 m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
@@ -1432,7 +1531,7 @@ def main():
                     control_camera_values = batch["control_camera_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length and zero_stage != 3:
+                if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
@@ -1459,7 +1558,7 @@ def main():
                     clip_pixel_values = batch["clip_pixel_values"]
                     clip_idx = batch["clip_idx"]
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length and zero_stage != 3:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             ref_pixel_values = torch.tile(ref_pixel_values, (4, 1, 1, 1, 1))
@@ -1696,7 +1795,7 @@ def main():
                 )
 
                 # Predict the noise residual
-                with torch.cuda.amp.autocast(dtype=weight_dtype):
+                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         x=noisy_latents,
                         context=prompt_embeds,
@@ -1750,7 +1849,7 @@ def main():
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or accelerator.is_main_process:
+                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1819,13 +1918,14 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-        accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-        save_model(safetensor_save_path, accelerator.unwrap_model(network))
-        if args.save_state:
+    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+        if not args.save_state:
+            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+            save_model(safetensor_save_path, accelerator.unwrap_model(network))
+        else:
+            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)
-        logger.info(f"Saved state to {accelerator_save_path}")
+            logger.info(f"Saved state to {accelerator_save_path}")
 
     accelerator.end_training()
 

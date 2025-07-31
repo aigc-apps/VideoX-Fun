@@ -49,8 +49,11 @@ try:
     elif f"{major}.{minor}" == "8.9":
         from sageattention_sm89 import sageattn
         SAGE_ATTENTION_AVAILABLE = True
-    elif major>=9:
+    elif f"{major}.{minor}" == "9.0":
         from sageattention_sm90 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif major>9:
+        from sageattention_sm120 import sageattn
         SAGE_ATTENTION_AVAILABLE = True
 except:
     try:
@@ -183,8 +186,9 @@ def attention(
     deterministic=False,
     dtype=torch.bfloat16,
     fa_version=None,
+    attention_type=None,
 ):
-    attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
+    attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION") if attention_type is None else attention_type
     if torch.is_grad_enabled() and attention_type == "SAGE_ATTENTION":
         attention_type = "FLASH_ATTENTION"
 
@@ -195,14 +199,9 @@ def attention(
             )
         attn_mask = None
 
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
         out = sageattn(
-            q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)
+            q, k, v, attn_mask=attn_mask, tensor_layout="NHD", is_causal=causal, dropout_p=dropout_p)
 
-        out = out.transpose(1, 2).contiguous()
     elif attention_type == "FLASH_ATTENTION" and (FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE):
         return flash_attention(
             q=q,
@@ -555,9 +554,31 @@ class WanI2VCrossAttention(WanSelfAttention):
         return x
 
 
+class WanCrossAttention(WanSelfAttention):
+    def forward(self, x, context, context_lens, dtype, t):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L1, C]
+            context(Tensor): Shape [B, L2, C]
+            context_lens(Tensor): Shape [B]
+        """
+        b, n, d = x.size(0), self.num_heads, self.head_dim
+        # compute query, key, value
+        q = self.norm_q(self.q(x)).view(b, -1, n, d)
+        k = self.norm_k(self.k(context)).view(b, -1, n, d)
+        v = self.v(context).view(b, -1, n, d)
+        # compute attention
+        x = attention(q, k, v, k_lens=context_lens)
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+
 WAN_CROSSATTENTION_CLASSES = {
     't2v_cross_attn': WanT2VCrossAttention,
     'i2v_cross_attn': WanI2VCrossAttention,
+    'cross_attn': WanCrossAttention,
 }
 
 
@@ -726,6 +747,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         in_dim_control_adapter=24,
         add_ref_conv=False,
         in_dim_ref_conv=16,
+        cross_attn_type=None,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -765,7 +787,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         super().__init__()
 
-        assert model_type in ['t2v', 'i2v']
+        assert model_type in ['t2v', 'i2v', 'ti2v']
         self.model_type = model_type
 
         self.patch_size = patch_size
@@ -795,7 +817,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
 
         # blocks
-        cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
+        if cross_attn_type is None:
+            cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
             WanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
                               window_size, qk_norm, cross_attn_norm, eps)
@@ -842,18 +865,33 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.gradient_checkpointing = False
         self.sp_world_size = 1
         self.sp_world_rank = 0
-    
+        self.init_weights()
+
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+
     def enable_teacache(
         self,
         coefficients,
         num_steps: int,
         rel_l1_thresh: float,
         num_skip_start_steps: int = 0,
-        offload: bool = True
+        offload: bool = True,
     ):
         self.teacache = TeaCache(
             coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
         )
+
+    def share_teacache(
+        self,
+        transformer = None,
+    ):
+        self.teacache = transformer.teacache
 
     def disable_teacache(self):
         self.teacache = None
@@ -867,6 +905,14 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.cfg_skip_ratio = None
             self.current_steps = 0
             self.num_inference_steps = None
+
+    def share_cfg_skip(
+        self,
+        transformer = None,
+    ):
+        self.cfg_skip_ratio = transformer.cfg_skip_ratio
+        self.current_steps = transformer.current_steps
+        self.num_inference_steps = transformer.num_inference_steps
 
     def disable_cfg_skip(self):
         self.cfg_skip_ratio = None
@@ -903,12 +949,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
-
-    def _set_gradient_checkpointing(self, module, value=False):
-        self.gradient_checkpointing = value
 
     @cfg_skip()
     def forward(
@@ -921,6 +965,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         y=None,
         y_camera=None,
         full_ref=None,
+        subject_ref=None,
         cond_flag=True,
     ):
         r"""
@@ -946,8 +991,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
-        if self.model_type == 'i2v':
-            assert clip_fea is not None and y is not None
+        # Wan2.2 don't need a clip.
+        # if self.model_type == 'i2v':
+        #     assert clip_fea is not None and y is not None
         # params
         device = self.patch_embedding.weight.device
         dtype = x.dtype
@@ -974,6 +1020,13 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             seq_len += full_ref.size(1)
             x = [torch.concat([_full_ref.unsqueeze(0), u], dim=1) for _full_ref, u in zip(full_ref, x)]
 
+        if subject_ref is not None:
+            subject_ref_frames = subject_ref.size(2)
+            subject_ref = self.patch_embedding(subject_ref).flatten(2).transpose(1, 2)
+            grid_sizes = torch.stack([torch.tensor([u[0] + subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
+            seq_len += subject_ref.size(1)
+            x = [torch.concat([u, _subject_ref.unsqueeze(0)], dim=1) for _subject_ref, u in zip(subject_ref, x)]
+        
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         if self.sp_world_size > 1:
             seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
@@ -1117,16 +1170,30 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     )
                     x = block(x, **kwargs)
 
+        # head
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
+        else:
+            x = self.head(x, e)
+
         if self.sp_world_size > 1:
-            x = get_sp_group().all_gather(x, dim=1)
+            x = self.all_gather(x, dim=1)
 
         if self.ref_conv is not None and full_ref is not None:
             full_ref_length = full_ref.size(1)
             x = x[:, full_ref_length:]
             grid_sizes = torch.stack([torch.tensor([u[0] - 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
 
-        # head
-        x = self.head(x, e)
+        if subject_ref is not None:
+            subject_ref_length = subject_ref[0].size(1)
+            x = x[:, :-subject_ref_length]
+            grid_sizes = torch.stack([torch.tensor([u[0] - subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
 
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
@@ -1326,3 +1393,101 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         
         model = model.to(torch_dtype)
         return model
+
+
+class Wan2_2Transformer3DModel(WanTransformer3DModel):
+    r"""
+    Wan diffusion backbone supporting both text-to-video and image-to-video.
+    """
+
+    # ignore_for_config = [
+    #     'patch_size', 'cross_attn_norm', 'qk_norm', 'text_dim', 'window_size'
+    # ]
+    # _no_split_modules = ['WanAttentionBlock']
+    _supports_gradient_checkpointing = True
+    
+    def __init__(
+        self,
+        model_type='t2v',
+        patch_size=(1, 2, 2),
+        text_len=512,
+        in_dim=16,
+        dim=2048,
+        ffn_dim=8192,
+        freq_dim=256,
+        text_dim=4096,
+        out_dim=16,
+        num_heads=16,
+        num_layers=32,
+        window_size=(-1, -1),
+        qk_norm=True,
+        cross_attn_norm=True,
+        eps=1e-6,
+        in_channels=16,
+        hidden_size=2048,
+        add_control_adapter=False,
+        in_dim_control_adapter=24,
+        add_ref_conv=False,
+        in_dim_ref_conv=16,
+    ):
+        r"""
+        Initialize the diffusion model backbone.
+        Args:
+            model_type (`str`, *optional*, defaults to 't2v'):
+                Model variant - 't2v' (text-to-video) or 'i2v' (image-to-video)
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                3D patch dimensions for video embedding (t_patch, h_patch, w_patch)
+            text_len (`int`, *optional*, defaults to 512):
+                Fixed length for text embeddings
+            in_dim (`int`, *optional*, defaults to 16):
+                Input video channels (C_in)
+            dim (`int`, *optional*, defaults to 2048):
+                Hidden dimension of the transformer
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Intermediate dimension in feed-forward network
+            freq_dim (`int`, *optional*, defaults to 256):
+                Dimension for sinusoidal time embeddings
+            text_dim (`int`, *optional*, defaults to 4096):
+                Input dimension for text embeddings
+            out_dim (`int`, *optional*, defaults to 16):
+                Output video channels (C_out)
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer blocks
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for local attention (-1 indicates global attention)
+            qk_norm (`bool`, *optional*, defaults to True):
+                Enable query/key normalization
+            cross_attn_norm (`bool`, *optional*, defaults to False):
+                Enable cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon value for normalization layers
+        """
+        super().__init__(
+            model_type=model_type,
+            patch_size=patch_size,
+            text_len=text_len,
+            in_dim=in_dim,
+            dim=dim,
+            ffn_dim=ffn_dim,
+            freq_dim=freq_dim,
+            text_dim=text_dim,
+            out_dim=out_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            window_size=window_size,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            add_control_adapter=add_control_adapter,
+            in_dim_control_adapter=in_dim_control_adapter,
+            add_ref_conv=add_ref_conv,
+            in_dim_ref_conv=in_dim_ref_conv,
+            cross_attn_type="cross_attn"
+        )
+        
+        if hasattr(self, "img_emb"):
+            del self.img_emb

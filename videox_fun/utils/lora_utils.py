@@ -156,7 +156,7 @@ def precalculate_safetensors_hashes(tensors, metadata):
 
 
 class LoRANetwork(torch.nn.Module):
-    TRANSFORMER_TARGET_REPLACE_MODULE = ["CogVideoXTransformer3DModel", "WanTransformer3DModel"]
+    TRANSFORMER_TARGET_REPLACE_MODULE = ["CogVideoXTransformer3DModel", "WanTransformer3DModel", "Wan2_2Transformer3DModel"]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -365,7 +365,7 @@ def create_network(
     )
     return network
 
-def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False):
+def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
     if state_dict is None:
@@ -393,30 +393,33 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                 curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer: {layer}')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -443,7 +446,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     return pipeline
 
 # TODO: Refactor with merge_lora.
-def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32):
+def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32, sub_transformer_name="transformer"):
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -466,30 +469,33 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer: {layer}')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device

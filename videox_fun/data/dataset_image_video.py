@@ -20,6 +20,7 @@ from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from packaging import version as pver
 from PIL import Image
+from safetensors.torch import load_file
 from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.dataset import Dataset
 
@@ -334,17 +335,18 @@ def resize_frame(frame, target_short_side):
 
 class ImageVideoDataset(Dataset):
     def __init__(
-            self,
-            ann_path, data_root=None,
-            video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
-            image_sample_size=512,
-            video_repeat=0,
-            text_drop_ratio=0.1,
-            enable_bucket=False,
-            video_length_drop_start=0.0, 
-            video_length_drop_end=1.0,
-            enable_inpaint=False,
-        ):
+        self,
+        ann_path, data_root=None,
+        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        image_sample_size=512,
+        video_repeat=0,
+        text_drop_ratio=0.1,
+        enable_bucket=False,
+        video_length_drop_start=0.0, 
+        video_length_drop_end=1.0,
+        enable_inpaint=False,
+        return_file_name=False,
+    ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         if ann_path.endswith('.csv'):
@@ -356,15 +358,18 @@ class ImageVideoDataset(Dataset):
         self.data_root = data_root
 
         # It's used to balance num of images and videos.
-        self.dataset = []
-        for data in dataset:
-            if data.get('type', 'image') != 'video':
-                self.dataset.append(data)
         if video_repeat > 0:
+            self.dataset = []
+            for data in dataset:
+                if data.get('type', 'image') != 'video':
+                    self.dataset.append(data)
+                    
             for _ in range(video_repeat):
                 for data in dataset:
                     if data.get('type', 'image') == 'video':
                         self.dataset.append(data)
+        else:
+            self.dataset = dataset
         del dataset
 
         self.length = len(self.dataset)
@@ -372,7 +377,8 @@ class ImageVideoDataset(Dataset):
         # TODO: enable bucket training
         self.enable_bucket = enable_bucket
         self.text_drop_ratio = text_drop_ratio
-        self.enable_inpaint  = enable_inpaint
+        self.enable_inpaint = enable_inpaint
+        self.return_file_name = return_file_name
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
@@ -453,7 +459,7 @@ class ImageVideoDataset(Dataset):
                 # Random use no text generation
                 if random.random() < self.text_drop_ratio:
                     text = ''
-            return pixel_values, text, 'video'
+            return pixel_values, text, 'video', video_dir
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -465,7 +471,7 @@ class ImageVideoDataset(Dataset):
                 image = np.expand_dims(np.array(image), 0)
             if random.random() < self.text_drop_ratio:
                 text = ''
-            return image, text, 'image'
+            return image, text, 'image', image_path
 
     def __len__(self):
         return self.length
@@ -481,11 +487,13 @@ class ImageVideoDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, name, data_type = self.get_batch(idx)
+                pixel_values, name, data_type, file_path = self.get_batch(idx)
                 sample["pixel_values"] = pixel_values
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(file_path)
                 
                 if len(sample) > 0:
                     break
@@ -503,11 +511,6 @@ class ImageVideoDataset(Dataset):
             clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
             sample["clip_pixel_values"] = clip_pixel_values
 
-            ref_pixel_values = sample["pixel_values"][0].unsqueeze(0)
-            if (mask == 1).all():
-                ref_pixel_values = torch.ones_like(ref_pixel_values) * -1
-            sample["ref_pixel_values"] = ref_pixel_values
-
         return sample
 
 class ImageVideoControlDataset(Dataset):
@@ -523,6 +526,7 @@ class ImageVideoControlDataset(Dataset):
         video_length_drop_end=0.9,
         enable_inpaint=False,
         enable_camera_info=False,
+        return_file_name=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -535,15 +539,18 @@ class ImageVideoControlDataset(Dataset):
         self.data_root = data_root
 
         # It's used to balance num of images and videos.
-        self.dataset = []
-        for data in dataset:
-            if data.get('type', 'image') != 'video':
-                self.dataset.append(data)
         if video_repeat > 0:
+            self.dataset = []
+            for data in dataset:
+                if data.get('type', 'image') != 'video':
+                    self.dataset.append(data)
+                    
             for _ in range(video_repeat):
                 for data in dataset:
                     if data.get('type', 'image') == 'video':
                         self.dataset.append(data)
+        else:
+            self.dataset = dataset
         del dataset
 
         self.length = len(self.dataset)
@@ -551,8 +558,9 @@ class ImageVideoControlDataset(Dataset):
         # TODO: enable bucket training
         self.enable_bucket = enable_bucket
         self.text_drop_ratio = text_drop_ratio
-        self.enable_inpaint  = enable_inpaint
+        self.enable_inpaint = enable_inpaint
         self.enable_camera_info = enable_camera_info
+        self.return_file_name = return_file_name
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
@@ -699,7 +707,8 @@ class ImageVideoControlDataset(Dataset):
                         control_pixel_values = self.video_transforms(control_pixel_values)
                 control_camera_values = None
 
-            return pixel_values, control_pixel_values, control_camera_values, text, "video"
+            return pixel_values, control_pixel_values, control_camera_values, text, "video", video_dir
+
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -725,7 +734,8 @@ class ImageVideoControlDataset(Dataset):
                 control_image = self.image_transforms(control_image).unsqueeze(0)
             else:
                 control_image = np.expand_dims(np.array(control_image), 0)
-            return image, control_image, None, text, 'image'
+            return image, control_image, None, text, 'image', image_path
+            
     def __len__(self):
         return self.length
 
@@ -740,7 +750,7 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, control_camera_values, name, data_type = self.get_batch(idx)
+                pixel_values, control_pixel_values, control_camera_values, name, data_type, file_path = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
@@ -750,6 +760,9 @@ class ImageVideoControlDataset(Dataset):
 
                 if self.enable_camera_info:
                     sample["control_camera_values"] = control_camera_values
+
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(file_path)
 
                 if len(sample) > 0:
                     break
@@ -767,9 +780,25 @@ class ImageVideoControlDataset(Dataset):
             clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
             sample["clip_pixel_values"] = clip_pixel_values
 
-            ref_pixel_values = sample["pixel_values"][0].unsqueeze(0)
-            if (mask == 1).all():
-                ref_pixel_values = torch.ones_like(ref_pixel_values) * -1
-            sample["ref_pixel_values"] = ref_pixel_values
-
         return sample
+
+class ImageVideoSafetensorsDataset(Dataset):
+    def __init__(
+        self,
+        ann_path
+    ):
+        # Loading annotations from files
+        print(f"loading annotations from {ann_path} ...")
+        if ann_path.endswith('.json'):
+            dataset = json.load(open(ann_path))
+    
+        self.dataset = dataset
+        self.length = len(self.dataset)
+        print(f"data scale: {self.length}")
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        state_dict = load_file(self.dataset[idx]["file_path"])
+        return state_dict

@@ -99,7 +99,9 @@ if ray is not None:
         def generate(self, datas):
             try:
                 base_model_path = datas.get('base_model_path', 'none')
+                base_model_2_path = datas.get('base_model_2_path', 'none')
                 lora_model_path = datas.get('lora_model_path', 'none')
+                lora_model_2_path = datas.get('lora_model_2_path', 'none')
                 lora_alpha_slider = datas.get('lora_alpha_slider', 0.55)
                 prompt_textbox = datas.get('prompt_textbox', None)
                 negative_prompt_textbox = datas.get('negative_prompt_textbox', 'The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ')
@@ -131,6 +133,7 @@ if ray is not None:
                 cfg_skip_ratio = datas.get('cfg_skip_ratio', 0)
                 enable_riflex = datas.get('enable_riflex', False)
                 riflex_k = datas.get('riflex_k', 6)
+                fps = datas.get('fps', None)
 
                 generation_method = "Image Generation" if is_image else generation_method
 
@@ -210,6 +213,9 @@ if ray is not None:
                         cfg_skip_ratio = cfg_skip_ratio,
                         enable_riflex = enable_riflex, 
                         riflex_k = riflex_k, 
+                        base_model_2_path = base_model_2_path,
+                        lora_model_2_path = lora_model_2_path,
+                        fps = fps,
                         is_api = True,
                     )
                 except Exception as e:

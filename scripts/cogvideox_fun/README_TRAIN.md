@@ -27,8 +27,9 @@ CogVideoX-Fun without deepspeed:
 export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train.py \
@@ -70,8 +71,9 @@ CogVideoX-Fun with deepspeed:
 export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/cogvideox_fun/train.py \
@@ -113,8 +115,9 @@ CogVideoX-Fun with multi machines:
 export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
 NUM_PROCESS=$((WORLD_SIZE * 8))

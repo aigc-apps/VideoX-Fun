@@ -3,8 +3,9 @@
 import torch
 
 class DiscreteSampling:
-    def __init__(self, num_idx, uniform_sampling=False):
+    def __init__(self, num_idx, uniform_sampling=False, start_num_idx=0, sp_size=1):
         self.num_idx = num_idx
+        self.start_num_idx = start_num_idx
         self.uniform_sampling = uniform_sampling
         self.is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
 
@@ -17,7 +18,12 @@ class DiscreteSampling:
                 if world_size % i != 0 or num_idx % (world_size // i) != 0:
                     i += 1
                 else: 
-                    self.group_num = world_size // i
+                    if i >= sp_size:
+                        self.group_num = world_size // i
+                    elif sp_size > world_size:
+                        self.group_num = 1
+                    else:
+                        self.group_num = world_size // sp_size
                     break
             assert self.group_num > 0 
             assert world_size % self.group_num == 0 
@@ -32,15 +38,15 @@ class DiscreteSampling:
         if self.is_distributed and self.uniform_sampling: 
             group_index = self.rank // self.group_width
             idx = torch.randint(
-                    group_index * self.sigma_interval,
-                    (group_index + 1) * self.sigma_interval,
+                    self.start_num_idx + group_index * self.sigma_interval,
+                    self.start_num_idx + (group_index + 1) * self.sigma_interval,
                     (n_samples,), 
                     generator=generator, device=device,
                 )
             print('proc[%d] idx=%s' % (self.rank, idx))
         else:   
             idx = torch.randint(
-                    0, self.num_idx, (n_samples,), 
+                    self.start_num_idx, self.start_num_idx + self.num_idx, (n_samples,), 
                     generator=generator, device=device,
                 )
         return idx

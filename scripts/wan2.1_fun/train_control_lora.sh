@@ -1,8 +1,9 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=1
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control_lora.py \

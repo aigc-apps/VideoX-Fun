@@ -51,6 +51,36 @@ class FunRiflex:
     def process(self, riflex_k):
         return (riflex_k, )
 
+class FunCompile:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "cache_size_limit": ("INT", {"default": 64, "min": 0, "max": 10086}),
+                "funmodels": ("FunModels",)
+            }
+        }
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "compile"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def compile(self, cache_size_limit, funmodels):
+        torch._dynamo.config.cache_size_limit = cache_size_limit
+        if hasattr(funmodels["pipeline"].transformer, "blocks"):
+            for i in range(len(funmodels["pipeline"].transformer.blocks)):
+                funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
+        
+        elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
+                for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
+                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
+        
+        else:
+            funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
+
+        print("Add Compile")
+        return (funmodels,)
+
 def gen_gaussian_heatmap(imgSize=200):
     circle_img = np.zeros((imgSize, imgSize,), np.float32) 
     circle_mask = cv2.circle(circle_img, (imgSize//2, imgSize//2), imgSize//2 - 1, 1, -1)
@@ -270,6 +300,7 @@ class CameraTrajectoryFromChaoJie:
 NODE_CLASS_MAPPINGS = {
     "FunTextBox": FunTextBox,
     "FunRiflex": FunRiflex,
+    "FunCompile": FunCompile,
 
     "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
     "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
@@ -304,6 +335,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
     "FunRiflex": "FunRiflex",
+    "FunCompile": "FunCompile",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
