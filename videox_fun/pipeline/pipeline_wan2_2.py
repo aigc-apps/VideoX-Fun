@@ -578,6 +578,7 @@ class Wan2_2Pipeline(DiffusionPipeline):
                         progress_bar.update()
                     if comfyui_progressbar:
                         pbar.update(1)
+            return latents
 
         latents = dit_forward(latents)
 
