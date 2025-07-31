@@ -281,7 +281,7 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
 else:
     pipeline.to(device=device)
 
-while 1:
+for i in range(2):
     coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
     if coefficients is not None:
         print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
