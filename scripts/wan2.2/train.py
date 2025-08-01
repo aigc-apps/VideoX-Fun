@@ -1479,13 +1479,18 @@ def main():
         vae_stream_1 = None
         vae_stream_2 = None
 
-    boundary = 1 - config['transformer_additional_kwargs'].get('boundary', 0.900)
+    # Calculate the index we need
+    boundary        = config['transformer_additional_kwargs'].get('boundary', 0.900)
+    split_timesteps = args.train_sampling_steps * boundary
+    differences     = torch.abs(noise_scheduler.timesteps - split_timesteps)
+    closest_index   = torch.argmin(differences).item()
+    print(f"The boundary is {boundary} and the boundary_type is {args.boundary_type}. The closest_index we calculate is {closest_index}")
     if args.boundary_type == "high":
         start_num_idx = 0
-        train_sampling_steps = int(args.train_sampling_steps * boundary)
+        train_sampling_steps = closest_index
     elif args.boundary_type == "low":
-        start_num_idx = int(args.train_sampling_steps * boundary)
-        train_sampling_steps = args.train_sampling_steps - int(args.train_sampling_steps * boundary)
+        start_num_idx = closest_index
+        train_sampling_steps = args.train_sampling_steps - closest_index
     else:
         start_num_idx = 0
         train_sampling_steps = args.train_sampling_steps
