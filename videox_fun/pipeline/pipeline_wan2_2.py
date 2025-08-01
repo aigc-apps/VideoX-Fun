@@ -113,7 +113,7 @@ class Wan2_2Pipeline(DiffusionPipeline):
     """
 
     _optional_components = ["transformer_2"]
-    model_cpu_offload_seq = "text_encoder->transformer->transformer_2->vae"
+    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
 
     _callback_tensor_inputs = [
         "latents",
