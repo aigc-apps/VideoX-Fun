@@ -978,7 +978,7 @@ def main():
                     from safetensors.torch import save_file
 
                     safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
-                    accelerate_state_dict[key] = {k: v.to(dtype=weight_dtype) for k, v in accelerate_state_dict.items()}
+                    accelerate_state_dict = {k: v.to(dtype=weight_dtype) for k, v in accelerate_state_dict.items()}
                     save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
