@@ -859,7 +859,7 @@ def main():
                     network_state_dict = {}
                     for key in accelerate_state_dict:
                         if "network" in key:
-                            network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key]
+                            network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
 
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
