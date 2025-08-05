@@ -354,6 +354,9 @@ class Wan2_2T2VSampler:
         config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
+        # Get boundary for wan
+        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+
         # Load Sampler
         pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
 
@@ -373,7 +376,7 @@ class Wan2_2T2VSampler:
             pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
 
         generator= torch.Generator(device).manual_seed(seed)
-        
+
         video_length = 1 if is_image else video_length
         with torch.no_grad():
             video_length = int((video_length - 1) // pipeline.vae.config.temporal_compression_ratio * pipeline.vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -442,7 +445,7 @@ class Wan2_2T2VSampler:
                 generator   = generator,
                 guidance_scale = cfg,
                 num_inference_steps = steps,
-
+                boundary     = boundary,
                 comfyui_progressbar = True,
             ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
@@ -552,6 +555,9 @@ class Wan2_2I2VSampler:
         config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
+        # Get boundary for wan
+        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+
         # Load Sampler
         pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
@@ -640,7 +646,7 @@ class Wan2_2I2VSampler:
 
                 video        = input_video,
                 mask_video   = input_video_mask,
-                clip_image   = clip_image,
+                boundary     = boundary,
                 comfyui_progressbar = True,
             ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
