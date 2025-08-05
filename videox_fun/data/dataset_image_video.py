@@ -785,13 +785,15 @@ class ImageVideoControlDataset(Dataset):
 class ImageVideoSafetensorsDataset(Dataset):
     def __init__(
         self,
-        ann_path
+        ann_path,
+        data_root=None,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         if ann_path.endswith('.json'):
             dataset = json.load(open(ann_path))
-    
+
+        self.data_root = data_root
         self.dataset = dataset
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
@@ -800,5 +802,9 @@ class ImageVideoSafetensorsDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        state_dict = load_file(self.dataset[idx]["file_path"])
+        if self.data_root is None:
+            path = self.dataset[idx]["file_path"]
+        else:
+            path = os.path.join(self.data_root, self.dataset[idx]["file_path"])
+        state_dict = load_file(path)
         return state_dict
