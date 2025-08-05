@@ -158,6 +158,8 @@ class CogVideoXFunController(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        base_model_2_dropdown=None,
+        lora_model_2_dropdown=None, 
         fps = None,
         is_api = False,
     ):

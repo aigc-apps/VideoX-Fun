@@ -16,6 +16,8 @@ from .wan2_1.nodes import (LoadWanLora, LoadWanModel, WanI2VSampler,
 from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunInpaintSampler, WanFunT2VSampler,
                                WanFunV2VSampler)
+from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
+                           Wan2_2T2VSampler)
 
 class FunTextBox:
     @classmethod
@@ -319,6 +321,11 @@ NODE_CLASS_MAPPINGS = {
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
 
+    "LoadWan2_2Model": LoadWan2_2Model,
+    "LoadWan2_2Lora": LoadWan2_2Lora,
+    "Wan2_2T2VSampler": Wan2_2T2VSampler,
+    "Wan2_2I2VSampler": Wan2_2I2VSampler,
+
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
     "VideoToOpenpose": VideoToPose,
@@ -354,6 +361,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanFunInpaintSampler": "Wan Fun Sampler for Image to Video",
     "WanFunV2VSampler": "Wan Fun Sampler for Video to Video",
 
+    "LoadWan2_2Model": "Load Wan 2.2 Model",
+    "LoadWan2_2Lora": "Load Wan 2.2 Lora",
+    "Wan2_2T2VSampler": "Wan 2.2 Sampler for Text to Video",
+    "Wan2_2I2VSampler": "Wan 2.2 Sampler for Image to Video",
+    
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
     "VideoToOpenpose": "Video To Pose",
