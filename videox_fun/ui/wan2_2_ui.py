@@ -110,6 +110,7 @@ class Wan2_2_Controller(Fun_Controller):
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             from functools import partial
             self.transformer.enable_multi_gpus_inference()
+            self.transformer_2.enable_multi_gpus_inference()
             if self.fsdp_dit:
                 shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
                 self.pipeline.transformer = shard_fn(self.pipeline.transformer)
