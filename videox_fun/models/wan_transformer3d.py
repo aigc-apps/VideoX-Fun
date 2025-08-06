@@ -642,7 +642,7 @@ class WanAttentionBlock(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
-        if e.dim() > 2:
+        if e.dim() > 3:
             e = (self.modulation.unsqueeze(0) + e).chunk(6, dim=2)
             e = [e.squeeze(2) for e in e]
         else:        

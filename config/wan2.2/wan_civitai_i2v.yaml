@@ -10,6 +10,7 @@ transformer_additional_kwargs:
     dim: hidden_size
 
 vae_kwargs:
+  vae_type: "AutoencoderKLWan"
   vae_subpath: Wan2.1_VAE.pth
   temporal_compression_ratio: 4
   spatial_compression_ratio: 8

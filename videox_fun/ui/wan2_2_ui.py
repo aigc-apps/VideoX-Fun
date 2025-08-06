@@ -12,7 +12,7 @@ from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ..models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, Wan2_2Transformer3DModel)
 from ..models.cache_utils import get_teacache_coefficients
 from ..pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline, Wan2_2TI2VPipeline
@@ -46,7 +46,11 @@ class Wan2_2_Controller(Fun_Controller):
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
             return gr.update()
-        self.vae = AutoencoderKLWan.from_pretrained(
+        Choosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[self.config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        self.vae = Choosen_AutoencoderKL.from_pretrained(
             os.path.join(diffusion_transformer_dropdown, self.config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(self.config['vae_kwargs']),
         ).to(self.weight_dtype)

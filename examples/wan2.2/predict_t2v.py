@@ -13,7 +13,7 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel, AutoTokenizer,
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, WanT5EncoderModel, AutoTokenizer,
                               Wan2_2Transformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import Wan2_2Pipeline
@@ -158,7 +158,11 @@ if transformer_high_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKLWan.from_pretrained(
+Choosen_AutoencoderKL = {
+    "AutoencoderKLWan": AutoencoderKLWan,
+    "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+}[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+vae = Choosen_AutoencoderKL.from_pretrained(
     os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
     additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
 ).to(weight_dtype)
