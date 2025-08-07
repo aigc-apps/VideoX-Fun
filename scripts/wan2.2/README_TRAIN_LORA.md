@@ -17,9 +17,9 @@ Some parameters in the sh file can be confusing, and they are explained in this 
     - At 768x768 resolution, the number of video frames is 21 (~= 512 * 512 * 49 / 768 / 768).
     - At 1024x1024 resolution, the number of video frames is 9 (~= 512 * 512 * 49 / 1024 / 1024).
     - These resolutions combined with their corresponding lengths allow the model to generate videos of different sizes.
-- `train_mode` is used to specify the training mode, which can be either normal or i2v. Since Wan uses the inpaint model to achieve image-to-video generation, the default is set to inpaint mode. If you only wish to achieve text-to-video generation, you can remove this line, and it will default to the text-to-video mode.
+- `train_mode` is used to specify the training mode, which can be either normal, i2v or ti2v. The t2v is used for 14B T2V model. The i2v is used for 14B I2V model. The ti2v is used in 5B TI2V model.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
-- `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model)
+- `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
 
 
 Wan2.2 T2V without deepspeed:
@@ -211,6 +211,50 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --boundary_type="low" \
   --train_mode="normal" \
-  --use_deepspeed \
   --low_vram
+```
+
+If you want to train 5B Wan2.2 TI2V model, please set config to `config/wan2.2/wan_civitai_5b.yaml`, set train_mode to `ti2v` and set boundary_type to `full`. Training shell command is as follows:
+
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
+  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=1024 \
+  --video_sample_size=256 \
+  --token_sample_size=512 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=1e-04 \
+  --seed=42 \
+  --output_dir="output_dir" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --boundary_type="full" \
+  --train_mode="ti2v" \
+  --low_vram 
 ```

@@ -77,7 +77,7 @@ enable_riflex       = False
 riflex_k            = 6
 
 # Config and model path
-config_path         = "config/wan2.2/wan_civitai_ti2v_5b.yaml"
+config_path         = "config/wan2.2/wan_civitai_5b.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 
@@ -318,6 +318,9 @@ with torch.no_grad():
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
         boundary = boundary,
+
+        video      = input_video,
+        mask_video   = input_video_mask,
         shift = shift,
     ).videos
 
