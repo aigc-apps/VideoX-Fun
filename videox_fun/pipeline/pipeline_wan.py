@@ -104,7 +104,7 @@ class WanPipelineOutput(BaseOutput):
     videos: torch.Tensor
 
 
-class WanFunPipeline(DiffusionPipeline):
+class WanPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-video generation using Wan.
 
