@@ -20,7 +20,7 @@ from PIL import Image
 from transformers import T5Tokenizer
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                              WanT5EncoderModel, WanTransformer3DModel)
+                      WanT5EncoderModel, Wan2_2Transformer3DModel)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -148,7 +148,7 @@ class WanPipelineOutput(BaseOutput):
     videos: torch.Tensor
 
 
-class WanFunInpaintPipeline(DiffusionPipeline):
+class Wan2_2TI2VPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-video generation using Wan.
 
@@ -156,8 +156,8 @@ class WanFunInpaintPipeline(DiffusionPipeline):
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
     """
 
-    _optional_components = []
-    model_cpu_offload_seq = "text_encoder->clip_image_encoder->transformer->vae"
+    _optional_components = ["transformer_2"]
+    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
 
     _callback_tensor_inputs = [
         "latents",
@@ -170,16 +170,16 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         tokenizer: AutoTokenizer,
         text_encoder: WanT5EncoderModel,
         vae: AutoencoderKLWan,
-        transformer: WanTransformer3DModel,
-        clip_image_encoder: CLIPModel,
-        scheduler: FlowMatchEulerDiscreteScheduler,
+        transformer: Wan2_2Transformer3DModel,
+        transformer_2: Wan2_2Transformer3DModel = None,
+        scheduler: FlowMatchEulerDiscreteScheduler = None,
     ):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, clip_image_encoder=clip_image_encoder, scheduler=scheduler
+            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, 
+            transformer_2=transformer_2, scheduler=scheduler
         )
-
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
         self.mask_processor = VaeImageProcessor(
@@ -493,8 +493,8 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         ] = None,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        clip_image: Image = None,
         max_sequence_length: int = 512,
+        boundary: float = 0.875,
         comfyui_progressbar: bool = False,
         shift: int = 5,
     ) -> Union[WanPipelineOutput, Tuple]:
@@ -507,7 +507,6 @@ class WanFunInpaintPipeline(DiffusionPipeline):
         Returns:
 
         """
-
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
         num_videos_per_prompt = 1
@@ -603,50 +602,37 @@ class WanFunInpaintPipeline(DiffusionPipeline):
 
         # Prepare mask latent variables
         if init_video is not None:
-            if (mask_video == 255).all():
-                mask_latents = torch.tile(
-                    torch.zeros_like(latents)[:, :1].to(device, weight_dtype), [1, 4, 1, 1, 1]
-                )
-                masked_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
-            else:
-                bs, _, video_length, height, width = video.size()
-                mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
-                mask_condition = mask_condition.to(dtype=torch.float32)
-                mask_condition = rearrange(mask_condition, "(b f) c h w -> b c f h w", f=video_length)
+            bs, _, video_length, height, width = video.size()
+            mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
+            mask_condition = mask_condition.to(dtype=torch.float32)
+            mask_condition = rearrange(mask_condition, "(b f) c h w -> b c f h w", f=video_length)
 
-                masked_video = init_video * (torch.tile(mask_condition, [1, 3, 1, 1, 1]) < 0.5)
-                _, masked_video_latents = self.prepare_mask_latents(
-                    None,
-                    masked_video,
-                    batch_size,
-                    height,
-                    width,
-                    weight_dtype,
-                    device,
-                    generator,
-                    do_classifier_free_guidance,
-                    noise_aug_strength=None,
-                )
-                
-                mask_condition = torch.concat(
-                    [
-                        torch.repeat_interleave(mask_condition[:, :, 0:1], repeats=4, dim=2), 
-                        mask_condition[:, :, 1:]
-                    ], dim=2
-                )
-                mask_condition = mask_condition.view(bs, mask_condition.shape[2] // 4, 4, height, width)
-                mask_condition = mask_condition.transpose(1, 2)
-                mask_latents = resize_mask(1 - mask_condition, masked_video_latents, True).to(device, weight_dtype) 
+            masked_video = init_video * (torch.tile(mask_condition, [1, 3, 1, 1, 1]) < 0.5)
+            _, masked_video_latents = self.prepare_mask_latents(
+                None,
+                masked_video,
+                batch_size,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+                do_classifier_free_guidance,
+                noise_aug_strength=None,
+            )
+            
+            mask_condition = torch.concat(
+                [
+                    torch.repeat_interleave(mask_condition[:, :, 0:1], repeats=4, dim=2), 
+                    mask_condition[:, :, 1:]
+                ], dim=2
+            )
+            mask_condition = mask_condition.view(bs, mask_condition.shape[2] // 4, 4, height, width)
+            mask_condition = mask_condition.transpose(1, 2)
 
-        # Prepare clip latent variables
-        if clip_image is not None:
-            clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
-            clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-        else:
-            clip_image = Image.new("RGB", (512, 512), color=(0, 0, 0))  
-            clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(device, weight_dtype) 
-            clip_context = self.clip_image_encoder([clip_image[:, None, :, :]])
-            clip_context = torch.zeros_like(clip_context)
+            mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
+            latents = (1 - mask) * masked_video_latents + mask * latents
+
         if comfyui_progressbar:
             pbar.update(1)
 
@@ -669,38 +655,48 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                 if hasattr(self.scheduler, "scale_model_input"):
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                if init_video is not None:
-                    mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
-                    masked_video_latents_input = (
-                        torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
-                    )
-                    y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
-
-                clip_context_input = (
-                    torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
-                )
-
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latent_model_input.shape[0])
+                if init_video is not None:
+                    temp_ts = ((mask[0][0][:, ::2, ::2]) * t).flatten()
+                    temp_ts = torch.cat([
+                        temp_ts,
+                        temp_ts.new_ones(seq_len - temp_ts.size(0)) * t
+                    ])
+                    temp_ts = temp_ts.unsqueeze(0)
+                    timestep = temp_ts.expand(latent_model_input.shape[0], temp_ts.size(1))
+                else:
+                    timestep = t.expand(latent_model_input.shape[0])
                 
+                if self.transformer_2 is not None:
+                    if t >= boundary * self.scheduler.config.num_train_timesteps:
+                        local_transformer = self.transformer_2
+                    else:
+                        local_transformer = self.transformer
+                else:
+                    local_transformer = self.transformer
+
                 # predict noise model_output
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
-                    noise_pred = self.transformer(
+                    noise_pred = local_transformer(
                         x=latent_model_input,
                         context=in_prompt_embeds,
                         t=timestep,
                         seq_len=seq_len,
-                        y=y,
-                        clip_fea=clip_context_input,
                     )
 
                 # perform guidance
                 if do_classifier_free_guidance:
+                    if self.transformer_2 is not None and (isinstance(self.guidance_scale, (list, tuple))):
+                        sample_guide_scale = self.guidance_scale[1] if t >= self.transformer_2.config.boundary * self.scheduler.config.num_train_timesteps else self.guidance_scale[0]
+                    else:
+                        sample_guide_scale = self.guidance_scale
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+                if init_video is not None:
+                    latents = (1 - mask) * masked_video_latents + mask * latents
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -711,7 +707,7 @@ class WanFunInpaintPipeline(DiffusionPipeline):
                     latents = callback_outputs.pop("latents", latents)
                     prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
                     negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
-                    
+
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
                 if comfyui_progressbar:

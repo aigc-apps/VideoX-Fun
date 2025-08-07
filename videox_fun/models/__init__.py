@@ -9,6 +9,7 @@ from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention,
                                 WanTransformer3DModel)
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
+from .wan_vae3_8 import AutoencoderKLWan3_8, AutoencoderKLWan2_2_
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("pai_fuser") is not None:
@@ -20,6 +21,7 @@ if importlib.util.find_spec("pai_fuser") is not None:
 
     from ..dist import parallel_magvit_vae
     AutoencoderKLWan_.decode = simple_wrapper(parallel_magvit_vae(0.2, 8)(AutoencoderKLWan_.decode))
+    AutoencoderKLWan2_2_.decode = simple_wrapper(parallel_magvit_vae(0.2, 16)(AutoencoderKLWan2_2_.decode))
 
     import torch
     from pai_fuser.core.attention import wan_sparse_attention_wrapper

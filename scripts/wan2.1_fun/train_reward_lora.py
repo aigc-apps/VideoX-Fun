@@ -1184,7 +1184,7 @@ def main():
             timesteps = noise_scheduler.timesteps
 
             # Prepare latent variables
-            vae_scale_factor = vae.spacial_compression_ratio
+            vae_scale_factor = vae.spatial_compression_ratio
             latent_shape = [
                 args.train_batch_size,
                 vae.config.latent_channels,

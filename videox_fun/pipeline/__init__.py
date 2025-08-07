@@ -7,6 +7,7 @@ from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_i2v import Wan2_2I2VPipeline
+from .pipeline_wan2_2_ti2v import Wan2_2TI2VPipeline
 
 WanPipeline = WanFunPipeline
 WanI2VPipeline = WanFunInpaintPipeline
@@ -24,3 +25,4 @@ if importlib.util.find_spec("pai_fuser") is not None:
     WanFunPhantomPipeline.__call__ = sparse_reset(WanFunPhantomPipeline.__call__)
     Wan2_2Pipeline.__call__ = sparse_reset(Wan2_2Pipeline.__call__)
     Wan2_2I2VPipeline.__call__ = sparse_reset(Wan2_2I2VPipeline.__call__)
+    Wan2_2TI2VPipeline.__call__ = sparse_reset(Wan2_2TI2VPipeline.__call__)

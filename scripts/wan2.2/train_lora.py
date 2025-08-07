@@ -68,7 +68,7 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                 ImageVideoSampler,
                                                 get_random_mask)
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, WanT5EncoderModel,
                               Wan2_2Transformer3DModel)
 from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -891,15 +891,21 @@ def main():
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        vae = AutoencoderKLWan.from_pretrained(
+        Choosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        vae = Choosen_AutoencoderKL.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
         vae.eval()
             
     # Get Transformer
-    sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer') \
-        if args.boundary_type == "low" else config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+    if args.boundary_type == "low" or args.boundary_type == "full":
+        sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+    else:
+        sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
     transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -1070,6 +1076,7 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
+    spatial_compression_ratio = vae.config.spatial_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1164,7 +1171,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1174,10 +1181,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
+                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
 
             for example in examples:
                 if args.fix_sample_size is not None:
@@ -1492,7 +1499,8 @@ def main():
     split_timesteps = args.train_sampling_steps * boundary
     differences     = torch.abs(noise_scheduler.timesteps - split_timesteps)
     closest_index   = torch.argmin(differences).item()
-    print(f"The boundary is {boundary} and the boundary_type is {args.boundary_type}. The closest_index we calculate is {closest_index}")
+    if args.boundary_type == "high" or args.boundary_type == "low":
+        print(f"The boundary is {boundary} and the boundary_type is {args.boundary_type}. The closest_index we calculate is {closest_index}")
     if args.boundary_type == "high":
         start_num_idx = 0
         train_sampling_steps = closest_index
@@ -1659,16 +1667,23 @@ def main():
                         )
                         mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
                         mask = mask.transpose(1, 2)
-                        mask = resize_mask(1 - mask, latents)
+
+                        if args.train_mode != "ti2v":
+                            mask = resize_mask(1 - mask, latents)
+                        else:
+                            mask = F.interpolate(mask[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(accelerator.device, weight_dtype)
 
                         # Encode inpaint latents.
                         mask_latents = _batch_encode_vae(mask_pixel_values)
                         if vae_stream_2 is not None:
                             torch.cuda.current_stream().wait_stream(vae_stream_2) 
 
-                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
-                        inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
-                        
+                        if args.train_mode != "ti2v":
+                            inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+                            inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
+                        else:
+                            inpaint_latents = mask_latents
+                                                    
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
@@ -1747,6 +1762,22 @@ def main():
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
                     target_shape[1]
                 )
+
+                if args.train_mode == "ti2v":
+                    if rng is None:
+                        t2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
+                    else:
+                        t2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
+
+                    mask_bs = mask.size()[0]
+                    if t2v_in_ti2v:
+                        noisy_latents = (1 - mask) * inpaint_latents + mask * noisy_latents
+                        
+                        temp_ts = (mask[:, 0, :, ::2, ::2] * timesteps[:, None, None, None]).flatten(1)
+                        timesteps = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * timesteps[:, None,]], dim = 1)
+                    else:
+                        timesteps = mask.new_ones(mask_bs, seq_len) * timesteps[:, None,]
+
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
@@ -1754,9 +1785,9 @@ def main():
                         context=prompt_embeds,
                         t=timesteps,
                         seq_len=seq_len,
-                        y=inpaint_latents if args.train_mode != "normal" else None,
+                        y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
                     )
-                
+
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
                     target = target.float()

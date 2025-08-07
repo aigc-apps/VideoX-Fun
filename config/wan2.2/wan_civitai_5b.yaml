@@ -1,19 +1,17 @@
 format: civitai
 pipeline: Wan
 transformer_additional_kwargs:
-  transformer_low_noise_model_subpath: ./low_noise_model
-  transformer_high_noise_model_subpath: ./high_noise_model
-  transformer_combination_type: "moe"
-  boundary: 0.900
+  transformer_low_noise_model_subpath: ./
+  transformer_combination_type: "single"
   dict_mapping:
     in_dim: in_channels
     dim: hidden_size
 
 vae_kwargs:
-  vae_type: "AutoencoderKLWan"
-  vae_subpath: Wan2.1_VAE.pth
+  vae_type: "AutoencoderKLWan3_8"
+  vae_subpath: Wan2.2_VAE.pth
   temporal_compression_ratio: 4
-  spatial_compression_ratio: 8
+  spatial_compression_ratio: 16
 
 text_encoder_kwargs:
   text_encoder_subpath: models_t5_umt5-xxl-enc-bf16.pth
@@ -32,7 +30,7 @@ text_encoder_kwargs:
 scheduler_kwargs:
   scheduler_subpath: null
   num_train_timesteps: 1000
-  shift: 5.0
+  shift: 12.0
   use_dynamic_shifting: false
   base_shift: 0.5
   max_shift: 1.15

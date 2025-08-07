@@ -642,7 +642,11 @@ class WanAttentionBlock(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
-        e = (self.modulation + e).chunk(6, dim=1)
+        if e.dim() > 3:
+            e = (self.modulation.unsqueeze(0) + e).chunk(6, dim=2)
+            e = [e.squeeze(2) for e in e]
+        else:        
+            e = (self.modulation + e).chunk(6, dim=1)
 
         # self-attention
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
@@ -691,7 +695,12 @@ class Head(nn.Module):
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, C]
         """
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        if e.dim() > 2:
+            e = (self.modulation.unsqueeze(0) + e.unsqueeze(2)).chunk(2, dim=2)
+            e = [e.squeeze(2) for e in e]
+        else:
+            e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        
         x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
         return x
 
@@ -1038,9 +1047,17 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # time embeddings
         with amp.autocast(dtype=torch.float32):
-            e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float())
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+            if t.dim() != 1:
+                bt = t.size(0)
+                ft = t.flatten()
+                e = self.time_embedding(
+                    sinusoidal_embedding_1d(self.freq_dim,
+                                            ft).unflatten(0, (bt, seq_len)).float())
+                e0 = self.time_projection(e).unflatten(2, (6, self.dim))
+            else:
+                e = self.time_embedding(
+                    sinusoidal_embedding_1d(self.freq_dim, t).float())
+                e0 = self.time_projection(e).unflatten(1, (6, self.dim))
 
             # assert e.dtype == torch.float32 and e0.dtype == torch.float32
             # e0 = e0.to(dtype)
@@ -1062,6 +1079,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # Context Parallel
         if self.sp_world_size > 1:
             x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+            if t.dim() != 1:
+                e0 = torch.chunk(e0, self.sp_world_size, dim=1)[self.sp_world_rank]
+                e = torch.chunk(e, self.sp_world_size, dim=1)[self.sp_world_rank]
         
         # TeaCache
         if self.teacache is not None:

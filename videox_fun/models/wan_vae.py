@@ -624,7 +624,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self,
         latent_channels=16,
         temporal_compression_ratio=4,
-        spacial_compression_ratio=8
+        spatial_compression_ratio=8
     ):
         super().__init__()
         mean = [

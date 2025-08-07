@@ -12,10 +12,10 @@ from PIL import Image
 from safetensors import safe_open
 
 from ..data.bucket_sampler import ASPECT_RATIO_512, get_closest_ratio
-from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ..models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
                       WanT5EncoderModel, Wan2_2Transformer3DModel)
 from ..models.cache_utils import get_teacache_coefficients
-from ..pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline
+from ..pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline, Wan2_2TI2VPipeline
 from ..utils.fp8_optimization import (convert_model_weight_to_float8,
                                       convert_weight_dtype_wrapper,
                                       replace_parameters_by_name)
@@ -46,7 +46,11 @@ class Wan2_2_Controller(Fun_Controller):
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
             return gr.update()
-        self.vae = AutoencoderKLWan.from_pretrained(
+        Choosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[self.config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        self.vae = Choosen_AutoencoderKL.from_pretrained(
             os.path.join(diffusion_transformer_dropdown, self.config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(self.config['vae_kwargs']),
         ).to(self.weight_dtype)
@@ -58,12 +62,15 @@ class Wan2_2_Controller(Fun_Controller):
             low_cpu_mem_usage=True,
             torch_dtype=self.weight_dtype,
         )
-        self.transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-            os.path.join(diffusion_transformer_dropdown, self.config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(self.config['transformer_additional_kwargs']),
-            low_cpu_mem_usage=True,
-            torch_dtype=self.weight_dtype,
-        )
+        if self.config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+            self.transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+                os.path.join(diffusion_transformer_dropdown, self.config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
+                transformer_additional_kwargs=OmegaConf.to_container(self.config['transformer_additional_kwargs']),
+                low_cpu_mem_usage=True,
+                torch_dtype=self.weight_dtype,
+            )
+        else:
+            self.transformer_2 = None
 
         # Get Tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -86,8 +93,8 @@ class Wan2_2_Controller(Fun_Controller):
 
         # Get pipeline
         if self.model_type == "Inpaint":
-            if self.transformer.config.in_channels != self.vae.config.latent_channels:
-                self.pipeline = Wan2_2I2VPipeline(
+            if "ti2v" in self.config_path:
+                self.pipeline = Wan2_2TI2VPipeline(
                     vae=self.vae,
                     tokenizer=self.tokenizer,
                     text_encoder=self.text_encoder,
@@ -96,25 +103,37 @@ class Wan2_2_Controller(Fun_Controller):
                     scheduler=self.scheduler,
                 )
             else:
-                self.pipeline = Wan2_2Pipeline(
-                    vae=self.vae,
-                    tokenizer=self.tokenizer,
-                    text_encoder=self.text_encoder,
-                    transformer=self.transformer,
-                    transformer_2=self.transformer_2,
-                    scheduler=self.scheduler,
-                )
+                if self.transformer.config.in_channels != self.vae.config.latent_channels:
+                    self.pipeline = Wan2_2I2VPipeline(
+                        vae=self.vae,
+                        tokenizer=self.tokenizer,
+                        text_encoder=self.text_encoder,
+                        transformer=self.transformer,
+                        transformer_2=self.transformer_2,
+                        scheduler=self.scheduler,
+                    )
+                else:
+                    self.pipeline = Wan2_2Pipeline(
+                        vae=self.vae,
+                        tokenizer=self.tokenizer,
+                        text_encoder=self.text_encoder,
+                        transformer=self.transformer,
+                        transformer_2=self.transformer_2,
+                        scheduler=self.scheduler,
+                    )
         else:
             raise ValueError("Not support now")
 
         if self.ulysses_degree > 1 or self.ring_degree > 1:
             from functools import partial
             self.transformer.enable_multi_gpus_inference()
-            self.transformer_2.enable_multi_gpus_inference()
+            if self.transformer_2 is not None:
+                self.transformer_2.enable_multi_gpus_inference()
             if self.fsdp_dit:
                 shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
                 self.pipeline.transformer = shard_fn(self.pipeline.transformer)
-                self.pipeline.transformer_2 = shard_fn(self.pipeline.transformer_2)
+                if self.transformer_2 is not None:
+                    self.pipeline.transformer_2 = shard_fn(self.pipeline.transformer_2)
                 print("Add FSDP DIT")
             if self.fsdp_text_encoder:
                 shard_fn = partial(shard_model, device_id=self.device, param_dtype=self.weight_dtype)
@@ -124,29 +143,33 @@ class Wan2_2_Controller(Fun_Controller):
         if self.compile_dit:
             for i in range(len(self.pipeline.transformer.blocks)):
                 self.pipeline.transformer.blocks[i] = torch.compile(self.pipeline.transformer.blocks[i])
-            for i in range(len(self.pipeline.transformer_2.blocks)):
-                self.pipeline.transformer_2.blocks[i] = torch.compile(self.pipeline.transformer_2.blocks[i])
+            if self.transformer_2 is not None:
+                for i in range(len(self.pipeline.transformer_2.blocks)):
+                    self.pipeline.transformer_2.blocks[i] = torch.compile(self.pipeline.transformer_2.blocks[i])
             print("Add Compile")
 
         if self.GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(self.transformer, ["modulation",], device=self.device)
-            replace_parameters_by_name(self.transformer_2, ["modulation",], device=self.device)
             self.transformer.freqs = self.transformer.freqs.to(device=self.device)
-            self.transformer_2.freqs = self.transformer_2.freqs.to(device=self.device)
+            if self.transformer_2 is not None:
+                replace_parameters_by_name(self.transformer_2, ["modulation",], device=self.device)
+                self.transformer_2.freqs = self.transformer_2.freqs.to(device=self.device)
             self.pipeline.enable_sequential_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
-            convert_model_weight_to_float8(self.transformer_2, exclude_module_name=["modulation",], device=self.device)
             convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            convert_weight_dtype_wrapper(self.transformer_2, self.weight_dtype)
+            if self.transformer_2 is not None:
+                convert_model_weight_to_float8(self.transformer_2, exclude_module_name=["modulation",], device=self.device)
+                convert_weight_dtype_wrapper(self.transformer_2, self.weight_dtype)
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_cpu_offload":
             self.pipeline.enable_model_cpu_offload(device=self.device)
         elif self.GPU_memory_mode == "model_full_load_and_qfloat8":
             convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
-            convert_model_weight_to_float8(self.transformer_2, exclude_module_name=["modulation",], device=self.device)
             convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            convert_weight_dtype_wrapper(self.transformer_2, self.weight_dtype)
+            if self.transformer_2 is not None:
+                convert_model_weight_to_float8(self.transformer_2, exclude_module_name=["modulation",], device=self.device)
+                convert_weight_dtype_wrapper(self.transformer_2, self.weight_dtype)
             self.pipeline.to(self.device)
         else:
             self.pipeline.to(self.device)
@@ -230,7 +253,8 @@ class Wan2_2_Controller(Fun_Controller):
         if self.lora_model_path != "none":
             print(f"Merge Lora.")
             self.pipeline = merge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
-            self.pipeline = merge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
+            if self.transformer_2 is not None:
+                self.pipeline = merge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             print(f"Merge Lora done.")
 
         coefficients = get_teacache_coefficients(self.diffusion_transformer_dropdown) if enable_teacache else None
@@ -239,16 +263,19 @@ class Wan2_2_Controller(Fun_Controller):
             self.pipeline.transformer.enable_teacache(
                 coefficients, sample_step_slider, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
             )
-            self.pipeline.transformer_2.share_teacache(self.pipeline.transformer)
+            if self.transformer_2 is not None:
+                self.pipeline.transformer_2.share_teacache(self.pipeline.transformer)
         else:
             print(f"Disable TeaCache.")
             self.pipeline.transformer.disable_teacache()
-            self.pipeline.transformer_2.disable_teacache()
+            if self.transformer_2 is not None:
+                self.pipeline.transformer_2.disable_teacache()
 
         if cfg_skip_ratio is not None and cfg_skip_ratio >= 0:
             print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
             self.pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, sample_step_slider)
-            self.pipeline.transformer_2.share_cfg_skip(self.pipeline.transformer)
+            if self.transformer_2 is not None:
+                self.pipeline.transformer_2.share_cfg_skip(self.pipeline.transformer)
 
         print(f"Generate seed.")
         if int(seed_textbox) != -1 and seed_textbox != "": torch.manual_seed(int(seed_textbox))
@@ -264,7 +291,8 @@ class Wan2_2_Controller(Fun_Controller):
             print(f"Enable riflex")
             latent_frames = (int(length_slider) - 1) // self.vae.config.temporal_compression_ratio + 1
             self.pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames if not is_image else 1)
-            self.pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames if not is_image else 1)
+            if self.transformer_2 is not None:
+                self.pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames if not is_image else 1)
 
         try:
             print(f"Generation.")
@@ -335,7 +363,8 @@ class Wan2_2_Controller(Fun_Controller):
             print(f"Error. error information is {str(e)}")
             if self.lora_model_path != "none":
                 self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
-                self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
+                if self.transformer_2 is not None:
+                    self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             if is_api:
                 return "", f"Error. error information is {str(e)}"
             else:
@@ -346,7 +375,8 @@ class Wan2_2_Controller(Fun_Controller):
         if self.lora_model_path != "none":
             print(f"Unmerge Lora.")
             self.pipeline = unmerge_lora(self.pipeline, self.lora_model_path, multiplier=lora_alpha_slider)
-            self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
+            if self.transformer_2 is not None:
+                self.pipeline = unmerge_lora(self.pipeline, self.lora_model_2_path, multiplier=lora_alpha_slider, sub_transformer_name="transformer_2")
             print(f"Unmerge Lora done.")
 
         print(f"Saving outputs.")
