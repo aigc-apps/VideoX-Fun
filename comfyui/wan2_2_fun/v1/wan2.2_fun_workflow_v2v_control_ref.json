@@ -398,7 +398,7 @@
         "Node name for S&R": "LoadWan2_2FunModel"
       },
       "widgets_values": [
-        "Wan2.2-A14B-Control",
+        "Wan2.2-Fun-A14B-Control",
         "Control",
         "sequential_cpu_offload",
         "wan2.2/wan_civitai_i2v.yaml",
