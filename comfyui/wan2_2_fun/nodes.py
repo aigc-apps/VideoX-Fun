@@ -65,10 +65,10 @@ class LoadWan2_2FunModel:
                 ),
                 "config": (
                     [
-                        "config/wan2.2/wan_civitai_i2v.yaml",
+                        "wan2.2/wan_civitai_i2v.yaml",
                     ],
                     {
-                        "default": "config/wan2.2/wan_civitai_i2v.yaml",
+                        "default": "wan2.2/wan_civitai_i2v.yaml",
                     }
                 ),
                 "precision": (

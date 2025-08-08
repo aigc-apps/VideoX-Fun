@@ -317,7 +317,7 @@
       "widgets_values": [
         "Wan2.2-Fun-A14B-InP",
         "Inpaint",
-        "model_cpu_offload",
+        "sequential_cpu_offload",
         "wan2.2/wan_civitai_i2v.yaml",
         "bf16"
       ]
