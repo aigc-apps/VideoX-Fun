@@ -79,6 +79,10 @@ class LoadWan2_2FunModel:
                 ),
             },
         }
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "loadmodel"
+    CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, GPU_memory_mode, model_type, model, precision, config):
         # Init weight_dtype and device
