@@ -48,7 +48,7 @@ class LoadWan2_2FunModel:
                         'Wan2.2-Fun-A14B-Control',
                     ],
                     {
-                        "default": 'Wan2.1-Fun-1.3B-InP',
+                        "default": 'Wan2.2-Fun-A14B-InP',
                     }
                 ),
                 "model_type": (
