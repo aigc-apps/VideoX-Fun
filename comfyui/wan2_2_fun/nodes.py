@@ -794,9 +794,6 @@ class Wan2_2FunV2VSampler:
             
             if end_image is not None:
                 end_image = [to_pil(_end_image) for _end_image in end_image]
-                original_width, original_height = end_image[0].size if type(end_image) is list else Image.open(end_image).size
-            
-
 
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
         height, width = [int(x / 16) * 16 for x in closest_size]
@@ -837,16 +834,12 @@ class Wan2_2FunV2VSampler:
                     clip_image = start_image[0].convert("RGB")
                 else:
                     clip_image = None
-        
+
+                inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=(height, width))
+
                 if ref_image is not None:
                     ref_image = get_image_latent(ref_image[0] if ref_image is not None else ref_image, sample_size=(height, width))
                 
-                if start_image is not None:
-                    start_image = get_image_latent(start_image[0] if start_image is not None else start_image, sample_size=(height, width))
-
-                if end_image is not None:
-                    end_image = get_image_latent(end_image[0] if end_image is not None else end_image, sample_size=(height, width))
-
                 if camera_conditions is not None and len(camera_conditions) > 0: 
                     poses      = json.loads(camera_conditions)
                     cam_params = np.array([[float(x) for x in pose] for pose in poses])
@@ -937,11 +930,12 @@ class Wan2_2FunV2VSampler:
                     guidance_scale = cfg,
                     num_inference_steps = steps,
 
-                    ref_image = ref_image,
-                    start_image = start_image,
-                    boundary = boundary,
+                    video      = inpaint_video,
+                    mask_video   = inpaint_video_mask,
                     control_video = input_video,
                     control_camera_video = control_camera_video,
+                    ref_image = ref_image,
+                    boundary = boundary,
                     comfyui_progressbar = True,
                 ).videos
             videos = rearrange(sample, "b c t h w -> (b t) h w c")
