@@ -33,9 +33,11 @@ from ...videox_fun.data.dataset_image_video import process_pose_params
 from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
 
 # Used in lora cache
-transformer_cpu_cache   = {}
+transformer_cpu_cache       = {}
+transformer_high_cpu_cache  = {}
 # lora path before
-lora_path_before        = ""
+lora_path_before            = ""
+lora_high_path_before       = ""
 
 class LoadWan2_2FunModel:
     @classmethod
