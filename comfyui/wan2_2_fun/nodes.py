@@ -532,7 +532,10 @@ class Wan2_2FunInpaintSampler:
 
     def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
+        global transformer_high_cpu_cache
         global lora_path_before
+        global lora_high_path_before
+
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 
@@ -744,7 +747,9 @@ class Wan2_2FunV2VSampler:
 
     def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, end_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
         global transformer_cpu_cache
+        global transformer_high_cpu_cache
         global lora_path_before
+        global lora_high_path_before
 
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
