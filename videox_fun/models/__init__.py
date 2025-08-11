@@ -20,8 +20,8 @@ if importlib.util.find_spec("pai_fuser") is not None:
         return inner
 
     from ..dist import parallel_magvit_vae
-    AutoencoderKLWan_.decode = simple_wrapper(parallel_magvit_vae(0.2, 8)(AutoencoderKLWan_.decode))
-    AutoencoderKLWan2_2_.decode = simple_wrapper(parallel_magvit_vae(0.2, 16)(AutoencoderKLWan2_2_.decode))
+    AutoencoderKLWan_.decode = simple_wrapper(parallel_magvit_vae(0.4, 8)(AutoencoderKLWan_.decode))
+    AutoencoderKLWan2_2_.decode = simple_wrapper(parallel_magvit_vae(0.4, 16)(AutoencoderKLWan2_2_.decode))
 
     import torch
     from pai_fuser.core.attention import wan_sparse_attention_wrapper
