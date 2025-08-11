@@ -1866,7 +1866,7 @@ def main():
                             # Switch back to the original transformer3d parameters.
                             ema_transformer3d.restore(transformer3d.parameters())
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "grad_norm":norm_sum}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
