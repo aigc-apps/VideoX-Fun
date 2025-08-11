@@ -354,9 +354,9 @@ def rope_apply(x, grid_sizes, freqs):
         x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float32).reshape(
             seq_len, n, -1, 2))
         freqs_i = torch.cat([
-            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1).to(torch.complex64),
+            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1).to(torch.complex64),
+            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1).to(torch.complex64)
         ],
                             dim=-1).reshape(seq_len, 1, -1)
 
@@ -404,7 +404,65 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x)
+        
+        if x.dtype == torch.bfloat16:
+            weight = self.weight
+            bias   = self.bias
+            orig_weight_dtype = weight.dtype if weight is not None else None
+            orig_bias_dtype   = bias.dtype if bias is not None else None
+
+            x_fp32 = x.float()
+            weight_fp32 = self.weight.float() if self.weight is not None else None
+            bias_fp32 = self.bias.float() if self.bias is not None else None
+            
+            result = torch.nn.functional.layer_norm(
+                x_fp32,
+                self.normalized_shape,
+                weight_fp32,
+                bias_fp32,
+                self.eps
+            )
+            
+            result = result.to(torch.bfloat16)
+            
+            if self.weight is not None:
+                self.weight.data = self.weight.data.to(orig_weight_dtype)
+            if self.bias is not None:
+                self.bias.data = self.bias.data.to(orig_bias_dtype)
+            
+            return result
+
+        elif x.dtype == torch.float:
+            weight = self.weight
+            bias   = self.bias
+            orig_weight_dtype = weight.dtype if weight is not None else None
+            orig_bias_dtype   = bias.dtype if bias is not None else None
+
+            weight_fp32 = self.weight.float() if self.weight is not None else None
+            bias_fp32 = self.bias.float() if self.bias is not None else None
+            
+            result = torch.nn.functional.layer_norm(
+                x,
+                self.normalized_shape,
+                weight_fp32,
+                bias_fp32,
+                self.eps
+            )
+
+            result = result.to(torch.bfloat16)
+            
+            if self.weight is not None:
+                self.weight.data = self.weight.data.to(orig_weight_dtype)
+            if self.bias is not None:
+                self.bias.data = self.bias.data.to(orig_bias_dtype)
+            
+            return result             
+        else:
+            raise ValueError("Unknown input type, error")
+						
+
+      
+
 
 class WanSelfAttention(nn.Module):
 
@@ -631,7 +689,7 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32,
+        dtype=torch.bfloat16,
         t=0,
     ):
         r"""
@@ -642,7 +700,9 @@ class WanAttentionBlock(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
-        e = (self.modulation + e).chunk(6, dim=1)
+        
+
+        e = (self.modulation + e).to(dtype).chunk(6, dim=1)
 
         # self-attention
         temp_x = self.norm1(x) * (1 + e[1]) + e[0]
@@ -654,7 +714,9 @@ class WanAttentionBlock(nn.Module):
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             # cross-attention
-            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype, t=t)
+
+            
+            x = x + self.cross_attn(self.norm3(x.float()), context, context_lens, dtype, t=t)
 
             # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
@@ -691,7 +753,9 @@ class Head(nn.Module):
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, C]
         """
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        
+        e = (self.modulation + e.unsqueeze(1)).to(torch.bfloat16).chunk(2, dim=1)
+
         x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
         return x
 
