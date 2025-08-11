@@ -23,6 +23,18 @@
         "offload_param": {
             "device": "none"
         }
+    },
+    "tensor_model_parallel_size": 4,
+    "sequence_parallel": {
+        "enabled": true
+    },
+    "activation_checkpointing": {
+        "partition_activations": true,
+        "contiguous_memory_optimization": true,
+        "cpu_checkpointing": false,
+        "number_checkpoints": null,
+        "synchronize_checkpoint_boundary": false,
+        "profile": false
     }
 }
 
