@@ -77,6 +77,8 @@ from videox_fun.pipeline import WanPipeline, WanI2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
+import torch_npu
+from torch_npu.contrib import transfer_to_npu
 if is_wandb_available():
     import wandb
 
@@ -1743,7 +1745,8 @@ def main():
                 )
 
                 # Predict the noise residual
-                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                # with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                with torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         x=noisy_latents,
                         context=prompt_embeds,
