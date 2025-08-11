@@ -12,6 +12,7 @@ from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.models.embeddings import get_1d_rotary_pos_embed
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import BaseOutput, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
@@ -19,8 +20,8 @@ from einops import rearrange
 from PIL import Image
 from transformers import T5Tokenizer
 
-from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                      WanT5EncoderModel, Wan2_2Transformer3DModel)
+from ..models import (AutoencoderKLWan, AutoTokenizer,
+                      Wan2_2Transformer3DModel, WanT5EncoderModel)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -148,7 +149,7 @@ class WanPipelineOutput(BaseOutput):
     videos: torch.Tensor
 
 
-class Wan2_2I2VPipeline(DiffusionPipeline):
+class Wan2_2FunControlPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-video generation using Wan.
 
@@ -157,7 +158,7 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
     """
 
     _optional_components = ["transformer_2"]
-    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
+    model_cpu_offload_seq = "text_encoder->transformer->transformer_2->vae"
 
     _callback_tensor_inputs = [
         "latents",
@@ -338,7 +339,6 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
             latents = latents * self.scheduler.init_noise_sigma
         return latents
 
-
     def prepare_mask_latents(
         self, mask, masked_image, batch_size, height, width, dtype, device, generator, do_classifier_free_guidance, noise_aug_strength
     ):
@@ -373,6 +373,39 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
             masked_image_latents = None
 
         return mask, masked_image_latents
+
+    def prepare_control_latents(
+        self, control, control_image, batch_size, height, width, dtype, device, generator, do_classifier_free_guidance
+    ):
+        # resize the control to latents shape as we concatenate the control to the latents
+        # we do that before converting to dtype to avoid breaking in case we're using cpu_offload
+        # and half precision
+
+        if control is not None:
+            control = control.to(device=device, dtype=dtype)
+            bs = 1
+            new_control = []
+            for i in range(0, control.shape[0], bs):
+                control_bs = control[i : i + bs]
+                control_bs = self.vae.encode(control_bs)[0]
+                control_bs = control_bs.mode()
+                new_control.append(control_bs)
+            control = torch.cat(new_control, dim = 0)
+
+        if control_image is not None:
+            control_image = control_image.to(device=device, dtype=dtype)
+            bs = 1
+            new_control_pixel_values = []
+            for i in range(0, control_image.shape[0], bs):
+                control_pixel_values_bs = control_image[i : i + bs]
+                control_pixel_values_bs = self.vae.encode(control_pixel_values_bs)[0]
+                control_pixel_values_bs = control_pixel_values_bs.mode()
+                new_control_pixel_values.append(control_pixel_values_bs)
+            control_image_latents = torch.cat(new_control_pixel_values, dim = 0)
+        else:
+            control_image_latents = None
+
+        return control, control_image_latents
 
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         frames = self.vae.decode(latents.to(self.vae.dtype)).sample
@@ -477,6 +510,10 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
         width: int = 720,
         video: Union[torch.FloatTensor] = None,
         mask_video: Union[torch.FloatTensor] = None,
+        control_video: Union[torch.FloatTensor] = None,
+        control_camera_video: Union[torch.FloatTensor] = None,
+        start_image: Union[torch.FloatTensor] = None,
+        ref_image: Union[torch.FloatTensor] = None,
         num_frames: int = 49,
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
@@ -508,6 +545,7 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
         Returns:
 
         """
+
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
         num_videos_per_prompt = 1
@@ -637,6 +675,94 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
                 mask_condition = mask_condition.view(bs, mask_condition.shape[2] // 4, 4, height, width)
                 mask_condition = mask_condition.transpose(1, 2)
                 mask_latents = resize_mask(1 - mask_condition, masked_video_latents, True).to(device, weight_dtype) 
+    
+        # Prepare mask latent variables
+        if control_camera_video is not None:
+            control_latents = None
+            # Rearrange dimensions
+            # Concatenate and transpose dimensions
+            control_camera_latents = torch.concat(
+                [
+                    torch.repeat_interleave(control_camera_video[:, :, 0:1], repeats=4, dim=2),
+                    control_camera_video[:, :, 1:]
+                ], dim=2
+            ).transpose(1, 2)
+
+            # Reshape, transpose, and view into desired shape
+            b, f, c, h, w = control_camera_latents.shape
+            control_camera_latents = control_camera_latents.contiguous().view(b, f // 4, 4, c, h, w).transpose(2, 3)
+            control_camera_latents = control_camera_latents.contiguous().view(b, f // 4, c * 4, h, w).transpose(1, 2)
+        elif control_video is not None:
+            video_length = control_video.shape[2]
+            control_video = self.image_processor.preprocess(rearrange(control_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
+            control_video = control_video.to(dtype=torch.float32)
+            control_video = rearrange(control_video, "(b f) c h w -> b c f h w", f=video_length)
+            control_video_latents = self.prepare_control_latents(
+                None,
+                control_video,
+                batch_size,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+                do_classifier_free_guidance
+            )[1]
+            control_camera_latents = None
+        else:
+            control_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
+            control_camera_latents = None
+
+        if start_image is not None:
+            video_length = start_image.shape[2]
+            start_image = self.image_processor.preprocess(rearrange(start_image, "b c f h w -> (b f) c h w"), height=height, width=width) 
+            start_image = start_image.to(dtype=torch.float32)
+            start_image = rearrange(start_image, "(b f) c h w -> b c f h w", f=video_length)
+            
+            start_image_latentes = self.prepare_control_latents(
+                None,
+                start_image,
+                batch_size,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+                do_classifier_free_guidance
+            )[1]
+
+            start_image_latentes_conv_in = torch.zeros_like(latents)
+            if latents.size()[2] != 1:
+                start_image_latentes_conv_in[:, :, :1] = start_image_latentes
+        else:
+            start_image_latentes_conv_in = torch.zeros_like(latents)
+
+        if self.transformer.config.get("add_ref_conv", False):
+            if ref_image is not None:
+                video_length = ref_image.shape[2]
+                ref_image = self.image_processor.preprocess(rearrange(ref_image, "b c f h w -> (b f) c h w"), height=height, width=width) 
+                ref_image = ref_image.to(dtype=torch.float32)
+                ref_image = rearrange(ref_image, "(b f) c h w -> b c f h w", f=video_length)
+                
+                ref_image_latentes = self.prepare_control_latents(
+                    None,
+                    ref_image,
+                    batch_size,
+                    height,
+                    width,
+                    weight_dtype,
+                    device,
+                    generator,
+                    do_classifier_free_guidance
+                )[1]
+                ref_image_latentes = ref_image_latentes[:, :, 0]
+            else:
+                ref_image_latentes = torch.zeros_like(latents)[:, :, 0]
+        else:
+            if ref_image is not None:
+                raise ValueError("The add_ref_conv is False, but ref_image is not None")
+            else:
+                ref_image_latentes = None
 
         if comfyui_progressbar:
             pbar.update(1)
@@ -660,13 +786,39 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
                 if hasattr(self.scheduler, "scale_model_input"):
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                # Prepare mask latent variables
+                if control_camera_video is not None:
+                    control_latents_input = None
+                    control_camera_latents_input = (
+                        torch.cat([control_camera_latents] * 2) if do_classifier_free_guidance else control_camera_latents
+                    ).to(device, weight_dtype)
+                else:
+                    control_latents_input = (
+                        torch.cat([control_video_latents] * 2) if do_classifier_free_guidance else control_video_latents
+                    ).to(device, weight_dtype)
+                    control_camera_latents_input = None
+
                 if init_video is not None:
                     mask_input = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
                     masked_video_latents_input = (
                         torch.cat([masked_video_latents] * 2) if do_classifier_free_guidance else masked_video_latents
                     )
                     y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
+                    control_latents_input = y if control_latents_input is None else \
+                        torch.cat([control_latents_input, y], dim = 1)
+                else:
+                    start_image_latentes_conv_in_input = (
+                        torch.cat([start_image_latentes_conv_in] * 2) if do_classifier_free_guidance else start_image_latentes_conv_in
+                    ).to(device, weight_dtype)
+                    control_latents_input = start_image_latentes_conv_in_input if control_latents_input is None else \
+                        torch.cat([control_latents_input, start_image_latentes_conv_in_input], dim = 1)
 
+                if ref_image_latentes is not None:
+                    full_ref = (
+                        torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
+                    ).to(device, weight_dtype)
+                else:
+                    full_ref = None
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
@@ -678,7 +830,7 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
                         local_transformer = self.transformer
                 else:
                     local_transformer = self.transformer
-
+                
                 # predict noise model_output
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
                     noise_pred = local_transformer(
@@ -686,17 +838,15 @@ class Wan2_2I2VPipeline(DiffusionPipeline):
                         context=in_prompt_embeds,
                         t=timestep,
                         seq_len=seq_len,
-                        y=y,
+                        y=control_latents_input,
+                        y_camera=control_camera_latents_input, 
+                        full_ref=full_ref,
                     )
 
                 # perform guidance
                 if do_classifier_free_guidance:
-                    if self.transformer_2 is not None and (isinstance(self.guidance_scale, (list, tuple))):
-                        sample_guide_scale = self.guidance_scale[1] if t >= self.transformer_2.config.boundary * self.scheduler.config.num_train_timesteps else self.guidance_scale[0]
-                    else:
-                        sample_guide_scale = self.guidance_scale
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]

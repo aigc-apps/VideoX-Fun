@@ -18,6 +18,10 @@ from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunV2VSampler)
 from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
                            Wan2_2T2VSampler)
+from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
+                               Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
+                               Wan2_2FunV2VSampler)
+
 
 class FunTextBox:
     @classmethod
@@ -73,12 +77,22 @@ class FunCompile:
             for i in range(len(funmodels["pipeline"].transformer.blocks)):
                 funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
         
+            if hasattr(funmodels["pipeline"], "transformer_2"):
+                for i in range(len(funmodels["pipeline"].transformer_2.blocks)):
+                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.blocks[i])
+            
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
-                for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
-                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
+            for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
+                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
+            if hasattr(funmodels["pipeline"], "transformer_2"):
+                for i in range(len(funmodels["pipeline"].transformer_2.transformer_blocks)):
+                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.transformer_blocks[i])
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
+
+            if hasattr(funmodels["pipeline"], "transformer_2"):
+                funmodels["pipeline"].transformer_2.forward = torch.compile(funmodels["pipeline"].transformer_2.forward)
 
         print("Add Compile")
         return (funmodels,)
@@ -326,6 +340,12 @@ NODE_CLASS_MAPPINGS = {
     "Wan2_2T2VSampler": Wan2_2T2VSampler,
     "Wan2_2I2VSampler": Wan2_2I2VSampler,
 
+    "LoadWan2_2FunModel": LoadWan2_2FunModel,
+    "LoadWan2_2FunLora": LoadWan2_2FunLora,
+    "Wan2_2FunT2VSampler": Wan2_2FunT2VSampler,
+    "Wan2_2FunInpaintSampler": Wan2_2FunInpaintSampler,
+    "Wan2_2FunV2VSampler": Wan2_2FunV2VSampler,
+
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
     "VideoToOpenpose": VideoToPose,
@@ -365,6 +385,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWan2_2Lora": "Load Wan 2.2 Lora",
     "Wan2_2T2VSampler": "Wan 2.2 Sampler for Text to Video",
     "Wan2_2I2VSampler": "Wan 2.2 Sampler for Image to Video",
+
+    "LoadWan2_2FunModel": "Load Wan 2.2 Fun Model",
+    "LoadWan2_2FunLora": "Load Wan 2.2 Fun Lora",
+    "Wan2_2FunT2VSampler": "Wan 2.2 Fun Sampler for Text to Video",
+    "Wan2_2FunInpaintSampler": "Wan 2.2 Fun Sampler for Image to Video",
+    "Wan2_2FunV2VSampler": "Wan 2.2 Fun Sampler for Video to Video",
     
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
