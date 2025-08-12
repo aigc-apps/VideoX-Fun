@@ -108,6 +108,7 @@ if __name__ == '__main__':
     # # --------------------------------------------------------------------------------------------------- #
     # | Model Name          | threshold | Model Name          | threshold |
     # | Wan2.2-T2V-A14B     | 0.10~0.15 | Wan2.2-I2V-A14B     | 0.15~0.20 |
+    # | Wan2.2-Fun-A14B-*   | 0.15~0.20 |
     # # --------------------------------------------------------------------------------------------------- #
     teacache_threshold  = 0.10
     # The number of steps to skip TeaCache at the beginning of the inference process, which can

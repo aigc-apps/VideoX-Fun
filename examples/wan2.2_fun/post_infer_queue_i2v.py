@@ -3,6 +3,8 @@ import json
 import time
 import urllib.parse
 import requests
+from PIL import Image
+from io import BytesIO
 
 
 def post_infer(
@@ -29,7 +31,20 @@ def post_infer(
     cfg_skip_ratio = None,
     enable_riflex = None, 
     riflex_k = None, 
+    start_image = None 
 ):
+    if start_image:
+        try:
+            if not start_image.startswith("http"):
+                image = Image.open(start_image).convert("RGB")
+                # 将图片转换为 Base64 编码
+                buffered = BytesIO()
+                image.save(buffered, format="JPEG")
+                start_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        except Exception as e:
+            print(f"Error processing start_image: {e}")
+            raise
+
     # Prepare the data payload
     datas = json.dumps({
         "base_model_path": base_model_path,
@@ -53,6 +68,7 @@ def post_infer(
         "cfg_skip_ratio": cfg_skip_ratio,
         "enable_riflex": enable_riflex,
         "riflex_k": riflex_k,
+        "start_image": start_image
     })
 
     # Initialize session and set headers
@@ -92,9 +108,10 @@ def post_infer(
     data = get_r.content.decode('utf-8')
     return data
 
+
 if __name__ == '__main__':
     # initiate time
-    time_start  = time.time()  
+    time_start = time.time()  
 
     # EAS队列配置
     EAS_URL = 'http://17xxxxxxxxx.pai-eas.aliyuncs.com/api/predict/xxxxxxxx'
@@ -108,6 +125,7 @@ if __name__ == '__main__':
     # # --------------------------------------------------------------------------------------------------- #
     # | Model Name          | threshold | Model Name          | threshold |
     # | Wan2.2-T2V-A14B     | 0.10~0.15 | Wan2.2-I2V-A14B     | 0.15~0.20 |
+    # | Wan2.2-Fun-A14B-*   | 0.15~0.20 |
     # # --------------------------------------------------------------------------------------------------- #
     teacache_threshold  = 0.10
     # The number of steps to skip TeaCache at the beginning of the inference process, which can
@@ -124,27 +142,30 @@ if __name__ == '__main__':
     enable_riflex       = False
     # Index of intrinsic frequency
     riflex_k            = 6
-        
+
     # "Video Generation" and "Image Generation"
-    generation_method   = "Video Generation"
+    generation_method = "Video Generation"
     # Video length
-    length_slider       = 81
+    length_slider = 81
     # Used in Lora models
-    lora_model_path     = "none"
-    lora_alpha_slider   = 0.55
+    lora_model_path = "none"
+    lora_alpha_slider = 0.55
     # Prompts
-    prompt_textbox      = "A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
+    prompt_textbox = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
     negative_prompt_textbox = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     # Sampler name
-    sampler_dropdown    = "Flow"
+    sampler_dropdown = "Flow"
     # Sampler steps
-    sample_step_slider  = 50
+    sample_step_slider = 50
     # height and width 
-    width_slider        = 832
-    height_slider       = 480
+    width_slider = 832
+    height_slider = 480
     # cfg scale
-    cfg_scale_slider    = 6
-    seed_textbox        = 43
+    cfg_scale_slider = 6
+    seed_textbox = 43
+
+    # 起始图片路径
+    start_image_path = "asset/1.png"  # 替换为实际的图片路径
 
     outputs = post_infer(
         generation_method, 
@@ -167,7 +188,8 @@ if __name__ == '__main__':
         enable_riflex = enable_riflex, 
         riflex_k = riflex_k, 
         url=EAS_URL, 
-        POST_TOKEN=TOKEN
+        POST_TOKEN=TOKEN,
+        start_image=start_image_path  # 传递起始图片路径
     )
     # Get decoded data
     outputs = json.loads(base64.b64decode(json.loads(outputs)[0]['data']))
