@@ -418,7 +418,7 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
         )
         with gr.Column(variant="panel"):
             config_dropdown, config_refresh_button = create_config(controller)
-            model_type = create_model_type(visible=False)
+            model_type = create_model_type(visible=True)
             diffusion_transformer_dropdown, diffusion_transformer_refresh_button = \
                 create_model_checkpoints(controller, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button = \
