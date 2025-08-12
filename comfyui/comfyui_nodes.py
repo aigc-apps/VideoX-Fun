@@ -77,21 +77,22 @@ class FunCompile:
             for i in range(len(funmodels["pipeline"].transformer.blocks)):
                 funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
         
-            if hasattr(funmodels["pipeline"], "transformer_2"):
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
                 for i in range(len(funmodels["pipeline"].transformer_2.blocks)):
                     funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.blocks[i])
             
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
             for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
                 funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
-            if hasattr(funmodels["pipeline"], "transformer_2"):
+
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
                 for i in range(len(funmodels["pipeline"].transformer_2.transformer_blocks)):
                     funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.transformer_blocks[i])
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
 
-            if hasattr(funmodels["pipeline"], "transformer_2"):
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
                 funmodels["pipeline"].transformer_2.forward = torch.compile(funmodels["pipeline"].transformer_2.forward)
 
         print("Add Compile")

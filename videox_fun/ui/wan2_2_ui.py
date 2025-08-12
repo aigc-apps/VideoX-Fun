@@ -93,7 +93,7 @@ class Wan2_2_Controller(Fun_Controller):
 
         # Get pipeline
         if self.model_type == "Inpaint":
-            if "ti2v" in self.config_path:
+            if "wan_civitai_5b" in self.config_path:
                 self.pipeline = Wan2_2TI2VPipeline(
                     vae=self.vae,
                     tokenizer=self.tokenizer,

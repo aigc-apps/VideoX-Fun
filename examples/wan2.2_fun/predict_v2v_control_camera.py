@@ -6,6 +6,7 @@ import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
 from omegaconf import OmegaConf
 from PIL import Image
+from transformers import AutoTokenizer
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -14,18 +15,21 @@ for project_root in project_roots:
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
-                              WanT5EncoderModel, Wan2_2Transformer3DModel)
+                               WanT5EncoderModel, Wan2_2Transformer3DModel)
+from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Wan2_2I2VPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
+from videox_fun.pipeline import Wan2_2FunControlPipeline, WanPipeline
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
+                                               convert_weight_dtype_wrapper,
+                                               replace_parameters_by_name)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+from videox_fun.utils.utils import (filter_kwargs, get_image_latent, get_image_to_video_latent,
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -52,7 +56,7 @@ fsdp_text_encoder   = True
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# TeaCache config
+# Support TeaCache.
 enable_teacache     = True
 # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
@@ -80,12 +84,14 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.2/wan_civitai_i2v.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
+model_name          = "models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control-Camera"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
+# If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
+# If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
 shift               = 5
 
 # Load pretrained model if need
@@ -96,7 +102,7 @@ vae_path                = None
 # Load lora model if need
 # The lora_path is used for low noise model, the lora_high_path is used for high noise model.
 lora_path               = None
-lora_high_path          = None 
+lora_high_path          = None
 
 # Other params
 sample_size         = [480, 832]
@@ -106,25 +112,32 @@ fps                 = 16
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
-validation_image_end    = None
+control_video           = None
+control_camera_txt      = "asset/Zoom_In.txt"
+start_image             = "asset/7.png"
+end_image               = None
+ref_image               = None
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
-negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-guidance_scale      = 6.0
-seed                = 43
-num_inference_steps = 50
+prompt                  = "一个小女孩正在户外玩耍。她穿着一件蓝色的短袖上衣和粉色的短裤，头发扎成一个可爱的辫子。她的脚上没有穿鞋，显得非常自然和随意。她正用一把红色的小铲子在泥土里挖土，似乎在进行某种有趣的活动，可能是种花或是挖掘宝藏。地上有一根长长的水管，可能是用来浇水的。背景是一片草地和一些绿色植物，阳光明媚，整个场景充满了童趣和生机。小女孩专注的表情和认真的动作让人感受到她的快乐和好奇心。"
+negative_prompt         = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+
+# Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
+# Adding words such as "quiet, solid" to the neg prompt can increase dynamism.
+# prompt                  = "A young woman with beautiful, clear eyes and blonde hair stands in the forest, wearing a white dress and a crown. Her expression is serene, reminiscent of a movie star, with fair and youthful skin. Her brown long hair flows in the wind. The video quality is very high, with a clear view. High quality, masterpiece, best quality, high resolution, ultra-fine, fantastical."
+# negative_prompt         = "Twisted body, limb deformities, text captions, comic, static, ugly, error, messy code."
+guidance_scale          = 6.0
+seed                    = 42
+num_inference_steps     = 50
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
-lora_weight         = 0.55
-lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-fun-i2v"
+lora_weight             = 0.55
+lora_high_weight        = 0.55
+save_path               = "samples/wan-videos-fun-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
-boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+boundary = config['transformer_additional_kwargs'].get('boundary', 0.875)
 
 transformer = Wan2_2Transformer3DModel.from_pretrained(
     os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')),
@@ -216,7 +229,7 @@ scheduler = Choosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = Wan2_2I2VPipeline(
+pipeline = Wan2_2FunControlPipeline(
     transformer=transformer,
     transformer_2=transformer_2,
     vae=vae,
@@ -305,7 +318,18 @@ with torch.no_grad():
         if transformer_2 is not None:
             pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
-    input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, validation_image_end, video_length=video_length, sample_size=sample_size)
+    inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=sample_size)
+
+    if ref_image is not None:
+        ref_image = get_image_latent(ref_image, sample_size=sample_size)
+    
+    if control_camera_txt is not None:
+        input_video, input_video_mask = None, None
+        control_camera_video = process_pose_file(control_camera_txt, sample_size[1], sample_size[0])
+        control_camera_video = control_camera_video[:video_length].permute([3, 0, 1, 2]).unsqueeze(0)
+    else:
+        input_video, input_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        control_camera_video = None
 
     sample = pipeline(
         prompt, 
@@ -316,10 +340,13 @@ with torch.no_grad():
         generator   = generator,
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        boundary = boundary,
 
-        video      = input_video,
-        mask_video   = input_video_mask,
+        video      = inpaint_video,
+        mask_video   = inpaint_video_mask,
+        control_video = input_video,
+        control_camera_video = control_camera_video,
+        ref_image = ref_image,
+        boundary = boundary,
         shift = shift,
     ).videos
 

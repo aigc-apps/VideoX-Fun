@@ -14,7 +14,7 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
                                WanT5EncoderModel, Wan2_2Transformer3DModel)
 from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
@@ -29,7 +29,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_latent, get_image_t
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-# GPU memory mode, which can be choosen in [model_full_load, model_cpu_offload_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -128,7 +128,7 @@ negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字
 # prompt                  = "A young woman with beautiful, clear eyes and blonde hair stands in the forest, wearing a white dress and a crown. Her expression is serene, reminiscent of a movie star, with fair and youthful skin. Her brown long hair flows in the wind. The video quality is very high, with a clear view. High quality, masterpiece, best quality, high resolution, ultra-fine, fantastical."
 # negative_prompt         = "Twisted body, limb deformities, text captions, comic, static, ugly, error, messy code."
 guidance_scale          = 6.0
-seed                    = 42
+seed                    = 43
 num_inference_steps     = 50
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight             = 0.55
@@ -145,13 +145,15 @@ transformer = Wan2_2Transformer3DModel.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-
-transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-    os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-    low_cpu_mem_usage=True,
-    torch_dtype=weight_dtype,
-)
+if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+    transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+        os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
+        torch_dtype=weight_dtype,
+    )
+else:
+    transformer_2 = None
 
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
@@ -165,21 +167,23 @@ if transformer_path is not None:
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-if transformer_high_path is not None:
-    print(f"From checkpoint: {transformer_high_path}")
-    if transformer_high_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
-        state_dict = load_file(transformer_high_path)
-    else:
-        state_dict = torch.load(transformer_high_path, map_location="cpu")
-    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+if transformer_2 is not None:
+    if transformer_high_path is not None:
+        print(f"From checkpoint: {transformer_high_path}")
+        if transformer_high_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(transformer_high_path)
+        else:
+            state_dict = torch.load(transformer_high_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-    m, u = transformer_2.load_state_dict(state_dict, strict=False)
-    print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        m, u = transformer_2.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
 Choosen_AutoencoderKL = {
     "AutoencoderKLWan": AutoencoderKLWan,
+    "AutoencoderKLWan3_8": AutoencoderKLWan3_8
 }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
 vae = Choosen_AutoencoderKL.from_pretrained(
     os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
@@ -236,11 +240,13 @@ pipeline = Wan2_2FunControlPipeline(
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
-    transformer_2.enable_multi_gpus_inference()
+    if transformer_2 is not None:
+        transformer_2.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
+        if transformer_2 is not None:
+            pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
@@ -250,29 +256,33 @@ if ulysses_degree > 1 or ring_degree > 1:
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
-    for i in range(len(pipeline.transformer_2.blocks)):
-        pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
+    if transformer_2 is not None:
+        for i in range(len(pipeline.transformer_2.blocks)):
+            pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)
-    replace_parameters_by_name(transformer_2, ["modulation",], device=device)
     transformer.freqs = transformer.freqs.to(device=device)
-    transformer_2.freqs = transformer_2.freqs.to(device=device)
+    if transformer_2 is not None:
+        replace_parameters_by_name(transformer_2, ["modulation",], device=device)
+        transformer_2.freqs = transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
@@ -283,18 +293,21 @@ if coefficients is not None:
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
-    pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
 
 if cfg_skip_ratio is not None:
     print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
     pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-    pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
-    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+    if transformer_2 is not None:
+        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -302,6 +315,8 @@ with torch.no_grad():
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
+        if transformer_2 is not None:
+            pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=sample_size)
 
@@ -337,7 +352,8 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
-    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+    if transformer_2 is not None:
+        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):

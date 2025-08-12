@@ -601,7 +601,7 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
             pbar.update(1)
 
         # Prepare mask latent variables
-        if init_video is not None:
+        if init_video is not None and (mask_video == 255).all():
             bs, _, video_length, height, width = video.size()
             mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
             mask_condition = mask_condition.to(dtype=torch.float32)
@@ -632,6 +632,8 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
 
             mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
             latents = (1 - mask) * masked_video_latents + mask * latents
+        else:
+            init_video = None
 
         if comfyui_progressbar:
             pbar.update(1)

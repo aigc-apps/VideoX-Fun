@@ -216,7 +216,7 @@ scheduler = Choosen_Scheduler(
 # Get Pipeline
 pipeline = Wan2_2TI2VPipeline(
     transformer=transformer,
-    transformer_2=transformer_2 ,
+    transformer_2=transformer_2,
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
