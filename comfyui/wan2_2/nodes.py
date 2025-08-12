@@ -160,7 +160,7 @@ class LoadWan2_2Model:
             low_cpu_mem_usage=True,
             torch_dtype=weight_dtype,
         )
-        if self.config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+        if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
             transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
                 os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
                 transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -189,7 +189,7 @@ class LoadWan2_2Model:
         # Get pipeline
         model_type = "Inpaint"
         if model_type == "Inpaint":
-            if "wan_civitai_5b" in self.config_path:
+            if "wan_civitai_5b" in config_path:
                 pipeline = Wan2_2TI2VPipeline(
                     vae=vae,
                     tokenizer=tokenizer,
