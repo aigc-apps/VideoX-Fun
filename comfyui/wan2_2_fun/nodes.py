@@ -557,6 +557,12 @@ class Wan2_2FunInpaintSampler:
 
         mm.soft_empty_cache()
         gc.collect()
+        
+        # Get Pipeline
+        pipeline = funmodels['pipeline']
+        model_name = funmodels['model_name']
+        config = funmodels['config']
+        weight_dtype = funmodels['dtype']
 
         start_img = [to_pil(_start_img) for _start_img in start_img] if start_img is not None else None
         end_img = [to_pil(_end_img) for _end_img in end_img] if end_img is not None else None
@@ -565,12 +571,6 @@ class Wan2_2FunInpaintSampler:
         original_width, original_height = start_img[0].size if type(start_img) is list else Image.open(start_img).size
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
         height, width = [int(x / 16) * 16 for x in closest_size]
-        
-        # Get Pipeline
-        pipeline = funmodels['pipeline']
-        model_name = funmodels['model_name']
-        config = funmodels['config']
-        weight_dtype = funmodels['dtype']
 
         # Get boundary for wan
         boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
