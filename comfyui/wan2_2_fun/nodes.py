@@ -394,6 +394,8 @@ class Wan2_2FunT2VSampler:
                 if pipeline.transformer_2 is not None:
                     pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
+            input_video, input_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=(height, width))
+
             # Apply lora
             if funmodels.get("lora_cache", False):
                 if len(funmodels.get("loras", [])) != 0:
@@ -459,6 +461,9 @@ class Wan2_2FunT2VSampler:
                 generator   = generator,
                 guidance_scale = cfg,
                 num_inference_steps = steps,
+                
+                video        = input_video,
+                mask_video   = input_video_mask,
                 boundary     = boundary,
                 comfyui_progressbar = True,
             ).videos
