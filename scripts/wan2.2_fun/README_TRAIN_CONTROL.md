@@ -1,6 +1,26 @@
 ## Training Code
 
-We can choose whether to use deep speed in Wan, which can save a lot of video memory. 
+We can choose whether to use deep speed in Wan-Fun, which can save a lot of video memory. 
+
+The metadata_control.json is a little different from normal json in Wan-Fun, you need to add a control_file_path, and [DWPose](https://github.com/IDEA-Research/DWPose) is suggested as tool to generate control file.
+
+```json
+[
+    {
+      "file_path": "train/00000001.mp4",
+      "control_file_path": "control/00000001.mp4",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "video"
+    },
+    {
+      "file_path": "train/00000002.jpg",
+      "control_file_path": "control/00000002.jpg",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "image"
+    },
+    .....
+]
+```
 
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
@@ -17,14 +37,31 @@ Some parameters in the sh file can be confusing, and they are explained in this 
     - At 768x768 resolution, the number of video frames is 21 (~= 512 * 512 * 49 / 768 / 768).
     - At 1024x1024 resolution, the number of video frames is 9 (~= 512 * 512 * 49 / 1024 / 1024).
     - These resolutions combined with their corresponding lengths allow the model to generate videos of different sizes.
-- `train_mode` is used to specify the training mode, which can be either normal or inpaint. Since Wan uses the inpaint model to achieve image-to-video generation, the default is set to inpaint mode. If you only wish to achieve text-to-video generation, you can remove this line, and it will default to the text-to-video mode.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
+- `train_mode` is used to set the training mode. 
+  - The models named `Wan2.1-Fun-*-Control` are trained in the `control_ref` mode. 
+  - The models named `Wan2.1-Fun-*-Control-Camera` are trained in the `control_ref_camera` mode.
+- `control_ref_image` is used to specify the type of control image. The available options are `first_frame` and `random`. 
+ - `first_frame` is used in V1.0 because V1.0 supports using a specified start frame as the control image. The Control-Camera models use the first frame as the control image.
+ - `random` is used in V1.1 because V1.1 supports both using a specified start frame and a reference image as the control image.
+- `add_full_ref_image_in_self_attention` determines whether to include the reference image in self-attention. This option is used in V1.1, as it supports using a reference image as the control image. It should not be used in V1.0 and Control-Camera models.
+- `add_inpaint_info` determines whether to incorporate inpaint information into the model training. When enabled, this allows the model to support specifying starting and ending images in the controls during generation.
+- `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
 
-Wan T2V without deepspeed:
-
-Wan without DeepSpeed is more suitable for 1.3B Wan, as using it with 14B Wan may result in insufficient GPU memory.
+When train model with multi machines, please set the params as follows:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/wan2.2_fun/xxx.py
+```
+ 
+Wan-Fun-Control without deepspeed:
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -32,8 +69,8 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_control.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -63,17 +100,18 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train.py \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="low" \
   --low_vram \
-  --train_mode="normal" \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_inpaint_info \
+  --add_full_ref_image_in_self_attention \
   --trainable_modules "."
 ```
 
-Wan T2V with deepspeed zero-2:
-
-Wan with DeepSpeed Zero-2 is suitable for training 1.3B Wan and 14B Wan at low resolutions, but training 14B Wan at high resolutions may still result in insufficient GPU memory.
-
+Wan-Fun-Control with deepspeed:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -81,8 +119,8 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2_fun/train_control.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -112,13 +150,17 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="low" \
   --low_vram \
   --use_deepspeed \
-  --train_mode="inpaint" \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_inpaint_info \
+  --add_full_ref_image_in_self_attention \
   --trainable_modules "."
 ```
 
-Wan T2V with deepspeed zero-3:
+Wan-Fun-Control with deepspeed zero-3:
 
 Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
 ```sh
@@ -127,7 +169,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 
 Training shell command is as follows:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -135,8 +177,8 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_fun/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.2_fun/train_control.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -166,17 +208,21 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="low" \
   --low_vram \
   --use_deepspeed \
-  --train_mode="inpaint" \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_inpaint_info \
+  --add_full_ref_image_in_self_attention \
   --trainable_modules "."
 ```
 
-Wan T2V with FSDP:
+Wan-Fun-Control with FSDP:
 
 Wan with FSDP is suitable for 14B Wan at high resolutions. Training shell command is as follows:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -184,8 +230,8 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_fun/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2_fun/train_control.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -215,8 +261,12 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="low" \
   --low_vram \
   --use_deepspeed \
-  --train_mode="inpaint" \
+  --train_mode="control_ref" \
+  --control_ref_image="random" \
+  --add_inpaint_info \
+  --add_full_ref_image_in_self_attention \
   --trainable_modules "."
 ```
