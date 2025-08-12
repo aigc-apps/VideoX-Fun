@@ -18,7 +18,7 @@ from PIL import Image
 
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                               get_closest_ratio)
-from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from ...videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
                                  WanT5EncoderModel, Wan2_2Transformer3DModel)
 from ...videox_fun.pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline, Wan2_2TI2VPipeline
 from ...videox_fun.ui.controller import all_cheduler_dict
@@ -73,7 +73,7 @@ class LoadWan2_2Model:
                         "wan2.2/wan_civitai_5b.yaml",
                     ],
                     {
-                        "default": "wan2.2/wan_civitai_5b.yaml",
+                        "default": "wan2.2/wan_civitai_t2v.yaml",
                     }
                 ),
                 "precision": (
@@ -133,7 +133,12 @@ class LoadWan2_2Model:
                     print(f"- {os.path.join(eas_cache_dir, folder)}")
             raise ValueError("Please download Fun model")
 
-        vae = AutoencoderKLWan.from_pretrained(
+        # Get Vae
+        Choosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        vae = Choosen_AutoencoderKL.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         ).to(weight_dtype)
