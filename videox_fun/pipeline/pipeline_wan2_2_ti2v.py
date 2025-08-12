@@ -601,7 +601,7 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
             pbar.update(1)
 
         # Prepare mask latent variables
-        if init_video is not None and (mask_video == 255).all():
+        if init_video is not None and not (mask_video == 255).all():
             bs, _, video_length, height, width = video.size()
             mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
             mask_condition = mask_condition.to(dtype=torch.float32)
