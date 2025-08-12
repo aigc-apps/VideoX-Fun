@@ -417,11 +417,14 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
             """
         )
         with gr.Column(variant="panel"):
-            model_type = create_model_type(visible=True)
+            config_dropdown, config_refresh_button = create_config(controller)
+            model_type = create_model_type(visible=False)
             diffusion_transformer_dropdown, diffusion_transformer_refresh_button = \
                 create_model_checkpoints(controller, visible=True)
             base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button = \
-                create_finetune_models_checkpoints(controller, visible=True)
+                create_finetune_models_checkpoints(controller, visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
             
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -454,6 +457,12 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
                     generate_button = gr.Button(value="Generate (生成)", variant='primary')
                     
                 result_image, result_video, infer_progress = create_ui_outputs()
+
+            config_dropdown.change(
+                fn=controller.update_config, 
+                inputs=[config_dropdown], 
+                outputs=[]
+            )
 
             model_type.change(
                 fn=controller.update_model_type, 
@@ -532,6 +541,8 @@ def ui(GPU_memory_mode, scheduler_dict, config_path, compile_dit, weight_dtype, 
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
@@ -557,7 +568,10 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
         with gr.Column(variant="panel"):
             model_type = create_fake_model_type(visible=False)
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
-            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = \
+                create_fake_finetune_models_checkpoints(visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
 
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -660,6 +674,8 @@ def ui_host(GPU_memory_mode, scheduler_dict, model_name, model_type, config_path
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
@@ -680,7 +696,10 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
         )
         with gr.Column(variant="panel"):
             diffusion_transformer_dropdown = create_fake_model_checkpoints(model_name, visible=True)
-            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = create_fake_finetune_models_checkpoints(visible=True)
+            base_model_dropdown, lora_model_dropdown, lora_alpha_slider = \
+                create_fake_finetune_models_checkpoints(visible=True, add_checkpoint_2=True)
+            base_model_dropdown, base_model_2_dropdown = base_model_dropdown
+            lora_model_dropdown, lora_model_2_dropdown = lora_model_dropdown
 
             with gr.Row():
                 enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload = \
@@ -776,6 +795,8 @@ def ui_client(scheduler_dict, model_name, savedir_sample=None):
                     cfg_skip_ratio,
                     enable_riflex, 
                     riflex_k, 
+                    base_model_2_dropdown, 
+                    lora_model_2_dropdown
                 ],
                 outputs=[result_image, result_video, infer_progress]
             )
