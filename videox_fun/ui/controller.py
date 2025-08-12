@@ -256,6 +256,7 @@ class Fun_Controller:
         validation_video,
         control_video,
     ):
+        spatial_compression_ratio = self.vae.config.spatial_compression_ratio if hasattr(self.vae.config, "spatial_compression_ratio") else 8
         aspect_ratio_sample_size    = {key : [x / 512 * base_resolution for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         if self.model_type == "Inpaint":
             if validation_video is not None:
@@ -265,7 +266,7 @@ class Fun_Controller:
         else:
             original_width, original_height = Image.fromarray(cv2.VideoCapture(control_video).read()[1]).size
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
-        height_slider, width_slider = [int(x / 16) * 16 for x in closest_size]
+        height_slider, width_slider = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
         return height_slider, width_slider
 
     def save_outputs(self, is_image, length_slider, sample, fps):

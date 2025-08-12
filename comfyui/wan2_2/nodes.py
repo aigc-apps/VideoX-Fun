@@ -578,10 +578,11 @@ class Wan2_2I2VSampler:
         start_img = [to_pil(_start_img) for _start_img in start_img] if start_img is not None else None
         end_img = [to_pil(_end_img) for _end_img in end_img] if end_img is not None else None
         # Count most suitable height and width
+        spatial_compression_ratio = pipeline.vae.config.spatial_compression_ratio if hasattr(pipeline.vae.config, "spatial_compression_ratio") else 8
         aspect_ratio_sample_size = {key : [x / 512 * base_resolution for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         original_width, original_height = start_img[0].size if type(start_img) is list else Image.open(start_img).size
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
-        height, width = [int(x / 16) * 16 for x in closest_size]
+        height, width = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
         
         # Get Pipeline
         pipeline = funmodels['pipeline']
