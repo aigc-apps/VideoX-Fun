@@ -1,8 +1,8 @@
 {
-  "id": "addf6f13-291c-4b88-a80c-cd5785fa8f42",
+  "id": "f2736b24-5147-427c-a9dd-036fd3053b5d",
   "revision": 0,
-  "last_node_id": 132,
-  "last_link_id": 292,
+  "last_node_id": 135,
+  "last_link_id": 300,
   "nodes": [
     {
       "id": 107,
@@ -75,7 +75,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            289
+            297
           ]
         }
       ],
@@ -145,7 +145,7 @@
           "type": "STRING",
           "slot_index": 0,
           "links": [
-            292
+            299
           ]
         },
         {
@@ -173,7 +173,7 @@
       ],
       "size": [
         390,
-        537.4615478515625
+        310
       ],
       "flags": {},
       "order": 12,
@@ -184,7 +184,7 @@
           "name": "images",
           "shape": 7,
           "type": "IMAGE",
-          "link": 291
+          "link": 300
         },
         {
           "label": "音频",
@@ -233,7 +233,7 @@
           "hidden": false,
           "paused": false,
           "params": {
-            "filename": "Fun_00061.mp4",
+            "filename": "Fun_00112.mp4",
             "subfolder": "",
             "type": "output",
             "format": "video/h264-mp4",
@@ -262,7 +262,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            288
+            296
           ]
         }
       ],
@@ -296,7 +296,7 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            290
+            298
           ]
         },
         {
@@ -377,15 +377,75 @@
       "bgcolor": "#653"
     },
     {
-      "id": 132,
-      "type": "WanFunV2VSampler",
+      "id": 112,
+      "type": "Note",
       "pos": [
-        899,
-        68
+        -203,
+        252
       ],
       "size": [
-        428.4000244140625,
-        506
+        427.074951171875,
+        143.9142608642578
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 134,
+      "type": "LoadWan2_2FunModel",
+      "pos": [
+        273.49224853515625,
+        249.6970672607422
+      ],
+      "size": [
+        350.6878662109375,
+        155.20101928710938
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            295
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2FunModel"
+      },
+      "widgets_values": [
+        "Wan2.2-Fun-A14B-Control-Camera",
+        "Control",
+        "sequential_cpu_offload",
+        "wan2.2/wan_civitai_i2v.yaml",
+        "bf16"
+      ]
+    },
+    {
+      "id": 135,
+      "type": "Wan2_2FunV2VSampler",
+      "pos": [
+        923.0663452148438,
+        107.64505767822266
+      ],
+      "size": [
+        350.2320251464844,
+        526
       ],
       "flags": {},
       "order": 11,
@@ -394,17 +454,17 @@
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 287
+          "link": 295
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 288
+          "link": 296
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 289
+          "link": 297
         },
         {
           "name": "validation_video",
@@ -422,7 +482,13 @@
           "name": "start_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 290
+          "link": 298
+        },
+        {
+          "name": "end_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
         },
         {
           "name": "ref_image",
@@ -434,7 +500,7 @@
           "name": "camera_conditions",
           "shape": 7,
           "type": "STRING",
-          "link": 292
+          "link": 299
         },
         {
           "name": "riflex_k",
@@ -448,12 +514,12 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            291
+            300
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "WanFunV2VSampler"
+        "Node name for S&R": "Wan2_2FunV2VSampler"
       },
       "widgets_values": [
         81,
@@ -461,7 +527,7 @@
         43,
         "fixed",
         50,
-        6,
+        6.000000000000001,
         1,
         "Flow",
         0.1,
@@ -470,67 +536,6 @@
         true,
         0
       ]
-    },
-    {
-      "id": 123,
-      "type": "LoadWanFunModel",
-      "pos": [
-        281,
-        251
-      ],
-      "size": [
-        315,
-        154
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "slot_index": 0,
-          "links": [
-            287
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWanFunModel"
-      },
-      "widgets_values": [
-        "Wan2.1-Fun-V1.1-1.3B-Control-Camera",
-        "Control",
-        "model_cpu_offload",
-        "wan2.1/wan_civitai.yaml",
-        "bf16"
-      ]
-    },
-    {
-      "id": 112,
-      "type": "Note",
-      "pos": [
-        -203,
-        252
-      ],
-      "size": [
-        427.074951171875,
-        143.9142608642578
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
     }
   ],
   "links": [
@@ -543,52 +548,52 @@
       "CameraPose"
     ],
     [
-      287,
-      123,
+      295,
+      134,
       0,
-      132,
+      135,
       0,
       "FunModels"
     ],
     [
-      288,
+      296,
       121,
       0,
-      132,
+      135,
       1,
       "STRING_PROMPT"
     ],
     [
-      289,
+      297,
       122,
       0,
-      132,
+      135,
       2,
       "STRING_PROMPT"
     ],
     [
-      290,
+      298,
       100,
       0,
-      132,
+      135,
       5,
       "IMAGE"
     ],
     [
-      291,
-      132,
+      299,
+      130,
+      0,
+      135,
+      8,
+      "STRING"
+    ],
+    [
+      300,
+      135,
       0,
       106,
       0,
       "IMAGE"
-    ],
-    [
-      292,
-      130,
-      0,
-      132,
-      7,
-      "STRING"
     ]
   ],
   "groups": [
@@ -650,8 +655,8 @@
     "ds": {
       "scale": 0.6830134553650709,
       "offset": [
-        236.8040025924094,
-        -27.611371387475245
+        246.58945220178464,
+        51.36424150314978
       ]
     },
     "node_versions": {

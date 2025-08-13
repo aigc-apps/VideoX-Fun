@@ -1,8 +1,8 @@
 {
-  "id": "34fdaa39-a397-46b5-84d1-8846799c8c09",
+  "id": "a707e0b0-7fbd-4f91-9c23-1c5bdca19bad",
   "revision": 0,
-  "last_node_id": 126,
-  "last_link_id": 287,
+  "last_node_id": 129,
+  "last_link_id": 294,
   "nodes": [
     {
       "id": 107,
@@ -76,7 +76,7 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            285
+            292
           ]
         },
         {
@@ -94,31 +94,6 @@
         "1.png",
         "image"
       ]
-    },
-    {
-      "id": 110,
-      "type": "Note",
-      "pos": [
-        847,
-        613
-      ],
-      "size": [
-        608.1410522460938,
-        188.2682342529297
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "Please set the mask height and mask width according to the height and width of the reference image. \nPlease set the video_length of the Spline Editor below to be the same as the video_length of the Sampler above. \nThe nodes are from KJNodes. For more details, please check https://github.com/kijai/ComfyUI-KJNodes/tree/main. \n\n请根据参考图片的高和宽设置mask height和mask width；\n请将下方Spline Editor的video_legnth置的与上方Sampler的video_legnth一样；\n部分节点来自于KJNodes，具体查看https://github.com/kijai/ComfyUI-KJNodes/tree/main；"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
     },
     {
       "id": 118,
@@ -175,7 +150,7 @@
         200
       ],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -183,7 +158,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            282
+            289
           ]
         }
       ],
@@ -194,46 +169,6 @@
       "widgets_values": [
         "一只棕褐色的狗正摇晃着脑袋，坐在一个舒适的房间里的浅色沙发上。沙发看起来柔软而宽敞，为这只活泼的狗狗提供了一个完美的休息地点。在狗的后面，靠墙摆放着一个架子，架子上挂着一幅精美的镶框画，画中描绘着一些美丽的风景或场景。画框周围装饰着粉红色的花朵，这些花朵不仅增添了房间的色彩，还带来了一丝自然和生机。房间里的灯光柔和而温暖，从天花板上的吊灯和角落里的台灯散发出来，营造出一种温馨舒适的氛围。整个空间给人一种宁静和谐的感觉，仿佛时间在这里变得缓慢而美好。"
       ]
-    },
-    {
-      "id": 114,
-      "type": "ImageMaximumNode",
-      "pos": [
-        2074,
-        905
-      ],
-      "size": [
-        210,
-        46
-      ],
-      "flags": {},
-      "order": 15,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "video_1",
-          "type": "IMAGE",
-          "link": 287
-        },
-        {
-          "name": "video_2",
-          "type": "IMAGE",
-          "link": 262
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            264
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ImageMaximumNode"
-      },
-      "widgets_values": []
     },
     {
       "id": 95,
@@ -269,7 +204,7 @@
           "links": [
             237,
             262,
-            284
+            291
           ]
         }
       ],
@@ -290,7 +225,7 @@
         200
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -299,7 +234,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            283
+            290
           ]
         }
       ],
@@ -323,7 +258,7 @@
         832
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -400,7 +335,7 @@
         832
       ],
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -616,107 +551,96 @@
       }
     },
     {
-      "id": 126,
-      "type": "WanFunV2VSampler",
+      "id": 112,
+      "type": "Note",
       "pos": [
-        902,
-        60
+        -203,
+        252
       ],
       "size": [
-        428.4000244140625,
-        506
+        427.074951171875,
+        143.9142608642578
       ],
       "flags": {},
-      "order": 13,
+      "order": 7,
       "mode": 0,
-      "inputs": [
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 128,
+      "type": "LoadWan2_2FunModel",
+      "pos": [
+        277.63623046875,
+        254.2862548828125
+      ],
+      "size": [
+        363.85333251953125,
+        154
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 281
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 282
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 283
-        },
-        {
-          "name": "validation_video",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "control_video",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": 284
-        },
-        {
-          "name": "start_image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": 285
-        },
-        {
-          "name": "ref_image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "camera_conditions",
-          "shape": 7,
-          "type": "STRING",
-          "link": null
-        },
-        {
-          "name": "riflex_k",
-          "shape": 7,
-          "type": "RIFLEXT_ARGS",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
           "links": [
-            286,
-            287
+            288
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "WanFunV2VSampler"
+        "Node name for S&R": "LoadWan2_2FunModel"
       },
       "widgets_values": [
-        81,
-        640,
-        43,
-        "fixed",
-        50,
-        6,
-        1,
-        "Flow",
-        0.1,
-        true,
-        5,
-        true,
-        0
+        "Wan2.2-Fun-A14B-Control",
+        "Control",
+        "sequential_cpu_offload",
+        "wan2.2/wan_civitai_i2v.yaml",
+        "bf16"
       ]
+    },
+    {
+      "id": 110,
+      "type": "Note",
+      "pos": [
+        836.5111083984375,
+        639.8340454101562
+      ],
+      "size": [
+        608.1410522460938,
+        188.2682342529297
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Please set the mask height and mask width according to the height and width of the reference image. \nPlease set the video_length of the Spline Editor below to be the same as the video_length of the Sampler above. \nThe nodes are from KJNodes. For more details, please check https://github.com/kijai/ComfyUI-KJNodes/tree/main. \n\n请根据参考图片的高和宽设置mask height和mask width；\n请将下方Spline Editor的video_legnth置的与上方Sampler的video_legnth一样；\n部分节点来自于KJNodes，具体查看https://github.com/kijai/ComfyUI-KJNodes/tree/main；"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
     },
     {
       "id": 106,
       "type": "VHS_VideoCombine",
       "pos": [
-        1390,
-        61
+        1386.0306396484375,
+        42.99613952636719
       ],
       "size": [
         390,
@@ -731,7 +655,7 @@
           "name": "images",
           "shape": 7,
           "type": "IMAGE",
-          "link": 286
+          "link": 293
         },
         {
           "label": "音频",
@@ -790,65 +714,146 @@
       }
     },
     {
-      "id": 123,
-      "type": "LoadWanFunModel",
+      "id": 114,
+      "type": "ImageMaximumNode",
       "pos": [
-        281,
-        251
+        2114.7646484375,
+        884.5827026367188
       ],
       "size": [
-        315,
-        154
+        210,
+        46
       ],
       "flags": {},
-      "order": 8,
+      "order": 15,
       "mode": 0,
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "video_1",
+          "type": "IMAGE",
+          "link": 294
+        },
+        {
+          "name": "video_2",
+          "type": "IMAGE",
+          "link": 262
+        }
+      ],
       "outputs": [
         {
-          "name": "funmodels",
-          "type": "FunModels",
-          "slot_index": 0,
+          "name": "image",
+          "type": "IMAGE",
           "links": [
-            281
+            264
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadWanFunModel"
+        "Node name for S&R": "ImageMaximumNode"
       },
-      "widgets_values": [
-        "Wan2.1-Fun-V1.1-1.3B-Control",
-        "Control",
-        "model_cpu_offload",
-        "wan2.1/wan_civitai.yaml",
-        "bf16"
-      ]
+      "widgets_values": []
     },
     {
-      "id": 112,
-      "type": "Note",
+      "id": 129,
+      "type": "Wan2_2FunV2VSampler",
       "pos": [
-        -203,
-        252
+        835.7046508789062,
+        41.22541809082031
       ],
       "size": [
-        427.074951171875,
-        143.9142608642578
+        470.3740234375,
+        526
       ],
       "flags": {},
-      "order": 9,
+      "order": 13,
       "mode": 0,
-      "inputs": [],
-      "outputs": [],
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 288
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 289
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 290
+        },
+        {
+          "name": "validation_video",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "control_video",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 291
+        },
+        {
+          "name": "start_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 292
+        },
+        {
+          "name": "end_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "camera_conditions",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "riflex_k",
+          "shape": 7,
+          "type": "RIFLEXT_ARGS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            293,
+            294
+          ]
+        }
+      ],
       "properties": {
-        "text": ""
+        "Node name for S&R": "Wan2_2FunV2VSampler"
       },
       "widgets_values": [
-        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
+        81,
+        640,
+        43,
+        "fixed",
+        50,
+        6.000000000000001,
+        1,
+        "Flow",
+        0.1,
+        true,
+        5,
+        true,
+        0
+      ]
     }
   ],
   "links": [
@@ -909,56 +914,56 @@
       "STRING"
     ],
     [
-      281,
-      123,
+      288,
+      128,
       0,
-      126,
+      129,
       0,
       "FunModels"
     ],
     [
-      282,
+      289,
       121,
       0,
-      126,
+      129,
       1,
       "STRING_PROMPT"
     ],
     [
-      283,
+      290,
       122,
       0,
-      126,
+      129,
       2,
       "STRING_PROMPT"
     ],
     [
-      284,
+      291,
       95,
       0,
-      126,
+      129,
       4,
       "IMAGE"
     ],
     [
-      285,
+      292,
       100,
       0,
-      126,
+      129,
       5,
       "IMAGE"
     ],
     [
-      286,
-      126,
+      293,
+      129,
       0,
       106,
       0,
       "IMAGE"
     ],
     [
-      287,
-      126,
+      294,
+      129,
       0,
       114,
       0,
@@ -968,7 +973,7 @@
   "groups": [
     {
       "id": 1,
-      "title": "Load EasyAnimate",
+      "title": "Load Model",
       "bounding": [
         189,
         160,
@@ -1022,19 +1027,19 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7513148009015782,
+      "scale": 0.6830134553650711,
       "offset": [
-        119.78785424088606,
-        -47.62140429778734
+        109.96141399088638,
+        -28.91205721966216
       ]
     },
+    "frontendVersion": "1.21.3",
     "node_versions": {
       "comfy-core": "0.3.44",
       "ComfyUI-KJNodes": "ff49e1b01f10a14496b08e21bb89b64d2b15f333",
       "CogVideoX-Fun": "e935795d7684aaba72be65d2ad5ef580c0526f7a",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
-    },
-    "frontendVersion": "1.21.3"
+    }
   },
   "version": 0.4
 }
