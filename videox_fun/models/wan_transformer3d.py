@@ -26,6 +26,8 @@ from ..utils import cfg_skip
 from .cache_utils import TeaCache
 from .wan_camera_adapter import SimpleAdapter
 
+import torch_npu
+
 try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
@@ -229,8 +231,22 @@ def attention(
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)
+        # out = torch.nn.functional.scaled_dot_product_attention(
+        #     q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)        
+
+        def apply_fa(query, key, value, dropout_p):
+            n_head     = query.shape[1]
+            head_dim   = query.shape[-1]
+            scale      = 1.0 / math.sqrt(head_dim)
+
+            output = torch_npu.npu_fusion_attention(
+                query, key, value, n_head, "BNSD",
+                scale=scale,
+                keep_prob= 1 - dropout_p
+            )[0]                              
+            return output 
+
+        out = apply_fa(q, k, v, dropout_p)          
 
         out = out.transpose(1, 2).contiguous()
     return out
