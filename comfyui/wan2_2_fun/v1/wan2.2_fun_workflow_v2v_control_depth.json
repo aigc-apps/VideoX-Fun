@@ -99,7 +99,7 @@
         "text": ""
       },
       "widgets_values": [
-        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -650,7 +650,7 @@
     },
     {
       "id": 2,
-      "title": "Load EasyAnimate",
+      "title": "Load Model",
       "bounding": [
         218,
         -387,
