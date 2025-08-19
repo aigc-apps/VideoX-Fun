@@ -953,7 +953,7 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 -0.0548,
                 -0.1681,
                 -0.0667,
-            ]
+            ], dtype=torch.float32
         )
         std = torch.tensor(
             [
@@ -1005,7 +1005,7 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 0.4089,
                 0.7468,
                 0.7744,
-            ]
+            ], dtype=torch.float32
         )
         self.scale = [mean, 1.0 / std]
 

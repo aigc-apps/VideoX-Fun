@@ -638,6 +638,12 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                 mask_condition = mask_condition.transpose(1, 2)
                 mask_latents = resize_mask(1 - mask_condition, masked_video_latents, True).to(device, weight_dtype) 
 
+                if self.vae.spatial_compression_ratio >= 16:
+                    mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
+                    if not mask[:, :, 0, :, :].any():
+                        mask[:, :, 1:, :, :] = 1
+                        latents = (1 - mask) * masked_video_latents + mask * latents
+
         if comfyui_progressbar:
             pbar.update(1)
 
@@ -667,9 +673,17 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                     )
                     y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
 
-
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latent_model_input.shape[0])
+                if self.vae.spatial_compression_ratio >= 16 and init_video is not None:
+                    temp_ts = ((mask[0][0][:, ::2, ::2]) * t).flatten()
+                    temp_ts = torch.cat([
+                        temp_ts,
+                        temp_ts.new_ones(seq_len - temp_ts.size(0)) * t
+                    ])
+                    temp_ts = temp_ts.unsqueeze(0)
+                    timestep = temp_ts.expand(latent_model_input.shape[0], temp_ts.size(1))
+                else:
+                    timestep = t.expand(latent_model_input.shape[0])
                 
                 if self.transformer_2 is not None:
                     if t >= boundary * self.scheduler.config.num_train_timesteps:
@@ -700,6 +714,9 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+                if self.vae.spatial_compression_ratio >= 16 and not mask[:, :, 0, :, :].any():
+                    latents = (1 - mask) * masked_video_latents + mask * latents
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

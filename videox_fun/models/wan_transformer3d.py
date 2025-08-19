@@ -754,6 +754,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         hidden_size=2048,
         add_control_adapter=False,
         in_dim_control_adapter=24,
+        downscale_factor_control_adapter=8,
         add_ref_conv=False,
         in_dim_ref_conv=16,
         cross_attn_type=None,
@@ -858,7 +859,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.img_emb = MLPProj(1280, dim)
         
         if add_control_adapter:
-            self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
+            self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:], downscale_factor=downscale_factor_control_adapter)
         else:
             self.control_adapter = None
 
@@ -1028,6 +1029,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
             seq_len += full_ref.size(1)
             x = [torch.concat([_full_ref.unsqueeze(0), u], dim=1) for _full_ref, u in zip(full_ref, x)]
+            if t.dim() != 1 and t.size(1) < seq_len:
+                pad_size = seq_len - t.size(1)
+                last_elements = t[:, -1].unsqueeze(1)
+                padding = last_elements.repeat(1, pad_size)
+                t = torch.cat([padding, t], dim=1)
 
         if subject_ref is not None:
             subject_ref_frames = subject_ref.size(2)
@@ -1035,6 +1041,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             grid_sizes = torch.stack([torch.tensor([u[0] + subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
             seq_len += subject_ref.size(1)
             x = [torch.concat([u, _subject_ref.unsqueeze(0)], dim=1) for _subject_ref, u in zip(subject_ref, x)]
+            if t.dim() != 1 and t.size(1) < seq_len:
+                pad_size = seq_len - t.size(1)
+                last_elements = t[:, -1].unsqueeze(1)
+                padding = last_elements.repeat(1, pad_size)
+                t = torch.cat([t, padding], dim=1)
         
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         if self.sp_world_size > 1:
@@ -1048,6 +1059,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # time embeddings
         with amp.autocast(dtype=torch.float32):
             if t.dim() != 1:
+                if t.size(1) < seq_len:
+                    pad_size = seq_len - t.size(1)
+                    last_elements = t[:, -1].unsqueeze(1)
+                    padding = last_elements.repeat(1, pad_size)
+                    t = torch.cat([t, padding], dim=1)
                 bt = t.size(0)
                 ft = t.flatten()
                 e = self.time_embedding(
@@ -1086,7 +1102,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # TeaCache
         if self.teacache is not None:
             if cond_flag:
-                modulated_inp = e0
+                if t.dim() != 1:
+                    modulated_inp = e0[:, -1, :]
+                else:
+                    modulated_inp = e0
                 skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
                 if skip_flag:
                     self.should_calc = True
@@ -1388,7 +1407,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     state_dict[key] = _state_dict[key]
         
         if model.state_dict()['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
-            model.state_dict()['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight']
+            model.state_dict()['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
             model.state_dict()['patch_embedding.weight'][:, state_dict['patch_embedding.weight'].size()[1]:, :, :] = 0
             state_dict['patch_embedding.weight'] = model.state_dict()['patch_embedding.weight']
         
@@ -1447,6 +1466,7 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
         hidden_size=2048,
         add_control_adapter=False,
         in_dim_control_adapter=24,
+        downscale_factor_control_adapter=8,
         add_ref_conv=False,
         in_dim_ref_conv=16,
     ):
@@ -1504,6 +1524,7 @@ class Wan2_2Transformer3DModel(WanTransformer3DModel):
             hidden_size=hidden_size,
             add_control_adapter=add_control_adapter,
             in_dim_control_adapter=in_dim_control_adapter,
+            downscale_factor_control_adapter=downscale_factor_control_adapter,
             add_ref_conv=add_ref_conv,
             in_dim_ref_conv=in_dim_ref_conv,
             cross_attn_type="cross_attn"

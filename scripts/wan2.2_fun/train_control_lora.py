@@ -1802,6 +1802,7 @@ def main():
                         )
                         mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
                         mask = mask.transpose(1, 2)
+                        mask_conditions = F.interpolate(mask[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(accelerator.device, weight_dtype)
                         mask = resize_mask(1 - mask, latents)
 
                         # Encode inpaint latents.
@@ -1901,6 +1902,17 @@ def main():
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
                     target_shape[1]
                 )
+
+                if spatial_compression_ratio >= 16:
+                    mask_conditions_bs = mask_conditions.size()[0]
+                    mask_conditions[:, :, 1:, :, :] = 1
+                    if not mask_conditions[:, :, 0, :, :].any():
+                        noisy_latents = (1 - mask_conditions) * control_latents[:, -vae.latent_channels:] + mask_conditions * noisy_latents
+                        
+                        temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * timesteps[:, None, None, None]).flatten(1)
+                        timesteps = torch.cat([temp_ts, temp_ts.new_ones(mask_conditions_bs, seq_len - temp_ts.size(1)) * timesteps[:, None,]], dim = 1)
+                    else:
+                        timesteps = mask_conditions.new_ones(mask_conditions_bs, seq_len) * timesteps[:, None,]
 
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):

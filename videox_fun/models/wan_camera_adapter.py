@@ -1,16 +1,17 @@
 import torch
 import torch.nn as nn
 
+
 class SimpleAdapter(nn.Module):
-    def __init__(self, in_dim, out_dim, kernel_size, stride, num_residual_blocks=1):
+    def __init__(self, in_dim, out_dim, kernel_size, stride, downscale_factor=8, num_residual_blocks=1):
         super(SimpleAdapter, self).__init__()
         
         # Pixel Unshuffle: reduce spatial dimensions by a factor of 8
-        self.pixel_unshuffle = nn.PixelUnshuffle(downscale_factor=8)
+        self.pixel_unshuffle = nn.PixelUnshuffle(downscale_factor=downscale_factor)
         
         # Convolution: reduce spatial dimensions by a factor
         #  of 2 (without overlap)
-        self.conv = nn.Conv2d(in_dim * 64, out_dim, kernel_size=kernel_size, stride=stride, padding=0)
+        self.conv = nn.Conv2d(in_dim * downscale_factor * downscale_factor, out_dim, kernel_size=kernel_size, stride=stride, padding=0)
         
         # Residual blocks for feature extraction
         self.residual_blocks = nn.Sequential(
@@ -38,6 +39,7 @@ class SimpleAdapter(nn.Module):
         out = out.permute(0, 2, 1, 3, 4)
 
         return out
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, dim):
