@@ -78,9 +78,9 @@ enable_riflex       = False
 riflex_k            = 6
 
 # Config and model path
-config_path         = "config/wan2.2/wan_civitai_i2v.yaml"
+config_path         = "config/wan2.2/wan_civitai_5b.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
+model_name          = "models/Diffusion_Transformer/Wan2.2-Fun-5B-InP/"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -99,17 +99,13 @@ lora_path               = None
 lora_high_path          = None 
 
 # Other params
-sample_size         = [480, 832]
-video_length        = 81
-fps                 = 16
+sample_size         = [704, 1280]
+video_length        = 121
+fps                 = 21
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
-validation_image_end    = None
-
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
 prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
@@ -120,7 +116,7 @@ num_inference_steps = 50
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
 lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-fun-i2v"
+save_path           = "samples/wan-videos-fun-t2v"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -305,7 +301,7 @@ with torch.no_grad():
         if transformer_2 is not None:
             pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
-    input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, validation_image_end, video_length=video_length, sample_size=sample_size)
+    input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=sample_size)
 
     sample = pipeline(
         prompt, 
@@ -316,10 +312,10 @@ with torch.no_grad():
         generator   = generator,
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        boundary = boundary,
 
-        video      = input_video,
+        video        = input_video,
         mask_video   = input_video_mask,
+        boundary = boundary,
         shift = shift,
     ).videos
 

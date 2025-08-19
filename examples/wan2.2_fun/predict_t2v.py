@@ -16,7 +16,7 @@ from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                               WanT5EncoderModel, Wan2_2Transformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Wan2_2I2VPipeline
+from videox_fun.pipeline import Wan2_2FunInpaintPipeline
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
                                               convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
@@ -116,7 +116,7 @@ num_inference_steps = 50
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
 lora_high_weight    = 0.55
-save_path           = "samples/wan-fun-videos-i2v"
+save_path           = "samples/wan-videos-fun-t2v"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -209,7 +209,7 @@ scheduler = Choosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = Wan2_2I2VPipeline(
+pipeline = Wan2_2FunInpaintPipeline(
     transformer=transformer,
     transformer_2=transformer_2,
     vae=vae,

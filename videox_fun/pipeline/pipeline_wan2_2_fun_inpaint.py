@@ -608,6 +608,8 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                     torch.zeros_like(latents)[:, :1].to(device, weight_dtype), [1, 4, 1, 1, 1]
                 )
                 masked_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
+                if self.vae.spatial_compression_ratio >= 16:
+                    mask = torch.ones_like(latents).to(device, weight_dtype)[:, :1].to(device, weight_dtype)
             else:
                 bs, _, video_length, height, width = video.size()
                 mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 

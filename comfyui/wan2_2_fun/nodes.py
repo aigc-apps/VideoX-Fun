@@ -49,6 +49,9 @@ class LoadWan2_2FunModel:
                         'Wan2.2-Fun-A14B-InP',
                         'Wan2.2-Fun-A14B-Control',
                         'Wan2.2-Fun-A14B-Control-Camera',
+                        'Wan2.2-Fun-5B-InP',
+                        'Wan2.2-Fun-5B-Control',
+                        'Wan2.2-Fun-5B-Control-Camera',
                     ],
                     {
                         "default": 'Wan2.2-Fun-A14B-InP',
@@ -158,12 +161,15 @@ class LoadWan2_2FunModel:
             torch_dtype=weight_dtype,
         )
 
-        transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-            os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-            low_cpu_mem_usage=True,
-            torch_dtype=weight_dtype,
-        )
+        if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+            transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+                os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
+                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                low_cpu_mem_usage=True,
+                torch_dtype=weight_dtype,
+            )
+        else:
+            transformer_2 = None
         # Update pbar
         pbar.update(1) 
 
@@ -212,21 +218,30 @@ class LoadWan2_2FunModel:
             )
 
         if GPU_memory_mode == "sequential_cpu_offload":
-            replace_parameters_by_name(transformer, ["modulation",], device="cuda")
-            transformer.freqs = transformer.freqs.to(device="cuda")
-            pipeline.enable_sequential_cpu_offload()
+            replace_parameters_by_name(transformer, ["modulation",], device=device)
+            transformer.freqs = transformer.freqs.to(device=device)
+            if transformer_2 is not None:
+                replace_parameters_by_name(transformer_2, ["modulation",], device=device)
+                transformer_2.freqs = transformer_2.freqs.to(device=device)
+            pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
-            pipeline.enable_model_cpu_offload()
+            if transformer_2 is not None:
+                convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+                convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+            pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
-            pipeline.enable_model_cpu_offload()
+            pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
+            if transformer_2 is not None:
+                convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+                convert_weight_dtype_wrapper(transformer_2, weight_dtype)
             pipeline.to(device=device)
         else:
-            pipeline.to("cuda")
+            pipeline.to(device=device)
 
         funmodels = {
             'pipeline': pipeline, 

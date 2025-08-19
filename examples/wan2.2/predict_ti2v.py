@@ -100,7 +100,7 @@ lora_path               = None
 lora_high_path          = None
 
 # Other params
-sample_size         = [480, 832]
+sample_size         = [704, 1280]
 video_length        = 121
 fps                 = 24
 

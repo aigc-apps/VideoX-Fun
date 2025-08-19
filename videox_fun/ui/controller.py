@@ -81,9 +81,11 @@ class Fun_Controller:
         self.diffusion_transformer_dropdown = model_name
         self.scheduler_dict             = scheduler_dict
         self.model_type                 = model_type
-        self.config_path                = os.path.realpath(config_path)
         if config_path is not None:
-            self.config = OmegaConf.load(config_path)
+            self.config_path            = os.path.realpath(config_path)
+            self.config                 = OmegaConf.load(config_path)
+        else:
+            self.config_path            = None
         self.ulysses_degree             = ulysses_degree
         self.ring_degree                = ring_degree
         self.fsdp_dit                   = fsdp_dit       
