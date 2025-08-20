@@ -14,8 +14,11 @@ from .discrete_sampler import DiscreteSampling
 
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
-if importlib.util.find_spec("pai_fuser") is not None:
-    from pai_fuser.core import (convert_model_weight_to_float8,
+if importlib.util.find_spec("paifuser") is not None:
+    # --------------------------------------------------------------- #
+    #   FP8 Linear Kernel
+    # --------------------------------------------------------------- #
+    from paifuser.ops import (convert_model_weight_to_float8,
                                 convert_weight_dtype_wrapper)
     from . import fp8_optimization
     fp8_optimization.convert_model_weight_to_float8 = convert_model_weight_to_float8
@@ -24,8 +27,15 @@ if importlib.util.find_spec("pai_fuser") is not None:
     convert_weight_dtype_wrapper = fp8_optimization.convert_weight_dtype_wrapper
     print("Import PAI Quantization Turbo")
 
-    from pai_fuser.core import (cfg_skip_turbo, enable_cfg_skip, 
-                                disable_cfg_skip)
+    # --------------------------------------------------------------- #
+    #   CFG Skip Turbo
+    # --------------------------------------------------------------- #
+    if importlib.util.find_spec("paifuser.accelerator") is not None:
+        from paifuser.accelerator import (cfg_skip_turbo, disable_cfg_skip,
+                                          enable_cfg_skip, share_cfg_skip)
+    else:
+        from paifuser import (cfg_skip_turbo, disable_cfg_skip,
+                              enable_cfg_skip, share_cfg_skip)
     from . import cfg_optimization
     cfg_optimization.cfg_skip = cfg_skip_turbo
     cfg_skip = cfg_skip_turbo
