@@ -57,10 +57,7 @@ if importlib.util.find_spec("paifuser") is not None:
 
     else:
         def adaptive_fast_usp_rope_apply_qk(q, k, grid_sizes, freqs):
-            if torch.is_grad_enabled():
-                return local_rope_apply_qk(q, k, grid_sizes, freqs)
-            else:
-                return usp_rope_apply_real_qk(q, k, grid_sizes, freqs)
+            return usp_rope_apply_real_qk(q, k, grid_sizes, freqs)
             
     wan_xfuser.rope_apply_qk = adaptive_fast_usp_rope_apply_qk
     rope_apply_qk = adaptive_fast_usp_rope_apply_qk
