@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--world_size', type=int, default=8, help='Number of parallel workers')
     parser.add_argument(
         '--gpu_memory_mode', type=str, default="model_full_load", help='''
-GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8].
+GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8].
 model_full_load means that the entire model will be moved to the GPU.
 
 model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,

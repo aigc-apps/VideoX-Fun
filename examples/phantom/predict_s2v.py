@@ -30,7 +30,7 @@ from videox_fun.utils.utils import (filter_kwargs,
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -180,15 +180,15 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 text_encoder = text_encoder.eval()
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
 if sampler_name == "Flow_Unipc" or sampler_name == "Flow_DPM++":
     config['scheduler_kwargs']['shift'] = 1
-scheduler = Choosen_Scheduler(
-    **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+scheduler = Chosen_Scheduler(
+    **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
 
 # Get Pipeline

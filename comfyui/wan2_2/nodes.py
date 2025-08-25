@@ -134,11 +134,11 @@ class LoadWan2_2Model:
             raise ValueError("Please download Fun model")
 
         # Get Vae
-        Choosen_AutoencoderKL = {
+        Chosen_AutoencoderKL = {
             "AutoencoderKLWan": AutoencoderKLWan,
             "AutoencoderKLWan3_8": AutoencoderKLWan3_8
         }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
-        vae = Choosen_AutoencoderKL.from_pretrained(
+        vae = Chosen_AutoencoderKL.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         ).to(weight_dtype)
