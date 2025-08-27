@@ -126,7 +126,6 @@ tokenizer = Qwen2Tokenizer.from_pretrained(
 text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype
 )
-print(text_encoder)
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
