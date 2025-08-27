@@ -28,7 +28,7 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -129,12 +129,12 @@ text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
 print(text_encoder)
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
-scheduler = Choosen_Scheduler.from_pretrained(
+scheduler = Chosen_Scheduler.from_pretrained(
     model_name, 
     subfolder="scheduler"
 )
