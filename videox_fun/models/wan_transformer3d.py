@@ -1022,7 +1022,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             grid_sizes = torch.stack([torch.tensor([u[0] - 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
 
         if subject_ref is not None:
-            subject_ref_length = subject_ref[0].size(1)
+            subject_ref_length = subject_ref.size(1)
             x = x[:, :-subject_ref_length]
             grid_sizes = torch.stack([torch.tensor([u[0] - subject_ref_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
 
