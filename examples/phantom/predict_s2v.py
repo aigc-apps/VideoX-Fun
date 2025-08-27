@@ -123,7 +123,7 @@ guidance_scale          = 6.0
 seed                    = 43
 num_inference_steps     = 50
 lora_weight             = 0.55
-save_path               = "samples/wan-videos-fun-control"
+save_path               = "samples/wan-videos-phantom"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
