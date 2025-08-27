@@ -20,15 +20,16 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import numpy as np
 import PIL.Image
 import torch
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.image_processor import VaeImageProcessor
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
                              replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 
-from videox_fun.models import QwenImageTransformer2DModel, AutoencoderKLQwenImage, Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
-
+from videox_fun.models import (AutoencoderKLQwenImage,
+                               Qwen2_5_VLForConditionalGeneration,
+                               Qwen2Tokenizer, QwenImageTransformer2DModel)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
