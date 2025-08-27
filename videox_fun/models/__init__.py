@@ -1,6 +1,11 @@
 import importlib.util
 
 from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
+except:
+    Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer = None, None
+    print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
@@ -10,6 +15,8 @@ from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention,
                                 WanTransformer3DModel)
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan3_8, AutoencoderKLWan2_2_
+from .qwenimage_transformer2d import QwenImageTransformer2DModel
+from .qwenimage_vae import AutoencoderKLQwenImage
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("pai_fuser") is not None:
