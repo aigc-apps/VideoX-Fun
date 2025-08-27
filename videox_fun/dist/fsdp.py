@@ -19,13 +19,14 @@ def shard_model(
     process_group=None,
     sharding_strategy=ShardingStrategy.FULL_SHARD,
     sync_module_states=True,
-):
+    module_to_wrapper=None,
+):  
     model = FSDP(
         module=model,
         process_group=process_group,
         sharding_strategy=sharding_strategy,
         auto_wrap_policy=partial(
-            lambda_auto_wrap_policy, lambda_fn=lambda m: m in model.blocks),
+            lambda_auto_wrap_policy, lambda_fn=lambda m: m in model.blocks if module_to_wrapper is None else module_to_wrapper),
         mixed_precision=MixedPrecision(
             param_dtype=param_dtype,
             reduce_dtype=reduce_dtype,
