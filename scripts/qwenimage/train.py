@@ -1342,7 +1342,6 @@ def main():
                 with torch.no_grad():
                     # This way is quicker when batch grows up
                     def _batch_encode_vae(pixel_values):
-                        print(pixel_values.size())
                         pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
                         bs = args.vae_mini_batch
                         new_pixel_values = []
