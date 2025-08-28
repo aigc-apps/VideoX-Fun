@@ -198,6 +198,7 @@ class WanLayerNorm(nn.LayerNorm):
         """
         return super().forward(x)
 
+
 class WanSelfAttention(nn.Module):
 
     def __init__(self,
@@ -223,7 +224,7 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, dtype, t):
+    def forward(self, x, seq_lens, grid_sizes, freqs, dtype=torch.bfloat16, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -260,7 +261,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens, dtype, t):
+    def forward(self, x, context, context_lens, dtype=torch.bfloat16, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -304,7 +305,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens, dtype, t):
+    def forward(self, x, context, context_lens, dtype=torch.bfloat16, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -347,7 +348,7 @@ class WanI2VCrossAttention(WanSelfAttention):
 
 
 class WanCrossAttention(WanSelfAttention):
-    def forward(self, x, context, context_lens, dtype, t):
+    def forward(self, x, context, context_lens, dtype=torch.bfloat16, t=0):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -356,14 +357,14 @@ class WanCrossAttention(WanSelfAttention):
         """
         b, n, d = x.size(0), self.num_heads, self.head_dim
         # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
+        q = self.norm_q(self.q(x.to(dtype))).view(b, -1, n, d)
+        k = self.norm_k(self.k(context.to(dtype))).view(b, -1, n, d)
+        v = self.v(context.to(dtype)).view(b, -1, n, d)
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        x = attention(q.to(dtype), k.to(dtype), v.to(dtype), k_lens=context_lens)
         # output
         x = x.flatten(2)
-        x = self.o(x)
+        x = self.o(x.to(dtype))
         return x
 
 
