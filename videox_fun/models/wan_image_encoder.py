@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 
-from .wan_transformer3d import attention, flash_attention
+from .attention_utils import attention, flash_attention
 from .wan_xlm_roberta import XLMRoberta
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin

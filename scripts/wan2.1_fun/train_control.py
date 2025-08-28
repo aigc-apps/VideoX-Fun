@@ -1821,8 +1821,8 @@ def main():
                 loss = loss.mean()
 
                 if args.motion_sub_loss and noise_pred.size()[1] > 2:
-                    gt_sub_noise = noise_pred[:, 1:, :].float() - noise_pred[:, :-1, :].float()
-                    pre_sub_noise = target[:, 1:, :].float() - target[:, :-1, :].float()
+                    gt_sub_noise = noise_pred[:, :, 1:].float() - noise_pred[:, :, :-1].float()
+                    pre_sub_noise = target[:, :, 1:].float() - target[:, :, :-1].float()
                     sub_loss = F.mse_loss(gt_sub_noise, pre_sub_noise, reduction="mean")
                     loss = loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
 
