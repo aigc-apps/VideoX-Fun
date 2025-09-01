@@ -9,6 +9,7 @@ from .fuser import (get_sequence_parallel_rank,
                     xFuserLongContextAttention)
 from .wan_xfuser import usp_attn_forward
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
+from .flux_xfuser import FluxMultiGPUsAttnProcessor2_0
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("pai_fuser") is not None:

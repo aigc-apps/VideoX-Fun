@@ -1,6 +1,10 @@
 import importlib.util
 
-from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+from diffusers import AutoencoderKL
+from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPTextModel,
+                          CLIPTokenizer, CLIPVisionModelWithProjection,
+                          T5EncoderModel, T5Tokenizer, T5TokenizerFast)
+
 try:
     from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
 except:
@@ -9,14 +13,16 @@ except:
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
-from .wan_image_encoder import CLIPModel
-from .wan_text_encoder import WanT5EncoderModel
-from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention,
-                                WanTransformer3DModel)
-from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
-from .wan_vae3_8 import AutoencoderKLWan3_8, AutoencoderKLWan2_2_
+from .flux_transformer2d import FluxTransformer2DModel
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_vae import AutoencoderKLQwenImage
+from .wan_audio_encoder import WanAudioEncoder
+from .wan_image_encoder import CLIPModel
+from .wan_text_encoder import WanT5EncoderModel
+from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
+                                WanSelfAttention, WanTransformer3DModel)
+from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
+from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("pai_fuser") is not None:

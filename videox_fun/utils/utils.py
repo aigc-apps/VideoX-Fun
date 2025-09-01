@@ -1,14 +1,18 @@
-import os
 import gc
-import imageio
 import inspect
+import os
+import shutil
+import subprocess
+import time
+
+import cv2
+import imageio
 import numpy as np
 import torch
-import time
 import torchvision
-import cv2
 from einops import rearrange
 from PIL import Image
+
 
 def filter_kwargs(cls, kwargs):
     sig = inspect.signature(cls.__init__)
@@ -77,6 +81,66 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
         if path.endswith("mp4"):
             path = path.replace('.mp4', '.gif')
         outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
+
+def merge_video_audio(video_path: str, audio_path: str):
+    """
+    Merge the video and audio into a new video, with the duration set to the shorter of the two,
+    and overwrite the original video file.
+
+    Parameters:
+    video_path (str): Path to the original video file
+    audio_path (str): Path to the audio file
+    """
+    # check
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"video file {video_path} does not exist")
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"audio file {audio_path} does not exist")
+
+    base, ext = os.path.splitext(video_path)
+    temp_output = f"{base}_temp{ext}"
+
+    try:
+        # create ffmpeg command
+        command = [
+            'ffmpeg',
+            '-y',  # overwrite
+            '-i',
+            video_path,
+            '-i',
+            audio_path,
+            '-c:v',
+            'copy',  # copy video stream
+            '-c:a',
+            'aac',  # use AAC audio encoder
+            '-b:a',
+            '192k',  # set audio bitrate (optional)
+            '-map',
+            '0:v:0',  # select the first video stream
+            '-map',
+            '1:a:0',  # select the first audio stream
+            '-shortest',  # choose the shortest duration
+            temp_output
+        ]
+
+        # execute the command
+        print("Start merging video and audio...")
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # check result
+        if result.returncode != 0:
+            error_msg = f"FFmpeg execute failed: {result.stderr}"
+            print(error_msg)
+            raise RuntimeError(error_msg)
+
+        shutil.move(temp_output, video_path)
+        print(f"Merge completed, saved to {video_path}")
+
+    except Exception as e:
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+        print(f"merge_video_audio failed with error: {e}")
 
 def get_image_to_video_latent(validation_image_start, validation_image_end, video_length, sample_size):
     if validation_image_start is not None and validation_image_end is not None:
@@ -314,12 +378,13 @@ def timer_record(model_name=""):
     return decorator
 
 def _write_to_excel(model_name, time_sum):
-    import pandas as pd
     import os
+
+    import pandas as pd
 
     row_env = os.environ.get(f"{model_name}_EXCEL_ROW", "1")  # 默认第1行
     col_env = os.environ.get(f"{model_name}_EXCEL_COL", "1")  # 默认第A列
-    file_path = os.environ.get(f"EXCEL_FILE", "timing_records.xlsx")  # 默认文件名
+    file_path = os.environ.get("EXCEL_FILE", "timing_records.xlsx")  # 默认文件名
 
     try:
         df = pd.read_excel(file_path, sheet_name="Sheet1", header=None)
