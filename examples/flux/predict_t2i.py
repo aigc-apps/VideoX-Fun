@@ -69,7 +69,7 @@ negative_prompt     = "The video is not of a high quality, it has a low resoluti
 guidance_scale      = 1.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 0.55
+lora_weight         = 0.70
 save_path           = "samples/flux-t2i"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
