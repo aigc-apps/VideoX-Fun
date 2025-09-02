@@ -386,4 +386,6 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
         print(m, u)
+
+        model = model.to(torch_dtype)
         return model
