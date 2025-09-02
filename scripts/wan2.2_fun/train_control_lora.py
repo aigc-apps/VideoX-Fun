@@ -1622,8 +1622,8 @@ def main():
                     control_camera_values = batch["control_camera_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length and not zero_stage == 3:
-                    if args.auto_tile_batch_size and args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                if args.auto_tile_batch_size and args.training_with_video_token_length and not zero_stage == 3:
+                    if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (4, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
@@ -1633,7 +1633,7 @@ def main():
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
                         else:
                             batch['text'] = batch['text'] * 4
-                    elif args.auto_tile_batch_size and args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                    elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
                         control_pixel_values = torch.tile(control_pixel_values, (2, 1, 1, 1, 1))
                         if args.train_mode == "control_camera_ref":
@@ -1660,7 +1660,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length and not zero_stage == 3:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and not zero_stage == 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
