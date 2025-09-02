@@ -16,7 +16,6 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoTokenizer,
                                WanT5EncoderModel, WanTransformer3DModel)
-from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import WanFunPhantomPipeline
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -25,8 +24,6 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
                                     save_videos_grid)
-from videox_fun.utils.utils import (filter_kwargs,
-                                   save_videos_grid)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
