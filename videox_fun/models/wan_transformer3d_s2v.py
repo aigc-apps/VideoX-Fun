@@ -674,6 +674,7 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         motion_frames=[17, 5],
         add_last_motion=2,
         drop_motion_frames=False,
+        cond_flag=True,
         *extra_args,
         **extra_kwargs
     ):
@@ -695,6 +696,7 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         drop_motion_frames  Bool, whether drop the motion frames info
         """
         device = self.patch_embedding.weight.device
+        dtype = x.dtype
         add_last_motion = self.add_last_motion * add_last_motion
 
         # Embeddings
@@ -839,9 +841,9 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         if self.teacache is not None:
             if cond_flag:
                 if t.dim() != 1:
-                    modulated_inp = e0[:, -1, :]
+                    modulated_inp = e0[0][:, -1, :]
                 else:
-                    modulated_inp = e0
+                    modulated_inp = e0[0]
                 skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
                 if skip_flag:
                     self.should_calc = True
@@ -868,7 +870,7 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
             else:
                 ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
 
-                for block in self.blocks:
+                for idx, block in enumerate(self.blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
 
                         def create_custom_forward(module):
@@ -959,6 +961,10 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         x = self.head(x, e)
         x = self.unpatchify(x, original_grid_sizes)
         x = torch.stack(x)
+        if self.teacache is not None and cond_flag:
+            self.teacache.cnt += 1
+            if self.teacache.cnt == self.teacache.num_steps:
+                self.teacache.reset()
         return x
 
     def unpatchify(self, x, grid_sizes):
