@@ -51,6 +51,7 @@ def rope_params(max_seq_len, dim, theta=10000):
     freqs = torch.polar(torch.ones_like(freqs), freqs)
     return freqs
 
+
 # modified from https://github.com/thu-ml/RIFLEx/blob/main/riflex_utils.py
 @amp.autocast(enabled=False)
 def get_1d_rotary_pos_embed_riflex(
@@ -111,6 +112,7 @@ def get_1d_rotary_pos_embed_riflex(
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
         return freqs_cis
 
+
 # Similar to diffusers.pipelines.hunyuandit.pipeline_hunyuandit.get_resize_crop_region_for_grid
 def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
     tw = tgt_width
@@ -128,6 +130,7 @@ def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
     crop_left = int(round((tw - resize_width) / 2.0))
 
     return (crop_top, crop_left), (crop_top + resize_height, crop_left + resize_width)
+
 
 @amp.autocast(enabled=False)
 @torch.compiler.disable()

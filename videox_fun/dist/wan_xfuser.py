@@ -109,3 +109,72 @@ def usp_attn_forward(self,
     x = x.flatten(2)
     x = self.o(x)
     return x
+
+@amp.autocast(enabled=False)
+@torch.compiler.disable()
+def s2v_rope_apply(x, grid_sizes, freqs):
+    s, n, c = x.size(1), x.size(2), x.size(3) // 2
+    # loop over samples
+    output = []
+    for i, _ in enumerate(x):
+        s = x.size(1)
+        # precompute multipliers
+        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
+            s, n, -1, 2))
+        freqs_i = freqs[i]
+        freqs_i_rank = pad_freqs(freqs_i, s)
+        x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
+        x_i = torch.cat([x_i, x[i, s:]])
+        # append to collection
+        output.append(x_i)
+    return torch.stack(output).float()
+
+def s2v_rope_apply_qk(q, k, grid_sizes, freqs):
+    q = s2v_rope_apply(q, grid_sizes, freqs)
+    k = s2v_rope_apply(k, grid_sizes, freqs)
+    return q, k
+
+def usp_attn_s2v_forward(self,
+                     x,
+                     seq_lens,
+                     grid_sizes,
+                     freqs,
+                     dtype=torch.bfloat16, 
+                     t=0):
+    b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+    half_dtypes = (torch.float16, torch.bfloat16)
+
+    def half(x):
+        return x if x.dtype in half_dtypes else x.to(dtype)
+
+    # query, key, value function
+    def qkv_fn(x):
+        q = self.norm_q(self.q(x)).view(b, s, n, d)
+        k = self.norm_k(self.k(x)).view(b, s, n, d)
+        v = self.v(x).view(b, s, n, d)
+        return q, k, v
+
+    q, k, v = qkv_fn(x)
+    q, k = s2v_rope_apply_qk(q, k, grid_sizes, freqs)
+
+    # TODO: We should use unpaded q,k,v for attention.
+    # k_lens = seq_lens // get_sequence_parallel_world_size()
+    # if k_lens is not None:
+    #     q = torch.cat([u[:l] for u, l in zip(q, k_lens)]).unsqueeze(0)
+    #     k = torch.cat([u[:l] for u, l in zip(k, k_lens)]).unsqueeze(0)
+    #     v = torch.cat([u[:l] for u, l in zip(v, k_lens)]).unsqueeze(0)
+
+    x = xFuserLongContextAttention()(
+        None,
+        query=half(q),
+        key=half(k),
+        value=half(v),
+        window_size=self.window_size)
+
+    # TODO: padding after attention.
+    # x = torch.cat([x, x.new_zeros(b, s - x.size(1), n, d)], dim=1)
+
+    # output
+    x = x.flatten(2)
+    x = self.o(x)
+    return x

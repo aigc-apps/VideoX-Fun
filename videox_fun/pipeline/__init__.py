@@ -10,6 +10,7 @@ from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
 from .pipeline_qwenimage import QwenImagePipeline
+from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
 from .pipeline_flux import FluxPipeline
 
 WanFunPipeline = WanPipeline
