@@ -27,9 +27,9 @@ from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
                              replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 
-from videox_fun.models import (AutoencoderKLQwenImage,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+from ..models import (AutoencoderKLQwenImage,
+                    Qwen2_5_VLForConditionalGeneration,
+                    Qwen2Tokenizer, QwenImageTransformer2DModel)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm

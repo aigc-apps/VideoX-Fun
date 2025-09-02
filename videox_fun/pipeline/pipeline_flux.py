@@ -27,10 +27,10 @@ from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
                              replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 
-from videox_fun.models import (CLIPImageProcessor, CLIPTextModel,
-                               CLIPTokenizer, CLIPVisionModelWithProjection,
-                               FluxTransformer2DModel, T5EncoderModel, AutoencoderKL,
-                               T5TokenizerFast)
+from ..models import (CLIPImageProcessor, CLIPTextModel,
+                    CLIPTokenizer, CLIPVisionModelWithProjection,
+                    FluxTransformer2DModel, T5EncoderModel, AutoencoderKL,
+                    T5TokenizerFast)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
