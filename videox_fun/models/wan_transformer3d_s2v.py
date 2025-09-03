@@ -1,4 +1,4 @@
-# Modified from https://github.com/Wan-Video/Wan2.1/blob/main/wan/modules/model.py
+# Modified from https://github.com/Wan-Video/Wan2.2/blob/main/wan/modules/s2v/model_s2v.py
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 
 import glob
@@ -25,7 +25,7 @@ from .cache_utils import TeaCache
 from .wan_audio_injector import (AudioInjector_WAN, CausalAudioEncoder,
                                  FramePackMotioner, MotionerTransformers,
                                  rope_precompute)
-from .wan_transformer3d import (Head, WanAttentionBlock, WanLayerNorm,
+from .wan_transformer3d import (Head, WanAttentionBlock, WanLayerNorm, Wan2_2Transformer3DModel,
                                 WanSelfAttention, rope_params,
                                 sinusoidal_embedding_1d)
 
@@ -181,7 +181,7 @@ class WanS2VAttentionBlock(WanAttentionBlock):
         return x
 
 
-class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
+class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
     # ignore_for_config = [
     #     'args', 'kwargs', 'patch_size', 'cross_attn_norm', 'qk_norm',
     #     'text_dim', 'window_size'
@@ -224,25 +224,33 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         *args,
         **kwargs
     ):
-        super().__init__()
+        super().__init__(
+            model_type=model_type,
+            patch_size=patch_size,
+            text_len=text_len,
+            in_dim=in_dim,
+            dim=dim,
+            ffn_dim=ffn_dim,
+            freq_dim=freq_dim,
+            text_dim=text_dim,
+            out_dim=out_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            window_size=window_size,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            add_control_adapter=add_control_adapter,
+            in_dim_control_adapter=in_dim_control_adapter,
+            downscale_factor_control_adapter=downscale_factor_control_adapter,
+            add_ref_conv=add_ref_conv,
+            in_dim_ref_conv=in_dim_ref_conv,
+            cross_attn_type="cross_attn"
+        )
 
         assert model_type == 's2v'
-        self.model_type = model_type
-
-        self.patch_size = patch_size
-        self.text_len = text_len
-        self.in_dim = in_dim
-        self.dim = dim
-        self.ffn_dim = ffn_dim
-        self.freq_dim = freq_dim
-        self.text_dim = text_dim
-        self.out_dim = out_dim
-        self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.window_size = window_size
-        self.qk_norm = qk_norm
-        self.cross_attn_norm = cross_attn_norm
-        self.eps = eps
         self.enbale_adain = enable_adain
         # Whether to assign 0 value timestep to ref/motion
         self.adain_mode = adain_mode
@@ -251,44 +259,8 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
         self.add_last_motion = add_last_motion
         self.enable_framepack = enable_framepack
 
-        # Embeddings
-        self.patch_embedding = nn.Conv3d(
-            in_dim, dim, kernel_size=patch_size, stride=patch_size)
-        self.text_embedding = nn.Sequential(
-            nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
-            nn.Linear(dim, dim))
-
-        self.time_embedding = nn.Sequential(
-            nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
-        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-
-        # Blocks
-        self.blocks = nn.ModuleList([
-            WanS2VAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
-                                 cross_attn_norm, eps)
-            for _ in range(num_layers)
-        ])
-
-        # Head
-        self.head = Head(dim, out_dim, patch_size, eps)
-
-        # Buffers (don't use register_buffer otherwise dtype will be changed in to())
-        assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
-        d = dim // num_heads
-        self.freqs = torch.cat(
-            [
-                rope_params(1024, d - 4 * (d // 6)),
-                rope_params(1024, 2 * (d // 6)),
-                rope_params(1024, 2 * (d // 6))
-            ],
-            dim=1
-        )
-
-        # Initialize weights
-        self.init_weights()
-
+        # init audio injector
         all_modules, all_modules_names = torch_dfs(self.blocks, parent_name="root.transformer_blocks")
-
         if cond_dim > 0:
             self.cond_encoder = nn.Conv3d(
                 cond_dim,
@@ -374,95 +346,6 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
                 num_heads=self.num_heads,
                 zip_frame_buckets=[1, 2, 16],
                 drop_mode=framepack_drop_mode)
-
-        self.use_context_parallel = False  
-        self.teacache = None
-        self.cfg_skip_ratio = None
-        self.current_steps = 0
-        self.num_inference_steps = None
-        self.gradient_checkpointing = False
-        self.sp_world_size = 1
-        self.sp_world_rank = 0
-        self.init_weights()
-
-    def _set_gradient_checkpointing(self, *args, **kwargs):
-        if "value" in kwargs:
-            self.gradient_checkpointing = kwargs["value"]
-        elif "enable" in kwargs:
-            self.gradient_checkpointing = kwargs["enable"]
-        else:
-            raise ValueError("Invalid set gradient checkpointing")
-
-    def enable_teacache(
-        self,
-        coefficients,
-        num_steps: int,
-        rel_l1_thresh: float,
-        num_skip_start_steps: int = 0,
-        offload: bool = True,
-    ):
-        self.teacache = TeaCache(
-            coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
-        )
-
-    def share_teacache(
-        self,
-        transformer = None,
-    ):
-        self.teacache = transformer.teacache
-
-    def disable_teacache(self):
-        self.teacache = None
-
-    def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
-        if cfg_skip_ratio != 0:
-            self.cfg_skip_ratio = cfg_skip_ratio
-            self.current_steps = 0
-            self.num_inference_steps = num_steps
-        else:
-            self.cfg_skip_ratio = None
-            self.current_steps = 0
-            self.num_inference_steps = None
-
-    def share_cfg_skip(
-        self,
-        transformer = None,
-    ):
-        self.cfg_skip_ratio = transformer.cfg_skip_ratio
-        self.current_steps = transformer.current_steps
-        self.num_inference_steps = transformer.num_inference_steps
-
-    def disable_cfg_skip(self):
-        self.cfg_skip_ratio = None
-        self.current_steps = 0
-        self.num_inference_steps = None
-
-    def enable_riflex(
-        self,
-        k = 6,
-        L_test = 66,
-        L_test_scale = 4.886,
-    ):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test, L_test_scale=L_test_scale),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6))
-            ],
-            dim=1
-        ).to(device)
-
-    def disable_riflex(self):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                rope_params(1024, self.d - 4 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6))
-            ],
-            dim=1
-        ).to(device)
 
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
@@ -992,30 +875,6 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
             out.append(u)
         return out
 
-    def init_weights(self):
-        r"""
-        Initialize model parameters using Xavier initialization.
-        """
-
-        # basic init
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-        # init embeddings
-        nn.init.xavier_uniform_(self.patch_embedding.weight.flatten(1))
-        for m in self.text_embedding.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, std=.02)
-        for m in self.time_embedding.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, std=.02)
-
-        # init output layer
-        nn.init.zeros_(self.head.head.weight)
-
     def zero_init_weights(self):
         with torch.no_grad():
             self.trainable_cond_mask = zero_module(self.trainable_cond_mask)
@@ -1028,143 +887,3 @@ class Wan2_2Transformer3DModel_S2V(ModelMixin, ConfigMixin):
                 if self.enbale_adain:
                     self.audio_injector.injector_adain_layers[i].linear = \
                         zero_module(self.audio_injector.injector_adain_layers[i].linear)
-
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
-        low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
-    ):
-        if subfolder is not None:
-            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
-        print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
-
-        config_file = os.path.join(pretrained_model_path, 'config.json')
-        if not os.path.isfile(config_file):
-            raise RuntimeError(f"{config_file} does not exist")
-        with open(config_file, "r") as f:
-            config = json.load(f)
-
-        from diffusers.utils import WEIGHTS_NAME
-        model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
-        model_file_safetensors = model_file.replace(".bin", ".safetensors")
-
-        if "dict_mapping" in transformer_additional_kwargs.keys():
-            for key in transformer_additional_kwargs["dict_mapping"]:
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
-
-        if low_cpu_mem_usage:
-            try:
-                import re
-
-                from diffusers import __version__ as diffusers_version
-                from diffusers.models.modeling_utils import \
-                    load_model_dict_into_meta
-                from diffusers.utils import is_accelerate_available
-                if is_accelerate_available():
-                    import accelerate
-                
-                # Instantiate model with empty weights
-                with accelerate.init_empty_weights():
-                    model = cls.from_config(config, **transformer_additional_kwargs)
-
-                param_device = "cpu"
-                if os.path.exists(model_file):
-                    state_dict = torch.load(model_file, map_location="cpu")
-                elif os.path.exists(model_file_safetensors):
-                    from safetensors.torch import load_file, safe_open
-                    state_dict = load_file(model_file_safetensors)
-                else:
-                    from safetensors.torch import load_file, safe_open
-                    model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
-                    state_dict = {}
-                    print(model_files_safetensors)
-                    for _model_file_safetensors in model_files_safetensors:
-                        _state_dict = load_file(_model_file_safetensors)
-                        for key in _state_dict:
-                            state_dict[key] = _state_dict[key]
-
-                if diffusers_version >= "0.33.0":
-                    # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
-                    # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
-                    load_model_dict_into_meta(
-                        model,
-                        state_dict,
-                        dtype=torch_dtype,
-                        model_name_or_path=pretrained_model_path,
-                    )
-                else:
-                    model._convert_deprecated_attention_blocks(state_dict)
-                    # move the params from meta device to cpu
-                    missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
-                    if len(missing_keys) > 0:
-                        raise ValueError(
-                            f"Cannot load {cls} from {pretrained_model_path} because the following keys are"
-                            f" missing: \n {', '.join(missing_keys)}. \n Please make sure to pass"
-                            " `low_cpu_mem_usage=False` and `device_map=None` if you want to randomly initialize"
-                            " those weights or else make sure your checkpoint file is correct."
-                        )
-
-                    unexpected_keys = load_model_dict_into_meta(
-                        model,
-                        state_dict,
-                        device=param_device,
-                        dtype=torch_dtype,
-                        model_name_or_path=pretrained_model_path,
-                    )
-
-                    if cls._keys_to_ignore_on_load_unexpected is not None:
-                        for pat in cls._keys_to_ignore_on_load_unexpected:
-                            unexpected_keys = [k for k in unexpected_keys if re.search(pat, k) is None]
-
-                    if len(unexpected_keys) > 0:
-                        print(
-                            f"Some weights of the model checkpoint were not used when initializing {cls.__name__}: \n {[', '.join(unexpected_keys)]}"
-                        )
-                
-                return model
-            except Exception as e:
-                print(
-                    f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
-                )
-        
-        model = cls.from_config(config, **transformer_additional_kwargs)
-        if os.path.exists(model_file):
-            state_dict = torch.load(model_file, map_location="cpu")
-        elif os.path.exists(model_file_safetensors):
-            from safetensors.torch import load_file, safe_open
-            state_dict = load_file(model_file_safetensors)
-        else:
-            from safetensors.torch import load_file, safe_open
-            model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
-            state_dict = {}
-            for _model_file_safetensors in model_files_safetensors:
-                _state_dict = load_file(_model_file_safetensors)
-                for key in _state_dict:
-                    state_dict[key] = _state_dict[key]
-        
-        if model.state_dict()['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
-            model.state_dict()['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
-            model.state_dict()['patch_embedding.weight'][:, state_dict['patch_embedding.weight'].size()[1]:, :, :] = 0
-            state_dict['patch_embedding.weight'] = model.state_dict()['patch_embedding.weight']
-        
-        tmp_state_dict = {} 
-        for key in state_dict:
-            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
-                tmp_state_dict[key] = state_dict[key]
-            else:
-                print(key, "Size don't match, skip")
-                
-        state_dict = tmp_state_dict
-
-        m, u = model.load_state_dict(state_dict, strict=False)
-        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
-        print(m)
-        
-        params = [p.numel() if "." in n else 0 for n, p in model.named_parameters()]
-        print(f"### All Parameters: {sum(params) / 1e6} M")
-
-        params = [p.numel() if "attn1." in n else 0 for n, p in model.named_parameters()]
-        print(f"### attn1 Parameters: {sum(params) / 1e6} M")
-        
-        model = model.to(torch_dtype)
-        return model
