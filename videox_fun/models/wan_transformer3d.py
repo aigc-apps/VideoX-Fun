@@ -427,7 +427,7 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        dtype=torch.float32,
+        dtype=torch.bfloat16,
         t=0,
     ):
         r"""
