@@ -221,6 +221,8 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         qk_norm=True,
         cross_attn_norm=True,
         eps=1e-6,
+        in_channels=16,
+        hidden_size=2048,
         *args,
         **kwargs
     ):
@@ -241,13 +243,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             cross_attn_norm=cross_attn_norm,
             eps=eps,
             in_channels=in_channels,
-            hidden_size=hidden_size,
-            add_control_adapter=add_control_adapter,
-            in_dim_control_adapter=in_dim_control_adapter,
-            downscale_factor_control_adapter=downscale_factor_control_adapter,
-            add_ref_conv=add_ref_conv,
-            in_dim_ref_conv=in_dim_ref_conv,
-            cross_attn_type="cross_attn"
+            hidden_size=hidden_size
         )
 
         assert model_type == 's2v'
@@ -258,6 +254,13 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         self.enable_motioner = enable_motioner
         self.add_last_motion = add_last_motion
         self.enable_framepack = enable_framepack
+
+        # Replace blocks
+        self.blocks = nn.ModuleList([
+            WanS2VAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
+                                 cross_attn_norm, eps)
+            for _ in range(num_layers)
+        ])
 
         # init audio injector
         all_modules, all_modules_names = torch_dfs(self.blocks, parent_name="root.transformer_blocks")
