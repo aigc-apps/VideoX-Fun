@@ -13,17 +13,22 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel, WanAudioEncoder,
-                              WanT5EncoderModel, Wan2_2Transformer3DModel_S2V)
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+                               AutoTokenizer, CLIPModel,
+                               Wan2_2Transformer3DModel_S2V, WanAudioEncoder,
+                               WanT5EncoderModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import Wan2_2S2VPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent,
-                                   save_videos_grid, merge_video_audio)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
+                                               convert_weight_dtype_wrapper,
+                                               replace_parameters_by_name)
+from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
+                                    get_image_to_video_latent,
+                                    get_video_to_video_latent,
+                                    merge_video_audio, save_videos_grid)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -106,6 +111,7 @@ fps                 = 16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
 # If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
+control_video           = "asset/pose.mp4"  
 ref_image               = "asset/8.png"
 audio_path              = "asset/talk.wav"
 
@@ -312,6 +318,8 @@ with torch.no_grad():
     if ref_image is not None:
         ref_image = get_image_latent(ref_image, sample_size=sample_size)
 
+    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+
     sample = pipeline(
         prompt, 
         num_frames = video_length,
@@ -324,6 +332,7 @@ with torch.no_grad():
         boundary = boundary,
 
         ref_image = ref_image,
+        pose_video = pose_video,
         audio_path = audio_path,
         shift = shift,
         fps = fps

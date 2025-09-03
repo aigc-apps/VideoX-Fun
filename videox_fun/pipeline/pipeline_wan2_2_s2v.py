@@ -331,67 +331,19 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             audio_embed_bucket = audio_embed_bucket.permute(0, 2, 3, 1)
         return audio_embed_bucket, num_repeat
 
-    def read_last_n_frames(self,
-                           video_path,
-                           n_frames,
-                           target_fps=16,
-                           reverse=False):
-        """
-        Read the last `n_frames` from a video at the specified frame rate.
-
-        Parameters:
-            video_path (str): Path to the video file.
-            n_frames (int): Number of frames to read.
-            target_fps (int, optional): Target sampling frame rate. Defaults to 16.
-            reverse (bool, optional): Whether to read frames in reverse order. 
-                                    If True, reads the first `n_frames` instead of the last ones.
-
-        Returns:
-            np.ndarray: A NumPy array of shape [n_frames, H, W, 3], representing the sampled video frames.
-        """
-        vr = VideoReader(video_path)
-        original_fps = vr.get_avg_fps()
-        total_frames = len(vr)
-
-        interval = max(1, round(original_fps / target_fps))
-
-        required_span = (n_frames - 1) * interval
-
-        start_frame = max(0, total_frames - required_span -
-                          1) if not reverse else 0
-
-        sampled_indices = []
-        for i in range(n_frames):
-            indice = start_frame + i * interval
-            if indice >= total_frames:
-                break
-            else:
-                sampled_indices.append(indice)
-
-        return vr.get_batch(sampled_indices).asnumpy()
-
     def encode_pose_latents(self, pose_video, num_repeat, num_frames, size, fps, weight_dtype, device):
         height, width = size
         if not pose_video is None:
-            pose_seq = self.read_last_n_frames(pose_video, n_frames=num_frames * num_repeat, target_fps=fps,reverse=True)
+            padding_frame_num = num_repeat * num_frames - pose_video.shape[2]
+            pose_video = torch.cat(
+                [
+                    pose_video,
+                    -torch.ones([1, 3, padding_frame_num, height, width])
+                ],
+                dim=2
+            )
 
-            resize_opreat = transforms.Resize(min(height, width))
-            crop_opreat = transforms.CenterCrop((height, width))
-            tensor_trans = transforms.ToTensor()
-
-            cond_tensor = torch.from_numpy(pose_seq)
-            cond_tensor = cond_tensor.permute(0, 3, 1, 2) / 255.0 * 2 - 1.0
-            cond_tensor = crop_opreat(resize_opreat(cond_tensor)).permute(
-                1, 0, 2, 3).unsqueeze(0)
-
-            padding_frame_num = num_repeat * num_frames - cond_tensor.shape[2]
-            cond_tensor = torch.cat([
-                cond_tensor,
-                - torch.ones([1, 3, padding_frame_num, height, width])
-            ],
-                                    dim=2)
-
-            cond_tensors = torch.chunk(cond_tensor, num_repeat, dim=2)
+            cond_tensors = torch.chunk(pose_video, num_repeat, dim=2)
         else:
             cond_tensors = [-torch.ones([1, 3, num_frames, height, width])]
 
@@ -700,6 +652,11 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         motion_latents = self.vae.encode(motion_latents)[0].mode()
 
         # Get pose cond input if need
+        if pose_video is not None:
+            video_length = pose_video.shape[2]
+            pose_video = self.image_processor.preprocess(rearrange(pose_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
+            pose_video = pose_video.to(dtype=torch.float32)
+            pose_video = rearrange(pose_video, "(b f) c h w -> b c f h w", f=video_length)
         pose_latents = self.encode_pose_latents(
             pose_video=pose_video,
             num_repeat=num_repeat,
@@ -768,7 +725,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                     with torch.no_grad():
                         left_idx = r * num_frames
                         right_idx = r * num_frames + num_frames
-                        cond_latents = pose_latents[r] if pose_video else pose_latents[0] * 0
+                        cond_latents = pose_latents[r] if pose_video is not None else pose_latents[0] * 0
                         cond_latents = cond_latents.to(dtype=weight_dtype, device=device)
                         audio_input = audio_emb[..., left_idx:right_idx]
 
