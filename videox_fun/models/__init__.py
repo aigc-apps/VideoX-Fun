@@ -24,6 +24,7 @@ from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
+from .vace_transformer3d import VaceWanTransformer3DModel
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("pai_fuser") is not None:
