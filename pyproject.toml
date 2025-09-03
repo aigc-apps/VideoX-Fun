@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "videox-fun"
 description = "VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and Lora models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and Lora models to perform specific style transformations."
@@ -8,6 +12,14 @@ dependencies = ["Pillow", "einops", "safetensors", "timm", "tomesd", "torch>=2.1
 [project.urls]
 Repository = "https://github.com/aigc-apps/VideoX-Fun"
 #  Used by Comfy Registry https://comfyregistry.org
+
+[tool.setuptools]
+packages = [
+    "videox_fun.pipeline",
+    "videox_fun.models",
+    "videox_fun.dist",
+    "videox_fun.utils",
+]
 
 [tool.comfy]
 PublisherId = "bubbliiiing"
