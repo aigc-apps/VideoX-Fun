@@ -1,17 +1,18 @@
 from .pipeline_cogvideox_fun import CogVideoXFunPipeline
 from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
+from .pipeline_flux import FluxPipeline
+from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline
 from .pipeline_wan2_2_fun_inpaint import Wan2_2FunInpaintPipeline
+from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
 from .pipeline_wan2_2_ti2v import Wan2_2TI2VPipeline
 from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
-from .pipeline_qwenimage import QwenImagePipeline
-from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
-from .pipeline_flux import FluxPipeline
+from .pipeline_wan_vace import WanVacePipeline
 
 WanFunPipeline = WanPipeline
 WanI2VPipeline = WanFunInpaintPipeline

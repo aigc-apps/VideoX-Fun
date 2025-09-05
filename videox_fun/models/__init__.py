@@ -1,6 +1,6 @@
 import importlib.util
-from diffusers import AutoencoderKL
 
+from diffusers import AutoencoderKL
 from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPTextModel,
                           CLIPTokenizer, CLIPVisionModelWithProjection,
                           T5EncoderModel, T5Tokenizer, T5TokenizerFast)
@@ -22,6 +22,7 @@ from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
+from .wan_transformer3d_vace import VaceWanTransformer3DModel
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
 
@@ -46,6 +47,7 @@ if importlib.util.find_spec("pai_fuser") is not None:
     WanTransformer3DModel.forward = simple_wrapper(WanTransformer3DModel.forward)
 
     import os
+
     from pai_fuser.core import (cfg_skip_turbo, disable_cfg_skip,
                                 enable_cfg_skip)
 
@@ -57,6 +59,7 @@ if importlib.util.find_spec("pai_fuser") is not None:
 
     if ENABLE_KERNEL:
         import types
+
         from . import wan_transformer3d
 
         def deepcopy_function(f):

@@ -8,10 +8,10 @@ transformer_additional_kwargs:
     dim: hidden_size
 
 vae_kwargs:
-  vae_type: "AutoencoderKLWan3_8"
-  vae_subpath: Wan2.2_VAE.pth
+  vae_type: "AutoencoderKLWan"
+  vae_subpath: Wan2.1_VAE.pth
   temporal_compression_ratio: 4
-  spatial_compression_ratio: 16
+  spatial_compression_ratio: 8
 
 text_encoder_kwargs:
   text_encoder_subpath: models_t5_umt5-xxl-enc-bf16.pth
@@ -27,10 +27,13 @@ text_encoder_kwargs:
   shared_pos: False
   dropout: 0.0
 
+audio_encoder_kwargs:
+  audio_encoder_subpath: wav2vec2-large-xlsr-53-english
+
 scheduler_kwargs:
   scheduler_subpath: null
   num_train_timesteps: 1000
-  shift: 5.0
+  shift: 3.0
   use_dynamic_shifting: false
   base_shift: 0.5
   max_shift: 1.15
