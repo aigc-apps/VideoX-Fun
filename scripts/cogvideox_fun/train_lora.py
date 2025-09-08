@@ -1074,9 +1074,7 @@ def main():
                         transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-                new_examples["pixel_values"].append(transform(pixel_values))
-                new_examples["text"].append(example["text"])
+                    ])                
 
                 batch_video_length = int(min(batch_video_length, len(pixel_values)))
 
@@ -1093,6 +1091,9 @@ def main():
 
                 if batch_video_length <= 0:
                     batch_video_length = 1
+                
+                new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
+                new_examples["text"].append(example["text"])
 
                 if args.train_mode != "normal":
                     mask = get_random_mask(new_examples["pixel_values"][-1].size())
@@ -1101,10 +1102,10 @@ def main():
                     new_examples["mask"].append(mask)
 
             # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["pixel_values"]])
+            new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
             if args.train_mode != "normal":
-                new_examples["mask_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["mask_pixel_values"]])
-                new_examples["mask"] = torch.stack([example[:batch_video_length] for example in new_examples["mask"]])
+                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
+                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
