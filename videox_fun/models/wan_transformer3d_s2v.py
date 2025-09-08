@@ -1,32 +1,27 @@
 # Modified from https://github.com/Wan-Video/Wan2.2/blob/main/wan/modules/s2v/model_s2v.py
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 
-import glob
-import json
 import math
-import os
 import types
 from copy import deepcopy
+from typing import Any, Dict
 
-import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.models.modeling_utils import ModelMixin
+from diffusers.configuration_utils import register_to_config
+from diffusers.utils import is_torch_version
 from einops import rearrange
 
 from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
-                    usp_attn_s2v_forward, xFuserLongContextAttention)
-from ..utils import cfg_skip
-from .attention_utils import attention, flash_attention
-from .cache_utils import TeaCache
+                    usp_attn_s2v_forward)
+from .attention_utils import attention
 from .wan_audio_injector import (AudioInjector_WAN, CausalAudioEncoder,
                                  FramePackMotioner, MotionerTransformers,
                                  rope_precompute)
-from .wan_transformer3d import (Head, WanAttentionBlock, WanLayerNorm, Wan2_2Transformer3DModel,
-                                WanSelfAttention, rope_params,
+from .wan_transformer3d import (Wan2_2Transformer3DModel, WanAttentionBlock,
+                                WanLayerNorm, WanSelfAttention,
                                 sinusoidal_embedding_1d)
 
 
