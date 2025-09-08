@@ -27,7 +27,7 @@ from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import get_video_to_video_latent, save_videos_grid
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -133,7 +133,7 @@ text_encoder = T5EncoderModel.from_pretrained(
 )
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
     "Euler A": EulerAncestralDiscreteScheduler,
     "DPM++": DPMSolverMultistepScheduler, 
@@ -141,7 +141,7 @@ Choosen_Scheduler = scheduler_dict = {
     "DDIM_Cog": CogVideoXDDIMScheduler,
     "DDIM_Origin": DDIMScheduler,
 }[sampler_name]
-scheduler = Choosen_Scheduler.from_pretrained(
+scheduler = Chosen_Scheduler.from_pretrained(
     model_name, 
     subfolder="scheduler"
 )

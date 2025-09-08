@@ -69,7 +69,7 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, WanT5EncoderModel,
                                Wan2_2Transformer3DModel)
 from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -556,6 +556,9 @@ def parse_args():
         "--training_with_video_token_length", action="store_true", help="The training stage of the model in training.",
     )
     parser.add_argument(
+        "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
+    )
+    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(
@@ -852,15 +855,21 @@ def main():
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        vae = AutoencoderKLWan.from_pretrained(
+        Chosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        vae = Chosen_AutoencoderKL.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
         vae.eval()
             
     # Get Transformer
-    sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer') \
-        if args.boundary_type == "low" else config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+    if args.boundary_type == "low" or args.boundary_type == "full":
+        sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+    else:
+        sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
     transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -1031,6 +1040,7 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
+    spatial_compression_ratio = vae.config.spatial_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1160,7 +1170,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1170,10 +1180,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
+                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
 
             for example in examples:
                 if args.fix_sample_size is not None:
@@ -1527,7 +1537,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length and zero_stage != 3:
+                if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1547,7 +1557,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length and zero_stage != 3:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
@@ -1784,8 +1794,8 @@ def main():
                 loss = loss.mean()
 
                 if args.motion_sub_loss and noise_pred.size()[1] > 2:
-                    gt_sub_noise = noise_pred[:, 1:, :].float() - noise_pred[:, :-1, :].float()
-                    pre_sub_noise = target[:, 1:, :].float() - target[:, :-1, :].float()
+                    gt_sub_noise = noise_pred[:, :, 1:].float() - noise_pred[:, :, :-1].float()
+                    pre_sub_noise = target[:, :, 1:].float() - target[:, :, :-1].float()
                     sub_loss = F.mse_loss(gt_sub_noise, pre_sub_noise, reduction="mean")
                     loss = loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
 

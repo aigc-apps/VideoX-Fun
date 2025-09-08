@@ -82,9 +82,9 @@ class Wan_Controller(Fun_Controller):
         else:
             self.clip_image_encoder = None
         
-        Choosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
-        self.scheduler = Choosen_Scheduler(
-            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
+        Chosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
+        self.scheduler = Chosen_Scheduler(
+            **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
         )
 
         # Get pipeline

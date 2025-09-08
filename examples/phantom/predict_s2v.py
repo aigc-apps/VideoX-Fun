@@ -16,7 +16,6 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoTokenizer,
                                WanT5EncoderModel, WanTransformer3DModel)
-from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import WanFunPhantomPipeline
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -25,12 +24,10 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
                                     save_videos_grid)
-from videox_fun.utils.utils import (filter_kwargs,
-                                   save_videos_grid)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -112,7 +109,7 @@ subject_ref_images      = ["asset/ref_1.png", "asset/ref_2.png"]
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt                  = "夕阳下，一位有着小麦色肌肤、留着乌黑长发的女人穿上有着大朵立体花朵装饰、肩袖处带有飘逸纱带的红色纱裙，漫步在金色的海滩上，海风轻拂她的长发，画面唯美动人。"
+prompt                  = "暖阳漫过草地，扎着双马尾、头戴绿色蝴蝶结、身穿浅绿色连衣裙的小女孩蹲在盛开的雏菊旁。她身旁一只棕白相间的狗狗吐着舌头，毛茸茸尾巴欢快摇晃。小女孩笑着举起黄红配色、带有蓝色按钮的玩具相机，将和狗狗的欢乐瞬间定格。"
 negative_prompt         = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 
 # Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
@@ -123,7 +120,7 @@ guidance_scale          = 6.0
 seed                    = 43
 num_inference_steps     = 50
 lora_weight             = 0.55
-save_path               = "samples/wan-videos-fun-control"
+save_path               = "samples/wan-videos-phantom"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -180,15 +177,15 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 text_encoder = text_encoder.eval()
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
 if sampler_name == "Flow_Unipc" or sampler_name == "Flow_DPM++":
     config['scheduler_kwargs']['shift'] = 1
-scheduler = Choosen_Scheduler(
-    **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+scheduler = Chosen_Scheduler(
+    **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
 
 # Get Pipeline

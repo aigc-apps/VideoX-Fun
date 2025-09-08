@@ -46,11 +46,11 @@ class Wan2_2_Controller(Fun_Controller):
         self.diffusion_transformer_dropdown = diffusion_transformer_dropdown
         if diffusion_transformer_dropdown == "none":
             return gr.update()
-        Choosen_AutoencoderKL = {
+        Chosen_AutoencoderKL = {
             "AutoencoderKLWan": AutoencoderKLWan,
             "AutoencoderKLWan3_8": AutoencoderKLWan3_8
         }[self.config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
-        self.vae = Choosen_AutoencoderKL.from_pretrained(
+        self.vae = Chosen_AutoencoderKL.from_pretrained(
             os.path.join(diffusion_transformer_dropdown, self.config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(self.config['vae_kwargs']),
         ).to(self.weight_dtype)
@@ -86,9 +86,9 @@ class Wan2_2_Controller(Fun_Controller):
         )
         self.text_encoder = self.text_encoder.eval()
         
-        Choosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
-        self.scheduler = Choosen_Scheduler(
-            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
+        Chosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
+        self.scheduler = Chosen_Scheduler(
+            **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
         )
 
         # Get pipeline

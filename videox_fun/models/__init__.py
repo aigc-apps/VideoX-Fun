@@ -1,13 +1,27 @@
 import importlib.util
+from diffusers import AutoencoderKL
 
-from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPTextModel,
+                          CLIPTokenizer, CLIPVisionModelWithProjection,
+                          T5EncoderModel, T5Tokenizer, T5TokenizerFast)
+
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
+except:
+    Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer = None, None
+    print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
+from .flux_transformer2d import FluxTransformer2DModel
+from .qwenimage_transformer2d import QwenImageTransformer2DModel
+from .qwenimage_vae import AutoencoderKLQwenImage
+from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
 from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
+from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
 

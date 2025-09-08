@@ -156,7 +156,10 @@ def precalculate_safetensors_hashes(tensors, metadata):
 
 
 class LoRANetwork(torch.nn.Module):
-    TRANSFORMER_TARGET_REPLACE_MODULE = ["CogVideoXTransformer3DModel", "WanTransformer3DModel", "Wan2_2Transformer3DModel"]
+    TRANSFORMER_TARGET_REPLACE_MODULE = [
+        "CogVideoXTransformer3DModel", "WanTransformer3DModel", \
+        "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel"
+    ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -413,13 +416,40 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer: {layer}')
+                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
                                 temp_name = layer_infos.pop(0)
             except Exception:
-                continue
+                if "lora_te" in layer:
+                    if transformer_only:
+                        continue
+                    else:
+                        layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                        curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+
+                len_layer_infos = len(layer_infos)
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'Error loading layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -489,13 +519,37 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer: {layer}')
+                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
                                 temp_name = layer_infos.pop(0)
             except Exception:
-                continue
+                if "lora_te" in layer:
+                    layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                    curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+                len_layer_infos = len(layer_infos)
+
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'Error loading layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
