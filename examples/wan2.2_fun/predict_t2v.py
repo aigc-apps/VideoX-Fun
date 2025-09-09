@@ -13,7 +13,7 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
+from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel, AutoencoderKLWan3_8,
                               WanT5EncoderModel, Wan2_2Transformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import Wan2_2FunInpaintPipeline

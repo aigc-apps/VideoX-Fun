@@ -100,6 +100,7 @@ lora_path           = None
 sample_size         = [832, 480]
 video_length        = 81
 fps                 = 16
+vace_context_scale  = 1.00
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -277,7 +278,8 @@ with torch.no_grad():
         mask_video          = inpaint_video_mask,
         control_video       = control_video,
         subject_ref_images  = subject_ref_images,
-        shift = shift,
+        shift               = shift,
+        vace_context_scale  = vace_context_scale,
     ).videos
 
 if lora_path is not None:

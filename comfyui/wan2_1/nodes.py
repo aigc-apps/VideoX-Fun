@@ -112,10 +112,16 @@ class LoadWanModel:
             if os.path.exists(candidate_path):
                 model_name = candidate_path
                 break
-
+        try:
+            if os.path.exists(eas_cache_dir):
+                list_dirs = os.listdir(eas_cache_dir)
+            else:
+                list_dirs = []
+        except:
+            list_dirs = []
         # If model_name is still None, check eas_cache_dir for each possible folder
         if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders:
+            for folder in possible_folders + list_dirs:
                 candidate_path = os.path.join(eas_cache_dir, folder, model)
                 if os.path.exists(candidate_path):
                     model_name = candidate_path
@@ -123,7 +129,7 @@ class LoadWanModel:
 
         # If model_name is still None, prompt the user to download the model
         if model_name is None:
-            print(f"Please download cogvideoxfun model to one of the following directories:")
+            print(f"Please download videoxfun model to one of the following directories:")
             for folder in possible_folders:
                 print(f"- {os.path.join(folder_paths.models_dir, folder)}")
                 if os.path.exists(eas_cache_dir):

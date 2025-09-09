@@ -97,7 +97,7 @@ vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [832, 480]
+sample_size         = [480, 832]
 video_length        = 81
 fps                 = 16
 
@@ -108,10 +108,11 @@ control_video           = None
 start_image             = "asset/1.png"
 end_image               = None
 subject_ref_images      = None
+vace_context_scale      = 1.00
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt              = "一只棕色的狗舔了一下它的舌头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
+prompt                  = "一只棕色的狗舔了一下它的舌头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 negative_prompt         = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 
 # Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
@@ -277,7 +278,8 @@ with torch.no_grad():
         mask_video          = inpaint_video_mask,
         control_video       = control_video,
         subject_ref_images  = subject_ref_images,
-        shift = shift,
+        shift               = shift,
+        vace_context_scale  = vace_context_scale,
     ).videos
 
 if lora_path is not None:
