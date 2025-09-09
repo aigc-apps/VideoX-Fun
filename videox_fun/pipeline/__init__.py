@@ -22,8 +22,11 @@ Wan2_2I2VPipeline = Wan2_2FunInpaintPipeline
 
 import importlib.util
 
-if importlib.util.find_spec("pai_fuser") is not None:
-    from pai_fuser.core import sparse_reset
+if importlib.util.find_spec("paifuser") is not None:
+    # --------------------------------------------------------------- #
+    #   Sparse Attention
+    # --------------------------------------------------------------- #
+    from paifuser.ops import sparse_reset
 
     # Wan2.1
     WanFunInpaintPipeline.__call__ = sparse_reset(WanFunInpaintPipeline.__call__)
