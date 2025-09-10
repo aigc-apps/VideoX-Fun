@@ -1334,19 +1334,6 @@ def main():
                 new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
                 new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
 
-            # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
-            new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
-            if args.train_mode != "control":
-                new_examples["ref_pixel_values"] = torch.stack([example for example in new_examples["ref_pixel_values"]])
-                new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
-                new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
-            if args.train_mode == "control_camera_ref":
-                new_examples["control_camera_values"] = torch.stack([example for example in new_examples["control_camera_values"]])
-            if args.add_inpaint_info:
-                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
-                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
-
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
                 prompt_ids = tokenizer(
