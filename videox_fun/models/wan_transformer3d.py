@@ -756,9 +756,17 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
         self.all_gather = get_sp_group().all_gather
+
+        # For normal model.
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
+
+        # For vace model.
+        if hasattr(self, 'vace_blocks'):
+            for block in self.vace_blocks:
+                block.self_attn.forward = types.MethodType(
+                    usp_attn_forward, block.self_attn)
 
     @cfg_skip()
     def forward(
@@ -1117,8 +1125,12 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                from diffusers.models.modeling_utils import \
-                    load_model_dict_into_meta
+                if diffusers_version >= "0.33.0":
+                    from diffusers.models.model_loading_utils import \
+                        load_model_dict_into_meta
+                else:
+                    from diffusers.models.modeling_utils import \
+                        load_model_dict_into_meta
                 from diffusers.utils import is_accelerate_available
                 if is_accelerate_available():
                     import accelerate

@@ -36,11 +36,9 @@ from diffusers.utils.torch_utils import maybe_allow_in_graph
 from torch import nn
 
 from ..dist import (get_sequence_parallel_rank,
-                    get_sequence_parallel_world_size, 
-                    get_sp_group,
+                    get_sequence_parallel_world_size, get_sp_group,
                     xFuserLongContextAttention)
 from ..dist.cogvideox_xfuser import CogVideoXMultiGPUsAttnProcessor2_0
-
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -709,8 +707,12 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                from diffusers.models.modeling_utils import \
-                    load_model_dict_into_meta
+                if diffusers_version >= "0.33.0":
+                    from diffusers.models.model_loading_utils import \
+                        load_model_dict_into_meta
+                else:
+                    from diffusers.models.modeling_utils import \
+                        load_model_dict_into_meta
                 from diffusers.utils import is_accelerate_available
                 if is_accelerate_available():
                     import accelerate

@@ -1,10 +1,14 @@
 # Modified from https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/wan_vace.py
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
+import math
+from typing import Any, Dict
+
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 from diffusers.configuration_utils import register_to_config
+from diffusers.utils import is_torch_version
 
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
@@ -135,16 +139,28 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
                       dim=1) for u in c
         ])
-        # # Context Parallel
-        # if self.sp_world_size > 1:
-        #     c = torch.chunk(c, self.sp_world_size, dim=1)[self.sp_world_rank]
+        # Context Parallel
+        if self.sp_world_size > 1:
+            c = torch.chunk(c, self.sp_world_size, dim=1)[self.sp_world_rank]
 
         # arguments
         new_kwargs = dict(x=x)
         new_kwargs.update(kwargs)
         
         for block in self.vace_blocks:
-            c = block(c, **new_kwargs)
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def create_custom_forward(module, **static_kwargs):
+                    def custom_forward(*inputs):
+                        return module(*inputs, **static_kwargs)
+                    return custom_forward
+                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                c = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block, **new_kwargs),
+                    c,
+                    **ckpt_kwargs,
+                )
+            else:
+                c = block(c, **new_kwargs)
         hints = torch.unbind(c)[:-1]
         return hints
 
@@ -184,6 +200,7 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         # if self.model_type == 'i2v':
         #     assert clip_fea is not None and y is not None
         # params
+        dtype = x.dtype
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
@@ -197,6 +214,8 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
+        if self.sp_world_size > 1:
+            seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
         assert seq_lens.max() <= seq_len
         x = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
@@ -218,6 +237,10 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                     [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
                 for u in context
             ]))
+
+        # Context Parallel
+        if self.sp_world_size > 1:
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
             
         # arguments
         kwargs = dict(
@@ -226,13 +249,10 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             grid_sizes=grid_sizes,
             freqs=self.freqs,
             context=context,
-            context_lens=context_lens)
+            context_lens=context_lens,
+            dtype=dtype,
+            t=t)
         hints = self.forward_vace(x, vace_context, seq_len, kwargs)
-
-        # Context Parallel
-        if self.sp_world_size > 1:
-            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
-            hints = [torch.chunk(u, self.sp_world_size, dim=1)[self.sp_world_rank] for u in hints]
 
         kwargs['hints'] = hints
         kwargs['context_scale'] = vace_context_scale
@@ -272,26 +292,28 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
 
                 for block in self.blocks:
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                        def create_custom_forward(module):
+                        def create_custom_forward(module, **static_kwargs):
                             def custom_forward(*inputs):
-                                return module(*inputs)
-
+                                return module(*inputs, **static_kwargs)
                             return custom_forward
-                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                        extra_kwargs = {
+                            'e': e0,
+                            'seq_lens': seq_lens,
+                            'grid_sizes': grid_sizes,
+                            'freqs': self.freqs,
+                            'context': context,
+                            'context_lens': context_lens,
+                            'dtype': dtype,
+                            't': t,
+                        }
+
+                        ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
                         x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
+                            create_custom_forward(block, **extra_kwargs),
                             x,
-                            hints, 
+                            hints,
                             vace_context_scale,
-                            e0,
-                            seq_lens,
-                            grid_sizes,
-                            self.freqs,
-                            context,
-                            context_lens,
-                            dtype,
-                            t,
                             **ckpt_kwargs,
                         )
                     else:
@@ -304,26 +326,28 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         else:
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                    def create_custom_forward(module):
+                    def create_custom_forward(module, **static_kwargs):
                         def custom_forward(*inputs):
-                            return module(*inputs)
-
+                            return module(*inputs, **static_kwargs)
                         return custom_forward
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    extra_kwargs = {
+                        'e': e0,
+                        'seq_lens': seq_lens,
+                        'grid_sizes': grid_sizes,
+                        'freqs': self.freqs,
+                        'context': context,
+                        'context_lens': context_lens,
+                        'dtype': dtype,
+                        't': t,
+                    }
+
+                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
                     x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
+                        create_custom_forward(block, **extra_kwargs),
                         x,
-                        hints, 
+                        hints,
                         vace_context_scale,
-                        e0,
-                        seq_lens,
-                        grid_sizes,
-                        self.freqs,
-                        context,
-                        context_lens,
-                        dtype,
-                        t,
                         **ckpt_kwargs,
                     )
                 else:
