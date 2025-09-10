@@ -65,13 +65,13 @@ def search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="umt5-xxl"
             candidate_path = os.path.join(eas_cache_dir, folder)
             new_possible_folders.append(candidate_path)
 
-    for folder in possible_folders:
+    for folder in new_possible_folders:
         for root, dirs, files in os.walk(folder):
             if sub_dir_name in dirs or sub_dir_name in files:
                 return os.path.join(root, sub_dir_name)
 
     print(f"Please download {sub_dir_name} tokenizer model to one of the following directories:")
-    for folder in possible_folders:
+    for folder in new_possible_folders:
         print(f"- {os.path.join(folder_paths.models_dir, folder)}")
         if os.path.exists(eas_cache_dir):
             print(f"- {os.path.join(eas_cache_dir, folder)}")

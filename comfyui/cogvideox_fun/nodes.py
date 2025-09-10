@@ -94,7 +94,7 @@ class LoadCogVideoXFunModel:
         pbar = ProgressBar(5)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
         model_name = search_model_in_possible_folders(possible_folders, model)
