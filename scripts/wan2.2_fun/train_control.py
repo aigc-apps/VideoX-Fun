@@ -1336,7 +1336,7 @@ def main():
                     batch_video_length = 1
 
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
-                new_examples["control_pixel_values"].append(transform(control_pixel_values)[:batch_video_length])
+                new_examples["control_pixel_values"].append(transform(control_pixel_values))
             
                 if args.train_mode == "control_camera_ref":
                     control_camera_values = example.get("control_camera_values", None)
@@ -1389,13 +1389,13 @@ def main():
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
-            new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
+            new_examples["control_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_pixel_values"]])
             if args.train_mode != "control":
                 new_examples["ref_pixel_values"] = torch.stack([example for example in new_examples["ref_pixel_values"]])
                 new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
                 new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
             if args.train_mode == "control_camera_ref":
-                new_examples["control_camera_values"] = torch.stack([example for example in new_examples["control_camera_values"]])
+                new_examples["control_camera_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_camera_values"]])
             if args.add_inpaint_info:
                 new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
                 new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
