@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
 from .annotator.nodes import VideoToCanny, VideoToDepth, VideoToPose
 from .camera_utils import CAMERA, combine_camera_motion, get_camera_motion
@@ -11,12 +12,15 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunT2VSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
-from .wan2_1.nodes import (LoadWanLora, LoadWanModel, WanI2VSampler,
-                           WanT2VSampler)
+from .comfyui_utils import script_directory
+from .wan2_1.nodes import (LoadWanClipEncoderModel, LoadWanLora, LoadWanModel, CombineWanPipeline,
+                           LoadWanTextEncoderModel, LoadWanTransformerModel,
+                           LoadWanVAEModel, WanI2VSampler, WanT2VSampler)
 from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunInpaintSampler, WanFunT2VSampler,
                                WanFunV2VSampler)
 from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
+                           LoadWan2_2TransformerModel, CombineWan2_2Pipeline,
                            Wan2_2T2VSampler)
 from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
                                Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
@@ -97,6 +101,34 @@ class FunCompile:
 
         print("Add Compile")
         return (funmodels,)
+
+class LoadConfig:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": (
+                [
+                    "wan2.1/wan_civitai.yaml",
+                    "wan2.2/wan_civitai_t2v.yaml",
+                    "wan2.2/wan_civitai_i2v.yaml",
+                    "wan2.2/wan_civitai_5b.yaml",
+                ],
+                {
+                    "default": "wan2.2/wan_civitai_i2v.yaml",
+                }
+            ),
+        }
+    
+    RETURN_TYPES = ("FunConfig",)
+    RETURN_NAMES = ("config",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, config):
+        # Load config
+        config_path = f"{script_directory}/config/{config}"
+        config = OmegaConf.load(config_path)
+        return (config, )
 
 def gen_gaussian_heatmap(imgSize=200):
     circle_img = np.zeros((imgSize, imgSize,), np.float32) 
@@ -330,6 +362,12 @@ NODE_CLASS_MAPPINGS = {
     "WanT2VSampler": WanT2VSampler,
     "WanI2VSampler": WanI2VSampler,
 
+    "LoadWanClipEncoderModel": LoadWanClipEncoderModel,
+    "LoadWanTextEncoderModel": LoadWanTextEncoderModel,
+    "LoadWanTransformerModel": LoadWanTransformerModel,
+    "LoadWanVAEModel": LoadWanVAEModel,
+    "CombineWanPipeline": CombineWanPipeline,
+
     "LoadWanFunModel": LoadWanFunModel,
     "LoadWanFunLora": LoadWanFunLora,
     "WanFunT2VSampler": WanFunT2VSampler,
@@ -340,6 +378,9 @@ NODE_CLASS_MAPPINGS = {
     "LoadWan2_2Lora": LoadWan2_2Lora,
     "Wan2_2T2VSampler": Wan2_2T2VSampler,
     "Wan2_2I2VSampler": Wan2_2I2VSampler,
+
+    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
+    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
 
     "LoadWan2_2FunModel": LoadWan2_2FunModel,
     "LoadWan2_2FunLora": LoadWan2_2FunLora,
@@ -358,12 +399,18 @@ NODE_CLASS_MAPPINGS = {
     "CameraCombineFromChaoJie": CameraCombineFromChaoJie,
     "ImageMaximumNode": ImageMaximumNode,
 }
-
-
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
     "FunRiflex": "FunRiflex",
     "FunCompile": "FunCompile",
+
+    "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
+    "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",
+    "LoadWanTransformerModel": "Load Wan Transformer Model",
+    "LoadWanVAEModel": "Load Wan VAE Model",
+    "CombineWanPipeline": "Combine Wan Pipeline", 
+    "LoadWan2_2TransformerModel": "Load Wan2_2 TransformerModel", 
+    "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",

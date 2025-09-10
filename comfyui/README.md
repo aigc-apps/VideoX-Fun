@@ -30,7 +30,16 @@ cd VideoX-Fun/
 python install.py
 ```
 
-### 2. Download models into `ComfyUI/models/Fun_Models/`
+### 2. Download models 
+#### i、Full loading
+Download full model into `ComfyUI/models/Fun_Models/`.
+
+#### ii、Chunked loading
+Put the transformer model weights to the `ComfyUI/models/diffusion_models/`.
+Put the text encoer model weights to the `ComfyUI/models/text_encoders/`.
+Put the clip vision model weights to the `ComfyUI/models/clip_vision/`.
+Put the vae model weights to the `ComfyUI/models/vae/`.
+Put the tokenizer files to the `ComfyUI/models/Fun_Models/` (For example: `ComfyUI/models/Fun_Models/umt5-xxl`).
 
 ### 3. (Optional) Download preprocess weights into `ComfyUI/custom_nodes/Fun_Models/Third_Party/`.
 Except for the fun models' weights, if you want to use the control preprocess nodes, you can download the preprocess weights to `ComfyUI/custom_nodes/Fun_Models/Third_Party/`.

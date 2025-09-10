@@ -1,8 +1,8 @@
 {
-  "id": "ca87b2cd-bd4a-4f31-82ec-e5e028f8848c",
+  "id": "ae5280b3-6ce0-4651-b35f-7876c3aa5506",
   "revision": 0,
-  "last_node_id": 101,
-  "last_link_id": 70,
+  "last_node_id": 107,
+  "last_link_id": 82,
   "nodes": [
     {
       "id": 75,
@@ -25,7 +25,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            68
+            79
           ]
         }
       ],
@@ -57,7 +57,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            66
+            81
           ]
         },
         {
@@ -145,7 +145,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            69
+            80
           ]
         }
       ],
@@ -156,31 +156,6 @@
       "widgets_values": [
         "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
       ]
-    },
-    {
-      "id": 80,
-      "type": "Note",
-      "pos": [
-        -75,
-        -297
-      ],
-      "size": [
-        350.7127990722656,
-        125.54820251464844
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
     },
     {
       "id": 17,
@@ -194,7 +169,7 @@
         537.4615478515625
       ],
       "flags": {},
-      "order": 8,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -202,7 +177,7 @@
           "name": "images",
           "shape": 7,
           "type": "IMAGE",
-          "link": 70
+          "link": 82
         },
         {
           "label": "音频",
@@ -261,7 +236,253 @@
       }
     },
     {
-      "id": 101,
+      "id": 104,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        232.4375762939453,
+        -422.52117919921875
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            72
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.1_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 105,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        232.4375762939453,
+        -271.95159912109375
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            73
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            74
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -163.70957946777344,
+        -415.55194091796875
+      ],
+      "size": [
+        350.7127990722656,
+        125.54820251464844
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 103,
+      "type": "CombineWan2_2Pipeline",
+      "pos": [
+        689.4248046875,
+        -376.8700866699219
+      ],
+      "size": [
+        360.3475341796875,
+        206
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 71
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 72
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 73
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 74
+        },
+        {
+          "name": "clip_encoder",
+          "shape": 7,
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": 75
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 76
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            78
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWan2_2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload",
+        "Inpaint"
+      ]
+    },
+    {
+      "id": 106,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        236.3606719970703,
+        -581.4786376953125
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            71
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            76
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2_2-I2V-A14B-LOW_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 102,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        668.324951171875,
+        -579.4934692382812
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            75
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2_2-I2V-A14B-HIGH_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 107,
       "type": "Wan2_2I2VSampler",
       "pos": [
         819.5313110351562,
@@ -269,34 +490,32 @@
       ],
       "size": [
         325.5747985839844,
-        402
+        450
       ],
-      "flags": {
-        "pinned": true
-      },
-      "order": 7,
+      "flags": {},
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 67
+          "link": 78
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 68
+          "link": 79
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 69
+          "link": 80
         },
         {
           "name": "start_img",
           "shape": 7,
           "type": "IMAGE",
-          "link": 66
+          "link": 81
         },
         {
           "name": "riflex_k",
@@ -310,7 +529,7 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            70
+            82
           ]
         }
       ],
@@ -321,90 +540,104 @@
         81,
         640,
         43,
-        "fixed",
-        43,
+        "randomize",
+        50,
         6,
         "Flow",
         5,
-        0.900,
-        0.15,
+        0.9,
+        0.1,
         true,
         3,
         true,
         0.25000000000000006
       ]
-    },
-    {
-      "id": 99,
-      "type": "LoadWan2_2Model",
-      "pos": [
-        347.27996826171875,
-        -299.0150146484375
-      ],
-      "size": [
-        276.705078125,
-        130
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            67
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWan2_2Model"
-      },
-      "widgets_values": [
-        "Wan2.2-I2V-A14B",
-        "sequential_cpu_offload",
-        "wan2.2/wan_civitai_i2v.yaml",
-        "bf16"
-      ]
     }
   ],
   "links": [
     [
-      66,
-      87,
+      71,
+      106,
       0,
-      101,
-      3,
-      "IMAGE"
+      103,
+      0,
+      "TransformerModel"
     ],
     [
-      67,
-      99,
+      72,
+      104,
       0,
-      101,
+      103,
+      1,
+      "VAEModel"
+    ],
+    [
+      73,
+      105,
+      0,
+      103,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      74,
+      105,
+      1,
+      103,
+      3,
+      "Tokenizer"
+    ],
+    [
+      75,
+      102,
+      0,
+      103,
+      5,
+      "TransformerModel"
+    ],
+    [
+      76,
+      106,
+      1,
+      103,
+      6,
+      "STRING"
+    ],
+    [
+      78,
+      103,
+      0,
+      107,
       0,
       "FunModels"
     ],
     [
-      68,
+      79,
       75,
       0,
-      101,
+      107,
       1,
       "STRING_PROMPT"
     ],
     [
-      69,
+      80,
       73,
       0,
-      101,
+      107,
       2,
       "STRING_PROMPT"
     ],
     [
-      70,
-      101,
+      81,
+      87,
+      0,
+      107,
+      3,
+      "IMAGE"
+    ],
+    [
+      82,
+      107,
       0,
       17,
       0,
@@ -412,19 +645,6 @@
     ]
   ],
   "groups": [
-    {
-      "id": 1,
-      "title": "Load Model",
-      "bounding": [
-        220,
-        -380,
-        472,
-        232
-      ],
-      "color": "#b06634",
-      "font_size": 24,
-      "flags": {}
-    },
     {
       "id": 2,
       "title": "Prompts",
@@ -450,6 +670,19 @@
       "color": "#a1309b",
       "font_size": 24,
       "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "Load Model",
+      "bounding": [
+        222.43731689453125,
+        -661.4031372070312,
+        863.243896484375,
+        511.2655029296875
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
     }
   ],
   "config": {},
@@ -457,19 +690,19 @@
     "ds": {
       "scale": 0.6830134553650705,
       "offset": [
-        272.66873113564736,
-        429.81230900451357
+        482.3495838700222,
+        753.3669707232627
       ]
     },
+    "frontendVersion": "1.21.3",
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "ffe64f2b8c101da85e0707c59b355f21a83f5464",
+      "CogVideoX-Fun": "37bd73564702fa47ffe4576c87da6f82a50cb60e",
       "comfy-core": "0.3.44",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
-    },
-    "frontendVersion": "1.21.3"
+    }
   },
   "version": 0.4
 }
