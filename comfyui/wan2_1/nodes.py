@@ -108,7 +108,7 @@ class LoadWanTransformerModel:
         add_control_adapter     = True if "control_adapter.conv.weight" in transformer_state_dict else False
         in_dim_control_adapter  = transformer_state_dict["control_adapter.conv.weight"].shape[1] if "control_adapter.conv.weight" in transformer_state_dict else None
 
-        if dim == 5120: #14B
+        if dim == 5120:
             num_heads = 40
             num_layers = 40
             out_dim = 16
@@ -124,13 +124,13 @@ class LoadWanTransformerModel:
             else:
                 model_name_in_pipeline = "wan2.1-fun-14b"
                 
-        elif dim == 3072: #5B
+        elif dim == 3072:
             num_heads = 24
             num_layers = 30
             out_dim = 48
             downscale_factor_control_adapter = 16
             model_name_in_pipeline = "wan2.1-t2v-1.3b"
-        else: #1.3B
+        else:
             num_heads = 12
             num_layers = 30
             out_dim = 16
@@ -140,7 +140,7 @@ class LoadWanTransformerModel:
         if in_dim != out_dim:
             model_type = "i2v"
         else:
-            model_type = "t2v" #5B no img crossattn
+            model_type = "t2v"
 
         kwargs = dict(
             dim = dim,
