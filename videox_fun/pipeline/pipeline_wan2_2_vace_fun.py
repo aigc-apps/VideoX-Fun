@@ -711,6 +711,9 @@ class Wan2_2VaceFunPipeline(DiffusionPipeline):
             num_length_latents=vace_latents[0].size(1)
         )
 
+        if comfyui_progressbar:
+            pbar.update(1)
+
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 

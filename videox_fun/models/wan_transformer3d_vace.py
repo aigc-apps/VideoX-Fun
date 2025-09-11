@@ -201,9 +201,9 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         # if self.model_type == 'i2v':
         #     assert clip_fea is not None and y is not None
         # params
-        dtype = x.dtype
         device = self.patch_embedding.weight.device
-        if self.freqs.device != device:
+        dtype = x.dtype
+        if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
         # if y is not None:

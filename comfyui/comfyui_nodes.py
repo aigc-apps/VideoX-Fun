@@ -21,7 +21,7 @@ from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
 from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
                                Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
                                Wan2_2FunV2VSampler)
-
+from .wan2_2_vace_fun.nodes import LoadWan2_2VaceFunModel, Wan2_2VaceFunSampler
 
 class FunTextBox:
     @classmethod
@@ -200,6 +200,27 @@ class ImageMaximumNode:
             outputs = torch.maximum(video_1, video_2[:length_1])
         return (outputs, )
 
+class ImageCollectNode:
+    RETURN_TYPES = ("IMAGE", )
+    RETURN_NAMES = ("image", )
+    FUNCTION = "imagecollect"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_1": ("IMAGE",)
+            },
+            "optional": {
+                "image_2": ("IMAGE",),
+            }
+    } 
+
+    def imagecollect(self, image_1, image_2):
+        image_out = [_image_1 for _image_1 in image_1] + [_image_2 for _image_2 in image_2]
+        return (image_out, )
+
 class CameraBasicFromChaoJie:
     # Copied from https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper/blob/main/nodes.py
     # Since ComfyUI-CameraCtrl-Wrapper requires a specific version of diffusers, which is not suitable for us. 
@@ -347,6 +368,9 @@ NODE_CLASS_MAPPINGS = {
     "Wan2_2FunInpaintSampler": Wan2_2FunInpaintSampler,
     "Wan2_2FunV2VSampler": Wan2_2FunV2VSampler,
 
+    "LoadWan2_2VaceFunModel": LoadWan2_2VaceFunModel,
+    "Wan2_2VaceFunSampler": Wan2_2VaceFunSampler,
+
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
     "VideoToOpenpose": VideoToPose,
@@ -357,6 +381,7 @@ NODE_CLASS_MAPPINGS = {
     "CameraJoinFromChaoJie": CameraJoinFromChaoJie,
     "CameraCombineFromChaoJie": CameraCombineFromChaoJie,
     "ImageMaximumNode": ImageMaximumNode,
+    "ImageCollectNode": ImageCollectNode,
 }
 
 
@@ -392,6 +417,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Wan2_2FunT2VSampler": "Wan 2.2 Fun Sampler for Text to Video",
     "Wan2_2FunInpaintSampler": "Wan 2.2 Fun Sampler for Image to Video",
     "Wan2_2FunV2VSampler": "Wan 2.2 Fun Sampler for Video to Video",
+
+    "LoadWan2_2VaceFunModel": "Load Wan2_2 Vace Fun Model",
+    "Wan2_2VaceFunSampler": "Wan2_2 Vace Fun Sampler",
     
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
@@ -403,4 +431,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CameraJoinFromChaoJie": "Camera Join From ChaoJie",
     "CameraCombineFromChaoJie": "Camera Combine From ChaoJie",
     "ImageMaximumNode": "Image Maximum Node",
+    "ImageCollectNode": "Image Collect Node",
 }
