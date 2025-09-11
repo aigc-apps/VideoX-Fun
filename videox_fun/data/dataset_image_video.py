@@ -513,6 +513,34 @@ class ImageVideoDataset(Dataset):
 
         return sample
 
+def padding_image(images, new_width, new_height):
+    new_image = Image.new('RGB', (new_width, new_height), (255, 255, 255))
+
+    aspect_ratio = images.width / images.height
+    if new_width / new_height > 1:
+        if aspect_ratio > new_width / new_height:
+            new_img_width = new_width
+            new_img_height = int(new_img_width / aspect_ratio)
+        else:
+            new_img_height = new_height
+            new_img_width = int(new_img_height * aspect_ratio)
+    else:
+        if aspect_ratio > new_width / new_height:
+            new_img_width = new_width
+            new_img_height = int(new_img_width / aspect_ratio)
+        else:
+            new_img_height = new_height
+            new_img_width = int(new_img_height * aspect_ratio)
+
+    resized_img = images.resize((new_img_width, new_img_height))
+
+    paste_x = (new_width - new_img_width) // 2
+    paste_y = (new_height - new_img_height) // 2
+
+    new_image.paste(resized_img, (paste_x, paste_y))
+
+    return new_image
+
 class ImageVideoControlDataset(Dataset):
     def __init__(
         self,
@@ -527,6 +555,7 @@ class ImageVideoControlDataset(Dataset):
         enable_inpaint=False,
         enable_camera_info=False,
         return_file_name=False,
+        enable_subject_info=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -560,7 +589,7 @@ class ImageVideoControlDataset(Dataset):
         self.text_drop_ratio = text_drop_ratio
         self.enable_inpaint = enable_inpaint
         self.enable_camera_info = enable_camera_info
-        self.return_file_name = return_file_name
+        self.enable_subject_info = enable_subject_info
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
@@ -649,12 +678,13 @@ class ImageVideoControlDataset(Dataset):
                     text = ''
 
             control_video_id = data_info['control_file_path']
-
-            if self.data_root is None:
-                control_video_id = control_video_id
-            else:
-                control_video_id = os.path.join(self.data_root, control_video_id)
             
+            if control_video_id is not None:
+                if self.data_root is None:
+                    control_video_id = control_video_id
+                else:
+                    control_video_id = os.path.join(self.data_root, control_video_id)
+                
             if self.enable_camera_info:
                 if control_video_id.lower().endswith('.txt'):
                     if not self.enable_bucket:
@@ -679,36 +709,63 @@ class ImageVideoControlDataset(Dataset):
                         control_pixel_values = np.zeros_like(pixel_values)
                         control_camera_values = None
             else:
-                with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
-                    try:
-                        sample_args = (control_video_reader, batch_index)
-                        control_pixel_values = func_timeout(
-                            VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
-                        )
-                        resized_frames = []
-                        for i in range(len(control_pixel_values)):
-                            frame = control_pixel_values[i]
-                            resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                            resized_frames.append(resized_frame)
-                        control_pixel_values = np.array(resized_frames)
-                    except FunctionTimedOut:
-                        raise ValueError(f"Read {idx} timeout.")
-                    except Exception as e:
-                        raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+                if control_video_id is not None:
+                    with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
+                        try:
+                            sample_args = (control_video_reader, batch_index)
+                            control_pixel_values = func_timeout(
+                                VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                            )
+                            resized_frames = []
+                            for i in range(len(control_pixel_values)):
+                                frame = control_pixel_values[i]
+                                resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                                resized_frames.append(resized_frame)
+                            control_pixel_values = np.array(resized_frames)
+                        except FunctionTimedOut:
+                            raise ValueError(f"Read {idx} timeout.")
+                        except Exception as e:
+                            raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                        if not self.enable_bucket:
+                            control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
+                            control_pixel_values = control_pixel_values / 255.
+                            del control_video_reader
+                        else:
+                            control_pixel_values = control_pixel_values
+
+                        if not self.enable_bucket:
+                            control_pixel_values = self.video_transforms(control_pixel_values)
+                else:
                     if not self.enable_bucket:
-                        control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
-                        control_pixel_values = control_pixel_values / 255.
-                        del control_video_reader
+                        control_pixel_values = torch.zeros_like(pixel_values)
                     else:
-                        control_pixel_values = control_pixel_values
-
-                    if not self.enable_bucket:
-                        control_pixel_values = self.video_transforms(control_pixel_values)
+                        control_pixel_values = np.zeros_like(pixel_values)
                 control_camera_values = None
+            
+            if self.enable_subject_info:
+                if not self.enable_bucket:
+                    visual_height, visual_width = pixel_values.shape[-2:]
+                else:
+                    visual_height, visual_width = pixel_values.shape[1:3]
 
-            return pixel_values, control_pixel_values, control_camera_values, text, "video", video_dir
+                subject_id = data_info.get('object_file_path', [])
+                shuffle(subject_id)
+                subject_images = []
+                for i in range(min(len(subject_id), 4)):
+                    subject_image = Image.open(subject_id[i])
+                    width, height = subject_image.size
+                    total_pixels = width * height
 
+                    img = padding_image(subject_image, visual_width, visual_height)
+                    if random.random() < 0.5:
+                        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    subject_images.append(img)
+                subject_image = np.array(subject_images)
+            else:
+                subject_image = None
+
+            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video"
         else:
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
@@ -734,8 +791,30 @@ class ImageVideoControlDataset(Dataset):
                 control_image = self.image_transforms(control_image).unsqueeze(0)
             else:
                 control_image = np.expand_dims(np.array(control_image), 0)
-            return image, control_image, None, text, 'image', image_path
             
+            if self.enable_subject_info:
+                if not self.enable_bucket:
+                    visual_height, visual_width = image.shape[-2:]
+                else:
+                    visual_height, visual_width = image.shape[1:3]
+
+                subject_id = data_info.get('object_file_path', [])
+                shuffle(subject_id)
+                subject_images = []
+                for i in range(min(len(subject_id), 4)):
+                    subject_image = Image.open(subject_id[i])
+                    width, height = subject_image.size
+                    total_pixels = width * height
+
+                    img = padding_image(subject_image, visual_width, visual_height)
+                    if random.random() < 0.5:
+                        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    subject_images.append(img)
+                subject_image = np.array(subject_images)
+            else:
+                subject_image = None
+
+            return image, control_image, subject_image, None, text, 'image'
     def __len__(self):
         return self.length
 
@@ -750,19 +829,17 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, control_camera_values, name, data_type, file_path = self.get_batch(idx)
+                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
+                sample["subject_image"] = subject_image
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx
 
                 if self.enable_camera_info:
                     sample["control_camera_values"] = control_camera_values
-
-                if self.return_file_name:
-                    sample["file_name"] = os.path.basename(file_path)
 
                 if len(sample) > 0:
                     break
