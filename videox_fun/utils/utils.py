@@ -336,6 +336,13 @@ def get_image_latent(ref_image=None, sample_size=None, padding=False):
             ref_image = ref_image.resize((sample_size[1], sample_size[0]))
             ref_image = torch.from_numpy(np.array(ref_image))
             ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
+        elif isinstance(ref_image, Image.Image):
+            ref_image = ref_image.convert("RGB")
+            if padding:
+                ref_image = padding_image(ref_image, sample_size[1], sample_size[0])
+            ref_image = ref_image.resize((sample_size[1], sample_size[0]))
+            ref_image = torch.from_numpy(np.array(ref_image))
+            ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
         else:
             ref_image = torch.from_numpy(np.array(ref_image))
             ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
