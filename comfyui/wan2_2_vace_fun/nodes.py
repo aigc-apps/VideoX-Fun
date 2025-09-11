@@ -272,7 +272,7 @@ class Wan2_2VaceFunSampler:
                     }
                 ),
                 "shift": (
-                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                    "INT", {"default": 12, "min": 1, "max": 100, "step": 1}
                 ),
                 "boundary": (
                     "FLOAT", {"default": 0.875, "min": 0.00, "max": 1.00, "step": 0.001}
