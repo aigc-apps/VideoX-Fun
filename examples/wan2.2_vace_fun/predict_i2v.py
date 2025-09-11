@@ -18,7 +18,7 @@ from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokeni
                                WanT5EncoderModel, VaceWanTransformer3DModel)
 from videox_fun.data.dataset_image_video import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import WanVaceFunPipeline, WanPipeline
+from videox_fun.pipeline import Wan2_2VaceFunPipeline, WanPipeline
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper,
                                                replace_parameters_by_name)
@@ -226,7 +226,7 @@ scheduler = Chosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = WanVaceFunPipeline(
+pipeline = Wan2_2VaceFunPipeline(
     transformer=transformer,
     transformer_2=transformer_2,
     vae=vae,
