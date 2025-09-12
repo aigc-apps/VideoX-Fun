@@ -563,6 +563,7 @@ class WanVacePipeline(DiffusionPipeline):
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
         shift: int = 5,
+        vace_context_scale: float = 1.0
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -739,6 +740,7 @@ class WanVacePipeline(DiffusionPipeline):
                         t=timestep,
                         vace_context=vace_context_input,
                         seq_len=seq_len,
+                        vace_context_scale=vace_context_scale
                     )
 
                 # perform guidance
