@@ -2,20 +2,20 @@
 """
 import copy
 import gc
+import inspect
 import json
 import os
 
+import comfy.model_management as mm
 import cv2
+import folder_paths
 import numpy as np
 import torch
+from comfy.utils import ProgressBar, load_torch_file
 from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
-
-import comfy.model_management as mm
-import folder_paths
-from comfy.utils import ProgressBar, load_torch_file
 
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                                get_closest_ratio)
@@ -25,19 +25,16 @@ from ...videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                   VaceWanTransformer3DModel, WanT5EncoderModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ...videox_fun.pipeline import Wan2_2VaceFunPipeline
-from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
                                        get_image_to_video_latent,
-                                       get_video_to_video_latent,
-                                       save_videos_grid)
-from ..wan2_1.nodes import get_wan_scheduler
-from ..comfyui_utils import (eas_cache_dir, script_directory,
+                                       get_video_to_video_latent)
+from ..comfyui_utils import (script_directory,
                              search_model_in_possible_folders, to_pil)
-
+from ..wan2_1.nodes import get_wan_scheduler
 
 # Used in lora cache
 transformer_cpu_cache       = {}
@@ -82,6 +79,8 @@ class LoadVaceWanTransformer3DModel:
         in_dim          = transformer_state_dict["patch_embedding.weight"].shape[1]
         in_channels     = in_dim
         ffn_dim         = transformer_state_dict["blocks.0.ffn.0.bias"].shape[0]
+        vace_layers     = [0, 5, 10, 15, 20, 25, 30, 35]
+        vace_in_dim     = 96
 
         add_ref_conv            = True if "ref_conv.weight" in transformer_state_dict else False
         in_dim_ref_conv         = transformer_state_dict["ref_conv.weight"].shape[1] if "ref_conv.weight" in transformer_state_dict else None
@@ -128,6 +127,8 @@ class LoadVaceWanTransformer3DModel:
             in_dim_control_adapter = in_dim_control_adapter // downscale_factor_control_adapter // downscale_factor_control_adapter if in_dim_control_adapter is not None else in_dim_control_adapter,
             in_dim_ref_conv = in_dim_ref_conv,
             downscale_factor_control_adapter = downscale_factor_control_adapter,
+            vace_layers = vace_layers,
+            vace_in_dim = vace_in_dim
         )
 
         sig = inspect.signature(VaceWanTransformer3DModel)
@@ -177,7 +178,7 @@ class CombineWan2_2VaceFunPipeline:
             text_encoder=text_encoder,
             transformer=transformer,
             transformer_2=transformer_2,
-            scheduler=scheduler,
+            scheduler=None,
         )
 
         if GPU_memory_mode == "sequential_cpu_offload":
@@ -465,7 +466,6 @@ class Wan2_2VaceFunSampler:
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
         weight_dtype = funmodels['dtype']
-        config = funmodels['config']
         model_type = funmodels['model_type']
 
         # Count most suitable height and width

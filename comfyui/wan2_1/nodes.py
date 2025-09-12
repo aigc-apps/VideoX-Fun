@@ -259,7 +259,7 @@ class LoadWanTextEncoderModel:
 
         possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
-        tokenizer = AutoTokenizer.from_pretrained(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="umt5-xxl"))
+        tokenizer = AutoTokenizer.from_pretrained(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="google/umt5-xxl"))
         return (text_encoder, tokenizer)
 
 class LoadWanClipEncoderModel:

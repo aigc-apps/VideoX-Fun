@@ -112,7 +112,7 @@ weight_dtype                    = torch.bfloat16
 control_video                   = None
 start_image                     = None
 end_image                       = None
-subject_ref_images              = ["asset/ref_1.png", "asset/ref_2.png"]
+subject_ref_images              = ["asset/8.png", "asset/ref_1.png"]
 vace_context_scale              = 1.00
 # Sometimes, when generating a video from a reference image, white borders appear.
 # Because the padding is mistakenly treated as part of the image. 
@@ -121,7 +121,7 @@ padding_in_subject_ref_images   = True
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt                  = "暖阳漫过草地，扎着双马尾、头戴绿色蝴蝶结、身穿浅绿色连衣裙的小女孩蹲在盛开的雏菊旁。她身旁一只棕白相间的狗狗吐着舌头，毛茸茸尾巴欢快摇晃。小女孩笑着举起黄红配色、带有蓝色按钮的玩具相机，将和狗狗的欢乐瞬间定格。"
+prompt                  = "海风作曲，浪花打拍。她握着一台亮黄色相机，双臂如翼般舒展流转。双手托举相机，在胸前划出轻柔的圆弧，时而高举过肩，迎向天际的光晕，时而缓缓贴近心口，倾听快门低语般的节奏。紫色长发在风中扬起，拂过肩头，仿佛与镜头共舞。她的目光随取景框游走，每一次微倾与回旋，都让镜头掠过海天相接的边际、摇曳的花丛。最后，呼吸一凝，稳稳对准水中倒影，轻轻按下快门——将风、光与心动，悄然收藏。"
 negative_prompt         = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 
 # Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
