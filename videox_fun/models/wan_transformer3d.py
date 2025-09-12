@@ -761,10 +761,6 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_forward, block.self_attn)
-        if hasattr(self, 'vace_blocks'):
-            for block in self.vace_blocks:
-                block.self_attn.forward = types.MethodType(
-                    usp_attn_forward, block.self_attn)
 
         # For vace model.
         if hasattr(self, 'vace_blocks'):
