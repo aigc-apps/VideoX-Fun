@@ -343,7 +343,6 @@ with torch.no_grad():
         subject_ref_images  = subject_ref_images,
         boundary            = boundary,
         shift               = shift,
-        shift               = shift,
         vace_context_scale  = vace_context_scale
     ).videos
 
