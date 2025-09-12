@@ -13,8 +13,6 @@ from diffusers.utils import is_torch_version
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
 
-from diffusers.utils import is_torch_version
-
 
 class VaceWanAttentionBlock(WanAttentionBlock):
     def __init__(
@@ -204,7 +202,6 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         # params
         dtype = x.dtype
         device = self.patch_embedding.weight.device
-        dtype = x.dtype
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 

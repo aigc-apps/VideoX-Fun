@@ -445,7 +445,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWan2_2TransformerModel": "Load Wan2_2 TransformerModel", 
     "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
     "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer3DModel", 
-    "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace FunPipeline",
+    "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace Fun Pipeline",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",

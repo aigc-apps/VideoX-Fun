@@ -153,12 +153,6 @@ class CombineWan2_2VaceFunPipeline:
                         "default": "model_cpu_offload",
                     }
                 ),
-                "model_type": (
-                    ["Inpaint", "Control"],
-                    {
-                        "default": "Inpaint",
-                    }
-                ),
             },
             "optional":{
                 "clip_encoder": ("ClipEncoderModel",),
@@ -171,7 +165,7 @@ class CombineWan2_2VaceFunPipeline:
     FUNCTION = "loadmodel"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def loadmodel(self, model_name, GPU_memory_mode, model_type, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None):
+    def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None, model_type="Control"):
         weight_dtype    = transformer.dtype
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
