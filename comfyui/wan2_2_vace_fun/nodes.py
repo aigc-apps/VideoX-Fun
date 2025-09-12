@@ -34,7 +34,9 @@ from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
                                        get_image_to_video_latent,
                                        get_video_to_video_latent,
                                        save_videos_grid)
-from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
+from ..wan2_1.nodes import get_wan_scheduler
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
 
 
 # Used in lora cache
@@ -43,6 +45,173 @@ transformer_high_cpu_cache  = {}
 # lora path before
 lora_path_before            = ""
 lora_high_path_before       = ""
+
+class LoadVaceWanTransformer3DModel:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model_name": (
+                    folder_paths.get_filename_list("diffusion_models"),
+                    {"default": "Wan2_1-T2V-1_3B_bf16.safetensors,"},
+                ),
+                "precision": (["fp16", "bf16"],
+                    {"default": "bf16"}
+                ),
+            },
+        }
+    RETURN_TYPES = ("TransformerModel", "STRING")
+    RETURN_NAMES = ("transformer", "model_name")
+    FUNCTION    = "loadmodel"
+    CATEGORY    = "CogVideoXFUNWrapper"
+
+    def loadmodel(self, model_name, precision):
+        # Init weight_dtype and device
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
+        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+
+        model_path = folder_paths.get_full_path("diffusion_models", model_name)
+        transformer_state_dict = load_torch_file(model_path, safe_load=True)
+        
+        eps             = 1e-6
+        text_len        = 512
+        freq_dim        = 256
+        dim             = transformer_state_dict["patch_embedding.weight"].shape[0]
+        hidden_size     = dim
+        in_dim          = transformer_state_dict["patch_embedding.weight"].shape[1]
+        in_channels     = in_dim
+        ffn_dim         = transformer_state_dict["blocks.0.ffn.0.bias"].shape[0]
+
+        add_ref_conv            = True if "ref_conv.weight" in transformer_state_dict else False
+        in_dim_ref_conv         = transformer_state_dict["ref_conv.weight"].shape[1] if "ref_conv.weight" in transformer_state_dict else None
+        add_control_adapter     = True if "control_adapter.conv.weight" in transformer_state_dict else False
+        in_dim_control_adapter  = transformer_state_dict["control_adapter.conv.weight"].shape[1] if "control_adapter.conv.weight" in transformer_state_dict else None
+
+        if dim == 5120:
+            num_heads = 40
+            num_layers = 40
+            out_dim = 16
+            downscale_factor_control_adapter = 8
+            model_name_in_pipeline = "wan2.2-vace-fun-a14b"
+                
+        elif dim == 3072:
+            num_heads = 24
+            num_layers = 30
+            out_dim = 48
+            downscale_factor_control_adapter = 16
+            model_name_in_pipeline = "wan2.2-vace-fun-5b"
+        else: 
+            num_heads = 12
+            num_layers = 30
+            out_dim = 16
+            downscale_factor_control_adapter = 8
+            model_name_in_pipeline = "wan2.1-vace-1.3b"
+        
+        model_type = "t2v"
+
+        kwargs = dict(
+            dim = dim,
+            in_dim = in_dim,
+            eps = eps,
+            ffn_dim = ffn_dim,
+            freq_dim = freq_dim,
+            model_type = model_type,
+            num_heads = num_heads,
+            num_layers = num_layers,
+            out_dim = out_dim,
+            text_len = text_len,
+            in_channels = in_channels,
+            hidden_size = hidden_size,
+            add_control_adapter = add_control_adapter,
+            add_ref_conv = add_ref_conv,
+            in_dim_control_adapter = in_dim_control_adapter // downscale_factor_control_adapter // downscale_factor_control_adapter if in_dim_control_adapter is not None else in_dim_control_adapter,
+            in_dim_ref_conv = in_dim_ref_conv,
+            downscale_factor_control_adapter = downscale_factor_control_adapter,
+        )
+
+        sig = inspect.signature(VaceWanTransformer3DModel)
+        accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        transformer = VaceWanTransformer3DModel(**accepted)
+        transformer.load_state_dict(transformer_state_dict)
+        transformer = transformer.eval().to(device=offload_device, dtype=weight_dtype)
+        return (transformer, model_name_in_pipeline)
+
+class CombineWan2_2VaceFunPipeline:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "transformer": ("TransformerModel",),
+                "vae": ("VAEModel",),
+                "text_encoder": ("TextEncoderModel",),
+                "tokenizer": ("Tokenizer",),
+                "model_name": ("STRING",),
+                "GPU_memory_mode":(
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    {
+                        "default": "model_cpu_offload",
+                    }
+                ),
+                "model_type": (
+                    ["Inpaint", "Control"],
+                    {
+                        "default": "Inpaint",
+                    }
+                ),
+            },
+            "optional":{
+                "clip_encoder": ("ClipEncoderModel",),
+                "transformer_2": ("TransformerModel",),
+            },
+        }
+
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "loadmodel"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def loadmodel(self, model_name, GPU_memory_mode, model_type, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None):
+        weight_dtype    = transformer.dtype
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
+
+        # Get pipeline
+        pipeline = Wan2_2VaceFunPipeline(
+            vae=vae,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            transformer=transformer,
+            transformer_2=transformer_2,
+            scheduler=scheduler,
+        )
+
+        if GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(transformer, ["modulation",], device=device)
+            transformer.freqs = transformer.freqs.to(device=device)
+            pipeline.enable_sequential_cpu_offload()
+        elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_cpu_offload":
+            pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.to(device=device)
+        else:
+            pipeline.to(device)
+
+        funmodels = {
+            'pipeline': pipeline, 
+            'dtype': weight_dtype,
+            'model_name': model_name,
+            'model_type': model_type,
+            'loras': [],
+            'strength_model': []
+        }
+        return (funmodels,)
 
 
 class LoadWan2_2VaceFunModel:
@@ -102,31 +271,7 @@ class LoadWan2_2VaceFunModel:
         possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download cogvideoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         Chosen_AutoencoderKL = {
             "AutoencoderKLWan": AutoencoderKLWan,
@@ -292,6 +437,9 @@ class Wan2_2VaceFunSampler:
                 "cfg_skip_ratio":(
                     "FLOAT", {"default": 0, "min": 0, "max": 1, "step": 0.01}
                 ),
+                "padding_in_subject_ref_images":(
+                    [False, True],  {"default": True,}
+                ),
             },
             "optional": {
                 "control_video": ("IMAGE",),
@@ -307,7 +455,7 @@ class Wan2_2VaceFunSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, shift, boundary, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, control_video=None, start_image=None, end_image=None, subject_ref_images=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, shift, boundary, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, padding_in_subject_ref_images, control_video=None, start_image=None, end_image=None, subject_ref_images=None, riflex_k=0):
         global transformer_cpu_cache
         global transformer_high_cpu_cache
         global lora_path_before
@@ -352,7 +500,7 @@ class Wan2_2VaceFunSampler:
         height, width = [int(x / 16) * 16 for x in closest_size]
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -386,7 +534,7 @@ class Wan2_2VaceFunSampler:
             inpaint_video, inpaint_video_mask, _ = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=(height, width))
 
             if subject_ref_images is not None:
-                subject_ref_images = [get_image_latent(_subject_ref_image, sample_size=(height, width), padding=True) for _subject_ref_image in subject_ref_images]
+                subject_ref_images = [get_image_latent(_subject_ref_image, sample_size=(height, width), padding=padding_in_subject_ref_images) for _subject_ref_image in subject_ref_images]
                 subject_ref_images = torch.cat(subject_ref_images, dim=2)
 
             control_video, control_video_mask, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=(height, width), fps=16, ref_image=None)

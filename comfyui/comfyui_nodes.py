@@ -13,19 +13,24 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
-from .wan2_1.nodes import (LoadWanClipEncoderModel, LoadWanLora, LoadWanModel, CombineWanPipeline,
-                           LoadWanTextEncoderModel, LoadWanTransformerModel,
-                           LoadWanVAEModel, WanI2VSampler, WanT2VSampler)
+from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
+                           LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
+                           LoadWanTransformerModel, LoadWanVAEModel,
+                           WanI2VSampler, WanT2VSampler)
 from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunInpaintSampler, WanFunT2VSampler,
                                WanFunV2VSampler)
-from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
-                           LoadWan2_2TransformerModel, CombineWan2_2Pipeline,
-                           Wan2_2T2VSampler)
+from .wan2_2.nodes import (CombineWan2_2Pipeline, LoadWan2_2Lora,
+                           LoadWan2_2Model, LoadWan2_2TransformerModel,
+                           Wan2_2I2VSampler, Wan2_2T2VSampler)
 from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
                                Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
                                Wan2_2FunV2VSampler)
-from .wan2_2_vace_fun.nodes import LoadWan2_2VaceFunModel, Wan2_2VaceFunSampler
+from .wan2_2_vace_fun.nodes import (CombineWan2_2VaceFunPipeline,
+                                    LoadVaceWanTransformer3DModel,
+                                    LoadWan2_2VaceFunModel,
+                                    Wan2_2VaceFunSampler)
+
 
 class FunTextBox:
     @classmethod
@@ -395,19 +400,22 @@ NODE_CLASS_MAPPINGS = {
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
 
+    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
+    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
+
     "LoadWan2_2Model": LoadWan2_2Model,
     "LoadWan2_2Lora": LoadWan2_2Lora,
     "Wan2_2T2VSampler": Wan2_2T2VSampler,
     "Wan2_2I2VSampler": Wan2_2I2VSampler,
-
-    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
-    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
 
     "LoadWan2_2FunModel": LoadWan2_2FunModel,
     "LoadWan2_2FunLora": LoadWan2_2FunLora,
     "Wan2_2FunT2VSampler": Wan2_2FunT2VSampler,
     "Wan2_2FunInpaintSampler": Wan2_2FunInpaintSampler,
     "Wan2_2FunV2VSampler": Wan2_2FunV2VSampler,
+
+    "LoadVaceWanTransformer3DModel": LoadVaceWanTransformer3DModel, 
+    "CombineWan2_2VaceFunPipeline": CombineWan2_2VaceFunPipeline,
 
     "LoadWan2_2VaceFunModel": LoadWan2_2VaceFunModel,
     "Wan2_2VaceFunSampler": Wan2_2VaceFunSampler,
@@ -436,6 +444,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CombineWanPipeline": "Combine Wan Pipeline", 
     "LoadWan2_2TransformerModel": "Load Wan2_2 TransformerModel", 
     "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
+    "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer3DModel", 
+    "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace FunPipeline",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
