@@ -1,8 +1,8 @@
 {
   "id": "ca87b2cd-bd4a-4f31-82ec-e5e028f8848c",
   "revision": 0,
-  "last_node_id": 103,
-  "last_link_id": 80,
+  "last_node_id": 115,
+  "last_link_id": 112,
   "nodes": [
     {
       "id": 87,
@@ -24,7 +24,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            79
+            111
           ]
         },
         {
@@ -112,7 +112,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            78
+            110
           ]
         }
       ],
@@ -125,31 +125,6 @@
       ]
     },
     {
-      "id": 80,
-      "type": "Note",
-      "pos": [
-        -75,
-        -297
-      ],
-      "size": [
-        350.7127990722656,
-        125.54820251464844
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
       "id": 17,
       "type": "VHS_VideoCombine",
       "pos": [
@@ -158,10 +133,10 @@
       ],
       "size": [
         390,
-        577.7142944335938
+        581.3912963867188
       ],
       "flags": {},
-      "order": 8,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -169,7 +144,7 @@
           "name": "images",
           "shape": 7,
           "type": "IMAGE",
-          "link": 80
+          "link": 112
         },
         {
           "label": "音频",
@@ -218,7 +193,7 @@
           "hidden": false,
           "paused": false,
           "params": {
-            "filename": "Fun_00107.mp4",
+            "filename": "Fun_00129.mp4",
             "subfolder": "",
             "type": "output",
             "format": "video/h264-mp4",
@@ -226,112 +201,6 @@
           }
         }
       }
-    },
-    {
-      "id": 99,
-      "type": "LoadWan2_2Model",
-      "pos": [
-        347.27996826171875,
-        -299.0150146484375
-      ],
-      "size": [
-        276.705078125,
-        130
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            76
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWan2_2Model"
-      },
-      "widgets_values": [
-        "Wan2.2-TI2V-5B",
-        "sequential_cpu_offload",
-        "wan2.2/wan_civitai_5b.yaml",
-        "bf16"
-      ]
-    },
-    {
-      "id": 103,
-      "type": "Wan2_2I2VSampler",
-      "pos": [
-        819.5313110351562,
-        -63.450443267822266
-      ],
-      "size": [
-        325.5747985839844,
-        402
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 76
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 77
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 78
-        },
-        {
-          "name": "start_img",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": 79
-        },
-        {
-          "name": "riflex_k",
-          "shape": 7,
-          "type": "RIFLEXT_ARGS",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            80
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "Wan2_2I2VSampler"
-      },
-      "widgets_values": [
-        81,
-        960,
-        43,
-        "fixed",
-        50,
-        6,
-        "Flow",
-        5,
-        0.900,
-        0.1,
-        true,
-        3,
-        true,
-        0.25000000000000006
-      ]
     },
     {
       "id": 75,
@@ -345,7 +214,7 @@
         156.71620178222656
       ],
       "flags": {},
-      "order": 6,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -354,7 +223,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            77
+            109
           ]
         }
       ],
@@ -365,44 +234,365 @@
       "widgets_values": [
         "fireworks display over night city. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
       ]
+    },
+    {
+      "id": 108,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        233.58401489257812,
+        -288.2000732421875
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            90
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            91
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 109,
+      "type": "Note",
+      "pos": [
+        -211.7540740966797,
+        -428.57659912109375
+      ],
+      "size": [
+        427.074951171875,
+        143.9142608642578
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 111,
+      "type": "CombineWan2_2Pipeline",
+      "pos": [
+        690.572021484375,
+        -393.1186828613281
+      ],
+      "size": [
+        360.3475341796875,
+        206
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 88
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 89
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 90
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 91
+        },
+        {
+          "name": "clip_encoder",
+          "shape": 7,
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": null
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 87
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            108
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWan2_2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload_and_qfloat8",
+        "Inpaint"
+      ]
+    },
+    {
+      "id": 110,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        237.50721740722656,
+        -597.7264404296875
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            88
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            87
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.2-TI2V-5B_transformer.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 107,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        233.58401489257812,
+        -438.769775390625
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            89
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.2_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 115,
+      "type": "Wan2_2I2VSampler",
+      "pos": [
+        749.0029296875,
+        -64.3254623413086
+      ],
+      "size": [
+        386.6094665527344,
+        450
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 108
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 109
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 110
+        },
+        {
+          "name": "start_img",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 111
+        },
+        {
+          "name": "riflex_k",
+          "shape": 7,
+          "type": "RIFLEXT_ARGS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            112
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Wan2_2I2VSampler"
+      },
+      "widgets_values": [
+        81,
+        960,
+        1124619359413896,
+        "randomize",
+        50,
+        6,
+        "Flow",
+        5,
+        0.9,
+        0.1,
+        true,
+        3,
+        true,
+        0.25000000000000006
+      ]
     }
   ],
   "links": [
     [
-      76,
-      99,
+      87,
+      110,
+      1,
+      111,
+      6,
+      "STRING"
+    ],
+    [
+      88,
+      110,
       0,
-      103,
+      111,
+      0,
+      "TransformerModel"
+    ],
+    [
+      89,
+      107,
+      0,
+      111,
+      1,
+      "VAEModel"
+    ],
+    [
+      90,
+      108,
+      0,
+      111,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      91,
+      108,
+      1,
+      111,
+      3,
+      "Tokenizer"
+    ],
+    [
+      108,
+      111,
+      0,
+      115,
       0,
       "FunModels"
     ],
     [
-      77,
+      109,
       75,
       0,
-      103,
+      115,
       1,
       "STRING_PROMPT"
     ],
     [
-      78,
+      110,
       73,
       0,
-      103,
+      115,
       2,
       "STRING_PROMPT"
     ],
     [
-      79,
+      111,
       87,
       0,
-      103,
+      115,
       3,
       "IMAGE"
     ],
     [
-      80,
-      103,
+      112,
+      115,
       0,
       17,
       0,
@@ -410,19 +600,6 @@
     ]
   ],
   "groups": [
-    {
-      "id": 1,
-      "title": "Load Model",
-      "bounding": [
-        220,
-        -380,
-        472,
-        232
-      ],
-      "color": "#b06634",
-      "font_size": 24,
-      "flags": {}
-    },
     {
       "id": 2,
       "title": "Prompts",
@@ -448,6 +625,19 @@
       "color": "#a1309b",
       "font_size": 24,
       "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "Load Model",
+      "bounding": [
+        223.58383178710938,
+        -677.6509399414062,
+        863.243896484375,
+        511.2655029296875
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
     }
   ],
   "config": {},
@@ -455,8 +645,8 @@
     "ds": {
       "scale": 0.6830134553650705,
       "offset": [
-        282.91743113564746,
-        433.6498523638886
+        312.3881627762727,
+        655.3866535357635
       ]
     },
     "frontendVersion": "1.21.3",
@@ -465,7 +655,7 @@
     },
     "node_versions": {
       "comfy-core": "0.3.44",
-      "CogVideoX-Fun": "5f2a55692d0834e00d477939b818b9bb63c06535",
+      "CogVideoX-Fun": "37bd73564702fa47ffe4576c87da6f82a50cb60e",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
     }
   },

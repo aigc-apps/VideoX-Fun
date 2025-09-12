@@ -5,32 +5,38 @@ import gc
 import json
 import os
 
-import comfy.model_management as mm
 import cv2
-import folder_paths
 import numpy as np
 import torch
-from comfy.utils import ProgressBar, load_torch_file
 from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
+import comfy.model_management as mm
+import folder_paths
+from comfy.utils import ProgressBar, load_torch_file
+
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                              get_closest_ratio)
+                                               get_closest_ratio)
+from ...videox_fun.data.dataset_image_video import process_pose_params
 from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                                 WanT5EncoderModel, WanTransformer3DModel)
-from ...videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline, WanFunControlPipeline
+                                  WanT5EncoderModel, WanTransformer3DModel)
+from ...videox_fun.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.pipeline import (WanFunControlPipeline,
+                                    WanFunInpaintPipeline, WanFunPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs, get_image_latent,
-                                      get_video_to_video_latent,
-                                      save_videos_grid)
-from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ...videox_fun.data.dataset_image_video import process_pose_params
-from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
+from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
+                                       get_image_to_video_latent,
+                                       get_video_to_video_latent,
+                                       save_videos_grid)
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
+from ..wan2_1.nodes import get_wan_scheduler
 
 # Used in lora cache
 transformer_cpu_cache   = {}
@@ -66,7 +72,7 @@ class LoadWanFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -82,7 +88,7 @@ class LoadWanFunModel:
                 "precision": (
                     ['fp16', 'bf16'],
                     {
-                        "default": 'fp16'
+                        "default": 'bf16'
                     }
                 ),
             },
@@ -107,40 +113,10 @@ class LoadWanFunModel:
         config = OmegaConf.load(config_path)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-        try:
-            if os.path.exists(eas_cache_dir):
-                list_dirs = os.listdir(eas_cache_dir)
-            else:
-                list_dirs = []
-        except:
-            list_dirs = []
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders + list_dirs:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download videoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
@@ -312,12 +288,13 @@ class WanFunT2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -345,7 +322,7 @@ class WanFunT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -357,12 +334,10 @@ class WanFunT2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
-
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -489,12 +464,13 @@ class WanFunInpaintSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -524,7 +500,7 @@ class WanFunInpaintSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -544,11 +520,10 @@ class WanFunInpaintSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -657,21 +632,22 @@ class WanFunV2VSampler:
                     "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
                 ),
                 "steps": (
-                    "INT", {"default": 25, "min": 1, "max": 200, "step": 1}
+                    "INT", {"default": 50, "min": 1, "max": 200, "step": 1}
                 ),
                 "cfg": (
-                    "FLOAT", {"default": 7.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                    "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "denoise_strength": (
-                    "FLOAT", {"default": 0.70, "min": 0.05, "max": 1.00, "step": 0.01}
+                    "FLOAT", {"default": 1.00, "min": 0.05, "max": 1.00, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -704,7 +680,7 @@ class WanFunV2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
 
@@ -717,7 +693,6 @@ class WanFunV2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
         model_type = funmodels['model_type']
 
@@ -750,7 +725,7 @@ class WanFunV2VSampler:
         height, width = [int(x / 16) * 16 for x in closest_size]
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")

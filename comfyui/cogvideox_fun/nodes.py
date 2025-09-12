@@ -29,7 +29,8 @@ from ...videox_fun.utils.utils import (get_image_to_video_latent,
                                       get_video_to_video_latent,
                                       save_videos_grid)
 from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
-from ..comfyui_utils import eas_cache_dir, to_pil
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
 
 # Used in lora cache
 transformer_cpu_cache   = {}
@@ -64,7 +65,7 @@ class LoadCogVideoXFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -93,40 +94,10 @@ class LoadCogVideoXFunModel:
         pbar = ProgressBar(5)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-        try:
-            if os.path.exists(eas_cache_dir):
-                list_dirs = os.listdir(eas_cache_dir)
-            else:
-                list_dirs = []
-        except:
-            list_dirs = []
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders + list_dirs:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download videoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         vae = AutoencoderKLCogVideoX.from_pretrained(
             model_name, 
@@ -370,7 +341,6 @@ class CogVideoXFunT2VSampler:
                     pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
         return (videos,)   
 
-
 class CogVideoXFunInpaintSampler:
     @classmethod
     def INPUT_TYPES(s):
@@ -547,7 +517,7 @@ class CogVideoXFunV2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "denoise_strength": (
-                    "FLOAT", {"default": 0.70, "min": 0.05, "max": 1.00, "step": 0.01}
+                    "FLOAT", {"default": 1.00, "min": 0.05, "max": 1.00, "step": 0.01}
                 ),
                 "scheduler": (
                     [ 

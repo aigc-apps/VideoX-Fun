@@ -8,6 +8,7 @@ import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 from diffusers.configuration_utils import register_to_config
+from diffusers.utils import is_torch_version
 
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
@@ -201,6 +202,7 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         # if self.model_type == 'i2v':
         #     assert clip_fea is not None and y is not None
         # params
+        dtype = x.dtype
         device = self.patch_embedding.weight.device
         dtype = x.dtype
         if self.freqs.device != device and torch.device(type="meta") != device:

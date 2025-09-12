@@ -2,34 +2,44 @@
 """
 import copy
 import gc
+import inspect
 import json
 import os
 
-import comfy.model_management as mm
 import cv2
-import folder_paths
 import numpy as np
 import torch
-from comfy.utils import ProgressBar, load_torch_file
 from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
+import comfy.model_management as mm
+import folder_paths
+from comfy.utils import ProgressBar, load_torch_file
+
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                              get_closest_ratio)
-from ...videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
-                                 WanT5EncoderModel, Wan2_2Transformer3DModel)
-from ...videox_fun.pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline, Wan2_2TI2VPipeline
+                                               get_closest_ratio)
+from ...videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+                                  AutoTokenizer, CLIPModel,
+                                  Wan2_2Transformer3DModel, WanT5EncoderModel)
+from ...videox_fun.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.pipeline import (Wan2_2FunControlPipeline,
+                                    Wan2_2FunInpaintPipeline,
+                                    Wan2_2FunPipeline, Wan2_2I2VPipeline,
+                                    Wan2_2Pipeline, Wan2_2TI2VPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs,
-                                      get_video_to_video_latent,
-                                      save_videos_grid)
-from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
+from ...videox_fun.utils.utils import (filter_kwargs,
+                                       get_image_to_video_latent,
+                                       get_video_to_video_latent,
+                                       save_videos_grid)
+from ..wan2_1.nodes import get_wan_scheduler
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
 
 # Used in lora cache
 transformer_cpu_cache       = {}
@@ -38,12 +48,214 @@ transformer_high_cpu_cache  = {}
 lora_path_before            = ""
 lora_high_path_before       = ""
 
-def filter_kwargs(cls, kwargs):
-    import inspect
-    sig = inspect.signature(cls.__init__)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-    return filtered_kwargs
+class LoadWan2_2TransformerModel:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model_name": (
+                    folder_paths.get_filename_list("diffusion_models"),
+                    {"default": "Wan2_1-T2V-1_3B_bf16.safetensors,"},
+                ),
+                "precision": (["fp16", "bf16"],
+                    {"default": "bf16"}
+                ),
+            },
+        }
+    RETURN_TYPES = ("TransformerModel", "STRING")
+    RETURN_NAMES = ("transformer", "model_name")
+    FUNCTION    = "loadmodel"
+    CATEGORY    = "CogVideoXFUNWrapper"
+
+    def loadmodel(self, model_name, precision):
+        # Init weight_dtype and device
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
+        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+
+        model_path = folder_paths.get_full_path("diffusion_models", model_name)
+        transformer_state_dict = load_torch_file(model_path, safe_load=True)
+        
+        eps             = 1e-6
+        text_len        = 512
+        freq_dim        = 256
+        dim             = transformer_state_dict["patch_embedding.weight"].shape[0]
+        hidden_size     = dim
+        in_dim          = transformer_state_dict["patch_embedding.weight"].shape[1]
+        in_channels     = in_dim
+        ffn_dim         = transformer_state_dict["blocks.0.ffn.0.bias"].shape[0]
+
+        add_ref_conv            = True if "ref_conv.weight" in transformer_state_dict else False
+        in_dim_ref_conv         = transformer_state_dict["ref_conv.weight"].shape[1] if "ref_conv.weight" in transformer_state_dict else None
+        add_control_adapter     = True if "control_adapter.conv.weight" in transformer_state_dict else False
+        in_dim_control_adapter  = transformer_state_dict["control_adapter.conv.weight"].shape[1] if "control_adapter.conv.weight" in transformer_state_dict else None
+
+        if dim == 5120: #14B
+            num_heads = 40
+            num_layers = 40
+            out_dim = 16
+            downscale_factor_control_adapter = 8
+            if in_dim == out_dim * 2 + 4:
+                model_name_in_pipeline = "wan2.2-i2v-a14b"
+            elif in_dim == out_dim:
+                model_name_in_pipeline = "wan2.2-t2v-a14b"
+            else:
+                model_name_in_pipeline = "wan2.2-fun-a14b"
+                
+        elif dim == 3072: #5B
+            num_heads = 24
+            num_layers = 30
+            out_dim = 48
+            downscale_factor_control_adapter = 16
+            if in_dim == out_dim:
+                model_name_in_pipeline = "wan2.2-ti2v-5b"
+            else:
+                model_name_in_pipeline = "wan2.2-fun-5b"
+        else: #1.3B
+            num_heads = 12
+            num_layers = 30
+            out_dim = 16
+            downscale_factor_control_adapter = 8
+            model_name_in_pipeline = "wan2.2-fun"
+        
+        if in_dim != out_dim:
+            model_type = "i2v"
+        else:
+            model_type = "t2v" #5B no img crossattn
+
+        kwargs = dict(
+            dim = dim,
+            in_dim = in_dim,
+            eps = eps,
+            ffn_dim = ffn_dim,
+            freq_dim = freq_dim,
+            model_type = model_type,
+            num_heads = num_heads,
+            num_layers = num_layers,
+            out_dim = out_dim,
+            text_len = text_len,
+            in_channels = in_channels,
+            hidden_size = hidden_size,
+            add_control_adapter = add_control_adapter,
+            add_ref_conv = add_ref_conv,
+            in_dim_control_adapter = in_dim_control_adapter // downscale_factor_control_adapter // downscale_factor_control_adapter if in_dim_control_adapter is not None else in_dim_control_adapter,
+            in_dim_ref_conv = in_dim_ref_conv,
+            downscale_factor_control_adapter = downscale_factor_control_adapter,
+        )
+
+        sig = inspect.signature(Wan2_2Transformer3DModel)
+        accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        transformer = Wan2_2Transformer3DModel(**accepted)
+        transformer.load_state_dict(transformer_state_dict)
+        transformer = transformer.eval().to(device=offload_device, dtype=weight_dtype)
+        return (transformer, model_name_in_pipeline)
+
+class CombineWan2_2Pipeline:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "transformer": ("TransformerModel",),
+                "vae": ("VAEModel",),
+                "text_encoder": ("TextEncoderModel",),
+                "tokenizer": ("Tokenizer",),
+                "model_name": ("STRING",),
+                "GPU_memory_mode":(
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    {
+                        "default": "model_cpu_offload",
+                    }
+                ),
+                "model_type": (
+                    ["Inpaint", "Control"],
+                    {
+                        "default": "Inpaint",
+                    }
+                ),
+            },
+            "optional":{
+                "clip_encoder": ("ClipEncoderModel",),
+                "transformer_2": ("TransformerModel",),
+            },
+        }
+
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "loadmodel"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def loadmodel(self, model_name, GPU_memory_mode, model_type, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None):
+        # Get pipeline
+        weight_dtype    = transformer.dtype
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
+
+        # Get pipeline
+        if model_type == "Inpaint":
+            if "5b" in model_name:
+                pipeline = Wan2_2TI2VPipeline(
+                    vae=vae,
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
+                    transformer=transformer,
+                    transformer_2=transformer_2,
+                    scheduler=None,
+                )
+            else:
+                if transformer.config.in_channels != vae.config.latent_channels:
+                    pipeline = Wan2_2FunInpaintPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        transformer_2=transformer_2,
+                        scheduler=None,
+                    )
+                else:
+                    pipeline = Wan2_2FunPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        transformer_2=transformer_2,
+                        scheduler=None,
+                    )
+        else:
+            pipeline = Wan2_2FunControlPipeline(
+                vae=vae,
+                tokenizer=tokenizer,
+                text_encoder=text_encoder,
+                transformer=transformer,
+                transformer_2=transformer_2,
+                scheduler=None,
+            )
+
+        if GPU_memory_mode == "sequential_cpu_offload":
+            replace_parameters_by_name(transformer, ["modulation",], device=device)
+            transformer.freqs = transformer.freqs.to(device=device)
+            pipeline.enable_sequential_cpu_offload()
+        elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_cpu_offload":
+            pipeline.enable_model_cpu_offload()
+        elif GPU_memory_mode == "model_full_load_and_qfloat8":
+            convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
+            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            pipeline.to(device=device)
+        else:
+            pipeline.to(device)
+
+        funmodels = {
+            'pipeline': pipeline, 
+            'dtype': weight_dtype,
+            'model_name': model_name,
+            'model_type': model_type,
+            'loras': [],
+            'strength_model': []
+        }
+        return (funmodels,)
 
 class LoadWan2_2Model:
     @classmethod
@@ -61,7 +273,7 @@ class LoadWan2_2Model:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -104,40 +316,10 @@ class LoadWan2_2Model:
         config = OmegaConf.load(config_path)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-        try:
-            if os.path.exists(eas_cache_dir):
-                list_dirs = os.listdir(eas_cache_dir)
-            else:
-                list_dirs = []
-        except:
-            list_dirs = []
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders + list_dirs:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download videoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         # Get Vae
         Chosen_AutoencoderKL = {
@@ -332,12 +514,16 @@ class Wan2_2T2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                ),
+                "boundary": (
+                    "FLOAT", {"default": 0.875, "min": 0.00, "max": 1.00, "step": 0.001}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -365,7 +551,7 @@ class Wan2_2T2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, shift, boundary, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
         global transformer_cpu_cache
         global transformer_high_cpu_cache
         global lora_path_before
@@ -379,14 +565,10 @@ class Wan2_2T2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
-        # Get boundary for wan
-        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
-
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
 
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
@@ -536,12 +718,16 @@ class Wan2_2I2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                ),
+                "boundary": (
+                    "FLOAT", {"default": 0.90, "min": 0.00, "max": 1.00, "step": 0.001}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -570,7 +756,7 @@ class Wan2_2I2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, shift, boundary, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global transformer_high_cpu_cache
         global lora_path_before
@@ -584,7 +770,6 @@ class Wan2_2I2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         start_img = [to_pil(_start_img) for _start_img in start_img] if start_img is not None else None
@@ -595,12 +780,9 @@ class Wan2_2I2VSampler:
         original_width, original_height = start_img[0].size if type(start_img) is list else Image.open(start_img).size
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
         height, width = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
-        
-        # Get boundary for wan
-        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")

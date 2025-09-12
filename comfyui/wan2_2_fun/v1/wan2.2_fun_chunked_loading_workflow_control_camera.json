@@ -1,8 +1,8 @@
 {
-  "id": "addf6f13-291c-4b88-a80c-cd5785fa8f42",
+  "id": "1464c536-caf0-472a-a5d5-6a0d06d5101a",
   "revision": 0,
-  "last_node_id": 132,
-  "last_link_id": 292,
+  "last_node_id": 141,
+  "last_link_id": 313,
   "nodes": [
     {
       "id": 107,
@@ -75,7 +75,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            289
+            310
           ]
         }
       ],
@@ -130,7 +130,7 @@
         150
       ],
       "flags": {},
-      "order": 10,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -145,7 +145,7 @@
           "type": "STRING",
           "slot_index": 0,
           "links": [
-            292
+            312
           ]
         },
         {
@@ -176,7 +176,7 @@
         537.4615478515625
       ],
       "flags": {},
-      "order": 12,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
@@ -184,7 +184,7 @@
           "name": "images",
           "shape": 7,
           "type": "IMAGE",
-          "link": 291
+          "link": 313
         },
         {
           "label": "音频",
@@ -233,7 +233,7 @@
           "hidden": false,
           "paused": false,
           "params": {
-            "filename": "Fun_00061.mp4",
+            "filename": "Fun_00112.mp4",
             "subfolder": "",
             "type": "output",
             "format": "video/h264-mp4",
@@ -262,7 +262,7 @@
           "name": "prompt",
           "type": "STRING_PROMPT",
           "links": [
-            288
+            309
           ]
         }
       ],
@@ -296,7 +296,7 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            290
+            311
           ]
         },
         {
@@ -377,34 +377,280 @@
       "bgcolor": "#653"
     },
     {
-      "id": 132,
-      "type": "WanFunV2VSampler",
+      "id": 137,
+      "type": "CombineWan2_2Pipeline",
       "pos": [
-        899,
-        68
+        459.86553955078125,
+        105.53478240966797
       ],
       "size": [
-        428.4000244140625,
-        506
+        360.3475341796875,
+        206
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 301
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 302
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 303
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 304
+        },
+        {
+          "name": "clip_encoder",
+          "shape": 7,
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": 305
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 306
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            308
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWan2_2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload",
+        "Control"
+      ]
+    },
+    {
+      "id": 138,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        2.877215623855591,
+        210.45326232910156
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            303
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            304
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 139,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        2.877215623855591,
+        59.883544921875
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            302
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.1_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 112,
+      "type": "Note",
+      "pos": [
+        -252.11000061035156,
+        389.1165771484375
+      ],
+      "size": [
+        427.074951171875,
+        143.9142608642578
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 140,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        6.800307750701904,
+        -99.07373809814453
+      ],
+      "size": [
+        393.9992370605469,
+        102
       ],
       "flags": {},
       "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            301
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            306
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.2-Fun-A14B-Control-Camera-LOW_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 136,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        438.7657470703125,
+        -97.08856964111328
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            305
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.2-Fun-A14B-Control-Camera-HIGH_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 141,
+      "type": "Wan2_2FunV2VSampler",
+      "pos": [
+        923.9700317382812,
+        64.22538757324219
+      ],
+      "size": [
+        350.2320251464844,
+        574
+      ],
+      "flags": {},
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 287
+          "link": 308
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 288
+          "link": 309
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 289
+          "link": 310
         },
         {
           "name": "validation_video",
@@ -422,7 +668,13 @@
           "name": "start_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 290
+          "link": 311
+        },
+        {
+          "name": "end_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
         },
         {
           "name": "ref_image",
@@ -434,7 +686,7 @@
           "name": "camera_conditions",
           "shape": 7,
           "type": "STRING",
-          "link": 292
+          "link": 312
         },
         {
           "name": "riflex_k",
@@ -448,90 +700,30 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            291
+            313
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "WanFunV2VSampler"
+        "Node name for S&R": "Wan2_2FunV2VSampler"
       },
       "widgets_values": [
         81,
         640,
-        43,
-        "fixed",
+        329092863634844,
+        "randomize",
         50,
         6,
         1,
         "Flow",
         5,
+        0.9,
         0.1,
         true,
         3,
         true,
         0.25000000000000006
       ]
-    },
-    {
-      "id": 123,
-      "type": "LoadWanFunModel",
-      "pos": [
-        281,
-        251
-      ],
-      "size": [
-        315,
-        154
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "slot_index": 0,
-          "links": [
-            287
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadWanFunModel"
-      },
-      "widgets_values": [
-        "Wan2.1-Fun-V1.1-1.3B-Control-Camera",
-        "Control",
-        "model_cpu_offload",
-        "wan2.1/wan_civitai.yaml",
-        "bf16"
-      ]
-    },
-    {
-      "id": 112,
-      "type": "Note",
-      "pos": [
-        -203,
-        252
-      ],
-      "size": [
-        427.074951171875,
-        143.9142608642578
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
     }
   ],
   "links": [
@@ -544,52 +736,100 @@
       "CameraPose"
     ],
     [
-      287,
-      123,
+      301,
+      140,
       0,
-      132,
+      137,
+      0,
+      "TransformerModel"
+    ],
+    [
+      302,
+      139,
+      0,
+      137,
+      1,
+      "VAEModel"
+    ],
+    [
+      303,
+      138,
+      0,
+      137,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      304,
+      138,
+      1,
+      137,
+      3,
+      "Tokenizer"
+    ],
+    [
+      305,
+      136,
+      0,
+      137,
+      5,
+      "TransformerModel"
+    ],
+    [
+      306,
+      140,
+      1,
+      137,
+      6,
+      "STRING"
+    ],
+    [
+      308,
+      137,
+      0,
+      141,
       0,
       "FunModels"
     ],
     [
-      288,
+      309,
       121,
       0,
-      132,
+      141,
       1,
       "STRING_PROMPT"
     ],
     [
-      289,
+      310,
       122,
       0,
-      132,
+      141,
       2,
       "STRING_PROMPT"
     ],
     [
-      290,
+      311,
       100,
       0,
-      132,
+      141,
       5,
       "IMAGE"
     ],
     [
-      291,
-      132,
+      312,
+      130,
+      0,
+      141,
+      8,
+      "STRING"
+    ],
+    [
+      313,
+      141,
       0,
       106,
       0,
       "IMAGE"
-    ],
-    [
-      292,
-      130,
-      0,
-      132,
-      7,
-      "STRING"
     ]
   ],
   "groups": [
@@ -633,13 +873,13 @@
       "flags": {}
     },
     {
-      "id": 4,
+      "id": 5,
       "title": "Load Model",
       "bounding": [
-        189,
-        160,
-        475,
-        269
+        -7.123280048370361,
+        -178.99830627441406,
+        863.243896484375,
+        511.2655029296875
       ],
       "color": "#b06634",
       "font_size": 24,
@@ -651,16 +891,16 @@
     "ds": {
       "scale": 0.6830134553650709,
       "offset": [
-        236.8040025924094,
-        -27.611371387475245
+        201.7628279830343,
+        116.00196884690006
       ]
     },
+    "frontendVersion": "1.21.3",
     "node_versions": {
-      "CogVideoX-Fun": "e935795d7684aaba72be65d2ad5ef580c0526f7a",
+      "CogVideoX-Fun": "37bd73564702fa47ffe4576c87da6f82a50cb60e",
       "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e",
       "comfy-core": "0.3.44"
-    },
-    "frontendVersion": "1.21.3"
+    }
   },
   "version": 0.4
 }
