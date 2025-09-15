@@ -377,6 +377,12 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         state_dict = state_dict
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model" in key:
+            key = key.replace("diffusion_model.", "lora_unet__")
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
@@ -484,6 +490,12 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model" in key:
+            key = key.replace("diffusion_model.", "lora_unet__")
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 

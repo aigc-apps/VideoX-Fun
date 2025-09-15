@@ -558,6 +558,14 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         self.sp_world_size = 1
         self.sp_world_rank = 0
 
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
@@ -703,14 +711,21 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
 
         for index_block, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    encoder_hidden_states,
-                    encoder_hidden_states_mask,
-                    temb,
-                    image_rotary_emb,
-                )
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs)
+
+                        return custom_forward
+                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        hidden_states,
+                        encoder_hidden_states,
+                        encoder_hidden_states_mask,
+                        temb,
+                        image_rotary_emb,
+                        **ckpt_kwargs,
+                    )
 
             else:
                 encoder_hidden_states, hidden_states = block(
@@ -737,3 +752,142 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
             return (output,)
 
         return Transformer2DModelOutput(sample=output)
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
+        low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
+    ):
+        if subfolder is not None:
+            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
+        print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
+
+        config_file = os.path.join(pretrained_model_path, 'config.json')
+        if not os.path.isfile(config_file):
+            raise RuntimeError(f"{config_file} does not exist")
+        with open(config_file, "r") as f:
+            config = json.load(f)
+
+        from diffusers.utils import WEIGHTS_NAME
+        model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+        model_file_safetensors = model_file.replace(".bin", ".safetensors")
+
+        if "dict_mapping" in transformer_additional_kwargs.keys():
+            for key in transformer_additional_kwargs["dict_mapping"]:
+                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+
+        if low_cpu_mem_usage:
+            try:
+                import re
+
+                from diffusers import __version__ as diffusers_version
+                if diffusers_version >= "0.33.0":
+                    from diffusers.models.model_loading_utils import \
+                        load_model_dict_into_meta
+                else:
+                    from diffusers.models.modeling_utils import \
+                        load_model_dict_into_meta
+                from diffusers.utils import is_accelerate_available
+                if is_accelerate_available():
+                    import accelerate
+                
+                # Instantiate model with empty weights
+                with accelerate.init_empty_weights():
+                    model = cls.from_config(config, **transformer_additional_kwargs)
+
+                param_device = "cpu"
+                if os.path.exists(model_file):
+                    state_dict = torch.load(model_file, map_location="cpu")
+                elif os.path.exists(model_file_safetensors):
+                    from safetensors.torch import load_file, safe_open
+                    state_dict = load_file(model_file_safetensors)
+                else:
+                    from safetensors.torch import load_file, safe_open
+                    model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
+                    state_dict = {}
+                    print(model_files_safetensors)
+                    for _model_file_safetensors in model_files_safetensors:
+                        _state_dict = load_file(_model_file_safetensors)
+                        for key in _state_dict:
+                            state_dict[key] = _state_dict[key]
+
+                if diffusers_version >= "0.33.0":
+                    # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
+                    # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
+                    load_model_dict_into_meta(
+                        model,
+                        state_dict,
+                        dtype=torch_dtype,
+                        model_name_or_path=pretrained_model_path,
+                    )
+                else:
+                    model._convert_deprecated_attention_blocks(state_dict)
+                    # move the params from meta device to cpu
+                    missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
+                    if len(missing_keys) > 0:
+                        raise ValueError(
+                            f"Cannot load {cls} from {pretrained_model_path} because the following keys are"
+                            f" missing: \n {', '.join(missing_keys)}. \n Please make sure to pass"
+                            " `low_cpu_mem_usage=False` and `device_map=None` if you want to randomly initialize"
+                            " those weights or else make sure your checkpoint file is correct."
+                        )
+
+                    unexpected_keys = load_model_dict_into_meta(
+                        model,
+                        state_dict,
+                        device=param_device,
+                        dtype=torch_dtype,
+                        model_name_or_path=pretrained_model_path,
+                    )
+
+                    if cls._keys_to_ignore_on_load_unexpected is not None:
+                        for pat in cls._keys_to_ignore_on_load_unexpected:
+                            unexpected_keys = [k for k in unexpected_keys if re.search(pat, k) is None]
+
+                    if len(unexpected_keys) > 0:
+                        print(
+                            f"Some weights of the model checkpoint were not used when initializing {cls.__name__}: \n {[', '.join(unexpected_keys)]}"
+                        )
+                
+                return model
+            except Exception as e:
+                print(
+                    f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
+                )
+        
+        model = cls.from_config(config, **transformer_additional_kwargs)
+        if os.path.exists(model_file):
+            state_dict = torch.load(model_file, map_location="cpu")
+        elif os.path.exists(model_file_safetensors):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(model_file_safetensors)
+        else:
+            from safetensors.torch import load_file, safe_open
+            model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
+            state_dict = {}
+            for _model_file_safetensors in model_files_safetensors:
+                _state_dict = load_file(_model_file_safetensors)
+                for key in _state_dict:
+                    state_dict[key] = _state_dict[key]
+        
+        tmp_state_dict = {} 
+        for key in state_dict:
+            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+                tmp_state_dict[key] = state_dict[key]
+            else:
+                print(key, "Size don't match, skip")
+                
+        state_dict = tmp_state_dict
+
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m)
+        
+        params = [p.numel() if "." in n else 0 for n, p in model.named_parameters()]
+        print(f"### All Parameters: {sum(params) / 1e6} M")
+
+        params = [p.numel() if "attn1." in n else 0 for n, p in model.named_parameters()]
+        print(f"### attn1 Parameters: {sum(params) / 1e6} M")
+        
+        model = model.to(torch_dtype)
+        return model
