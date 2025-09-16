@@ -1576,7 +1576,6 @@ def main():
 
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    print(noisy_latents.size(), prompt_embeds.size(), pooled_prompt_embeds.size(), text_ids.size(), latent_image_ids.size())
                     noise_pred = transformer3d(
                         hidden_states=noisy_latents,
                         timestep=timesteps / 1000,
