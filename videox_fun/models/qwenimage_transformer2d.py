@@ -711,21 +711,21 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
 
         for index_block, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    def create_custom_forward(module):
-                        def custom_forward(*inputs):
-                            return module(*inputs)
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
 
-                        return custom_forward
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        hidden_states,
-                        encoder_hidden_states,
-                        encoder_hidden_states_mask,
-                        temb,
-                        image_rotary_emb,
-                        **ckpt_kwargs,
-                    )
+                    return custom_forward
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    hidden_states,
+                    encoder_hidden_states,
+                    encoder_hidden_states_mask,
+                    temb,
+                    image_rotary_emb,
+                    **ckpt_kwargs,
+                )
 
             else:
                 encoder_hidden_states, hidden_states = block(
