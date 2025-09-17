@@ -1,4 +1,5 @@
 import json
+import os
 
 import cv2
 import numpy as np
@@ -105,6 +106,31 @@ class FunCompile:
                 funmodels["pipeline"].transformer_2.forward = torch.compile(funmodels["pipeline"].transformer_2.forward)
 
         print("Add Compile")
+        return (funmodels,)
+    
+class FunAttention:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "attention_type": (
+                    ["flash", "sage", "torch"],
+                    {"default": "flash"},
+                ),
+                "funmodels": ("FunModels",)
+            }
+        }
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "funattention"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def funattention(self, attention_type, funmodels):
+        os.environ['VIDEOX_ATTENTION_TYPE'] = {
+            "flash": "FLASH_ATTENTION",
+            "sage": "SAGE_ATTENTION",
+            "torch": "TORCH_SCALED_DOT"
+        }[attention_type]
         return (funmodels,)
 
 class LoadConfig:
@@ -376,6 +402,7 @@ NODE_CLASS_MAPPINGS = {
     "FunTextBox": FunTextBox,
     "FunRiflex": FunRiflex,
     "FunCompile": FunCompile,
+    "FunAttention": FunAttention,
 
     "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
     "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
@@ -436,6 +463,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
     "FunRiflex": "FunRiflex",
     "FunCompile": "FunCompile",
+    "FunAttention": "FunAttention",
 
     "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
     "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",

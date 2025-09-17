@@ -383,6 +383,14 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             key = key.replace(".self_attn.", "_self_attn_")
             key = key.replace(".cross_attn.", "_cross_attn_")
             key = key.replace(".ffn.", "_ffn_")
+        if "lora_A" in key or "lora_B" in key:
+            key = "lora_unet__" + key
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+            key = key.replace(".lora_A.default.", ".lora_down.")
+            key = key.replace(".lora_B.default.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
@@ -496,6 +504,14 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             key = key.replace(".self_attn.", "_self_attn_")
             key = key.replace(".cross_attn.", "_cross_attn_")
             key = key.replace(".ffn.", "_ffn_")
+        if "lora_A" in key or "lora_B" in key:
+            key = "lora_unet__" + key
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+            key = key.replace(".lora_A.default.", ".lora_down.")
+            key = key.replace(".lora_B.default.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
