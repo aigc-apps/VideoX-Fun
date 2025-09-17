@@ -93,7 +93,7 @@ class FunCompile:
                 for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
                     if hasattr(block, "_orig_mod"):
                         block = block._orig_mod
-                    funmodels["pipeline"].transformer.blocks[i] = torch.compile(block)
+                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(block)
             
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
             for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
@@ -105,7 +105,7 @@ class FunCompile:
                 for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
                     if hasattr(block, "_orig_mod"):
                         block = block._orig_mod
-                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(block)
+                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(block)
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
