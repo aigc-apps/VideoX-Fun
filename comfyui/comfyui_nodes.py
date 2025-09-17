@@ -84,20 +84,28 @@ class FunCompile:
     def compile(self, cache_size_limit, funmodels):
         torch._dynamo.config.cache_size_limit = cache_size_limit
         if hasattr(funmodels["pipeline"].transformer, "blocks"):
-            for i in range(len(funmodels["pipeline"].transformer.blocks)):
-                funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
+            for i, block in enumerate(funmodels["pipeline"].transformer.blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.blocks[i] = torch.compile(block)
         
             if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
-                for i in range(len(funmodels["pipeline"].transformer_2.blocks)):
-                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.blocks[i])
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer.blocks[i] = torch.compile(block)
             
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
-            for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
-                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
-
+            for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(block)
+        
             if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
-                for i in range(len(funmodels["pipeline"].transformer_2.transformer_blocks)):
-                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.transformer_blocks[i])
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(block)
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)

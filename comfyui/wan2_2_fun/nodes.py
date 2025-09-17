@@ -258,14 +258,16 @@ class LoadWan2_2FunLora:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def load_lora(self, funmodels, lora_name, lora_high_name, strength_model, lora_cache):
+        new_funmodels = dict(funmodels)
         if lora_name is not None:
-            funmodels['lora_cache'] = lora_cache
-            funmodels['loras'] = funmodels.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)]
-            funmodels['loras_high'] = funmodels.get("loras_high", []) + [folder_paths.get_full_path("loras", lora_high_name)]
-            funmodels['strength_model'] = funmodels.get("strength_model", []) + [strength_model]
-            return (funmodels,)
-        else:
-            return (funmodels,)
+            loras = list(new_funmodels.get("loras", [])) + [folder_paths.get_full_path("loras", lora_name)]
+            loras_high = list(new_funmodels.get("loras_high", [])) + [folder_paths.get_full_path("loras", lora_high_name)]
+            strength_models = list(new_funmodels.get("strength_model", [])) + [strength_model]
+            new_funmodels['loras'] = loras
+            new_funmodels['loras_high'] = loras_high
+            new_funmodels['strength_model'] = strength_models
+            new_funmodels['lora_cache'] = lora_cache
+        return (new_funmodels,)
 
 class Wan2_2FunT2VSampler:
     @classmethod
