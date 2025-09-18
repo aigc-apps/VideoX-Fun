@@ -16,7 +16,7 @@ The metadata_control.json is a little different from normal json in Wan-Fun, you
     {
       "file_path": "train/00000002.jpg",
       "control_file_path": "control/00000002.jpg",
-      "object_file_path": ["object/1.jpg", "object/2.jpg"],
+      "object_file_path": ["object/3.jpg", "object/4.jpg"],
       "text": "Ba Da Ba Ba Ba Ba.",
       "type": "image"
     },
