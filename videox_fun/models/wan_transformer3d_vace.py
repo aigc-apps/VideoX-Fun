@@ -14,7 +14,8 @@ from diffusers.utils import is_torch_version
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
 
-VIDEOX_OFFLOAD_VACE_LATENTS=os.environ.get("VIDEOX_OFFLOAD_VACE_LATENTS", False)
+
+VIDEOX_OFFLOAD_VACE_LATENTS = os.environ.get("VIDEOX_OFFLOAD_VACE_LATENTS", False)
 
 class VaceWanAttentionBlock(WanAttentionBlock):
     def __init__(
@@ -82,8 +83,9 @@ class BaseWanAttentionBlock(WanAttentionBlock):
         x = super().forward(x, **kwargs)
         if self.block_id is not None:
             if VIDEOX_OFFLOAD_VACE_LATENTS:
-                hints[self.block_id].to(x.device)
-            x = x + hints[self.block_id] * context_scale
+                x = x + hints[self.block_id].to(x.device) * context_scale
+            else:
+                x = x + hints[self.block_id] * context_scale
         return x
     
     
