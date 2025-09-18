@@ -110,11 +110,11 @@ fps                 = 16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_video       = None
-start_image         = "asset/1.png"
+start_image         = None
 end_image           = None
 # Use inpaint video instead of start image and end image.
-inpaint_video       = None
-inpaint_video_mask  = None
+inpaint_video       = "asset/inpaint_video.mp4"
+inpaint_video_mask  = "asset/inpaint_video_mask.mp4"
 subject_ref_images  = None
 vace_context_scale  = 1.00
 # Sometimes, when generating a video from a reference image, white borders appear.
@@ -124,8 +124,8 @@ padding_in_subject_ref_images   = True
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt                  = "一只棕色的狗舔了一下它的舌头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
-negative_prompt         = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+prompt              = "一只棕色的兔子舔了一下它的舌头，坐在舒适房间里的浅色沙发上。在兔子的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
+negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 
 # Using longer neg prompt such as "Blurring, mutation, deformation, distortion, dark and solid, comics, text subtitles, line art." can increase stability
 # Adding words such as "quiet, solid" to the neg prompt can increase dynamism.
@@ -309,9 +309,9 @@ if cfg_skip_ratio is not None:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
     if transformer_2 is not None:
-        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -357,9 +357,9 @@ with torch.no_grad():
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
     if transformer_2 is not None:
-        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):
