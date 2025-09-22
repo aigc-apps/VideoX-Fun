@@ -465,6 +465,7 @@ class QwenImagePipeline(DiffusionPipeline):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        comfyui_progressbar: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -576,6 +577,9 @@ class QwenImagePipeline(DiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(num_inference_steps + 2)
 
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
@@ -612,6 +616,8 @@ class QwenImagePipeline(DiffusionPipeline):
             latents,
         )
         img_shapes = [[(1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2)]] * batch_size
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 5. Prepare timesteps
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
@@ -647,6 +653,8 @@ class QwenImagePipeline(DiffusionPipeline):
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
@@ -734,6 +742,8 @@ class QwenImagePipeline(DiffusionPipeline):
             image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
             image = self.image_processor.postprocess(image, output_type=output_type)
 
+        if comfyui_progressbar:
+            pbar.update(1)
         # Offload all models
         self.maybe_free_model_hooks()
 
