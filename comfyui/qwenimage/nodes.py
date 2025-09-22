@@ -715,7 +715,7 @@ class QwenImageT2VSampler:
                 height      = height,
                 width       = width,
                 generator   = generator,
-                True_cfg_scale = cfg,
+                true_cfg_scale = cfg,
                 num_inference_steps = steps,
                 comfyui_progressbar = True,
             ).videos
