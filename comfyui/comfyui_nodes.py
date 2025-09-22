@@ -14,6 +14,11 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
+from .qwenimage.nodes import (CombineQwenImagePipeline, LoadQwenImageLora,
+                              LoadQwenImageModel,
+                              LoadQwenImageTextEncoderModel,
+                              LoadQwenImageTransformerModel,
+                              LoadQwenImageVAEModel, QwenImageT2VSampler)
 from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
                            LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
                            LoadWanTransformerModel, LoadWanVAEModel,
@@ -417,7 +422,15 @@ NODE_CLASS_MAPPINGS = {
     "CogVideoXFunT2VSampler": CogVideoXFunT2VSampler,
     "CogVideoXFunInpaintSampler": CogVideoXFunInpaintSampler,
     "CogVideoXFunV2VSampler": CogVideoXFunV2VSampler,
-
+    
+    "CombineQwenImagePipeline": CombineQwenImagePipeline, 
+    "LoadQwenImageLora": LoadQwenImageLora,
+    "LoadQwenImageModel": LoadQwenImageModel,
+    "LoadQwenImageTextEncoderModel": LoadQwenImageTextEncoderModel,
+    "LoadQwenImageTransformerModel": LoadQwenImageTransformerModel,
+    "LoadQwenImageVAEModel": LoadQwenImageVAEModel, 
+    "QwenImageT2VSampler": QwenImageT2VSampler,
+                                
     "LoadWanModel": LoadWanModel,
     "LoadWanLora": LoadWanLora,
     "WanT2VSampler": WanT2VSampler,
@@ -478,9 +491,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWanTransformerModel": "Load Wan Transformer Model",
     "LoadWanVAEModel": "Load Wan VAE Model",
     "CombineWanPipeline": "Combine Wan Pipeline", 
-    "LoadWan2_2TransformerModel": "Load Wan2_2 TransformerModel", 
+    "LoadWan2_2TransformerModel": "Load Wan2_2 Transformer Model", 
     "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
-    "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer3DModel", 
+    "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer 3DModel", 
     "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace Fun Pipeline",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
@@ -488,6 +501,14 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
     "CogVideoXFunT2VSampler": "CogVideoX-Fun Sampler for Text to Video",
     "CogVideoXFunV2VSampler": "CogVideoX-Fun Sampler for Video to Video",
+
+    "CombineQwenImagePipeline": "Combine QwenImage Pipeline", 
+    "LoadQwenImageLora": "Load QwenImage Lora",
+    "LoadQwenImageModel": "Load QwenImage Model",
+    "LoadQwenImageTextEncoderModel": "Load QwenImage TextEncoder Model",
+    "LoadQwenImageTransformerModel": "Load QwenImage Transformer Model",
+    "LoadQwenImageVAEModel": "Load QwenImage VAE Model", 
+    "QwenImageT2VSampler": "QwenImage T2V Sampler",
 
     "LoadWanModel": "Load Wan Model",
     "LoadWanLora": "Load Wan Lora",

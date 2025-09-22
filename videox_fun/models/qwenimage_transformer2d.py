@@ -15,6 +15,7 @@
 
 
 import functools
+import inspect
 import glob
 import json
 import math
@@ -52,6 +53,8 @@ from ..dist import (QwenImageMultiGPUsAttnProcessor2_0,
                     get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group)
 from .attention_utils import attention
+from .cache_utils import TeaCache
+from ..utils import cfg_skip
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -230,8 +233,7 @@ class QwenEmbedRope(nn.Module):
         max_vid_index = 0
         for idx, fhw in enumerate(video_fhw):
             frame, height, width = fhw
-            rope_key = f"{idx}_{height}_{width}"
-
+            rope_key = f"{idx}_{frame}_{height}_{width}"
             if not torch.compiler.is_compiling():
                 if rope_key not in self.rope_cache:
                     self.rope_cache[rope_key] = self._compute_video_freqs(frame, height, width, idx)
@@ -552,9 +554,12 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
 
         self.norm_out = AdaLayerNormContinuous(self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6)
         self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
-
+        
+        self.teacache = None
+        self.cfg_skip_ratio = None
+        self.current_steps = 0
+        self.num_inference_steps = None
         self.gradient_checkpointing = False
-
         self.sp_world_size = 1
         self.sp_world_rank = 0
 
@@ -632,6 +637,105 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
+    def enable_cfg_skip(self, cfg_skip_ratio, num_steps):
+        if cfg_skip_ratio != 0:
+            self.cfg_skip_ratio = cfg_skip_ratio
+            self.current_steps = 0
+            self.num_inference_steps = num_steps
+        else:
+            self.cfg_skip_ratio = None
+            self.current_steps = 0
+            self.num_inference_steps = None
+
+    def share_cfg_skip(
+        self,
+        transformer = None,
+    ):
+        self.cfg_skip_ratio = transformer.cfg_skip_ratio
+        self.current_steps = transformer.current_steps
+        self.num_inference_steps = transformer.num_inference_steps
+
+    def disable_cfg_skip(self):
+        self.cfg_skip_ratio = None
+        self.current_steps = 0
+        self.num_inference_steps = None
+
+    def enable_teacache(
+        self,
+        coefficients,
+        num_steps: int,
+        rel_l1_thresh: float,
+        num_skip_start_steps: int = 0,
+        offload: bool = True,
+    ):
+        self.teacache = TeaCache(
+            coefficients, num_steps, rel_l1_thresh=rel_l1_thresh, num_skip_start_steps=num_skip_start_steps, offload=offload
+        )
+
+    def share_teacache(
+        self,
+        transformer = None,
+    ):
+        self.teacache = transformer.teacache
+
+    def disable_teacache(self):
+        self.teacache = None
+
+    @cfg_skip()
+    def forward_bs(self, x, *args, **kwargs):
+        func = self.forward
+        sig = inspect.signature(func)
+        
+        bs          = len(x)
+        bs_half     = int(bs // 2)
+
+        if bs >= 2:
+            # cond
+            x_i = x[bs_half:]
+            args_i = [
+                arg[bs_half:] if
+                isinstance(arg,
+                            (torch.Tensor, list, tuple, np.ndarray)) and
+                len(arg) == bs else arg for arg in args
+            ]
+            kwargs_i = {
+                k: (v[bs_half:] if
+                isinstance(v,
+                    (torch.Tensor, list, tuple,
+                    np.ndarray)) and len(v) == bs else v
+                ) for k, v in kwargs.items()
+            }
+            if 'cond_flag' in sig.parameters:
+                kwargs_i["cond_flag"] = True
+        
+            cond_out = func(x_i, *args_i, **kwargs_i)
+            
+            # uncond
+            uncond_x_i = x[:bs_half]
+            uncond_args_i = [
+                arg[:bs_half] if
+                isinstance(arg,
+                            (torch.Tensor, list, tuple, np.ndarray)) and
+                len(arg) == bs else arg for arg in args
+            ]
+            uncond_kwargs_i = {
+                k: (v[:bs_half] if
+                    isinstance(v,
+                                (torch.Tensor, list, tuple,
+                                np.ndarray)) and len(v) == bs else v
+                    ) for k, v in kwargs.items()
+            }
+            if 'cond_flag' in sig.parameters:
+                uncond_kwargs_i["cond_flag"] = False
+            uncond_out = func(uncond_x_i, *uncond_args_i,
+                                **uncond_kwargs_i)
+
+            x = torch.cat([uncond_out, cond_out], dim=0)
+        else:
+            x = func(x, *args, **kwargs)
+
+        return x
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -642,6 +746,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         txt_seq_lens: Optional[List[int]] = None,
         guidance: torch.Tensor = None,  # TODO: this should probably be removed
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        cond_flag: bool = True,
         return_dict: bool = True,
     ) -> Union[torch.Tensor, Transformer2DModelOutput]:
         """
@@ -683,6 +788,10 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                     "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
                 )
 
+        if isinstance(encoder_hidden_states, list):
+            encoder_hidden_states = torch.stack(encoder_hidden_states)
+            encoder_hidden_states_mask = torch.stack(encoder_hidden_states_mask)
+
         hidden_states = self.img_in(hidden_states)
 
         timestep = timestep.to(hidden_states.dtype)
@@ -709,33 +818,106 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                     image_rotary_emb[1]
                 )
 
-        for index_block, block in enumerate(self.transformer_blocks):
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
+        # TeaCache
+        if self.teacache is not None:
+            if cond_flag:
+                inp = hidden_states.clone()
+                temb_ = temb.clone()
+                encoder_hidden_states_ = encoder_hidden_states.clone()
 
-                    return custom_forward
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    encoder_hidden_states,
-                    encoder_hidden_states_mask,
-                    temb,
-                    image_rotary_emb,
-                    **ckpt_kwargs,
-                )
+                img_mod_params_ = self.transformer_blocks[0].img_mod(temb_)
+                img_mod1_, img_mod2_ = img_mod_params_.chunk(2, dim=-1) 
+                img_normed_ = self.transformer_blocks[0].img_norm1(inp)
+                modulated_inp, img_gate1_ = self.transformer_blocks[0]._modulate(img_normed_, img_mod1_)
 
+                skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
+                if skip_flag:
+                    self.should_calc = True
+                    self.teacache.accumulated_rel_l1_distance = 0
+                else:
+                    if cond_flag:
+                        rel_l1_distance = self.teacache.compute_rel_l1_distance(self.teacache.previous_modulated_input, modulated_inp)
+                        self.teacache.accumulated_rel_l1_distance += self.teacache.rescale_func(rel_l1_distance)
+                    if self.teacache.accumulated_rel_l1_distance < self.teacache.rel_l1_thresh:
+                        self.should_calc = False
+                    else:
+                        self.should_calc = True
+                        self.teacache.accumulated_rel_l1_distance = 0
+                self.teacache.previous_modulated_input = modulated_inp
+                self.teacache.should_calc = self.should_calc
             else:
-                encoder_hidden_states, hidden_states = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_hidden_states_mask=encoder_hidden_states_mask,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                    joint_attention_kwargs=attention_kwargs,
-                )
+                self.should_calc = self.teacache.should_calc
+
+        # TeaCache
+        if self.teacache is not None:
+            if not self.should_calc:
+                previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
+                hidden_states = hidden_states + previous_residual.to(hidden_states.device)[-hidden_states.size()[0]:,]
+            else:
+                ori_hidden_states = hidden_states.clone().cpu() if self.teacache.offload else hidden_states.clone()
+
+                # 4. Transformer blocks
+                for i, block in enumerate(self.transformer_blocks):
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
+                        def create_custom_forward(module):
+                            def custom_forward(*inputs):
+                                return module(*inputs)
+
+                            return custom_forward
+                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                        encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block),
+                            hidden_states,
+                            encoder_hidden_states,
+                            encoder_hidden_states_mask,
+                            temb,
+                            image_rotary_emb,
+                            **ckpt_kwargs,
+                        )
+
+                    else:
+                        encoder_hidden_states, hidden_states = block(
+                            hidden_states=hidden_states,
+                            encoder_hidden_states=encoder_hidden_states,
+                            encoder_hidden_states_mask=encoder_hidden_states_mask,
+                            temb=temb,
+                            image_rotary_emb=image_rotary_emb,
+                            joint_attention_kwargs=attention_kwargs,
+                        )
+
+                if cond_flag:
+                    self.teacache.previous_residual_cond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
+                else:
+                    self.teacache.previous_residual_uncond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
+                del ori_hidden_states
+        else:
+            for index_block, block in enumerate(self.transformer_blocks):
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs)
+
+                        return custom_forward
+                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        hidden_states,
+                        encoder_hidden_states,
+                        encoder_hidden_states_mask,
+                        temb,
+                        image_rotary_emb,
+                        **ckpt_kwargs,
+                    )
+
+                else:
+                    encoder_hidden_states, hidden_states = block(
+                        hidden_states=hidden_states,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_hidden_states_mask=encoder_hidden_states_mask,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                        joint_attention_kwargs=attention_kwargs,
+                    )
 
         # Use only the image part (hidden_states) from the dual-stream blocks
         hidden_states = self.norm_out(hidden_states, temb)
@@ -748,10 +930,11 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
             # remove `lora_scale` from each PEFT layer
             unscale_lora_layers(self, lora_scale)
 
-        if not return_dict:
-            return (output,)
-
-        return Transformer2DModelOutput(sample=output)
+        if self.teacache is not None and cond_flag:
+            self.teacache.cnt += 1
+            if self.teacache.cnt == self.teacache.num_steps:
+                self.teacache.reset()
+        return output
 
     @classmethod
     def from_pretrained(

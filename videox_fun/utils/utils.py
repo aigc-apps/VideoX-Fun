@@ -349,6 +349,15 @@ def get_image_latent(ref_image=None, sample_size=None, padding=False):
 
     return ref_image
 
+def get_image(ref_image=None):
+    if ref_image is not None:
+        if isinstance(ref_image, str):
+            ref_image = Image.open(ref_image).convert("RGB")
+        elif isinstance(ref_image, Image.Image):
+            ref_image = ref_image.convert("RGB")
+
+    return ref_image
+
 def timer(func):
     def wrapper(*args, **kwargs):
         start_time  = time.time()
