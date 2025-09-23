@@ -1141,6 +1141,17 @@ def main():
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
                 closest_size = [int(x / 16) * 16 for x in closest_size]
 
+            min_example_length = min(
+                [example["pixel_values"].shape[0] for example in examples]
+            )
+            batch_video_length = int(min(batch_video_length, min_example_length))
+
+            # Magvae needs the number of frames to be 4n + 1.
+            batch_video_length = (batch_video_length - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
+
+            if batch_video_length <= 0:
+                batch_video_length = 1
+
             for example in examples:
                 # To 0~1
                 pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
@@ -1202,7 +1213,7 @@ def main():
                         transforms.CenterCrop(closest_size),
                     ])
     
-                new_examples["pixel_values"].append(transform(pixel_values))
+                new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["control_pixel_values"].append(transform(control_pixel_values))
             
                 if args.train_mode == "control_camera_ref":
@@ -1221,15 +1232,6 @@ def main():
                         new_examples["control_camera_values"].append(transform_no_normalize(local_control_camera_values))
                 
                 new_examples["text"].append(example["text"])
-                # Magvae needs the number of frames to be 4n + 1.
-                batch_video_length = int(
-                    min(
-                        batch_video_length,
-                        (len(pixel_values) - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1, 
-                    )
-                )
-                if batch_video_length == 0:
-                    batch_video_length = 1
 
                 if args.train_mode != "control":
                     if args.control_ref_image == "first_frame":
@@ -1256,10 +1258,10 @@ def main():
                     new_examples["clip_pixel_values"].append(clip_pixel_values)
 
             # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["pixel_values"]])
+            new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
             new_examples["control_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["control_pixel_values"]])
             if args.train_mode != "control":
-                new_examples["ref_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["ref_pixel_values"]])
+                new_examples["ref_pixel_values"] = torch.stack([example for example in new_examples["ref_pixel_values"]])
                 new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
                 new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
             if args.train_mode == "control_camera_ref":
