@@ -835,6 +835,7 @@ class QwenImageEditPipeline(DiffusionPipeline):
                         attention_kwargs=self.attention_kwargs,
                         return_dict=False,
                     )
+                    noise_pred = noise_pred[:, : latents.size(1)]
 
                 if do_true_cfg:
                     neg_noise_pred, noise_pred = noise_pred.chunk(2)

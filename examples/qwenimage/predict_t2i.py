@@ -62,7 +62,7 @@ teacache_offload    = False
 
 # Skip some cfg steps in inference for acceleration
 # Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0.25
+cfg_skip_ratio      = 0
 
 # model path
 model_name          = "models/Diffusion_Transformer/Qwen-Image"
