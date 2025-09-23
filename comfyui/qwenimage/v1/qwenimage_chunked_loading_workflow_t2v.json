@@ -1,8 +1,8 @@
 {
   "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
   "revision": 0,
-  "last_node_id": 90,
-  "last_link_id": 66,
+  "last_node_id": 94,
+  "last_link_id": 73,
   "nodes": [
     {
       "id": 78,
@@ -121,39 +121,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 86,
-      "type": "LoadQwenImageModel",
-      "pos": [
-        314.6495666503906,
-        -281.51666259765625
-      ],
-      "size": [
-        276.705078125,
-        106
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            63
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageModel"
-      },
-      "widgets_values": [
-        "Qwen-Image",
-        "model_cpu_offload_and_qfloat8",
-        "bf16"
-      ]
-    },
-    {
       "id": 90,
       "type": "QwenImageT2VSampler",
       "pos": [
@@ -165,13 +132,13 @@
         386
       ],
       "flags": {},
-      "order": 5,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 63
+          "link": 72
         },
         {
           "name": "prompt",
@@ -199,7 +166,7 @@
       "widgets_values": [
         1344,
         768,
-        953973307425457,
+        917463079267282,
         "randomize",
         50,
         6,
@@ -210,6 +177,177 @@
         5,
         true,
         0
+      ]
+    },
+    {
+      "id": 92,
+      "type": "LoadQwenImageTransformerModel",
+      "pos": [
+        275.9798278808594,
+        -465.2391052246094
+      ],
+      "size": [
+        416.3677673339844,
+        106.13789367675781
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            69
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            71
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageTransformerModel"
+      },
+      "widgets_values": [
+        "Qwen-Image_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 93,
+      "type": "LoadQwenImageVAEModel",
+      "pos": [
+        775.0554809570312,
+        -470.7688293457031
+      ],
+      "size": [
+        377.8583984375,
+        84.69844055175781
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            68
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageVAEModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-vae_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 91,
+      "type": "LoadQwenImageTextEncoderModel",
+      "pos": [
+        283.53765869140625,
+        -280.6837463378906
+      ],
+      "size": [
+        407.4130859375,
+        102
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            70
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            73
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageTextEncoderModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-text_encoder_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 94,
+      "type": "CombineQwenImagePipeline",
+      "pos": [
+        796.923828125,
+        -315.029052734375
+      ],
+      "size": [
+        321.2720642089844,
+        142
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 69
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 68
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 70
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 73
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 71
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            72
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineQwenImagePipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload_and_qfloat8"
       ]
     },
     {
@@ -224,7 +362,7 @@
         415.4429626464844
       ],
       "flags": {},
-      "order": 6,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -241,14 +379,6 @@
     }
   ],
   "links": [
-    [
-      63,
-      86,
-      0,
-      90,
-      0,
-      "FunModels"
-    ],
     [
       64,
       75,
@@ -272,6 +402,54 @@
       88,
       0,
       "IMAGE"
+    ],
+    [
+      68,
+      93,
+      0,
+      94,
+      1,
+      "VAEModel"
+    ],
+    [
+      69,
+      92,
+      0,
+      94,
+      0,
+      "TransformerModel"
+    ],
+    [
+      70,
+      91,
+      0,
+      94,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      71,
+      92,
+      1,
+      94,
+      4,
+      "STRING"
+    ],
+    [
+      72,
+      94,
+      0,
+      90,
+      0,
+      "FunModels"
+    ],
+    [
+      73,
+      91,
+      1,
+      94,
+      3,
+      "Tokenizer"
     ]
   ],
   "groups": [
@@ -279,10 +457,10 @@
       "id": 1,
       "title": "Load Model",
       "bounding": [
-        220,
-        -380,
-        472,
-        232
+        227.96267700195312,
+        -546.4359741210938,
+        985.5581665039062,
+        393.7902526855469
       ],
       "color": "#b06634",
       "font_size": 24,
@@ -305,20 +483,20 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.9090909090909091,
+      "scale": 0.7513148009015777,
       "offset": [
-        134.1995390028008,
-        455.3474386653364
+        468.42972650280086,
+        658.9756144465858
       ]
     },
+    "frontendVersion": "1.21.3",
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
       "CogVideoX-Fun": "af7923c2e2ddb71f8e68d60ebe179b55108291f1",
       "comfy-core": "0.3.57"
-    },
-    "frontendVersion": "1.21.3"
+    }
   },
   "version": 0.4
 }
