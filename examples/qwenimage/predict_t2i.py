@@ -35,7 +35,7 @@ from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_full_load_and_qfloat8"
+GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
