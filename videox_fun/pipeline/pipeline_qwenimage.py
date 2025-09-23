@@ -663,36 +663,48 @@ class QwenImagePipeline(DiffusionPipeline):
                 if self.interrupt:
                     continue
 
+                if do_true_cfg:
+                    latent_model_input = torch.cat([latents] * 2) 
+                    prompt_embeds_mask_input = [_negative_prompt_embeds_mask for _negative_prompt_embeds_mask in negative_prompt_embeds_mask] + [_prompt_embeds_mask for _prompt_embeds_mask in prompt_embeds_mask]
+                    prompt_embeds_input = [_negative_prompt_embeds for _negative_prompt_embeds in negative_prompt_embeds] + [_prompt_embeds for _prompt_embeds in prompt_embeds]
+                    img_shapes_input = img_shapes * 2
+                    txt_seq_lens_input = negative_txt_seq_lens + txt_seq_lens
+                else:
+                    latent_model_input = latents
+                    prompt_embeds_mask_input = prompt_embeds_mask
+                    prompt_embeds_input = prompt_embeds
+                    img_shapes_input = img_shapes 
+                    txt_seq_lens_input = txt_seq_lens
+
+                if hasattr(self.scheduler, "scale_model_input"):
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+                # handle guidance
+                if self.transformer.config.guidance_embeds:
+                    guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
+                    guidance = guidance.expand(latent_model_input.shape[0])
+                else:
+                    guidance = None
+
                 self._current_timestep = t
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                timestep = t.expand(latent_model_input.shape[0]).to(latent_model_input.dtype)
 
                 with torch.cuda.amp.autocast(dtype=latents.dtype), torch.cuda.device(device=latents.device):
-                    noise_pred = self.transformer(
-                        hidden_states=latents,
+                    noise_pred = self.transformer.forward_bs(
+                        x=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
-                        encoder_hidden_states_mask=prompt_embeds_mask,
-                        encoder_hidden_states=prompt_embeds,
-                        img_shapes=img_shapes,
-                        txt_seq_lens=txt_seq_lens,
+                        encoder_hidden_states_mask=prompt_embeds_mask_input,
+                        encoder_hidden_states=prompt_embeds_input,
+                        img_shapes=img_shapes_input,
+                        txt_seq_lens=txt_seq_lens_input,
                         attention_kwargs=self.attention_kwargs,
                         return_dict=False,
-                    )[0]
+                    )
 
                 if do_true_cfg:
-                    with torch.cuda.amp.autocast(dtype=latents.dtype), torch.cuda.device(device=latents.device):
-                        neg_noise_pred = self.transformer(
-                            hidden_states=latents,
-                            timestep=timestep / 1000,
-                            guidance=guidance,
-                            encoder_hidden_states_mask=negative_prompt_embeds_mask,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            img_shapes=img_shapes,
-                            txt_seq_lens=negative_txt_seq_lens,
-                            attention_kwargs=self.attention_kwargs,
-                            return_dict=False,
-                        )[0]
+                    neg_noise_pred, noise_pred = noise_pred.chunk(2)
                     comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
                     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)

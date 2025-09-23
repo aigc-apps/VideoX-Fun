@@ -1468,7 +1468,7 @@ def main():
                         img_shapes=img_shapes,
                         txt_seq_lens=txt_seq_lens,
                         return_dict=False,
-                    )[0]
+                    )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
