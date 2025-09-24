@@ -441,7 +441,6 @@ class CombineQwenImagePipeline:
                 "vae": ("VAEModel",),
                 "text_encoder": ("TextEncoderModel",),
                 "tokenizer": ("Tokenizer",),
-                "processor": ("Processor",),
                 "model_name": ("STRING",),
                 "GPU_memory_mode":(
                     ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
@@ -449,6 +448,9 @@ class CombineQwenImagePipeline:
                         "default": "model_cpu_offload",
                     }
                 ),
+            },
+            "optional":{
+                "processor": ("Processor",),
             },
         }
 
