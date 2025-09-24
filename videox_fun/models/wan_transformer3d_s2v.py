@@ -23,6 +23,7 @@ from .wan_audio_injector import (AudioInjector_WAN, CausalAudioEncoder,
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanAttentionBlock,
                                 WanLayerNorm, WanSelfAttention,
                                 sinusoidal_embedding_1d)
+from ..utils import cfg_skip
 
 
 def zero_module(module):
@@ -542,6 +543,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
 
         return hidden_states
 
+    @cfg_skip()
     def forward(
         self,
         x,

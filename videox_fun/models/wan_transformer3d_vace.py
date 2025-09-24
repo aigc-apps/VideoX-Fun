@@ -178,6 +178,7 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         hints = torch.unbind(c)[:-1]
         return hints
 
+    @cfg_skip()
     def forward(
         self,
         x,
