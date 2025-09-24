@@ -20,18 +20,18 @@ from PIL import Image
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                                get_closest_ratio)
 from ...videox_fun.models import (AutoencoderKLQwenImage, Qwen2_5_VLConfig,
-                                  Qwen2_5_VLForConditionalGeneration,
+                                  Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor,
                                   Qwen2Tokenizer, QwenImageTransformer2DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ...videox_fun.pipeline import QwenImagePipeline
+from ...videox_fun.pipeline import QwenImagePipeline, QwenImageEditPipeline
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import filter_kwargs
-from ..comfyui_utils import (eas_cache_dir, script_directory,
+from ...videox_fun.utils.utils import filter_kwargs, get_image
+from ..comfyui_utils import (eas_cache_dir, script_directory, to_pil,
                              search_model_in_possible_folders,
                              search_sub_dir_in_possible_folders)
 
@@ -401,6 +401,37 @@ class LoadQwenImageTextEncoderModel:
         return (text_encoder, tokenizer)
 
 
+class LoadQwenImageProcessor:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+            },
+        }
+
+    RETURN_TYPES = ("Processor",)
+    RETURN_NAMES = ("processor",)
+    FUNCTION    = "loadmodel"
+    CATEGORY    = "CogVideoXFUNWrapper"
+
+    def loadmodel(self, ):
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI", "Qwen"] + \
+            [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
+        try:
+            processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="qwen2_processor")
+        except:
+            try:
+                processor_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen-Image-Edit"), "processor")
+            except:
+                processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen2.5-VL-7B-Instruct")
+
+        # Get processor
+        processor = Qwen2VLProcessor.from_pretrained(
+            processor_path,
+        )
+        return (processor, )
+
+
 class CombineQwenImagePipeline:
     @classmethod
     def INPUT_TYPES(s):
@@ -410,6 +441,7 @@ class CombineQwenImagePipeline:
                 "vae": ("VAEModel",),
                 "text_encoder": ("TextEncoderModel",),
                 "tokenizer": ("Tokenizer",),
+                "processor": ("Processor",),
                 "model_name": ("STRING",),
                 "GPU_memory_mode":(
                     ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
@@ -425,7 +457,7 @@ class CombineQwenImagePipeline:
     FUNCTION = "loadmodel"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None):
+    def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, processor=None, transformer_2=None):
         # Get pipeline
         weight_dtype    = transformer.dtype
         device          = mm.get_torch_device()
@@ -434,6 +466,16 @@ class CombineQwenImagePipeline:
         # Get pipeline
         model_type = "Inpaint"
         if model_type == "Inpaint":
+            if processor is not None:
+                pipeline = QwenImageEditPipeline(
+                    vae=vae,
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
+                    transformer=transformer,
+                    scheduler=None,
+                    processor=processor,
+                )
+            else:
                 pipeline = QwenImagePipeline(
                     vae=vae,
                     tokenizer=tokenizer,
@@ -477,6 +519,7 @@ class LoadQwenImageModel:
                 "model": (
                     [
                         'Qwen-Image',
+                        'Qwen-Image-Edit',
                     ],
                     {
                         "default": 'Qwen-Image',
@@ -555,8 +598,28 @@ class LoadQwenImageModel:
         )
         pbar.update(1) 
 
+        if os.path.exists(os.path.join(model_name, "processor")):
+            need_processor = True
+            # Get processor
+            processor = Qwen2VLProcessor.from_pretrained(
+                model_name,
+                subfolder="processor"
+            )
+        else:
+            need_processor = False
+
         model_type = "Inpaint"
         if model_type == "Inpaint":
+            if need_processor:
+                pipeline = QwenImageEditPipeline(
+                    vae=vae,
+                    tokenizer=tokenizer,
+                    text_encoder=text_encoder,
+                    transformer=transformer,
+                    scheduler=None,
+                    processor=processor,
+                )
+            else:
                 pipeline = QwenImagePipeline(
                     vae=vae,
                     tokenizer=tokenizer,
@@ -749,6 +812,157 @@ class QwenImageT2VSampler:
 
             sample = pipeline(
                 prompt, 
+                negative_prompt = negative_prompt,
+                height      = height,
+                width       = width,
+                generator   = generator,
+                true_cfg_scale = cfg,
+                num_inference_steps = steps,
+                comfyui_progressbar = True,
+            ).images
+            image = torch.Tensor(np.array(sample[0])).unsqueeze(0) / 255
+
+            if not funmodels.get("lora_cache", False):
+                print('Unmerge Lora')
+                for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+        return (image,)   
+
+class QwenImageEditSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "funmodels": (
+                    "FunModels", 
+                ),
+                "prompt": (
+                    "STRING_PROMPT", 
+                ),
+                "negative_prompt": (
+                    "STRING_PROMPT", 
+                ),
+                "width": (
+                    "INT", {"default": 1344, "min": 64, "max": 2048, "step": 16}
+                ),
+                "height": (
+                    "INT", {"default": 768, "min": 64, "max": 2048, "step": 16}
+                ),
+                "seed": (
+                    "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
+                ),
+                "steps": (
+                    "INT", {"default": 50, "min": 1, "max": 200, "step": 1}
+                ),
+                "cfg": (
+                    "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                ),
+                "scheduler": (
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
+                    {
+                        "default": 'Flow'
+                    }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                ),
+                "teacache_threshold": (
+                    "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
+                ),
+                "enable_teacache":(
+                    [False, True],  {"default": True,}
+                ),
+                "num_skip_start_steps": (
+                    "INT", {"default": 5, "min": 0, "max": 50, "step": 1}
+                ),
+                "teacache_offload":(
+                    [False, True],  {"default": True,}
+                ),
+                "cfg_skip_ratio":(
+                    "FLOAT", {"default": 0, "min": 0, "max": 1, "step": 0.01}
+                ),
+            },
+            "optional":{
+                "image": ("IMAGE",),
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES =("images",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, funmodels, prompt, negative_prompt, width, height, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, image=None):
+        global transformer_cpu_cache
+        global transformer_high_cpu_cache
+        global lora_path_before
+        global lora_high_path_before
+        device = mm.get_torch_device()
+        offload_device = mm.unet_offload_device()
+
+        mm.soft_empty_cache()
+        gc.collect()
+
+        # Get Pipeline
+        pipeline = funmodels['pipeline']
+        model_name = funmodels['model_name']
+        weight_dtype = funmodels['dtype']
+
+        # Load Sampler
+        pipeline.scheduler = get_qwen_scheduler(scheduler, shift)
+
+        coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+        if coefficients is not None:
+            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+            pipeline.transformer.enable_teacache(
+                coefficients, steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+            )
+        else:
+            pipeline.transformer.disable_teacache()
+
+        if cfg_skip_ratio is not None:
+            print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+            pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, steps)
+
+        generator= torch.Generator(device).manual_seed(seed)
+
+        with torch.no_grad():
+            # Apply lora
+            if funmodels.get("lora_cache", False):
+                if len(funmodels.get("loras", [])) != 0:
+                    # Save the original weights to cpu
+                    if len(transformer_cpu_cache) == 0:
+                        print('Save transformer state_dict to cpu memory')
+                        transformer_state_dict = pipeline.transformer.state_dict()
+                        for key in transformer_state_dict:
+                            transformer_cpu_cache[key] = transformer_state_dict[key].clone().cpu()
+                    
+                    lora_path_now = str(funmodels.get("loras", []) + funmodels.get("strength_model", []))
+                    if lora_path_now != lora_path_before:
+                        print('Merge Lora with Cache')
+                        lora_path_before = copy.deepcopy(lora_path_now)
+                        pipeline.transformer.load_state_dict(transformer_cpu_cache)
+                        for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                   
+            else:
+                print('Merge Lora')
+                # Clear lora when switch from lora_cache=True to lora_cache=False.
+                if len(transformer_cpu_cache) != 0:
+                    pipeline.transformer.load_state_dict(transformer_cpu_cache)
+                    transformer_cpu_cache = {}
+                    lora_path_before = ""
+                    gc.collect()
+                
+                for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+
+            image = [to_pil(image) for image in image]
+            image = get_image(image[0]) if image is not None else image
+
+            sample = pipeline(
+                image       = image,
+                prompt      = prompt,
                 negative_prompt = negative_prompt,
                 height      = height,
                 width       = width,

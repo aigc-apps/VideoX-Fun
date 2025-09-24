@@ -15,7 +15,7 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
 from .qwenimage.nodes import (CombineQwenImagePipeline, LoadQwenImageLora,
-                              LoadQwenImageModel,
+                              LoadQwenImageModel, LoadQwenImageProcessor, QwenImageEditSampler,
                               LoadQwenImageTextEncoderModel,
                               LoadQwenImageTransformerModel,
                               LoadQwenImageVAEModel, QwenImageT2VSampler)
@@ -423,33 +423,35 @@ NODE_CLASS_MAPPINGS = {
     "CogVideoXFunInpaintSampler": CogVideoXFunInpaintSampler,
     "CogVideoXFunV2VSampler": CogVideoXFunV2VSampler,
     
-    "CombineQwenImagePipeline": CombineQwenImagePipeline, 
     "LoadQwenImageLora": LoadQwenImageLora,
-    "LoadQwenImageModel": LoadQwenImageModel,
     "LoadQwenImageTextEncoderModel": LoadQwenImageTextEncoderModel,
     "LoadQwenImageTransformerModel": LoadQwenImageTransformerModel,
     "LoadQwenImageVAEModel": LoadQwenImageVAEModel, 
-    "QwenImageT2VSampler": QwenImageT2VSampler,
-                                
-    "LoadWanModel": LoadWanModel,
-    "LoadWanLora": LoadWanLora,
-    "WanT2VSampler": WanT2VSampler,
-    "WanI2VSampler": WanI2VSampler,
+    "LoadQwenImageProcessor": LoadQwenImageProcessor,
+    "CombineQwenImagePipeline": CombineQwenImagePipeline, 
 
+    "LoadQwenImageModel": LoadQwenImageModel,
+    "QwenImageT2VSampler": QwenImageT2VSampler,
+    "QwenImageEditSampler": QwenImageEditSampler,
+                                
     "LoadWanClipEncoderModel": LoadWanClipEncoderModel,
     "LoadWanTextEncoderModel": LoadWanTextEncoderModel,
     "LoadWanTransformerModel": LoadWanTransformerModel,
     "LoadWanVAEModel": LoadWanVAEModel,
     "CombineWanPipeline": CombineWanPipeline,
+    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
+    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
+
+    "LoadWanModel": LoadWanModel,
+    "LoadWanLora": LoadWanLora,
+    "WanT2VSampler": WanT2VSampler,
+    "WanI2VSampler": WanI2VSampler,
 
     "LoadWanFunModel": LoadWanFunModel,
     "LoadWanFunLora": LoadWanFunLora,
     "WanFunT2VSampler": WanFunT2VSampler,
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
-
-    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
-    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
 
     "LoadWan2_2Model": LoadWan2_2Model,
     "LoadWan2_2Lora": LoadWan2_2Lora,
@@ -486,6 +488,23 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunCompile": "FunCompile",
     "FunAttention": "FunAttention",
 
+    "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
+    "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
+    "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
+    "CogVideoXFunT2VSampler": "CogVideoX-Fun Sampler for Text to Video",
+    "CogVideoXFunV2VSampler": "CogVideoX-Fun Sampler for Video to Video",
+
+    "LoadQwenImageLora": "Load QwenImage Lora",
+    "LoadQwenImageTextEncoderModel": "Load QwenImage TextEncoder Model",
+    "LoadQwenImageTransformerModel": "Load QwenImage Transformer Model",
+    "LoadQwenImageVAEModel": "Load QwenImage VAE Model", 
+    "LoadQwenImageProcessor": "Load QwenImage Processor",
+    "CombineQwenImagePipeline": "Combine QwenImage Pipeline", 
+
+    "LoadQwenImageModel": "Load QwenImage Model",
+    "QwenImageT2VSampler": "QwenImage T2V Sampler",
+    "QwenImageEditSampler": "QwenImage Edit Sampler",
+
     "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
     "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",
     "LoadWanTransformerModel": "Load Wan Transformer Model",
@@ -495,20 +514,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
     "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer 3DModel", 
     "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace Fun Pipeline",
-
-    "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
-    "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
-    "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
-    "CogVideoXFunT2VSampler": "CogVideoX-Fun Sampler for Text to Video",
-    "CogVideoXFunV2VSampler": "CogVideoX-Fun Sampler for Video to Video",
-
-    "CombineQwenImagePipeline": "Combine QwenImage Pipeline", 
-    "LoadQwenImageLora": "Load QwenImage Lora",
-    "LoadQwenImageModel": "Load QwenImage Model",
-    "LoadQwenImageTextEncoderModel": "Load QwenImage TextEncoder Model",
-    "LoadQwenImageTransformerModel": "Load QwenImage Transformer Model",
-    "LoadQwenImageVAEModel": "Load QwenImage VAE Model", 
-    "QwenImageT2VSampler": "QwenImage T2V Sampler",
 
     "LoadWanModel": "Load Wan Model",
     "LoadWanLora": "Load Wan Lora",

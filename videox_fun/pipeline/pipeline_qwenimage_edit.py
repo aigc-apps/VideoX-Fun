@@ -575,6 +575,7 @@ class QwenImageEditPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         _auto_resize: bool = True,
+        comfyui_progressbar: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -685,6 +686,10 @@ class QwenImageEditPipeline(DiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(num_inference_steps + 2)
+
         # 3. Preprocess image
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
             img = image[0] if isinstance(image, list) else image
@@ -727,6 +732,8 @@ class QwenImageEditPipeline(DiffusionPipeline):
                 num_images_per_prompt=num_images_per_prompt,
                 max_sequence_length=max_sequence_length,
             )
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 4. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -782,6 +789,8 @@ class QwenImageEditPipeline(DiffusionPipeline):
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
@@ -869,6 +878,9 @@ class QwenImageEditPipeline(DiffusionPipeline):
 
                 if XLA_AVAILABLE:
                     xm.mark_step()
+
+                if comfyui_progressbar:
+                    pbar.update(1)
 
         self._current_timestep = None
         if output_type == "latent":

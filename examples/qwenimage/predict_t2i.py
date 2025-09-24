@@ -82,7 +82,7 @@ sample_size         = [1344, 768]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 prompt              = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
-negative_prompt     = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. "
+negative_prompt     = " "
 guidance_scale      = 4.0
 seed                = 43
 num_inference_steps = 50

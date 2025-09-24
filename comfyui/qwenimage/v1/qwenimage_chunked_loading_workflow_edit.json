@@ -1,0 +1,596 @@
+{
+  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "revision": 0,
+  "last_node_id": 98,
+  "last_link_id": 79,
+  "nodes": [
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        18,
+        -46
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -92,
+        -294
+      ],
+      "size": [
+        351.1499938964844,
+        130.12660217285156
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 20B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用20B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 93,
+      "type": "LoadQwenImageVAEModel",
+      "pos": [
+        775.0554809570312,
+        -470.7688293457031
+      ],
+      "size": [
+        377.8583984375,
+        84.69844055175781
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            68
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageVAEModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-vae_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 91,
+      "type": "LoadQwenImageTextEncoderModel",
+      "pos": [
+        283.53765869140625,
+        -280.6837463378906
+      ],
+      "size": [
+        407.4130859375,
+        102
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            70
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            73
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageTextEncoderModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-text_encoder_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 96,
+      "type": "LoadQwenImageProcessor",
+      "pos": [
+        706.2975463867188,
+        -275.1779479980469
+      ],
+      "size": [
+        217.32675170898438,
+        26
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "processor",
+          "type": "Processor",
+          "links": [
+            74
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageProcessor"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 73,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        160
+      ],
+      "size": [
+        383.7149963378906,
+        183.83506774902344
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            77
+          ]
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
+    },
+    {
+      "id": 98,
+      "type": "LoadImage",
+      "pos": [
+        312.6856384277344,
+        418.9110107421875
+      ],
+      "size": [
+        315,
+        314.0000305175781
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            79
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ref_1.png",
+        "image"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1070.207763671875,
+        -73.63389587402344
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 75
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 92,
+      "type": "LoadQwenImageTransformerModel",
+      "pos": [
+        275.9798278808594,
+        -465.2391052246094
+      ],
+      "size": [
+        416.3677673339844,
+        106.13789367675781
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            69
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            71
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageTransformerModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-Edit_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        -50
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            76
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "把相机转变成西瓜"
+      ]
+    },
+    {
+      "id": 97,
+      "type": "QwenImageEditSampler",
+      "pos": [
+        747.4175415039062,
+        -76.30315399169922
+      ],
+      "size": [
+        280.724609375,
+        406
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 78
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 76
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 77
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 79
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            75
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenImageEditSampler"
+      },
+      "widgets_values": [
+        1344,
+        768,
+        373336117071181,
+        "randomize",
+        50,
+        6,
+        "Flow",
+        5,
+        0.3,
+        true,
+        5,
+        true,
+        0
+      ]
+    },
+    {
+      "id": 94,
+      "type": "CombineQwenImagePipeline",
+      "pos": [
+        945.2576293945312,
+        -330.913330078125
+      ],
+      "size": [
+        321.2720642089844,
+        162
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 69
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 68
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 70
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 73
+        },
+        {
+          "name": "processor",
+          "shape": 7,
+          "type": "Processor",
+          "link": 74
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 71
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            78
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineQwenImagePipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload_and_qfloat8"
+      ]
+    }
+  ],
+  "links": [
+    [
+      68,
+      93,
+      0,
+      94,
+      1,
+      "VAEModel"
+    ],
+    [
+      69,
+      92,
+      0,
+      94,
+      0,
+      "TransformerModel"
+    ],
+    [
+      70,
+      91,
+      0,
+      94,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      71,
+      92,
+      1,
+      94,
+      5,
+      "STRING"
+    ],
+    [
+      73,
+      91,
+      1,
+      94,
+      3,
+      "Tokenizer"
+    ],
+    [
+      74,
+      96,
+      0,
+      94,
+      4,
+      "Processor"
+    ],
+    [
+      75,
+      97,
+      0,
+      88,
+      0,
+      "IMAGE"
+    ],
+    [
+      76,
+      75,
+      0,
+      97,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      77,
+      73,
+      0,
+      97,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      78,
+      94,
+      0,
+      97,
+      0,
+      "FunModels"
+    ],
+    [
+      79,
+      98,
+      0,
+      97,
+      3,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Load Model",
+      "bounding": [
+        227.96267700195312,
+        -546.4359741210938,
+        1053.5875244140625,
+        397.3387756347656
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        218,
+        -127,
+        450,
+        483
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6905497838871149,
+      "offset": [
+        351.20689397709714,
+        562.4271762478439
+      ]
+    },
+    "frontendVersion": "1.25.11",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "CogVideoX-Fun": "a97dd425909c3c3719fbbcb99e78061e2f0a237c",
+      "comfy-core": "0.3.57"
+    }
+  },
+  "version": 0.4
+}

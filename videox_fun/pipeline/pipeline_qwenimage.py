@@ -737,6 +737,9 @@ class QwenImagePipeline(DiffusionPipeline):
                 if XLA_AVAILABLE:
                     xm.mark_step()
 
+                if comfyui_progressbar:
+                    pbar.update(1)
+
         self._current_timestep = None
         if output_type == "latent":
             image = latents
@@ -755,8 +758,6 @@ class QwenImagePipeline(DiffusionPipeline):
             image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
             image = self.image_processor.postprocess(image, output_type=output_type)
 
-        if comfyui_progressbar:
-            pbar.update(1)
         # Offload all models
         self.maybe_free_model_hooks()
 
