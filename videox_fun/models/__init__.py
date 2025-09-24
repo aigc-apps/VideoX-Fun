@@ -9,6 +9,7 @@ try:
     from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Qwen2VLProcessor, Qwen2_5_VLConfig
 except:
     Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer = None, None
+    Qwen2VLProcessor, Qwen2_5_VLConfig = None, None
     print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
