@@ -1798,7 +1798,7 @@ def main():
                 loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
                 loss = loss.mean()
 
-                if args.motion_sub_loss and noise_pred.size()[1] > 2:
+                if args.motion_sub_loss and noise_pred.size()[2] > 2:
                     gt_sub_noise = noise_pred[:, :, 1:].float() - noise_pred[:, :, :-1].float()
                     pre_sub_noise = target[:, :, 1:].float() - target[:, :, :-1].float()
                     sub_loss = F.mse_loss(gt_sub_noise, pre_sub_noise, reduction="mean")
