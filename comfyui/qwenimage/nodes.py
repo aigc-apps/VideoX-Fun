@@ -149,6 +149,13 @@ class LoadQwenImageVAEModel:
         model_path = folder_paths.get_full_path("vae", model_name)
         vae_state_dict = load_torch_file(model_path, safe_load=True)
 
+        if "conv1.weight" in vae_state_dict:
+            use_wan_compiled_vae = True
+            if not any(k.startswith("model.") for k in vae_state_dict.keys()):
+                vae_state_dict = {f"model.{k}": v for k, v in vae_state_dict.items()}
+        else:
+            use_wan_compiled_vae = False
+
         kwargs = {
             "attn_scales": [],
             "base_dim": 96,
@@ -207,7 +214,11 @@ class LoadQwenImageVAEModel:
         sig = inspect.signature(AutoencoderKLQwenImage)
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
-        vae = AutoencoderKLQwenImage(**accepted)
+        if use_wan_compiled_vae:
+            from ...videox_fun.models.wan_vae import AutoencoderKLWanCompileQwenImage
+            vae = AutoencoderKLWanCompileQwenImage(**accepted)
+        else:
+            vae = AutoencoderKLQwenImage(**accepted)
         vae.load_state_dict(vae_state_dict)
         vae = vae.eval().to(device=offload_device, dtype=weight_dtype)
         return (vae,)
@@ -377,7 +388,6 @@ class LoadQwenImageTextEncoderModel:
         }
         config = Qwen2_5_VLConfig(**kwargs)
         text_encoder = Qwen2_5_VLForConditionalGeneration._from_config(config)
-        text_encoder.state_dict().keys()-text_state_dict.keys()
         def transform_key(key):
             key = key.replace("model.", "model.language_model.")
             key = key.replace("visual.", "model.visual.")
@@ -713,7 +723,7 @@ class QwenImageT2VSampler:
                     "INT", {"default": 50, "min": 1, "max": 200, "step": 1}
                 ),
                 "cfg": (
-                    "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                    "FLOAT", {"default": 4.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
                     ["Flow", "Flow_Unipc", "Flow_DPM++"],
@@ -722,10 +732,10 @@ class QwenImageT2VSampler:
                     }
                 ),
                 "shift": (
-                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                    "INT", {"default": 1, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
-                    "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
+                    "FLOAT", {"default": 0.250, "min": 0.00, "max": 1.00, "step": 0.005}
                 ),
                 "enable_teacache":(
                     [False, True],  {"default": True,}
@@ -857,7 +867,7 @@ class QwenImageEditSampler:
                     "INT", {"default": 50, "min": 1, "max": 200, "step": 1}
                 ),
                 "cfg": (
-                    "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                    "FLOAT", {"default": 4.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
                     ["Flow", "Flow_Unipc", "Flow_DPM++"],
@@ -866,7 +876,7 @@ class QwenImageEditSampler:
                     }
                 ),
                 "shift": (
-                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
+                    "INT", {"default": 1, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}

@@ -517,12 +517,13 @@ class AutoencoderKLWan_(nn.Module):
         x_recon = self.decode(z)
         return x_recon, mu, log_var
 
-    def encode(self, x, scale):
+    def encode(self, x, scale=None):
         self.clear_cache()
         ## cache
         t = x.shape[2]
         iter_ = 1 + (t - 1) // 4
-        scale = [item.to(x.device, x.dtype) for item in scale]
+        if scale != None:
+            scale = [item.to(x.device, x.dtype) for item in scale]
         ## 对encode输入的x，按时间拆分为1、4、4、4....
         for i in range(iter_):
             self._enc_conv_idx = [0]
@@ -538,24 +539,26 @@ class AutoencoderKLWan_(nn.Module):
                     feat_idx=self._enc_conv_idx)
                 out = torch.cat([out, out_], 2)
         mu, log_var = self.conv1(out).chunk(2, dim=1)
-        if isinstance(scale[0], torch.Tensor):
-            mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
-                1, self.z_dim, 1, 1, 1)
-        else:
-            mu = (mu - scale[0]) * scale[1]
+        if scale != None:
+            if isinstance(scale[0], torch.Tensor):
+                mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                mu = (mu - scale[0]) * scale[1]
         x = torch.cat([mu, log_var], dim = 1)
         self.clear_cache()
         return x
 
-    def decode(self, z, scale):
+    def decode(self, z, scale=None):
         self.clear_cache()
         # z: [b,c,t,h,w]
-        scale = [item.to(z.device, z.dtype) for item in scale]
-        if isinstance(scale[0], torch.Tensor):
-            z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
-                1, self.z_dim, 1, 1, 1)
-        else:
-            z = z / scale[1] + scale[0]
+        if scale != None:
+            scale = [item.to(z.device, z.dtype) for item in scale]
+            if isinstance(scale[0], torch.Tensor):
+                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
         x = self.conv2(z)
         for i in range(iter_):
@@ -667,6 +670,146 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def _decode(self, zs):
         dec = [
             self.model.decode(u.unsqueeze(0), self.scale).clamp_(-1, 1).squeeze(0)
+            for u in zs
+        ]
+        dec = torch.stack(dec)
+
+        return DecoderOutput(sample=dec)
+
+    @apply_forward_hook
+    def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+        decoded = self._decode(z).sample
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_path, additional_kwargs={}):
+        def filter_kwargs(cls, kwargs):
+            import inspect
+            sig = inspect.signature(cls.__init__)
+            valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+            return filtered_kwargs
+
+        model = cls(**filter_kwargs(cls, additional_kwargs))
+        if pretrained_model_path.endswith(".safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(pretrained_model_path)
+        else:
+            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+        tmp_state_dict = {} 
+        for key in state_dict:
+            tmp_state_dict["model." + key] = state_dict[key]
+        state_dict = tmp_state_dict
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m, u)
+        return model
+
+
+class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    @register_to_config
+    def __init__(
+        self,
+        attn_scales = [],
+        base_dim = 96,
+        dim_mult = [
+            1,
+            2,
+            4,
+            4
+        ],
+        dropout = 0.0,
+        latents_mean = [
+            -0.7571,
+            -0.7089,
+            -0.9113,
+            0.1075,
+            -0.1745,
+            0.9653,
+            -0.1517,
+            1.5508,
+            0.4134,
+            -0.0715,
+            0.5517,
+            -0.3632,
+            -0.1922,
+            -0.9497,
+            0.2503,
+            -0.2921
+        ],
+        latents_std = [
+            2.8184,
+            1.4541,
+            2.3275,
+            2.6558,
+            1.2196,
+            1.7708,
+            2.6052,
+            2.0743,
+            3.2687,
+            2.1526,
+            2.8652,
+            1.5579,
+            1.6382,
+            1.1253,
+            2.8251,
+            1.916
+        ],
+        num_res_blocks = 2,
+        temperal_downsample = [
+            False,
+            True,
+            True
+        ],
+        z_dim = 16
+    ):
+        super().__init__()
+        cfg = dict(
+            dim=base_dim,
+            z_dim=z_dim,
+            dim_mult=dim_mult,
+            num_res_blocks=num_res_blocks,
+            attn_scales=attn_scales,
+            temperal_downsample=temperal_downsample,
+            dropout=dropout)
+
+        # init model
+        self.model = AutoencoderKLWan_(**cfg)
+
+        self.dim = base_dim
+        self.z_dim = z_dim
+        self.dim_mult = dim_mult
+        self.num_res_blocks = num_res_blocks
+        self.attn_scales = attn_scales
+        self.temperal_downsample = temperal_downsample
+        self.temperal_upsample = temperal_downsample[::-1]
+
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = [
+            self.model.encode(u.unsqueeze(0)).squeeze(0)
+            for u in x
+        ]
+        x = torch.stack(x)
+        return x
+
+    @apply_forward_hook
+    def encode(
+        self, x: torch.Tensor, return_dict: bool = True
+    ) -> Union[AutoencoderKLOutput, Tuple[DiagonalGaussianDistribution]]:
+        h = self._encode(x)
+
+        posterior = DiagonalGaussianDistribution(h)
+
+        if not return_dict:
+            return (posterior,)
+        return AutoencoderKLOutput(latent_dist=posterior)
+
+    def _decode(self, zs):
+        dec = [
+            self.model.decode(u.unsqueeze(0)).clamp_(-1, 1).squeeze(0)
             for u in zs
         ]
         dec = torch.stack(dec)
