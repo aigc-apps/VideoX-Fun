@@ -73,6 +73,11 @@ class LoadWan2_2TransformerModel:
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
 
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+        transformer = None
+
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
         
@@ -230,6 +235,8 @@ class CombineWan2_2Pipeline:
                 scheduler=None,
             )
 
+        pipeline.remove_all_hooks()
+
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)
             transformer.freqs = transformer.freqs.to(device=device)
@@ -307,6 +314,10 @@ class LoadWan2_2Model:
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
 
         # Init processbar
         pbar = ProgressBar(5)
@@ -407,6 +418,8 @@ class LoadWan2_2Model:
                     )
         else:
             raise ValueError(f"Model type {model_type} not supported")
+
+        pipeline.remove_all_hooks()
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)

@@ -93,6 +93,11 @@ class LoadQwenImageTransformerModel:
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
 
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+        transformer = None
+
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
         
@@ -498,6 +503,8 @@ class CombineQwenImagePipeline:
         else:
             raise ValueError("Not supported now.")
 
+        pipeline.remove_all_hooks()
+
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
@@ -562,6 +569,10 @@ class LoadQwenImageModel:
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
 
         # Init processbar
         pbar = ProgressBar(5)
@@ -641,6 +652,8 @@ class LoadQwenImageModel:
                 )
         else:
             raise ValueError("Not supported now.")
+
+        pipeline.remove_all_hooks()
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)

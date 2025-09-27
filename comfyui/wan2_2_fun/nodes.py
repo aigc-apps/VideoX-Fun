@@ -107,6 +107,10 @@ class LoadWan2_2FunModel:
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+
         # Init processbar
         pbar = ProgressBar(5)
 
@@ -202,6 +206,8 @@ class LoadWan2_2FunModel:
                 transformer_2=transformer_2,
                 scheduler=scheduler,
             )
+
+        pipeline.remove_all_hooks()
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)
