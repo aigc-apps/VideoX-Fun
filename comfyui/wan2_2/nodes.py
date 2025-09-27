@@ -30,7 +30,7 @@ from ...videox_fun.pipeline import (Wan2_2FunControlPipeline,
                                     Wan2_2Pipeline, Wan2_2TI2VPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (filter_kwargs,
@@ -236,6 +236,7 @@ class CombineWan2_2Pipeline:
             )
 
         pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             transformer = transformer.to(weight_dtype)
@@ -421,6 +422,7 @@ class LoadWan2_2Model:
             raise ValueError(f"Model type {model_type} not supported")
 
         pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)

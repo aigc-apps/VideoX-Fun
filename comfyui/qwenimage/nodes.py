@@ -27,7 +27,7 @@ from ...videox_fun.pipeline import QwenImagePipeline, QwenImageEditPipeline
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import filter_kwargs, get_image, get_autocast_dtype
@@ -504,6 +504,7 @@ class CombineQwenImagePipeline:
             raise ValueError("Not supported now.")
 
         pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             transformer = transformer.to(weight_dtype)
@@ -655,6 +656,7 @@ class LoadQwenImageModel:
             raise ValueError("Not supported now.")
 
         pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
