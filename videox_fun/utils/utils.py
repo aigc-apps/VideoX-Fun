@@ -419,3 +419,29 @@ def _write_to_excel(model_name, time_sum):
     df.iloc[row_idx, col_idx] = time_sum
 
     df.to_excel(file_path, index=False, header=False, sheet_name="Sheet1")
+
+def get_autocast_dtype():
+    try:
+        if not torch.cuda.is_available():
+            print("CUDA not available, using float16 by default.")
+            return torch.float16
+
+        device = torch.cuda.current_device()
+        prop = torch.cuda.get_device_properties(device)
+
+        print(f"GPU: {prop.name}, Compute Capability: {prop.major}.{prop.minor}")
+
+        if prop.major >= 8:
+            if torch.cuda.is_bf16_supported():
+                print("Using bfloat16.")
+                return torch.bfloat16
+            else:
+                print("Compute capability >= 8.0 but bfloat16 not supported, falling back to float16.")
+                return torch.float16
+        else:
+            print("GPU does not support bfloat16 natively, using float16.")
+            return torch.float16
+
+    except Exception as e:
+        print(f"Error detecting GPU capability: {e}, falling back to float16.")
+        return torch.float16

@@ -31,7 +31,7 @@ from ...videox_fun.utils.fp8_optimization import (
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
                                        get_image_to_video_latent,
-                                       get_video_to_video_latent)
+                                       get_video_to_video_latent, get_autocast_dtype)
 from ..comfyui_utils import (script_directory,
                              search_model_in_possible_folders, to_pil)
 from ..wan2_1.nodes import get_wan_scheduler
@@ -172,7 +172,7 @@ class CombineWan2_2VaceFunPipeline:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None, model_type="Control"):
-        weight_dtype    = transformer.dtype
+        weight_dtype    = transformer.dtype if transformer.dtype != torch.float32 else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 

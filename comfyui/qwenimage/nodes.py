@@ -30,7 +30,7 @@ from ...videox_fun.utils.fp8_optimization import (
     convert_model_weight_to_float8, convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import filter_kwargs, get_image
+from ...videox_fun.utils.utils import filter_kwargs, get_image, get_autocast_dtype
 from ..comfyui_utils import (eas_cache_dir, script_directory, to_pil,
                              search_model_in_possible_folders,
                              search_sub_dir_in_possible_folders)
@@ -476,7 +476,7 @@ class CombineQwenImagePipeline:
 
     def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, processor=None, transformer_2=None):
         # Get pipeline
-        weight_dtype    = transformer.dtype
+        weight_dtype    = transformer.dtype if transformer.dtype != torch.float32 else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 
