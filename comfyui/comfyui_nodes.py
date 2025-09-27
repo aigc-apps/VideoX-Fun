@@ -89,7 +89,7 @@ class FunCompile:
     def compile(self, cache_size_limit, funmodels):
         torch._dynamo.config.cache_size_limit = cache_size_limit
 
-        if pipeline.transformer.device == torch.device(type="meta"):
+        if funmodels["pipeline"].transformer.device == torch.device(type="meta"):
             print("Sequential cpu offload can not work with compile. Continue")
             return (funmodels,)
 
