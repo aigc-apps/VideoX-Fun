@@ -506,6 +506,7 @@ class CombineQwenImagePipeline:
         pipeline.remove_all_hooks()
 
         if GPU_memory_mode == "sequential_cpu_offload":
+            transformer = transformer.to(weight_dtype)
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)

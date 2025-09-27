@@ -420,6 +420,7 @@ class CombineWanPipeline:
         pipeline.remove_all_hooks()
 
         if GPU_memory_mode == "sequential_cpu_offload":
+            transformer = transformer.to(weight_dtype)
             replace_parameters_by_name(transformer, ["modulation",], device=device)
             transformer.freqs = transformer.freqs.to(device=device)
             pipeline.enable_sequential_cpu_offload()
