@@ -172,7 +172,7 @@ class CombineWan2_2VaceFunPipeline:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, clip_encoder=None, transformer_2=None, model_type="Control"):
-        weight_dtype    = transformer.dtype if transformer.dtype != torch.float32 else get_autocast_dtype()
+        weight_dtype    = transformer.dtype if transformer.dtype not in [torch.float32, torch.float8_e4m3fn, torch.float8_e5m2] else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 
@@ -188,9 +188,10 @@ class CombineWan2_2VaceFunPipeline:
 
         pipeline.remove_all_hooks()
         undo_convert_weight_dtype_wrapper(transformer)
+        pipeline.to(device=offload_device)
+        transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
-            transformer = transformer.to(weight_dtype)
             replace_parameters_by_name(transformer, ["modulation",], device=device)
             transformer.freqs = transformer.freqs.to(device=device)
             pipeline.enable_sequential_cpu_offload()
@@ -565,7 +566,7 @@ class Wan2_2VaceFunSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
                    
                     if pipeline.transformer_2 is not None:
                         # Save the original weights to cpu
@@ -581,7 +582,7 @@ class Wan2_2VaceFunSampler:
                             lora_high_path_before = copy.deepcopy(lora_high_path_now)
                             pipeline.transformer_2.load_state_dict(transformer_cpu_cache)
                             for _lora_path, _lora_weight in zip(funmodels.get("loras_high", []), funmodels.get("strength_model", [])):
-                                pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype, sub_transformer_name="transformer_2")
+                                pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
             else:
                 print('Merge Lora')
                 # Clear lora when switch from lora_cache=True to lora_cache=False.
@@ -592,7 +593,7 @@ class Wan2_2VaceFunSampler:
                     gc.collect()
                 
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
                 # Clear lora when switch from lora_cache=True to lora_cache=False.
                 if pipeline.transformer_2 is not None:
@@ -603,7 +604,7 @@ class Wan2_2VaceFunSampler:
                         gc.collect()
 
                     for _lora_path, _lora_weight in zip(funmodels.get("loras_high", []), funmodels.get("strength_model", [])):
-                        pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype, sub_transformer_name="transformer_2")
+                        pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
             sample = pipeline(
                 prompt, 
@@ -627,8 +628,8 @@ class Wan2_2VaceFunSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
                 if pipeline.transformer_2 is not None:
                     for _lora_path, _lora_weight in zip(funmodels.get("loras_high", []), funmodels.get("strength_model", [])):
-                        pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype, sub_transformer_name="transformer_2")
+                        pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
         return (videos,)   

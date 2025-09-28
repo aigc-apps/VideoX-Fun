@@ -385,7 +385,7 @@ class CombineWanPipeline:
 
     def loadmodel(self, model_name, GPU_memory_mode, model_type, transformer, vae, text_encoder, tokenizer, clip_encoder=None):
         # Get pipeline
-        weight_dtype    = transformer.dtype if transformer.dtype != torch.float32 else get_autocast_dtype()
+        weight_dtype    = transformer.dtype if transformer.dtype not in [torch.float32, torch.float8_e4m3fn, torch.float8_e5m2] else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 
@@ -419,9 +419,10 @@ class CombineWanPipeline:
 
         pipeline.remove_all_hooks()
         undo_convert_weight_dtype_wrapper(transformer)
+        pipeline.to(device=offload_device)
+        transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
-            transformer = transformer.to(weight_dtype)
             replace_parameters_by_name(transformer, ["modulation",], device=device)
             transformer.freqs = transformer.freqs.to(device=device)
             pipeline.enable_sequential_cpu_offload()
