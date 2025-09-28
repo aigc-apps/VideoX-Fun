@@ -60,5 +60,5 @@ def convert_weight_dtype_wrapper(module, origin_dtype):
 def undo_convert_weight_dtype_wrapper(module):
     for name, module in module.named_modules():
         if hasattr(module, "original_forward") and module.weight is not None:
-            setattr(module, "forward", original_forward)
+            setattr(module, "forward", module.original_forward)
             delattr(module, "original_forward")
