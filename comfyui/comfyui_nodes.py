@@ -90,6 +90,26 @@ class FunCompile:
         torch._dynamo.config.cache_size_limit = cache_size_limit
 
         if funmodels["pipeline"].transformer.device == torch.device(type="meta"):
+            if hasattr(funmodels["pipeline"].transformer, "blocks"):
+                for i, block in enumerate(funmodels["pipeline"].transformer.blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+
+                if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                    for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
+                        if hasattr(block, "_orig_mod"):
+                            block = block._orig_mod
+
+            elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
+                for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+            
+                if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                    for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
+                        if hasattr(block, "_orig_mod"):
+                            block = block._orig_mod
+                
             print("Sequential cpu offload can not work with compile. Continue")
             return (funmodels,)
 
