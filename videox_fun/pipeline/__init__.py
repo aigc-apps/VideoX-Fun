@@ -4,6 +4,7 @@ from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
 from .pipeline_flux import FluxPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
+from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline

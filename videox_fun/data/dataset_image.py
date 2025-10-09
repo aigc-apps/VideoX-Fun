@@ -65,6 +65,108 @@ class CC15M(Dataset):
         sample = dict(pixel_values=pixel_values, text=name)
         return sample
 
+class ImageEditDataset(Dataset):
+    def __init__(
+        self,
+        ann_path, data_root=None,
+        image_sample_size=512,
+        text_drop_ratio=0.1,
+        enable_bucket=False,
+        enable_inpaint=False,
+        return_file_name=False,
+    ):
+        # Loading annotations from files
+        print(f"loading annotations from {ann_path} ...")
+        if ann_path.endswith('.csv'):
+            with open(ann_path, 'r') as csvfile:
+                dataset = list(csv.DictReader(csvfile))
+        elif ann_path.endswith('.json'):
+            dataset = json.load(open(ann_path))
+    
+        self.data_root = data_root
+        self.dataset = dataset
+
+        self.length = len(self.dataset)
+        print(f"data scale: {self.length}")
+        # TODO: enable bucket training
+        self.enable_bucket = enable_bucket
+        self.text_drop_ratio = text_drop_ratio
+        self.enable_inpaint = enable_inpaint
+        self.return_file_name = return_file_name
+
+        # Image params
+        self.image_sample_size  = tuple(image_sample_size) if not isinstance(image_sample_size, int) else (image_sample_size, image_sample_size)
+        self.image_transforms   = transforms.Compose([
+            transforms.Resize(min(self.image_sample_size)),
+            transforms.CenterCrop(self.image_sample_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5],[0.5, 0.5, 0.5])
+        ])
+
+    def get_batch(self, idx):
+        data_info = self.dataset[idx % len(self.dataset)]
+
+        image_path, text = data_info['file_path'], data_info['text']
+        if self.data_root is not None:
+            image_path = os.path.join(self.data_root, image_path)
+            
+        source_image_path = data_info['source_file_path']
+        if self.data_root is not None:
+            source_image_path = os.path.join(self.data_root, source_image_path)
+
+        image = Image.open(image_path).convert('RGB')
+        source_image = Image.open(source_image_path).convert('RGB')
+        if not self.enable_bucket:
+            image = self.image_transforms(image).unsqueeze(0)
+            source_image = self.image_transforms(source_image).unsqueeze(0)
+        else:
+            image = np.expand_dims(np.array(image), 0)
+            source_image = np.expand_dims(np.array(source_image), 0)
+        if random.random() < self.text_drop_ratio:
+            text = ''
+        return image, source_image, text, 'image', image_path
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        data_info = self.dataset[idx % len(self.dataset)]
+        data_type = data_info.get('type', 'image')
+        while True:
+            sample = {}
+            try:
+                data_info_local = self.dataset[idx % len(self.dataset)]
+                data_type_local = data_info_local.get('type', 'image')
+                if data_type_local != data_type:
+                    raise ValueError("data_type_local != data_type")
+
+                pixel_values, source_pixel_values, name, data_type, file_path = self.get_batch(idx)
+                sample["pixel_values"] = pixel_values
+                sample["source_pixel_values"] = source_pixel_values
+                sample["text"] = name
+                sample["data_type"] = data_type
+                sample["idx"] = idx
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(file_path)
+                
+                if len(sample) > 0:
+                    break
+            except Exception as e:
+                print(e, self.dataset[idx % len(self.dataset)])
+                idx = random.randint(0, self.length-1)
+
+        if self.enable_inpaint and not self.enable_bucket:
+            mask = get_random_mask(pixel_values.size())
+            mask_pixel_values = pixel_values * (1 - mask) + torch.ones_like(pixel_values) * -1 * mask
+            sample["mask_pixel_values"] = mask_pixel_values
+            sample["mask"] = mask
+
+            clip_pixel_values = sample["pixel_values"][0].permute(1, 2, 0).contiguous()
+            clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
+            sample["clip_pixel_values"] = clip_pixel_values
+
+        return sample
+
 if __name__ == "__main__":
     dataset = CC15M(
         csv_path="/mnt_wg/zhoumo.xjq/CCUtils/cc15m_add_index.json",
