@@ -548,15 +548,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
-        ),
-    )
-    parser.add_argument(
         "--abnormal_norm_clip_start",
         type=int,
         default=1000,
@@ -1305,13 +1296,13 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
     else:
         vae_stream_1 = None
-        vae_stream_2 = None
+        vae_stream_2 = None8
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 

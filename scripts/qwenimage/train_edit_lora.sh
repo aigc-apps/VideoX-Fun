@@ -26,4 +26,5 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_edit_lora.py 
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --uniform_sampling
+  --uniform_sampling \
+  --train_mode "qwen_image_edit"

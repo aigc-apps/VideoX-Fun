@@ -29,4 +29,5 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_edit.py \
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
-  --trainable_modules "."
+  --trainable_modules "." \
+  --train_mode "qwen_image_edit"

@@ -554,15 +554,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"inpaint"`.'
-        ),
-    )
-    parser.add_argument(
         "--weighting_scheme",
         type=str,
         default="none",
@@ -1310,7 +1301,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()

@@ -70,14 +70,18 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                             ASPECT_RATIO_RANDOM_CROP_PROB,
                                             AspectRatioBatchImageVideoSampler,
                                             RandomSampler, get_closest_ratio)
+from videox_fun.data.dataset_image import ImageEditDataset
 from videox_fun.data.dataset_image_video import (ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.data.dataset_image import ImageEditDataset
-from videox_fun.models import (AutoencoderKLQwenImage, Qwen2VLProcessor,
+from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+                               Qwen2Tokenizer, Qwen2VLProcessor,
+                               QwenImageTransformer2DModel)
 from videox_fun.pipeline import QwenImageEditPipeline
-from videox_fun.pipeline.pipeline_qwenimage_edit import PREFERRED_QWENIMAGE_RESOLUTIONS
+from videox_fun.pipeline.pipeline_qwenimage_edit import (
+    PREFERRED_QWENIMAGE_RESOLUTIONS, calculate_dimensions)
+from videox_fun.pipeline.pipeline_qwenimage_edit_plus import (
+    CONDITION_IMAGE_SIZE, VAE_IMAGE_SIZE)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -533,28 +537,12 @@ def parse_args():
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
     )
     parser.add_argument(
-        "--prompt_template_encode",
-        type=str,
-        default="<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}<|im_end|>\n<|im_start|>assistant\n",
-        help=(
-            'The prompt template for text encoder.'
-        ),
-    )
-    parser.add_argument(
-        "--prompt_template_encode_start_idx",
-        type=int,
-        default=64,
-        help=(
-            'The start idx for prompt template.'
-        ),
-    )
-    parser.add_argument(
         "--train_mode",
         type=str,
-        default="normal",
+        default="qwen_image_edit",
         help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
+            'The format of training data. Support `"qwen_image_edit"`'
+            ' (default), `"qwen_image_edit_plus"`.'
         ),
     )
     parser.add_argument(
@@ -754,6 +742,13 @@ def main():
             args.pretrained_model_name_or_path, subfolder="text_encoder", torch_dtype=weight_dtype
         )
         text_encoder = text_encoder.eval()
+        if args.train_mode == "qwen_image_edit":
+            template = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}<|im_end|>\n<|im_start|>assistant\n"
+            drop_idx = 64
+        else:
+            template = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
+            drop_idx = 64
+
         # Get Vae
         vae = AutoencoderKLQwenImage.from_pretrained(
             args.pretrained_model_name_or_path, 
@@ -1143,22 +1138,10 @@ def main():
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
-
-                source_image_height, source_image_width = np.shape(example["source_pixel_values"])[-2:]
-                aspect_ratio = source_image_width / source_image_height
-                _, source_image_width, source_image_height = min(
-                    (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_QWENIMAGE_RESOLUTIONS
-                )
-                multiple_of = vae_scale_factor * 2
-                source_image_width = source_image_width // multiple_of * multiple_of
-                source_image_height = source_image_height // multiple_of * multiple_of
-
-                source_image = Image.fromarray(np.array(example["source_pixel_values"], np.uint8)[0])
-                source_image = source_image.resize((source_image_width, source_image_height), resample=Image.LANCZOS)
-
-                source_pixel_values = torch.from_numpy(np.expand_dims(np.array(source_image), 0)).permute(0, 3, 1, 2).contiguous()
-                source_pixel_values = source_pixel_values / 255.
-                source_pixel_values = (source_pixel_values - 0.5) / 0.5
+                
+                source_pixel_values = []
+                for _source_pixel_value in example["source_pixel_values"]:
+                    source_pixel_values.append(np.array(_source_pixel_value))
 
                 new_examples["pixel_values"].append(transform(pixel_values))
                 new_examples["source_pixel_values"].append(source_pixel_values)
@@ -1166,13 +1149,9 @@ def main():
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
-            new_examples["source_pixel_values"] = torch.stack([example for example in new_examples["source_pixel_values"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                template = args.prompt_template_encode
-                drop_idx = args.prompt_template_encode_start_idx
-
                 txt = [template.format(e) for e in batch['text']]
                 prompt_in_pixel_values = [
                     Image.fromarray(np.array((source_pixel_value.float().cpu().permute(0, 2, 3, 1) * 0.5 + 0.5)[0], np.uint8)) for source_pixel_value in source_pixel_values
@@ -1251,6 +1230,7 @@ def main():
 
     if fsdp_stage != 0:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
@@ -1342,7 +1322,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
@@ -1359,22 +1339,74 @@ def main():
             # Data batch sanity check
             if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
-                source_pixel_values = batch['source_pixel_values'].cpu()
+                source_pixel_values = batch['source_pixel_values']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                source_pixel_values = rearrange(source_pixel_values, "b f c h w -> b c f h w")
 
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
                 for idx, (pixel_value, source_pixel_value, text) in enumerate(zip(pixel_values, source_pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
-                    source_pixel_value = source_pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                    save_videos_grid(source_pixel_value, f"{args.output_dir}/sanity_check/source_{gif_name[:10]}.gif", rescale=True)
+                    for local_index, _source_pixel_value in enumerate(source_pixel_value):
+                        _source_pixel_value = Image.fromarray(np.uint8(_source_pixel_value))
+                        _source_pixel_value.save(f"{args.output_dir}/sanity_check/source_{local_index}_{gif_name[:10]}.jpg")
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
-                source_pixel_values = batch["source_pixel_values"].to(weight_dtype)
+                source_pixel_values = batch["source_pixel_values"]
+
+                condition_image_sizes = []
+                condition_images = []
+                vae_image_sizes = []
+                vae_images = []
+
+                if args.train_mode == "qwen_image_edit":
+                    for source_pixel_value in source_pixel_values:
+                        _prompt_in_pixel_values = []
+                        _prompt_in_sizes = []
+                        for _source_pixel_value in source_pixel_value:
+                            source_image_height, source_image_width = np.shape(_source_pixel_value)[-2:]
+                            aspect_ratio = source_image_width / source_image_height
+                            _, source_image_width, source_image_height = min(
+                                (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_QWENIMAGE_RESOLUTIONS
+                            )
+                            multiple_of = vae_scale_factor * 2
+                            source_image_width = source_image_width // multiple_of * multiple_of
+                            source_image_height = source_image_height // multiple_of * multiple_of
+
+                            _source_pixel_value = Image.fromarray(np.array(_source_pixel_value, np.uint8))
+                            _source_pixel_value = _source_pixel_value.resize((source_image_width, source_image_height), resample=Image.LANCZOS)
+                            
+                            _prompt_in_pixel_values.append(_source_pixel_value)
+                            _prompt_in_sizes.append([source_image_width, source_image_height])
+
+                        condition_images.append(_prompt_in_pixel_values)
+                        condition_image_sizes.append(_prompt_in_sizes)
+                        vae_images.append(_prompt_in_pixel_values)
+                        vae_image_sizes.append(_prompt_in_sizes)
+                else:
+                    for source_pixel_value in source_pixel_values:
+                        _condition_images = []
+                        _condition_image_sizes = []
+                        _vae_images = []
+                        _vae_image_sizes = []
+                        for _source_pixel_value in source_pixel_value:
+                            _source_pixel_value = Image.fromarray(np.array(_source_pixel_value, np.uint8))
+
+                            image_width, image_height = _source_pixel_value.size
+                            vae_width, vae_height = calculate_dimensions(VAE_IMAGE_SIZE, image_width / image_height)
+                            _vae_image_sizes.append((vae_width, vae_height))
+                            _vae_images.append(_source_pixel_value.resize((vae_width, vae_height), resample=Image.LANCZOS))
+
+                            condition_width, condition_height = calculate_dimensions(CONDITION_IMAGE_SIZE, image_width / image_height)
+                            _condition_image_sizes.append((condition_width, condition_height))
+                            _condition_images.append(_source_pixel_value.resize((condition_width, condition_height), resample=Image.LANCZOS))
+
+                        condition_images.append(_condition_images)
+                        condition_image_sizes.append(_condition_image_sizes)
+                        vae_images.append(_vae_images)
+                        vae_image_sizes.append(_vae_image_sizes)
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1402,8 +1434,24 @@ def main():
                         latents = _batch_encode_vae(pixel_values)
                     latents = ((latents - latents_mean) * latents_std).to(dtype=weight_dtype)
 
-                    source_latents = _batch_encode_vae(source_pixel_values)
-                    source_latents = (source_latents - latents_mean) / latents_std
+                    source_latents = []
+                    for _vae_images in vae_images:
+                        _source_latents = []
+                        for _vae_image in _vae_images:
+                            _vae_image = torch.from_numpy(np.expand_dims(np.array(_vae_image), 0)).to(dtype=weight_dtype, device=vae.device)
+                            _vae_image = _vae_image.permute(0, 3, 1, 2).contiguous().unsqueeze(0)
+                            _vae_image = _vae_image / 255.
+                            _vae_image = (_vae_image - 0.5) / 0.5
+
+                            _source_latent = _batch_encode_vae(_vae_image)
+                            _source_latent = ((_source_latent - latents_mean) * latents_std).to(dtype=weight_dtype)
+
+                            bsz, source_channel, _, source_latent_height, source_latent_width = _source_latent.size()
+                            _source_latent = _pack_latents(_source_latent, bsz, source_channel, source_latent_height, source_latent_width)
+                            _source_latents.append(_source_latent)
+                        _source_latents = torch.cat(_source_latents, dim = 1)
+                        source_latents.append(_source_latents)
+                    source_latents = torch.cat(source_latents, dim = 0)
 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1420,13 +1468,24 @@ def main():
                     encoder_attention_mask = batch['encoder_attention_mask']
                 else:
                     with torch.no_grad():
-                        template = args.prompt_template_encode
-                        drop_idx = args.prompt_template_encode_start_idx
+                        if args.train_mode == "qwen_image_edit":
+                            prompt_in_pixel_values = condition_images[0]
+                            base_img_prompt = ""
+                            txt = [template.format(e) for e in batch['text']]
+                        else:
+                            prompt_in_pixel_values = condition_images[0]
+                            
+                            img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
+                            if isinstance(prompt_in_pixel_values, list):
+                                base_img_prompt = ""
+                                for i, img in enumerate(prompt_in_pixel_values):
+                                    base_img_prompt += img_prompt_template.format(i + 1)
+                            elif prompt_in_pixel_values is not None:
+                                base_img_prompt = img_prompt_template.format(1)
+                            else:
+                                base_img_prompt = ""
 
-                        txt = [template.format(e) for e in batch['text']]
-                        prompt_in_pixel_values = [
-                            Image.fromarray(np.array((source_pixel_value.float().cpu().permute(0, 2, 3, 1) * 0.5 + 0.5)[0], np.uint8)) for source_pixel_value in source_pixel_values
-                        ]
+                            txt = [template.format(base_img_prompt + e) for e in batch['text']]
 
                         model_inputs = processor(
                             text=txt,
@@ -1461,8 +1520,6 @@ def main():
 
                 bsz, channel, num_frame, height, width = latents.size()
                 latents = _pack_latents(latents, bsz, channel, height, width)
-                bsz, source_channel, _, source_latent_height, source_latent_width = source_latents.size()
-                source_latents = _pack_latents(source_latents, bsz, source_channel, source_latent_height, source_latent_width)
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
                 if not args.uniform_sampling:
@@ -1515,7 +1572,10 @@ def main():
                 img_shapes = [
                     [
                         (1, height // 2, width // 2),
-                        (1, source_latent_height // 2, source_latent_width // 2),
+                        *[
+                            (1, vae_height // vae_scale_factor // 2, vae_width // vae_scale_factor // 2)
+                            for vae_width, vae_height in vae_image_sizes[0]
+                        ],
                     ]
                 ] * latents.size(0)
                 txt_seq_lens = encoder_attention_mask.sum(dim=1).tolist() if encoder_attention_mask is not None else None
