@@ -173,7 +173,7 @@ def calculate_dimensions(target_area, ratio):
     width = round(width / 32) * 32
     height = round(height / 32) * 32
 
-    return width, height, None
+    return width, height
 
 
 @dataclass
@@ -688,7 +688,7 @@ class QwenImageEditPipeline(DiffusionPipeline):
             returning a tuple, the first element is a list with the generated images.
         """
         image_size = image[0].size if isinstance(image, list) else image.size
-        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
+        calculated_width, calculated_height = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
         height = height or calculated_height
         width = width or calculated_width
 

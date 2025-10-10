@@ -180,7 +180,6 @@ def calculate_dimensions(target_area, ratio):
     return width, height
 
 
-
 @dataclass
 class QwenImagePipelineOutput(BaseOutput):
     """

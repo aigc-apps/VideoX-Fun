@@ -109,19 +109,32 @@ class ImageEditDataset(Dataset):
         image_path, text = data_info['file_path'], data_info['text']
         if self.data_root is not None:
             image_path = os.path.join(self.data_root, image_path)
-            
-        source_image_path = data_info['source_file_path']
-        if self.data_root is not None:
-            source_image_path = os.path.join(self.data_root, source_image_path)
-
         image = Image.open(image_path).convert('RGB')
-        source_image = Image.open(source_image_path).convert('RGB')
+
         if not self.enable_bucket:
-            image = self.image_transforms(image).unsqueeze(0)
-            source_image = self.image_transforms(source_image).unsqueeze(0)
+            raise ValueError("Not enable_bucket is not supported now. ")
         else:
             image = np.expand_dims(np.array(image), 0)
-            source_image = np.expand_dims(np.array(source_image), 0)
+
+        source_image_path = data_info.get('source_file_path', [])
+        source_image = []
+        if isinstance(source_image_path, list):
+            for _source_image_path in source_image_path:
+                if self.data_root is not None:
+                    _source_image_path = os.path.join(self.data_root, _source_image_path)
+                _source_image = Image.open(_source_image_path).convert('RGB')
+                source_image.append(_source_image)
+        else:
+            if self.data_root is not None:
+                _source_image_path = os.path.join(self.data_root, source_image_path)
+            _source_image = Image.open(_source_image_path).convert('RGB')
+            source_image.append(_source_image)
+
+        if not self.enable_bucket:
+            raise ValueError("Not enable_bucket is not supported now. ")
+        else:
+            source_image = [np.array(_source_image) for _source_image in source_image]
+
         if random.random() < self.text_drop_ratio:
             text = ''
         return image, source_image, text, 'image', image_path
