@@ -1728,11 +1728,6 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        transformer3d = unwrap_model(transformer3d)
-        if args.use_ema:
-            ema_transformer3d.copy_to(transformer3d.parameters())
-
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
         gc.collect()
         torch.cuda.empty_cache()

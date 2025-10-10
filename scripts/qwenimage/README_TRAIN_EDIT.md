@@ -2,6 +2,29 @@
 
 We can choose whether to use deepspeed or fsdp in qwen-image, which can save a lot of video memory. 
 
+The metadata_control.json is a little different from normal json in Qwen-Image, you need to add a source_file_path.
+
+Qwen-Image-Edit needs only one file in source_file_path.
+Qwen-Image-Edit-2509 needs only one file or more files in source_file_path.
+
+```json
+[
+    {
+      "file_path": "train/00000001.mp4",
+      "source_file_path": ["source/00000001.mp4"],
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "video"
+    },
+    {
+      "file_path": "train/00000002.jpg",
+      "source_file_path": ["source/00000002.jpg"],
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "image"
+    },
+    .....
+]
+```
+
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
 - `enable_bucket` is used to enable bucket training. When enabled, the model does not crop the images at the center, but instead, it trains the entire images after grouping them into buckets based on resolution.

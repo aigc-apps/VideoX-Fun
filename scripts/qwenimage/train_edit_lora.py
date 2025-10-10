@@ -1443,6 +1443,7 @@ def main():
                     latents = ((latents - latents_mean) * latents_std).to(dtype=weight_dtype)
 
                     source_latents = []
+                    source_exist = False
                     for _vae_images in vae_images:
                         _source_latents = []
                         for _vae_image in _vae_images:
@@ -1457,9 +1458,14 @@ def main():
                             bsz, source_channel, _, source_latent_height, source_latent_width = _source_latent.size()
                             _source_latent = _pack_latents(_source_latent, bsz, source_channel, source_latent_height, source_latent_width)
                             _source_latents.append(_source_latent)
-                        _source_latents = torch.cat(_source_latents, dim = 1)
+                        if len(_source_latents) != 0: 
+                            _source_latents = torch.cat(_source_latents, dim = 1)
+                            source_exist = True
                         source_latents.append(_source_latents)
-                    source_latents = torch.cat(source_latents, dim = 0)
+                    if source_exist:
+                        source_latents = torch.cat(source_latents, dim = 0)
+                    else:
+                        source_latents = None                        
 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1477,11 +1483,17 @@ def main():
                 else:
                     with torch.no_grad():
                         if args.train_mode == "qwen_image_edit":
-                            prompt_in_pixel_values = condition_images[0]
+                            if source_exist:
+                                prompt_in_pixel_values = condition_images[0][:1]
+                            else:
+                                prompt_in_pixel_values = None
                             base_img_prompt = ""
                             txt = [template.format(e) for e in batch['text']]
                         else:
-                            prompt_in_pixel_values = condition_images[0]
+                            if source_exist:
+                                prompt_in_pixel_values = condition_images[0]
+                            else:
+                                prompt_in_pixel_values = None
                             
                             img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
                             if isinstance(prompt_in_pixel_values, list):
@@ -1501,13 +1513,20 @@ def main():
                             padding=True,
                             return_tensors="pt",
                         ).to(accelerator.device)
-                        encoder_hidden_states = text_encoder(
-                            input_ids=model_inputs.input_ids,
-                            attention_mask=model_inputs.attention_mask,
-                            pixel_values=model_inputs.pixel_values,
-                            image_grid_thw=model_inputs.image_grid_thw,
-                            output_hidden_states=True,
-                        )
+                        if prompt_in_pixel_values is None:
+                            encoder_hidden_states = text_encoder(
+                                input_ids=model_inputs.input_ids,
+                                attention_mask=model_inputs.attention_mask,
+                                output_hidden_states=True,
+                            )
+                        else:
+                            encoder_hidden_states = text_encoder(
+                                input_ids=model_inputs.input_ids,
+                                attention_mask=model_inputs.attention_mask,
+                                pixel_values=model_inputs.pixel_values,
+                                image_grid_thw=model_inputs.image_grid_thw,
+                                output_hidden_states=True,
+                            )
                         hidden_states = encoder_hidden_states.hidden_states[-1]
                         split_hidden_states = _extract_masked_hidden(hidden_states, model_inputs.attention_mask)
                         split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
@@ -1588,7 +1607,10 @@ def main():
                 ] * latents.size(0)
                 txt_seq_lens = encoder_attention_mask.sum(dim=1).tolist() if encoder_attention_mask is not None else None
 
-                noisy_latents_and_image_latents = torch.cat([noisy_latents, source_latents], dim=1)
+                if source_latents is not None:
+                    noisy_latents_and_image_latents = torch.cat([noisy_latents, source_latents], dim=1)
+                else:
+                    noisy_latents_and_image_latents = noisy_latents
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
