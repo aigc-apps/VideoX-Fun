@@ -1302,7 +1302,7 @@ def main():
         vae_stream_2 = torch.cuda.Stream()
     else:
         vae_stream_1 = None
-        vae_stream_2 = None8
+        vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 
