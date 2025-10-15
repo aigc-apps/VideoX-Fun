@@ -15,6 +15,8 @@ except:
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .flux_transformer2d import FluxTransformer2DModel
+from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
+from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .wan_audio_encoder import WanAudioEncoder

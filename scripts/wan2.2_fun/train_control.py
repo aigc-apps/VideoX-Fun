@@ -1552,7 +1552,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
@@ -1928,7 +1928,7 @@ def main():
                         context=prompt_embeds,
                         t=timesteps,
                         seq_len=seq_len,
-                        y=control_latents if args.train_mode != "control" else None,
+                        y=control_latents,
                         y_camera=control_camera_latents if args.train_mode == "control_camera_ref" else None,
                         full_ref=full_ref if args.add_full_ref_image_in_self_attention else None,
                     )
