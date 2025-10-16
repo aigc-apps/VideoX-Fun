@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from diffusers.configuration_utils import register_to_config
 from diffusers.utils import is_torch_version
 
+from ..dist import sequence_parallel_all_gather, sequence_parallel_chunk
 from ..utils import cfg_skip
 from .attention_utils import attention
 from .wan_transformer3d import (WanAttentionBlock, WanLayerNorm, WanRMSNorm,
@@ -79,6 +80,7 @@ class AudioCrossAttentionProcessor(nn.Module):
         img_x = img_x.flatten(2)
 
         if len(audio_proj.shape) == 4:
+            q = sequence_parallel_all_gather(q, dim=1)
             audio_q = q.view(b * latents_num_frames, -1, n, d)  # [b, 21, l1, n, d]
             ip_key = self.k_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
@@ -87,6 +89,7 @@ class AudioCrossAttentionProcessor(nn.Module):
             )
             audio_x = audio_x.view(b, q.size(1), n, d)
             audio_x = audio_x.flatten(2)
+            audio_x = sequence_parallel_chunk(audio_x, dim=1)
         elif len(audio_proj.shape) == 3:
             ip_key = self.k_proj(audio_proj).view(b, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b, -1, n, d)
@@ -206,12 +209,12 @@ class AudioAttentionBlock(nn.Module):
             e = (self.modulation.to(dtype=e.dtype, device=e.device) + e).chunk(6, dim=1)
         assert e[0].dtype == torch.float32
 
-        # Self-attention
-        temp_x = self.norm1(x) * (1 + e[1]) + e[0]
-        temp_x = temp_x.to(dtype)
-
-        y = self.self_attn(temp_x, seq_lens, grid_sizes, freqs, dtype, t=t)
-        x = x + y * e[2]
+        # self-attention
+        y = self.self_attn(
+            self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes, freqs, dtype, t=t
+        )
+        with amp.autocast(dtype=torch.float32):
+            x = x + y * e[2]
 
         # Cross-attention & FFN function
         def cross_attn_ffn(x, context, context_lens, e):
@@ -220,12 +223,9 @@ class AudioAttentionBlock(nn.Module):
                 audio_proj=audio_proj, audio_context_lens=audio_context_lens, audio_scale=audio_scale,
                 latents_num_frames=grid_sizes[0][0],
             )
-            # FFN function
-            temp_x = self.norm2(x) * (1 + e[4]) + e[3]
-            temp_x = temp_x.to(dtype)
-            
-            y = self.ffn(temp_x)
-            x = x + y * e[5]
+            y = self.ffn(self.norm2(x).float() * (1 + e[4]) + e[3])
+            with amp.autocast(dtype=torch.float32):
+                x = x + y * e[5]
             return x
 
         x = cross_attn_ffn(x, context, context_lens, e)

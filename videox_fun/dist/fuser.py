@@ -10,7 +10,7 @@ try:
         from paifuser.xfuser.core.distributed import (
             get_sequence_parallel_rank, get_sequence_parallel_world_size,
             get_sp_group, get_world_group, init_distributed_environment,
-            initialize_model_parallel)
+            initialize_model_parallel, model_parallel_is_initialized)
         from paifuser.xfuser.core.long_ctx_attention import \
             xFuserLongContextAttention
         print("Import PAI DiT Turbo")
@@ -20,7 +20,8 @@ try:
                                              get_sequence_parallel_world_size,
                                              get_sp_group, get_world_group,
                                              init_distributed_environment,
-                                             initialize_model_parallel)
+                                             initialize_model_parallel,
+                                             model_parallel_is_initialized)
         from xfuser.core.long_ctx_attention import xFuserLongContextAttention
         print("Xfuser import sucessful")
 except Exception as ex:
@@ -53,3 +54,34 @@ def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance
     else:
         device = "cuda"
     return device
+
+def sequence_parallel_chunk(x, dim=1):
+    if get_sequence_parallel_world_size is None or not model_parallel_is_initialized():
+        return x
+
+    sp_world_size = get_sequence_parallel_world_size()
+    if sp_world_size <= 1:
+        return x
+
+    sp_rank = get_sequence_parallel_rank()
+    sp_group = get_sp_group()
+
+    if x.size(1) % sp_world_size != 0:
+        raise ValueError(f"Dim 1 of x ({x.size(1)}) not divisible by SP world size ({sp_world_size})")
+
+    chunks = torch.chunk(x, sp_world_size, dim=1)
+    x = chunks[sp_rank]
+
+    return x
+
+def sequence_parallel_all_gather(x, dim=1):
+    if get_sequence_parallel_world_size is None or not model_parallel_is_initialized():
+        return x
+
+    sp_world_size = get_sequence_parallel_world_size()
+    if sp_world_size <= 1:
+        return x  # No gathering needed
+
+    sp_group = get_sp_group()
+    gathered_x = sp_group.all_gather(x, dim=dim)
+    return gathered_x
