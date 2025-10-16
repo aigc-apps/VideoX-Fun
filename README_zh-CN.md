@@ -26,6 +26,7 @@ VideoX-Fun是一个视频生成的pipeline，可用于生成AI图片与视频、
 我们会逐渐支持从不同平台快速启动，请参阅 [快速启动](#快速启动)。
 
 新特性：
+- 更新支持Wan2.2系列模型、Wan-VACE控制模型、支持Fantasy Talking数字人模型、Qwen-Image和Flux图片生成模型等。[2025.10.16]。
 - 更新Wan2.1-Fun-V1.1版本：支持14B与1.3B模型Control+参考图模型，支持镜头控制，另外Inpaint模型重新训练，性能更佳。[2025.04.25]
 - 更新Wan2.1-Fun-V1.0版本：支持14B与1.3B模型的I2V和Control模型，支持首尾图预测。[2025.03.26]
 - 更新CogVideoX-Fun-V1.5版本：上传I2V模型与相关训练预测代码。[2024.12.16]
@@ -583,7 +584,29 @@ V1.0:
 | Wan2.1-I2V-14B-480P | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P) | 万象2.1-14B-480P图生视频权重 |
 | Wan2.1-I2V-14B-720P| [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720P图生视频权重 |
 
-## 5. CogVideoX-Fun
+## 5. FantasyTalking
+
+| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
+|--|--|--|--|--|
+| Wan2.1-I2V-14B-720P | - | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720P图生视频权重 |
+| Wav2Vec |  -  | [🤗Link](https://huggingface.co/facebook/wav2vec2-base-960h) | [😄Link](https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h) | Wav2Vec模型，请放在Wan2.1-I2V-14B-720P文件夹下，命名为audio_encoder |
+| FantasyTalking model	 | - | [🤗Link](https://huggingface.co/acvlab/FantasyTalking/) | [😄Link](https://www.modelscope.cn/models/amap_cvlab/FantasyTalking/) | 官方Audio Condition的权重。 |
+
+## 6. Qwen-Image
+
+| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
+|--|--|--|--|--|
+| Qwen-Image | [🤗Link](https://huggingface.co/Qwen/Qwen-Image) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image) | Qwen-Image官方权重 |
+| Qwen-Image-Edit | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit) | Qwen-Image-Edit官方权重 |
+| Qwen-Image-Edit-2509 | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit-2509) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509) | Qwen-Image-Edit-2509官方权重 |
+
+## 7. Flux
+
+| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
+|--|--|--|--|--|
+| FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/ai-modelscope/flux.1-dev) | FLUX.1-dev官方权重 |
+
+## 8. CogVideoX-Fun
 
 V1.5:
 

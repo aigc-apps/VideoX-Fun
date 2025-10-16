@@ -26,6 +26,7 @@ VideoX-Funはビデオ生成のパイプラインであり、AI画像やビデ�
 異なるプラットフォームからのクイックスタートをサポートします。詳細は[クイックスタート](#クイックスタート)を参照してください。
 
 新機能：
+- Wan 2.2シリーズモデル、Wan-VACE制御モデル、Fantasy Talkingデジタルヒューマンモデル、Qwen-Image、Flux画像生成モデルなどのサポートを追加しました。[2025.10.16]
 - Wan2.1-Fun-V1.1バージョンを更新：14Bと1.3BモデルのControl＋参照画像モデルをサポート、カメラ制御にも対応。さらに、Inpaintモデルを再訓練し、性能が向上しました。[2025.04.25]
 - Wan2.1-Fun-V1.0の更新：14Bおよび1.3BのI2V（画像からビデオ）モデルとControlモデルをサポートし、開始フレームと終了フレームの予測に対応。[2025.03.26]
 - CogVideoX-Fun-V1.5の更新：I2Vモデルと関連するトレーニング・予測コードをアップロード。[2024.12.16]
@@ -594,7 +595,29 @@ V1.0:
 | Wan2.1-I2V-14B-480P | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P) | 万象2.1-14B-480Pの画像から動画生成する重み |
 | Wan2.1-I2V-14B-720P| [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720Pの画像から動画生成する重み |
 
-## 5. CogVideoX-Fun
+## 5. FantasyTalking
+
+| 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| Wan2.1-I2V-14B-720P | - | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720P 画像→動画モデルの重み |
+| Wav2Vec | - | [🤗Link](https://huggingface.co/facebook/wav2vec2-base-960h) | [😄Link](https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h) | Wav2Vecモデル。Wan2.1-I2V-14B-720Pフォルダ内に配置し、`audio_encoder` という名前に変更してください |
+| FantasyTalking model | - | [🤗Link](https://huggingface.co/acvlab/FantasyTalking/) | [😄Link](https://www.modelscope.cn/models/amap_cvlab/FantasyTalking/) | 公式Audio Condition重み |
+
+## 6. Qwen-Image
+
+| 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| Qwen-Image | [🤗Link](https://huggingface.co/Qwen/Qwen-Image) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image) | Qwen-Image 公式重み |
+| Qwen-Image-Edit | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit) | Qwen-Image-Edit 公式重み |
+| Qwen-Image-Edit-2509 | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit-2509) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509) | Qwen-Image-Edit-2509 公式重み |
+
+## 7. Flux
+
+| 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/ai-modelscope/flux.1-dev) | FLUX.1-dev 公式重み |
+
+## 8. CogVideoX-Fun
 
 V1.5:
 
