@@ -92,7 +92,7 @@ model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
 sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
-shift               = 3
+shift               = 5
 
 # Load pretrained model if need
 # The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
@@ -194,7 +194,7 @@ clip_image_encoder = clip_image_encoder.eval()
 
 audio_encoder = FantasyTalkingAudioEncoder(
     os.path.join(model_name, "audio_encoder")
-).to(weight_dtype)
+)
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
