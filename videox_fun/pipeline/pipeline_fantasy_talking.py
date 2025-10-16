@@ -713,25 +713,11 @@ class FantasyTalkingPipeline(DiffusionPipeline):
                         audio_scale=audio_scale,
                         clip_fea=clip_context_input,
                     )
-                    if hasattr(self, "teacache"):
-                        self.teacache.should_calc = False
-                    noise_pred_no_audio = self.transformer(
-                        x=latent_model_input[1:],
-                        context=in_prompt_embeds[1:],
-                        t=timestep[1:],
-                        seq_len=seq_len,
-                        y=y[1:],
-                        audio_wav2vec_fea=audio_wav2vec_fea_input[1:],
-                        clip_fea=clip_context_input[1:],
-                        audio_scale=0,
-                        cond_flag=False
-                    )
 
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_no_audio - noise_pred_uncond) + \
-                         self.guidance_scale * (noise_pred_text - noise_pred_no_audio)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
