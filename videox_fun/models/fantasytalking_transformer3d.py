@@ -83,22 +83,26 @@ class AudioCrossAttentionProcessor(nn.Module):
             ip_key = self.k_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
             audio_x = attention(
-                audio_q, ip_key, ip_value, k_lens=audio_context_lens, attention_type="FLASH_ATTENTION"
+                audio_q, ip_key, ip_value, k_lens=audio_context_lens, attention_type="NORMAL"
             )
             audio_x = audio_x.view(b, q.size(1), n, d)
             audio_x = audio_x.flatten(2)
         elif len(audio_proj.shape) == 3:
             ip_key = self.k_proj(audio_proj).view(b, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b, -1, n, d)
-            audio_x = attention(q, ip_key, ip_value, k_lens=audio_context_lens, attention_type="FLASH_ATTENTION")
+            audio_x = attention(q, ip_key, ip_value, k_lens=audio_context_lens, attention_type="NORMAL")
             audio_x = audio_x.flatten(2)
         # Output
+        if isinstance(audio_scale, torch.Tensor):
+            audio_scale = audio_scale[:, None, None]
+
         x = x + img_x + audio_x * audio_scale
         x = attn.o(x)
+        # print(audio_scale)
         return x
 
 
-class AudioCrossAttention(WanSelfAttention):
+class AudioCrossAttention(WanSelfAttention):    
     def __init__(self, dim, num_heads, window_size=(-1, -1), qk_norm=True, eps=1e-6):
         super().__init__(dim, num_heads, window_size, qk_norm, eps)
 
@@ -193,6 +197,7 @@ class AudioAttentionBlock(nn.Module):
         context_lens,
         audio_proj=None,
         audio_context_lens=None,
+        audio_scale=1,
         dtype=torch.bfloat16,
         t=0,
     ):
@@ -212,7 +217,7 @@ class AudioAttentionBlock(nn.Module):
         def cross_attn_ffn(x, context, context_lens, e):
             x = x + self.cross_attn(
                 self.norm3(x), context, context_lens, dtype=dtype, t=t,
-                audio_proj=audio_proj, audio_context_lens=audio_context_lens,
+                audio_proj=audio_proj, audio_context_lens=audio_context_lens, audio_scale=audio_scale,
                 latents_num_frames=grid_sizes[0][0],
             )
             # FFN function
@@ -366,6 +371,7 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
         audio_wav2vec_fea=None,
         clip_fea=None,
         y=None,
+        audio_scale=1,
         cond_flag=True
     ):
         r"""
@@ -389,6 +395,9 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
+        # Wan2.2 don't need a clip.
+        # if self.model_type == 'i2v':
+        #     assert clip_fea is not None and y is not None
         # params
         device = self.patch_embedding.weight.device
         dtype = x.dtype
@@ -518,6 +527,7 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
                             context_lens,
                             audio_proj,
                             audio_context_lens,
+                            audio_scale,
                             dtype,
                             t,
                             **ckpt_kwargs,
@@ -531,9 +541,10 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
                             freqs=self.freqs,
                             context=context,
                             context_lens=context_lens,
-                            dtype=dtype,
                             audio_proj=audio_proj,
                             audio_context_lens=audio_context_lens,
+                            audio_scale=audio_scale,
+                            dtype=dtype,
                             t=t  
                         )
                         x = block(x, **kwargs)
@@ -563,6 +574,7 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
                         context_lens,
                         audio_proj,
                         audio_context_lens,
+                        audio_scale,
                         dtype,
                         t,
                         **ckpt_kwargs,
@@ -578,6 +590,7 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
                         context_lens=context_lens,
                         audio_proj=audio_proj,
                         audio_context_lens=audio_context_lens,
+                        audio_scale=audio_scale,
                         dtype=dtype,
                         t=t  
                     )

@@ -84,6 +84,8 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
+# Please Download https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/summary
+# to models/Diffusion_Transformer/Wan2.1-I2V-14B-720P/audio_encoder for encoding audio.
 model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
@@ -94,6 +96,7 @@ shift               = 3
 
 # Load pretrained model if need
 # The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
+# The fantasytalking_model.ckpt can be downloaded in https://www.modelscope.cn/models/amap_cvlab/FantasyTalking/
 transformer_path    = "models/Personalized_Model/fantasytalking_model.ckpt"
 vae_path            = None
 # Load lora model if need

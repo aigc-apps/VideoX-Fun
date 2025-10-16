@@ -694,6 +694,10 @@ class FantasyTalkingPipeline(DiffusionPipeline):
                     torch.cat([audio_wav2vec_fea] * 2) if do_classifier_free_guidance else audio_wav2vec_fea
                 )
 
+                audio_scale = torch.tensor(
+                    [0, 1]
+                ).to(latent_model_input.device, latent_model_input.dtype)
+
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
                 
@@ -706,13 +710,28 @@ class FantasyTalkingPipeline(DiffusionPipeline):
                         seq_len=seq_len,
                         y=y,
                         audio_wav2vec_fea=audio_wav2vec_fea_input,
+                        audio_scale=audio_scale,
                         clip_fea=clip_context_input,
+                    )
+                    if hasattr(self, "teacache"):
+                        self.teacache.should_calc = False
+                    noise_pred_no_audio = self.transformer(
+                        x=latent_model_input[1:],
+                        context=in_prompt_embeds[1:],
+                        t=timestep[1:],
+                        seq_len=seq_len,
+                        y=y[1:],
+                        audio_wav2vec_fea=audio_wav2vec_fea_input[1:],
+                        clip_fea=clip_context_input[1:],
+                        audio_scale=0,
+                        cond_flag=False
                     )
 
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_no_audio - noise_pred_uncond) + \
+                         self.guidance_scale * (noise_pred_text - noise_pred_no_audio)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
