@@ -71,7 +71,7 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
 from videox_fun.pipeline import (CogVideoXFunPipeline,
                                 CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from videox_fun.pipeline.pipeline_CogVideoXFuninpaint import (
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -1180,7 +1180,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1361,7 +1364,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))

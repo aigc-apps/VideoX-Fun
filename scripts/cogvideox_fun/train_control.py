@@ -70,7 +70,7 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
 from videox_fun.pipeline import (CogVideoXFunPipeline,
                                 CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from videox_fun.pipeline.pipeline_CogVideoXFuninpaint import (
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -1179,10 +1179,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
-        tracker_config.pop("validation_paths")
-        tracker_config.pop("trainable_modules")
-        tracker_config.pop("trainable_modules_low_learning_rate")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.

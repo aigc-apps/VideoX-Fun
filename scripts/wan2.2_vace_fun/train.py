@@ -74,7 +74,7 @@ from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                  padding_image,
                                                  process_pose_file,
                                                  process_pose_params)
-from videox_fun.models import (AutoencoderKLWan, CLIPModel,
+from videox_fun.models import (AutoencoderKLWan, CLIPModel, AutoencoderKLWan3_8,
                                VaceWanTransformer3DModel, WanT5EncoderModel)
 from videox_fun.pipeline import Wan2_2VaceFunPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -117,11 +117,46 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = VaceWanTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-        ).to(weight_dtype)
-        transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+        if args.boundary_type == "full":
+            sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+            transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, sub_path),
+                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+            ).to(weight_dtype)
+            transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+            
+            transformer3d_2_val = None
+        else:
+            if args.boundary_type == "low":
+                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+                transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+
+                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+            else:
+                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+
+                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+                transformer3d_2_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+        
         scheduler = FlowMatchEulerDiscreteScheduler(
             **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
         )
@@ -131,6 +166,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
             transformer=transformer3d_val,
+            transformer_2=transformer3d_2_val,
             scheduler=scheduler,
             clip_image_encoder=clip_image_encoder,
         )
@@ -146,7 +182,8 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
             with torch.no_grad():
                 with torch.autocast("cuda", dtype=weight_dtype):
                     video_length = int(args.video_sample_n_frames // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
-                    input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
+                    inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
+                    control_video, _, _, _ = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
                     sample = pipeline(
                         args.validation_prompts[i], 
                         num_frames = video_length,
@@ -155,7 +192,11 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                         width       = args.video_sample_size,
                         generator   = generator, 
 
-                        control_video = input_video,
+                        video               = inpaint_video,
+                        mask_video          = inpaint_video_mask,
+                        control_video       = control_video,
+                        subject_ref_images  = None,
+                        vace_context_scale  = 1,
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                     save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
@@ -230,6 +271,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -780,7 +828,11 @@ def main():
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        vae = AutoencoderKLWan.from_pretrained(
+        Chosen_AutoencoderKL = {
+            "AutoencoderKLWan": AutoencoderKLWan,
+            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+        vae = Chosen_AutoencoderKL.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
@@ -1023,7 +1075,8 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
-    
+    spatial_compression_ratio = vae.config.spatial_compression_ratio
+
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
         args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
@@ -1186,7 +1239,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1196,10 +1249,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
+                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
 
             for example in examples:
                 # To 0~1
@@ -1808,7 +1861,7 @@ def main():
                         vace_latents = vace_encode_frames(control_pixel_values, subject_ref_images, mask)
                         mask = torch.ones_like(mask)
 
-                    mask_latents = vace_encode_masks(mask, subject_ref_images)
+                    mask_latents = vace_encode_masks(mask, subject_ref_images, vae_stride=[4, spatial_compression_ratio, spatial_compression_ratio])
                     vace_context = torch.stack(vace_latent(vace_latents, mask_latents))
                     
                     if subject_ref_images is not None:

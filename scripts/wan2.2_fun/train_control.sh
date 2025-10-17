@@ -37,6 +37,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_control.py \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="low" \
   --train_mode="control_ref" \
   --control_ref_image="random" \
   --add_inpaint_info \

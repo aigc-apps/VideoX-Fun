@@ -75,7 +75,7 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, CLIPModel, WanT5EncoderModel,
                                Wan2_2Transformer3DModel)
-from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
+from videox_fun.pipeline import Wan2_2Pipeline, Wan2_2I2VPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -157,20 +157,66 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
         )
 
+        if args.boundary_type == "full":
+            sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+            transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, sub_path),
+                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+            ).to(weight_dtype)
+            transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+            
+            transformer3d_2_val = None
+        else:
+            if args.boundary_type == "low":
+                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+                transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+
+                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+            else:
+                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+
+                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+
+                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, sub_path),
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                ).to(weight_dtype)
+                transformer3d_2_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
+        
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+        )
+        
         if args.train_mode != "normal":
-            pipeline = WanFunInpaintPipeline(
+            pipeline = Wan2_2I2VPipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
+                transformer_2=transformer3d_2_val,
                 scheduler=scheduler,
             )
         else:
-            pipeline = WanFunPipeline(
+            pipeline = Wan2_2Pipeline(
                 vae=accelerator.unwrap_model(vae).to(weight_dtype), 
                 text_encoder=accelerator.unwrap_model(text_encoder),
                 tokenizer=tokenizer,
                 transformer=transformer3d_val,
+                transformer_2=transformer3d_2_val,
                 scheduler=scheduler,
             )
         pipeline = pipeline.to(accelerator.device)
@@ -1423,10 +1469,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
-        tracker_config.pop("trainable_modules")
-        tracker_config.pop("trainable_modules_low_learning_rate")
-        tracker_config.pop("fix_sample_size")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.

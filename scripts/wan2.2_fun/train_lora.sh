@@ -38,5 +38,4 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_lora.py \
   --train_mode="inpaint" \
   --boundary_type="low" \
   --lora_skip_name="ffn" \
-  --boundary_type="low" \
   --low_vram

@@ -76,11 +76,11 @@ from videox_fun.data.dataset_image import ImageEditDataset
 from videox_fun.models import (AutoencoderKLQwenImage, Qwen2VLProcessor,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
-from videox_fun.pipeline import QwenImageEditPipeline
+from videox_fun.pipeline import QwenImageEditPipeline, QwenImageEditPlusPipeline
 from videox_fun.pipeline.pipeline_qwenimage_edit import PREFERRED_QWENIMAGE_RESOLUTIONS, calculate_dimensions
 from videox_fun.pipeline.pipeline_qwenimage_edit_plus import CONDITION_IMAGE_SIZE, VAE_IMAGE_SIZE
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid, get_image
 
 if is_wandb_available():
     import wandb
@@ -150,13 +150,22 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
             subfolder="scheduler"
         )
         transformer3d = transformer3d.to("cpu")
-        pipeline = QwenImageEditPipeline(
-            vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-            text_encoder=accelerator.unwrap_model(text_encoder),
-            tokenizer=tokenizer,
-            transformer=transformer3d_val,
-            scheduler=scheduler,
-        )
+        if args.train_mode == "qwen_image_edit":
+            pipeline = QwenImageEditPipeline(
+                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
+                text_encoder=accelerator.unwrap_model(text_encoder),
+                tokenizer=tokenizer,
+                transformer=transformer3d_val,
+                scheduler=scheduler,
+            )
+        else:
+            pipeline = QwenImageEditPlusPipeline(
+                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
+                text_encoder=accelerator.unwrap_model(text_encoder),
+                tokenizer=tokenizer,
+                transformer=transformer3d_val,
+                scheduler=scheduler,
+            )
         pipeline = pipeline.to(accelerator.device)
 
         if args.seed is None:
@@ -166,12 +175,17 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
 
         for i in range(len(args.validation_prompts)):
             with torch.no_grad():
+                if args.train_mode == "qwen_image_edit":
+                    image = get_image(args.validation_image_paths[i])
+                else:
+                    image = [get_image(args.validation_image_paths[i])]
                 sample = pipeline(
                     args.validation_prompts[i], 
                     negative_prompt = "bad detailed",
                     height      = args.image_sample_size,
                     width       = args.image_sample_size,
-                    generator   = generator
+                    generator   = generator,
+                    image       = image
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 image = sample[0].save(os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
@@ -245,6 +259,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_image_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of images evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -1250,10 +1271,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
-        tracker_config.pop("trainable_modules")
-        tracker_config.pop("trainable_modules_low_learning_rate")
-        tracker_config.pop("fix_sample_size")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.

@@ -33,8 +33,8 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import (AdaLayerNormContinuous,
                                             AdaLayerNormZero,
                                             AdaLayerNormZeroSingle)
-from diffusers.utils import (USE_PEFT_BACKEND, logging, scale_lora_layers,
-                             unscale_lora_layers)
+from diffusers.utils import (USE_PEFT_BACKEND, is_torch_version, logging,
+                             scale_lora_layers, unscale_lora_layers)
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 
 from ..dist import (FluxMultiGPUsAttnProcessor2_0, get_sequence_parallel_rank,
@@ -695,6 +695,14 @@ class FluxTransformer2DModel(
         self.sp_world_size = 1
         self.sp_world_rank = 0
 
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
@@ -868,13 +876,20 @@ class FluxTransformer2DModel(
 
         for index_block, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
-                    block,
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+
+                    return custom_forward
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
                     hidden_states,
                     encoder_hidden_states,
                     temb,
                     image_rotary_emb,
                     joint_attention_kwargs,
+                    **ckpt_kwargs,
                 )
 
             else:
@@ -900,13 +915,20 @@ class FluxTransformer2DModel(
 
         for index_block, block in enumerate(self.single_transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
-                    block,
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+
+                    return custom_forward
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
                     hidden_states,
                     encoder_hidden_states,
                     temb,
                     image_rotary_emb,
                     joint_attention_kwargs,
+                    **ckpt_kwargs,
                 )
 
             else:

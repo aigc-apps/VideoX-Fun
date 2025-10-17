@@ -146,7 +146,8 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
             with torch.no_grad():
                 with torch.autocast("cuda", dtype=weight_dtype):
                     video_length = int(args.video_sample_n_frames // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
-                    input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
+                    inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
+                    control_video, _, _, _ = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
                     sample = pipeline(
                         args.validation_prompts[i], 
                         num_frames = video_length,
@@ -155,7 +156,11 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                         width       = args.video_sample_size,
                         generator   = generator, 
 
-                        control_video = input_video,
+                        video               = inpaint_video,
+                        mask_video          = inpaint_video_mask,
+                        control_video       = control_video,
+                        subject_ref_images  = None,
+                        vace_context_scale  = 1,
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                     save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
@@ -230,6 +235,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -1403,10 +1415,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
-        tracker_config.pop("trainable_modules")
-        tracker_config.pop("trainable_modules_low_learning_rate")
-        tracker_config.pop("fix_sample_size")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
