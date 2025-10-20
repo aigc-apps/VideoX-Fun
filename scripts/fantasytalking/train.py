@@ -838,15 +838,20 @@ def main():
         else:
             state_dict = torch.load(args.transformer_path, map_location="cpu")
 
-        audio_processor_dict = state_dict["audio_processor"] if "audio_processor" in state_dict else state_dict
-        m, u = transformer3d.load_state_dict(audio_processor_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        if "audio_processor" in state_dict:
+            audio_processor_dict = state_dict["audio_processor"] if "audio_processor" in state_dict else state_dict
+            m, u = transformer3d.load_state_dict(audio_processor_dict, strict=False)
+            print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-        proj_model_dict = state_dict["proj_model"] if "proj_model" in state_dict else state_dict
-        proj_model_dict = {"proj_model." + k : v for k, v in proj_model_dict.items()}
-        m, u = transformer3d.load_state_dict(proj_model_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+            proj_model_dict = state_dict["proj_model"] if "proj_model" in state_dict else state_dict
+            proj_model_dict = {"proj_model." + k : v for k, v in proj_model_dict.items()}
+            m, u = transformer3d.load_state_dict(proj_model_dict, strict=False)
+            print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        else:
+            state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
+            m, u = transformer.load_state_dict(state_dict, strict=False)
+            print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
