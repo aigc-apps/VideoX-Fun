@@ -182,7 +182,7 @@ class ImageEditDataset(Dataset):
 
 if __name__ == "__main__":
     dataset = CC15M(
-        csv_path="/mnt_wg/zhoumo.xjq/CCUtils/cc15m_add_index.json",
+        csv_path="./cc15m_add_index.json",
         resolution=512,
     )
     

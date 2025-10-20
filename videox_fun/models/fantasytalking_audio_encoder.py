@@ -41,3 +41,12 @@ class FantasyTalkingAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin
         with torch.no_grad():
             fea = self.model(input_values).last_hidden_state
         return fea
+
+    def extract_audio_feat_without_file_load(self, audio_segment, sample_rate):
+        input_values = self.processor(
+            audio_segment, sampling_rate=sample_rate, return_tensors="pt"
+        ).input_values.to(self.model.device, self.model.dtype)
+
+        with torch.no_grad():
+            fea = self.model(input_values).last_hidden_state
+        return fea
