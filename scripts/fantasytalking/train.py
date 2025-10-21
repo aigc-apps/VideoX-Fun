@@ -1269,7 +1269,7 @@ def main():
                 new_examples["audio"].append(example["audio"][:batch_audio_length])
                 new_examples["sample_rate"].append(example["sample_rate"])
 
-                mask = get_random_mask(new_examples["pixel_values"][-1].size())
+                mask = get_random_mask(new_examples["pixel_values"][-1].size(), image_start_only=True)
                 mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
                 # Wan 2.1 use 0 for masked pixels
                 # + torch.ones_like(new_examples["pixel_values"][-1]) * -1 * mask
@@ -1718,6 +1718,10 @@ def main():
                 )
 
                 # Predict the noise residual
+                if rng is None:
+                    audio_scale = np.random.choice([1, 0], p=[0.9, 0.1])
+                else:
+                    audio_scale = rng.choice([1, 0], p=[0.9, 0.1])
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         x=noisy_latents,
@@ -1727,7 +1731,7 @@ def main():
                         y=inpaint_latents,
                         clip_fea=clip_context,
                         audio_wav2vec_fea=audio_wav2vec_fea,
-                        audio_scale=1,
+                        audio_scale=audio_scale,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
