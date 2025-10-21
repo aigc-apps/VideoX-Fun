@@ -21,61 +21,11 @@ from PIL import Image
 from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.dataset import Dataset
 
-VIDEO_READER_TIMEOUT = 20
-
-def get_random_mask(shape):
-    f, c, h, w = shape
-    
-    mask_index = np.random.randint(0, 4)
-    mask = torch.zeros((f, 1, h, w), dtype=torch.uint8)
-    if mask_index == 0:
-        mask[1:, :, :, :] = 1
-    elif mask_index == 1:
-        mask_frame_index = 1
-        mask[mask_frame_index:-mask_frame_index, :, :, :] = 1
-    elif mask_index == 2:
-        center_x = torch.randint(0, w, (1,)).item()
-        center_y = torch.randint(0, h, (1,)).item()
-        block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-        block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
-
-        start_x = max(center_x - block_size_x // 2, 0)
-        end_x = min(center_x + block_size_x // 2, w)
-        start_y = max(center_y - block_size_y // 2, 0)
-        end_y = min(center_y + block_size_y // 2, h)
-        mask[:, :, start_y:end_y, start_x:end_x] = 1
-    elif mask_index == 3:
-        center_x = torch.randint(0, w, (1,)).item()
-        center_y = torch.randint(0, h, (1,)).item()
-        block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-        block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
-
-        start_x = max(center_x - block_size_x // 2, 0)
-        end_x = min(center_x + block_size_x // 2, w)
-        start_y = max(center_y - block_size_y // 2, 0)
-        end_y = min(center_y + block_size_y // 2, h)
-
-        mask_frame_before = np.random.randint(0, f // 2)
-        mask_frame_after = np.random.randint(f // 2, f)
-        mask[mask_frame_before:mask_frame_after, :, start_y:end_y, start_x:end_x] = 1
-    else:
-        raise ValueError(f"The mask_index {mask_index} is not define")
-    return mask
-
-
-@contextmanager
-def VideoReader_contextmanager(*args, **kwargs):
-    vr = VideoReader(*args, **kwargs)
-    try:
-        yield vr
-    finally:
-        del vr
-        gc.collect()
-
-
-def get_video_reader_batch(video_reader, batch_index):
-    frames = video_reader.get_batch(batch_index).asnumpy()
-    return frames
+from .utils import (VIDEO_READER_TIMEOUT, Camera, VideoReader_contextmanager,
+                    custom_meshgrid, get_random_mask, get_relative_pose,
+                    get_video_reader_batch, padding_image, process_pose_file,
+                    process_pose_params, ray_condition, resize_frame,
+                    resize_image_with_target_area)
 
 
 class WebVid10M(Dataset):
@@ -390,7 +340,7 @@ class VideoSpeechDataset(Dataset):
                 idx = random.randint(0, self.length - 1)
 
         if self.enable_inpaint and not self.enable_bucket:
-            mask = get_random_mask(pixel_values.size())
+            mask = get_random_mask(pixel_values.size(), image_start_only=True)
             mask_pixel_values = pixel_values * (1 - mask) + torch.zeros_like(pixel_values) * mask
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
@@ -405,15 +355,15 @@ class VideoSpeechDataset(Dataset):
 if __name__ == "__main__":
     if 1:
         dataset = VideoDataset(
-            json_path="./results_2M_val.json",
+            json_path="/home/zhoumo.xjq/disk3/datasets/webvidval/results_2M_val.json",
             sample_size=256,
             sample_stride=4, sample_n_frames=16,
         )
 
     if 0:
         dataset = WebVid10M(
-            csv_path="./results_2M_val.csv",
-            video_folder="./2M_val",
+            csv_path="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/results_2M_val.csv",
+            video_folder="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/2M_val",
             sample_size=256,
             sample_stride=4, sample_n_frames=16,
             is_image=False,
