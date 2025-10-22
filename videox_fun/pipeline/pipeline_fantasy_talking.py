@@ -695,7 +695,7 @@ class FantasyTalkingPipeline(DiffusionPipeline):
                 )
 
                 audio_scale = torch.tensor(
-                    [0, 1]
+                    [0.75, 1]
                 ).to(latent_model_input.device, latent_model_input.dtype)
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
