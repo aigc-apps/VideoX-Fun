@@ -639,6 +639,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.train_batch_size >= 2:
+        raise ValueError("This code does not support args.train_batch_size >= 2 now.")
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(

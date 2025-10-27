@@ -613,6 +613,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.train_batch_size >= 2:
+        raise ValueError("This code does not support args.train_batch_size >= 2 now.")
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -1493,6 +1495,7 @@ def main():
                     with torch.no_grad():
                         if args.train_mode == "qwen_image_edit":
                             if source_exist:
+                                # Take the first batch condition_images
                                 prompt_in_pixel_values = condition_images[0][:1]
                             else:
                                 prompt_in_pixel_values = None
@@ -1500,6 +1503,7 @@ def main():
                             txt = [template.format(e) for e in batch['text']]
                         else:
                             if source_exist:
+                                # Take the first batch condition_images
                                 prompt_in_pixel_values = condition_images[0]
                             else:
                                 prompt_in_pixel_values = None

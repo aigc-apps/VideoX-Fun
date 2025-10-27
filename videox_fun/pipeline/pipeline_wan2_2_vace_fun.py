@@ -694,7 +694,7 @@ class Wan2_2VaceFunPipeline(DiffusionPipeline):
             subject_ref_images = new_subject_ref_images
         
         vace_latents = self.vace_encode_frames(input_video, subject_ref_images, masks=mask_condition, vae=self.vae)
-        mask_latents = self.vace_encode_masks(mask_condition, subject_ref_images)
+        mask_latents = self.vace_encode_masks(mask_condition, subject_ref_images, vae_stride=[4, self.vae.spatial_compression_ratio, self.vae.spatial_compression_ratio])
         vace_context = self.vace_latent(vace_latents, mask_latents)
 
         # 5. Prepare latents.

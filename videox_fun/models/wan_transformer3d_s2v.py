@@ -530,10 +530,26 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             context_lens = torch.ones(
                 attn_hidden_states.shape[0], dtype=torch.long, device=attn_hidden_states.device
             ) * attn_audio_emb.shape[1]
-            residual_out = self.audio_injector.injector[audio_attn_id](
-                x=attn_hidden_states,
-                context=attn_audio_emb,
-                context_lens=context_lens)
+
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+
+                    return custom_forward
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                residual_out = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(self.audio_injector.injector[audio_attn_id]), 
+                    attn_hidden_states,
+                    attn_audio_emb,
+                    context_lens,
+                    **ckpt_kwargs
+                )
+            else:
+                residual_out = self.audio_injector.injector[audio_attn_id](
+                    x=attn_hidden_states,
+                    context=attn_audio_emb,
+                    context_lens=context_lens)
             residual_out = rearrange(residual_out, "(b t) n c -> b (t n) c", t=num_frames)
             hidden_states[:, :self.original_seq_len] = hidden_states[:, :self.original_seq_len] + residual_out
 
@@ -585,15 +601,30 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         # Embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
 
+        if isinstance(motion_frames[0], list):
+            motion_frames_0 = motion_frames[0][0]
+            motion_frames_1 = motion_frames[0][1]
+        else:
+            motion_frames_0 = motion_frames[0]
+            motion_frames_1 = motion_frames[1]
         # Audio process
-        audio_input = torch.cat([audio_input[..., 0:1].repeat(1, 1, 1, motion_frames[0]), audio_input], dim=-1)
-        audio_emb_res = self.casual_audio_encoder(audio_input)
+        audio_input = torch.cat([audio_input[..., 0:1].repeat(1, 1, 1, motion_frames_0), audio_input], dim=-1)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            audio_emb_res = torch.utils.checkpoint.checkpoint(create_custom_forward(self.casual_audio_encoder), audio_input, **ckpt_kwargs)
+        else:
+            audio_emb_res = self.casual_audio_encoder(audio_input)
         if self.enbale_adain:
             audio_emb_global, audio_emb = audio_emb_res
-            self.audio_emb_global = audio_emb_global[:, motion_frames[1]:].clone()
+            self.audio_emb_global = audio_emb_global[:, motion_frames_1:].clone()
         else:
             audio_emb = audio_emb_res
-        self.merged_audio_emb = audio_emb[:, motion_frames[1]:, :]
+        self.merged_audio_emb = audio_emb[:, motion_frames_1:, :]
 
         # Cond states
         cond = [self.cond_encoder(c.unsqueeze(0)) for c in cond_states]
@@ -677,6 +708,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                 sinusoidal_embedding_1d(self.freq_dim, t).float())
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
+
         if self.zero_timestep:
             e = e[:-1]
             zero_e0 = e0[-1:]
@@ -840,8 +872,17 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
 
         # Unpatchify
         x = x[:, :self.original_seq_len]
-        # Head
-        x = self.head(x, e)
+        # head
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
+        else:
+            x = self.head(x, e)
         x = self.unpatchify(x, original_grid_sizes)
         x = torch.stack(x)
         if self.teacache is not None and cond_flag:

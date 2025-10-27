@@ -731,8 +731,9 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
                     pose_latents_input = torch.cat([cond_latents] * 2) if do_classifier_free_guidance else cond_latents
                     motion_latents_input = torch.cat([motion_latents] * 2) if do_classifier_free_guidance else motion_latents
-                    audio_emb_input = torch.cat([audio_input * 0] + [audio_input]) if do_classifier_free_guidance else audio_emb
+                    audio_emb_input = torch.cat([audio_input * 0] + [audio_input]) if do_classifier_free_guidance else audio_input
                     ref_image_latentes_input = torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
+                    motion_frames=[[self.motion_frames, (self.motion_frames + 3) // 4]] * 2 if do_classifier_free_guidance else [[self.motion_frames, (self.motion_frames + 3) // 4]]
                     timestep = t.expand(latent_model_input.shape[0])
 
                     if self.transformer_2 is not None:
@@ -754,7 +755,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                             motion_latents=motion_latents_input,
                             ref_latents=ref_image_latentes_input,
                             audio_input=audio_emb_input,
-                            motion_frames=[self.motion_frames, (self.motion_frames + 3) // 4],
+                            motion_frames=motion_frames,
                             drop_motion_frames=drop_first_motion and r == 0,
                         )
                     # perform guidance
