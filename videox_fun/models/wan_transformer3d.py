@@ -676,8 +676,12 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
             self.gradient_checkpointing = kwargs["value"]
+            if hasattr(self, "motioner") and hasattr(self.motioner, "gradient_checkpointing"):
+                self.motioner.gradient_checkpointing = kwargs["value"]
         elif "enable" in kwargs:
             self.gradient_checkpointing = kwargs["enable"]
+            if hasattr(self, "motioner") and hasattr(self.motioner, "gradient_checkpointing"):
+                self.motioner.gradient_checkpointing = kwargs["enable"]
         else:
             raise ValueError("Invalid set gradient checkpointing")
 
