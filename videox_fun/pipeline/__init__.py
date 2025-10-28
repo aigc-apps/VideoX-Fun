@@ -1,13 +1,14 @@
 from .pipeline_cogvideox_fun import CogVideoXFunPipeline
 from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
-from .pipeline_flux import FluxPipeline
 from .pipeline_fantasy_talking import FantasyTalkingPipeline
+from .pipeline_flux import FluxPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
+from .pipeline_wan2_2_animate import Wan2_2AnimatePipeline
 from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline
 from .pipeline_wan2_2_fun_inpaint import Wan2_2FunInpaintPipeline
 from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
@@ -38,6 +39,7 @@ if importlib.util.find_spec("paifuser") is not None:
     WanFunControlPipeline.__call__ = sparse_reset(WanFunControlPipeline.__call__)
     WanI2VPipeline.__call__ = sparse_reset(WanI2VPipeline.__call__)
     WanPipeline.__call__ = sparse_reset(WanPipeline.__call__)
+    WanVacePipeline.__call__ = sparse_reset(WanVacePipeline.__call__)
 
     # Phantom
     WanFunPhantomPipeline.__call__ = sparse_reset(WanFunPhantomPipeline.__call__)
@@ -49,3 +51,6 @@ if importlib.util.find_spec("paifuser") is not None:
     Wan2_2Pipeline.__call__ = sparse_reset(Wan2_2Pipeline.__call__)
     Wan2_2I2VPipeline.__call__ = sparse_reset(Wan2_2I2VPipeline.__call__)
     Wan2_2TI2VPipeline.__call__ = sparse_reset(Wan2_2TI2VPipeline.__call__)
+    Wan2_2S2VPipeline.__call__ = sparse_reset(Wan2_2S2VPipeline.__call__)
+    Wan2_2VaceFunPipeline.__call__ = sparse_reset(Wan2_2VaceFunPipeline.__call__)
+    Wan2_2AnimatePipeline.__call__ = sparse_reset(Wan2_2AnimatePipeline.__call__)

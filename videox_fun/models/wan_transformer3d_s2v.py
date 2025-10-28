@@ -596,6 +596,8 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         """
         device = self.patch_embedding.weight.device
         dtype = x.dtype
+        if self.freqs.device != device and torch.device(type="meta") != device:
+            self.freqs = self.freqs.to(device)
         add_last_motion = self.add_last_motion * add_last_motion
 
         # Embeddings
