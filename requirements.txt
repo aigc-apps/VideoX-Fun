@@ -3,6 +3,7 @@ einops
 safetensors
 timm
 tomesd
+librosa
 torch>=2.1.2
 torchdiffeq
 torchsde
