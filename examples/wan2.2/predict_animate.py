@@ -121,7 +121,7 @@ num_inference_steps = 20
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
 lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-t2v"
+save_path           = "samples/wan-videos-animate"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
