@@ -648,7 +648,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         drop_first_motion = self.drop_first_motion
         if init_first_frame:
             drop_first_motion = False
-            motion_latents[:, :, -6:] = ref_image[:, :, 0]
+            motion_latents[:, :, -6:] = ref_image
         motion_latents = self.vae.encode(motion_latents)[0].mode()
 
         # Get pose cond input if need

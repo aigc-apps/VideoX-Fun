@@ -1799,7 +1799,7 @@ def main():
                             init_first_frame = rng.choice([0, 1], p = [0.50, 0.50])
                     if init_first_frame or has_motion_pixel_values:
                         if not has_motion_pixel_values:
-                            motion_pixel_values[:, -6:, :] = ref_pixel_values[:, 0, :]
+                            motion_pixel_values[:, -6:, :] = ref_pixel_values
                             
                         motion_frames_latents_length = int((args.motion_frames - 1) / sample_n_frames_bucket_interval + 1)
                         local_pixel_values = torch.cat([motion_pixel_values, pixel_values], dim = 1)

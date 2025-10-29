@@ -110,9 +110,13 @@ fps                 = 16
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
+# The path of the pose control video
 control_video           = "asset/pose.mp4"  
+# The path of the reference image
 ref_image               = "asset/8.png"
+# Use ref_image as the first frame
+init_first_frame        = False
+# The path of the audio 
 audio_path              = "asset/talk.wav"
 
 # prompts
@@ -335,7 +339,8 @@ with torch.no_grad():
         pose_video = pose_video,
         audio_path = audio_path,
         shift = shift,
-        fps = fps
+        fps = fps,
+        init_first_frame = init_first_frame
     ).videos
 
 if lora_path is not None:
