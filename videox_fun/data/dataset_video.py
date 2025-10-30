@@ -750,7 +750,7 @@ class VideoAnimateDataset(Dataset):
             else:
                 face_pixel_values = np.zeros_like(pixel_values)
 
-        background_video_id = data_info['background_file_path']
+        background_video_id = data_info.get('background_file_path', None)
         
         if background_video_id is not None:
             if self.data_root is None:
@@ -791,7 +791,7 @@ class VideoAnimateDataset(Dataset):
             else:
                 background_pixel_values = np.ones_like(pixel_values) * 127.5
 
-        mask_video_id = data_info['mask_file_path']
+        mask_video_id = data_info.get('mask_file_path', None)
         
         if mask_video_id is not None:
             if self.data_root is None:

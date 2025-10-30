@@ -365,7 +365,6 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
             idx = 0
             flip = False
             while len(indices) < target_len:
-                print(idx)
                 indices.append(idx)
                 if flip:
                     idx -= 1
@@ -834,7 +833,6 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
                     msk_reft = self.get_i2v_mask(
                         int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
                     )
-                print(msk_reft.size(), y_reft.size())
 
             y_reft = torch.concat([msk_reft, y_reft], dim=1).to(device=device, dtype=weight_dtype)
             y = torch.concat([y_ref, y_reft], dim=2)
