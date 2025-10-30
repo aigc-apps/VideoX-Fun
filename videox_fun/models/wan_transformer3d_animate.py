@@ -11,6 +11,7 @@ import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.utils import is_torch_version, logging
 from einops import rearrange
 
 from .attention_utils import attention
@@ -21,151 +22,6 @@ from .wan_transformer3d import (Head, MLPProj, WanAttentionBlock, WanLayerNorm,
                                 WanTransformer3DModel, rope_apply,
                                 sinusoidal_embedding_1d)
 from ..utils import cfg_skip
-
-
-class WanAnimateCrossAttention(WanSelfAttention):
-    def __init__(
-        self,
-        dim,
-        num_heads,
-        window_size=(-1, -1),
-        qk_norm=True,
-        eps=1e-6,
-        use_img_emb=True
-    ):
-        super().__init__(
-            dim,
-            num_heads,
-            window_size,
-            qk_norm,
-            eps
-        )
-        self.use_img_emb = use_img_emb
-
-        if use_img_emb:
-            self.k_img = nn.Linear(dim, dim)
-            self.v_img = nn.Linear(dim, dim)
-            self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
-
-    def forward(self, x, context, context_lens, dtype=torch.bfloat16, t=0):
-        """
-        x:              [B, L1, C].
-        context:        [B, L2, C].
-        context_lens:   [B].
-        """
-        if self.use_img_emb:
-            context_img = context[:, :257]
-            context = context[:, 257:]
-        else:
-            context = context
-
-        b, n, d = x.size(0), self.num_heads, self.head_dim
-
-        # compute query, key, value
-        q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
-
-        if self.use_img_emb:
-            k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
-            v_img = self.v_img(context_img).view(b, -1, n, d)
-            img_x = attention(q, k_img, v_img, k_lens=None)
-        # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
-
-        # output
-        x = x.flatten(2)
-
-        if self.use_img_emb:
-            img_x = img_x.flatten(2)
-            x = x + img_x
-
-        x = self.o(x)
-        return x
-
-
-class WanAnimateAttentionBlock(nn.Module):
-    def __init__(self,
-                 dim,
-                 ffn_dim,
-                 num_heads,
-                 window_size=(-1, -1),
-                 qk_norm=True,
-                 cross_attn_norm=True,
-                 eps=1e-6,
-                 use_img_emb=True):
-
-        super().__init__()
-        self.dim = dim
-        self.ffn_dim = ffn_dim
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.qk_norm = qk_norm
-        self.cross_attn_norm = cross_attn_norm
-        self.eps = eps
-
-        # layers
-        self.norm1 = WanLayerNorm(dim, eps)
-        self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm, eps)
-        
-        self.norm3 = WanLayerNorm(
-            dim, eps, elementwise_affine=True
-        ) if cross_attn_norm else nn.Identity()
-            
-        self.cross_attn = WanAnimateCrossAttention(dim, num_heads, (-1, -1), qk_norm, eps, use_img_emb=use_img_emb)
-        self.norm2 = WanLayerNorm(dim, eps)
-        self.ffn = nn.Sequential(
-            nn.Linear(dim, ffn_dim),
-            nn.GELU(approximate='tanh'),
-            nn.Linear(ffn_dim, dim)
-        )
-
-        # modulation
-        self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim ** 0.5)
-
-    def forward(
-        self,
-        x,
-        e,
-        seq_lens,
-        grid_sizes,
-        freqs,
-        context,
-        context_lens,
-        dtype=torch.bfloat16,
-        t=0,
-    ):
-        """
-        Args:
-            x(Tensor): Shape [B, L, C]
-            e(Tensor): Shape [B, L1, 6, C]
-            seq_lens(Tensor): Shape [B], length of each sequence in batch
-            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
-            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
-        """
-        assert e.dtype == torch.float32
-        with amp.autocast(dtype=torch.float32):
-            e = (self.modulation + e).chunk(6, dim=1)
-        assert e[0].dtype == torch.float32
-
-        # self-attention
-        y = self.self_attn(
-            self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes, freqs, dtype, t=t
-        )
-        with amp.autocast(dtype=torch.float32):
-            x = x + y * e[2]
-
-        # cross-attention & ffn function
-        def cross_attn_ffn(x, context, context_lens, e):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype, t=t)
-            y = self.ffn(self.norm2(x).float() * (1 + e[4]) + e[3])
-            with amp.autocast(dtype=torch.float32):
-                x = x + y * e[5]
-            return x
-
-        x = cross_attn_ffn(x, context, context_lens, e)
-        return x
-
 
 
 class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
@@ -205,17 +61,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
             16, dim, kernel_size=patch_size, stride=patch_size
         )
 
-        # blocks
-        self.blocks = nn.ModuleList([
-            WanAnimateAttentionBlock(dim, ffn_dim, num_heads, window_size, qk_norm,
-                              cross_attn_norm, eps, use_img_emb) for _ in range(num_layers)
-        ])
-        for layer_idx, block in enumerate(self.blocks):
-            block.self_attn.layer_idx = layer_idx
-            block.self_attn.num_layers = self.num_layers
-
-        self.img_emb = MLPProj(1280, dim)
-        
         # initialize weights
         self.init_weights()
 
@@ -274,7 +119,8 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
         seq_len,
         y=None,
         pose_latents=None, 
-        face_pixel_values=None
+        face_pixel_values=None,
+        cond_flag=True
     ):
         # params
         device = self.patch_embedding.weight.device

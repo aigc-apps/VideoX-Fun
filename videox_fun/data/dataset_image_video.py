@@ -595,6 +595,7 @@ class ImageVideoControlDataset(Dataset):
 
         return sample
 
+
 class ImageVideoSafetensorsDataset(Dataset):
     def __init__(
         self,
