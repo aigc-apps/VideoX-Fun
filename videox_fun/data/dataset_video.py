@@ -554,18 +554,343 @@ class VideoSpeechControlDataset(Dataset):
         return sample
 
 
+class VideoAnimateDataset(Dataset):
+    def __init__(
+        self,
+        ann_path, data_root=None,
+        video_sample_size=512, 
+        video_sample_stride=4, 
+        video_sample_n_frames=16,
+        video_repeat=0,
+        text_drop_ratio=0.1,
+        enable_bucket=False,
+        video_length_drop_start=0.1, 
+        video_length_drop_end=0.9,
+        return_file_name=False,
+    ):
+        # Loading annotations from files
+        print(f"loading annotations from {ann_path} ...")
+        if ann_path.endswith('.csv'):
+            with open(ann_path, 'r') as csvfile:
+                dataset = list(csv.DictReader(csvfile))
+        elif ann_path.endswith('.json'):
+            dataset = json.load(open(ann_path))
+    
+        self.data_root = data_root
+
+        # It's used to balance num of images and videos.
+        if video_repeat > 0:
+            self.dataset = []
+            for data in dataset:
+                if data.get('type', 'image') != 'video':
+                    self.dataset.append(data)
+                    
+            for _ in range(video_repeat):
+                for data in dataset:
+                    if data.get('type', 'image') == 'video':
+                        self.dataset.append(data)
+        else:
+            self.dataset = dataset
+        del dataset
+
+        self.length = len(self.dataset)
+        print(f"data scale: {self.length}")
+        # TODO: enable bucket training
+        self.enable_bucket = enable_bucket
+        self.text_drop_ratio = text_drop_ratio
+
+        self.video_length_drop_start = video_length_drop_start
+        self.video_length_drop_end = video_length_drop_end
+
+        # Video params
+        self.video_sample_stride    = video_sample_stride
+        self.video_sample_n_frames  = video_sample_n_frames
+        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
+        self.video_transforms = transforms.Compose(
+            [
+                transforms.Resize(min(self.video_sample_size)),
+                transforms.CenterCrop(self.video_sample_size),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+            ]
+        )
+
+        self.larger_side_of_image_and_video = min(self.video_sample_size)
+    
+    def get_batch(self, idx):
+        data_info = self.dataset[idx % len(self.dataset)]
+        video_id, text = data_info['file_path'], data_info['text']
+
+        if self.data_root is None:
+            video_dir = video_id
+        else:
+            video_dir = os.path.join(self.data_root, video_id)
+
+        with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+            min_sample_n_frames = min(
+                self.video_sample_n_frames, 
+                int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
+            )
+            if min_sample_n_frames == 0:
+                raise ValueError(f"No Frames in video.")
+
+            video_length = int(self.video_length_drop_end * len(video_reader))
+            clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
+            start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+            batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
+
+            try:
+                sample_args = (video_reader, batch_index)
+                pixel_values = func_timeout(
+                    VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                )
+                resized_frames = []
+                for i in range(len(pixel_values)):
+                    frame = pixel_values[i]
+                    resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                    resized_frames.append(resized_frame)
+                pixel_values = np.array(resized_frames)
+            except FunctionTimedOut:
+                raise ValueError(f"Read {idx} timeout.")
+            except Exception as e:
+                raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+            if not self.enable_bucket:
+                pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+                del video_reader
+            else:
+                pixel_values = pixel_values
+
+            if not self.enable_bucket:
+                pixel_values = self.video_transforms(pixel_values)
+            
+            # Random use no text generation
+            if random.random() < self.text_drop_ratio:
+                text = ''
+
+        control_video_id = data_info['control_file_path']
+        
+        if control_video_id is not None:
+            if self.data_root is None:
+                control_video_id = control_video_id
+            else:
+                control_video_id = os.path.join(self.data_root, control_video_id)
+            
+        if control_video_id is not None:
+            with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
+                try:
+                    sample_args = (control_video_reader, batch_index)
+                    control_pixel_values = func_timeout(
+                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                    )
+                    resized_frames = []
+                    for i in range(len(control_pixel_values)):
+                        frame = control_pixel_values[i]
+                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                        resized_frames.append(resized_frame)
+                    control_pixel_values = np.array(resized_frames)
+                except FunctionTimedOut:
+                    raise ValueError(f"Read {idx} timeout.")
+                except Exception as e:
+                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+                if not self.enable_bucket:
+                    control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
+                    control_pixel_values = control_pixel_values / 255.
+                    del control_video_reader
+                else:
+                    control_pixel_values = control_pixel_values
+
+                if not self.enable_bucket:
+                    control_pixel_values = self.video_transforms(control_pixel_values)
+        else:
+            if not self.enable_bucket:
+                control_pixel_values = torch.zeros_like(pixel_values)
+            else:
+                control_pixel_values = np.zeros_like(pixel_values)
+
+        face_video_id = data_info['face_file_path']
+        
+        if face_video_id is not None:
+            if self.data_root is None:
+                face_video_id = face_video_id
+            else:
+                face_video_id = os.path.join(self.data_root, face_video_id)
+            
+        if face_video_id is not None:
+            with VideoReader_contextmanager(face_video_id, num_threads=2) as face_video_reader:
+                try:
+                    sample_args = (face_video_reader, batch_index)
+                    face_pixel_values = func_timeout(
+                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                    )
+                    resized_frames = []
+                    for i in range(len(face_pixel_values)):
+                        frame = face_pixel_values[i]
+                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                        resized_frames.append(resized_frame)
+                    face_pixel_values = np.array(resized_frames)
+                except FunctionTimedOut:
+                    raise ValueError(f"Read {idx} timeout.")
+                except Exception as e:
+                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+                if not self.enable_bucket:
+                    face_pixel_values = torch.from_numpy(face_pixel_values).permute(0, 3, 1, 2).contiguous()
+                    face_pixel_values = face_pixel_values / 255.
+                    del face_video_reader
+                else:
+                    face_pixel_values = face_pixel_values
+
+                if not self.enable_bucket:
+                    face_pixel_values = self.video_transforms(face_pixel_values)
+        else:
+            if not self.enable_bucket:
+                face_pixel_values = torch.zeros_like(pixel_values)
+            else:
+                face_pixel_values = np.zeros_like(pixel_values)
+
+        background_video_id = data_info.get('background_file_path', None)
+        
+        if background_video_id is not None:
+            if self.data_root is None:
+                background_video_id = background_video_id
+            else:
+                background_video_id = os.path.join(self.data_root, background_video_id)
+            
+        if background_video_id is not None:
+            with VideoReader_contextmanager(background_video_id, num_threads=2) as background_video_reader:
+                try:
+                    sample_args = (background_video_reader, batch_index)
+                    background_pixel_values = func_timeout(
+                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                    )
+                    resized_frames = []
+                    for i in range(len(background_pixel_values)):
+                        frame = background_pixel_values[i]
+                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                        resized_frames.append(resized_frame)
+                    background_pixel_values = np.array(resized_frames)
+                except FunctionTimedOut:
+                    raise ValueError(f"Read {idx} timeout.")
+                except Exception as e:
+                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+                if not self.enable_bucket:
+                    background_pixel_values = torch.from_numpy(background_pixel_values).permute(0, 3, 1, 2).contiguous()
+                    background_pixel_values = background_pixel_values / 255.
+                    del background_video_reader
+                else:
+                    background_pixel_values = background_pixel_values
+
+                if not self.enable_bucket:
+                    background_pixel_values = self.video_transforms(background_pixel_values)
+        else:
+            if not self.enable_bucket:
+                background_pixel_values = torch.ones_like(pixel_values) * 127.5
+            else:
+                background_pixel_values = np.ones_like(pixel_values) * 127.5
+
+        mask_video_id = data_info.get('mask_file_path', None)
+        
+        if mask_video_id is not None:
+            if self.data_root is None:
+                mask_video_id = mask_video_id
+            else:
+                mask_video_id = os.path.join(self.data_root, mask_video_id)
+            
+        if mask_video_id is not None:
+            with VideoReader_contextmanager(mask_video_id, num_threads=2) as mask_video_reader:
+                try:
+                    sample_args = (mask_video_reader, batch_index)
+                    mask = func_timeout(
+                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                    )
+                    resized_frames = []
+                    for i in range(len(mask)):
+                        frame = mask[i]
+                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
+                        resized_frames.append(resized_frame)
+                    mask = np.array(resized_frames)
+                except FunctionTimedOut:
+                    raise ValueError(f"Read {idx} timeout.")
+                except Exception as e:
+                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+                if not self.enable_bucket:
+                    mask = torch.from_numpy(mask).permute(0, 3, 1, 2).contiguous()
+                    mask = mask / 255.
+                    del mask_video_reader
+                else:
+                    mask = mask
+        else:
+            if not self.enable_bucket:
+                mask = torch.ones_like(pixel_values)
+            else:
+                mask = np.ones_like(pixel_values) * 255
+        mask = mask[:, :, :, :1]
+        
+        ref_pixel_values_path = data_info.get('ref_file_path', [])
+        if self.data_root is not None:
+            ref_pixel_values_path = os.path.join(self.data_root, ref_pixel_values_path)
+        ref_pixel_values = Image.open(ref_pixel_values_path).convert('RGB')
+
+        if not self.enable_bucket:
+            raise ValueError("Not enable_bucket is not supported now. ")
+        else:
+            ref_pixel_values = np.array(ref_pixel_values)
+    
+        return pixel_values, control_pixel_values, face_pixel_values, background_pixel_values, mask, ref_pixel_values, text, "video"
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        data_info = self.dataset[idx % len(self.dataset)]
+        data_type = data_info.get('type', 'image')
+        while True:
+            sample = {}
+            try:
+                data_info_local = self.dataset[idx % len(self.dataset)]
+                data_type_local = data_info_local.get('type', 'image')
+                if data_type_local != data_type:
+                    raise ValueError("data_type_local != data_type")
+
+                pixel_values, control_pixel_values, face_pixel_values, background_pixel_values, mask, ref_pixel_values, name, data_type = \
+                    self.get_batch(idx)
+
+                sample["pixel_values"] = pixel_values
+                sample["control_pixel_values"] = control_pixel_values
+                sample["face_pixel_values"] = face_pixel_values
+                sample["background_pixel_values"] = background_pixel_values
+                sample["mask"] = mask
+                sample["ref_pixel_values"] = ref_pixel_values
+                sample["clip_pixel_values"] = ref_pixel_values
+                sample["text"] = name
+                sample["data_type"] = data_type
+                sample["idx"] = idx
+
+                if len(sample) > 0:
+                    break
+            except Exception as e:
+                print(e, self.dataset[idx % len(self.dataset)])
+                idx = random.randint(0, self.length-1)
+
+        return sample
+
+
 if __name__ == "__main__":
     if 1:
         dataset = VideoDataset(
-            json_path="/home/zhoumo.xjq/disk3/datasets/webvidval/results_2M_val.json",
+            json_path="./webvidval/results_2M_val.json",
             sample_size=256,
             sample_stride=4, sample_n_frames=16,
         )
 
     if 0:
         dataset = WebVid10M(
-            csv_path="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/results_2M_val.csv",
-            video_folder="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/2M_val",
+            csv_path="./webvid/results_2M_val.csv",
+            video_folder="./webvid/2M_val",
             sample_size=256,
             sample_stride=4, sample_n_frames=16,
             is_image=False,

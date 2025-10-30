@@ -299,34 +299,6 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
             ref_image = ref_image.unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0) / 255
     return input_video, input_video_mask, ref_image, clip_image
 
-def padding_image(images, new_width, new_height):
-    new_image = Image.new('RGB', (new_width, new_height), (255, 255, 255))
-
-    aspect_ratio = images.width / images.height
-    if new_width / new_height > 1:
-        if aspect_ratio > new_width / new_height:
-            new_img_width = new_width
-            new_img_height = int(new_img_width / aspect_ratio)
-        else:
-            new_img_height = new_height
-            new_img_width = int(new_img_height * aspect_ratio)
-    else:
-        if aspect_ratio > new_width / new_height:
-            new_img_width = new_width
-            new_img_height = int(new_img_width / aspect_ratio)
-        else:
-            new_img_height = new_height
-            new_img_width = int(new_img_height * aspect_ratio)
-
-    resized_img = images.resize((new_img_width, new_img_height))
-
-    paste_x = (new_width - new_img_width) // 2
-    paste_y = (new_height - new_img_height) // 2
-
-    new_image.paste(resized_img, (paste_x, paste_y))
-
-    return new_image
-
 def get_image_latent(ref_image=None, sample_size=None, padding=False):
     if ref_image is not None:
         if isinstance(ref_image, str):
@@ -357,6 +329,34 @@ def get_image(ref_image=None):
             ref_image = ref_image.convert("RGB")
 
     return ref_image
+
+def padding_image(images, new_width, new_height):
+    new_image = Image.new('RGB', (new_width, new_height), (255, 255, 255))
+
+    aspect_ratio = images.width / images.height
+    if new_width / new_height > 1:
+        if aspect_ratio > new_width / new_height:
+            new_img_width = new_width
+            new_img_height = int(new_img_width / aspect_ratio)
+        else:
+            new_img_height = new_height
+            new_img_width = int(new_img_height * aspect_ratio)
+    else:
+        if aspect_ratio > new_width / new_height:
+            new_img_width = new_width
+            new_img_height = int(new_img_width / aspect_ratio)
+        else:
+            new_img_height = new_height
+            new_img_width = int(new_img_height * aspect_ratio)
+
+    resized_img = images.resize((new_img_width, new_img_height))
+
+    paste_x = (new_width - new_img_width) // 2
+    paste_y = (new_height - new_img_height) // 2
+
+    new_image.paste(resized_img, (paste_x, paste_y))
+
+    return new_image
 
 def timer(func):
     def wrapper(*args, **kwargs):

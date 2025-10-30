@@ -15,20 +15,20 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                AutoTokenizer, CLIPModel,
-                               Wan2_2Transformer3DModel_S2V, WanAudioEncoder,
+                               Wan2_2Transformer3DModel_Animate,
                                WanT5EncoderModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Wan2_2S2VPipeline
+from videox_fun.pipeline import Wan2_2AnimatePipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper,
                                                replace_parameters_by_name)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
+from videox_fun.utils.utils import (filter_kwargs, get_image,
                                     get_image_to_video_latent,
                                     get_video_to_video_latent,
-                                    merge_video_audio, save_videos_grid)
+                                    save_videos_grid)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -61,10 +61,6 @@ compile_dit         = False
 enable_teacache     = True
 # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
-# # --------------------------------------------------------------------------------------------------- #
-# | Model Name          | threshold | Model Name          | threshold |
-# | Wan2.2-T2V-A14B     | 0.10~0.15 | Wan2.2-I2V-A14B     | 0.15~0.20 |
-# # --------------------------------------------------------------------------------------------------- #
 teacache_threshold  = 0.10
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
@@ -82,15 +78,15 @@ enable_riflex       = False
 riflex_k            = 6
 
 # Config and model path
-config_path         = "config/wan2.2/wan_civitai_s2v.yaml"
+config_path         = "config/wan2.2/wan_civitai_animate.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.2-S2V-14B"
+model_name          = "./models/Diffusion_Transformer/Wan2.2-Animate-14B/"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
-sampler_name        = "Flow"
+sampler_name        = "Flow_Unipc"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
-shift               = 3
+shift               = 5
 
 # Load pretrained model if need
 # The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
@@ -102,39 +98,36 @@ vae_path                = None
 lora_path               = None
 lora_high_path          = None
 
+src_root_path           = "asset/wan_animate/replace/process_results/"
+src_pose_path           = os.path.join(src_root_path, "src_pose.mp4")
+src_face_path           = os.path.join(src_root_path, "src_face.mp4")
+src_ref_path            = os.path.join(src_root_path, "src_ref.png")
+src_bg_path             = os.path.join(src_root_path, "src_bg.mp4")
+src_mask_path           = os.path.join(src_root_path, "src_mask.mp4")
+
 # Other params
-sample_size         = [832, 480]
-video_length        = 80
+sample_size         = [480, 832]
+video_length        = 81
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
-weight_dtype            = torch.bfloat16
-# The path of the pose control video
-control_video           = "asset/pose.mp4"  
-# The path of the reference image
-ref_image               = "asset/8.png"
-# Use ref_image as the first frame
-init_first_frame        = False
-# The path of the audio 
-audio_path              = "asset/talk.wav"
-
-# prompts
-prompt              = "一个女孩在海边说话。"
+weight_dtype        = torch.bfloat16
+prompt              = "视频中的人在做动作"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-guidance_scale      = 4.5
+guidance_scale      = 4.0
 seed                = 43
-num_inference_steps = 40
+num_inference_steps = 20
 # The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
 lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-speech2v"
+save_path           = "samples/wan-videos-animate"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
-boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+boundary = config['transformer_additional_kwargs'].get('boundary', 0.875)
 
-transformer = Wan2_2Transformer3DModel_S2V.from_pretrained(
+transformer = Wan2_2Transformer3DModel_Animate.from_pretrained(
     os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')),
     transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     low_cpu_mem_usage=True,
@@ -211,10 +204,11 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 )
 text_encoder = text_encoder.eval()
 
-audio_encoder = WanAudioEncoder(
-    os.path.join(model_name, config['audio_encoder_kwargs'].get('audio_encoder_subpath', 'audio_encoder')),
-    "cpu"
-)
+# Get Clip Image Encoder
+clip_image_encoder = CLIPModel.from_pretrained(
+    os.path.join(model_name, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
+).to(weight_dtype)
+clip_image_encoder = clip_image_encoder.eval()
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
@@ -229,14 +223,14 @@ scheduler = Chosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = Wan2_2S2VPipeline(
+pipeline = Wan2_2AnimatePipeline(
     transformer=transformer,
     transformer_2=transformer_2,
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
+    clip_image_encoder=clip_image_encoder,
     scheduler=scheduler,
-    audio_encoder=audio_encoder,
 )
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
@@ -311,18 +305,29 @@ if lora_path is not None:
         pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
-    video_length = video_length // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if video_length != 1 else 1
-    latent_frames = video_length // vae.config.temporal_compression_ratio
+    video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
+    latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
         if transformer_2 is not None:
             pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
-    if ref_image is not None:
-        ref_image = get_image_latent(ref_image, sample_size=sample_size)
+    pose_video, _, _, _ = get_video_to_video_latent(src_pose_path, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
 
-    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+    face_video, _, _, _ = get_video_to_video_latent(src_face_path, video_length=video_length, sample_size=[512, 512], fps=fps, ref_image=None)
+    
+    ref_image = get_image(src_ref_path)
+
+    if os.path.exists(src_bg_path):
+        bg_video, _, _, _ = get_video_to_video_latent(src_bg_path, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        mask_video, _, _, _ = get_video_to_video_latent(src_mask_path, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        mask_video = mask_video[:, :1]
+        replace_flag = True
+    else:
+        bg_video = None
+        mask_video = None
+        replace_flag = False
 
     sample = pipeline(
         prompt, 
@@ -331,21 +336,22 @@ with torch.no_grad():
         height      = sample_size[0],
         width       = sample_size[1],
         generator   = generator,
-        guidance_scale = guidance_scale,
+        guidance_scale      = guidance_scale,
         num_inference_steps = num_inference_steps,
-        boundary = boundary,
-
-        ref_image = ref_image,
-        pose_video = pose_video,
-        audio_path = audio_path,
-        shift = shift,
-        fps = fps,
-        init_first_frame = init_first_frame
+        boundary            = boundary,
+        pose_video      = pose_video,
+        face_video      = face_video,
+        ref_image       = ref_image,
+        bg_video        = bg_video,
+        mask_video      = mask_video,
+        replace_flag    = replace_flag,
+        shift           = shift,
     ).videos
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+    if transformer_2 is not None:
+        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):
@@ -364,8 +370,6 @@ def save_results():
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)
-    
-    merge_video_audio(video_path=video_path, audio_path=audio_path)
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

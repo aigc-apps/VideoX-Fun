@@ -1,28 +1,26 @@
 import inspect
 import math
-import copy
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import copy
 import torch
+import cv2
 import torch.nn.functional as F
+from einops import rearrange
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import VaeImageProcessor
-from diffusers.models.embeddings import get_1d_rotary_pos_embed
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.utils import BaseOutput, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
-from einops import rearrange
-from PIL import Image
-from torchvision import transforms
-from transformers import T5Tokenizer
+from decord import VideoReader
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                      Wan2_2Transformer3DModel_S2V, WanAudioEncoder,
-                      WanT5EncoderModel)
+                              WanT5EncoderModel, Wan2_2Transformer3DModel_Animate)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -98,43 +96,6 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-def resize_mask(mask, latent, process_first_frame_only=True):
-    latent_size = latent.size()
-    batch_size, channels, num_frames, height, width = mask.shape
-
-    if process_first_frame_only:
-        target_size = list(latent_size[2:])
-        target_size[0] = 1
-        first_frame_resized = F.interpolate(
-            mask[:, :, 0:1, :, :],
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
-        )
-        
-        target_size = list(latent_size[2:])
-        target_size[0] = target_size[0] - 1
-        if target_size[0] != 0:
-            remaining_frames_resized = F.interpolate(
-                mask[:, :, 1:, :, :],
-                size=target_size,
-                mode='trilinear',
-                align_corners=False
-            )
-            resized_mask = torch.cat([first_frame_resized, remaining_frames_resized], dim=2)
-        else:
-            resized_mask = first_frame_resized
-    else:
-        target_size = list(latent_size[2:])
-        resized_mask = F.interpolate(
-            mask,
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
-        )
-    return resized_mask
-
-
 @dataclass
 class WanPipelineOutput(BaseOutput):
     r"""
@@ -150,7 +111,7 @@ class WanPipelineOutput(BaseOutput):
     videos: torch.Tensor
 
 
-class Wan2_2S2VPipeline(DiffusionPipeline):
+class Wan2_2AnimatePipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-video generation using Wan.
 
@@ -158,8 +119,8 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
     """
 
-    _optional_components = ["transformer_2", "audio_encoder"]
-    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
+    _optional_components = ["transformer_2", "clip_image_encoder"]
+    model_cpu_offload_seq = "text_encoder->clip_image_encoder->transformer_2->transformer->vae"
 
     _callback_tensor_inputs = [
         "latents",
@@ -171,26 +132,23 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         self,
         tokenizer: AutoTokenizer,
         text_encoder: WanT5EncoderModel,
-        audio_encoder: WanAudioEncoder,
         vae: AutoencoderKLWan,
-        transformer: Wan2_2Transformer3DModel_S2V,
-        transformer_2: Wan2_2Transformer3DModel_S2V = None,
+        transformer: Wan2_2Transformer3DModel_Animate,
+        transformer_2: Wan2_2Transformer3DModel_Animate = None,
+        clip_image_encoder: CLIPModel = None,
         scheduler: FlowMatchEulerDiscreteScheduler = None,
     ):
         super().__init__()
 
         self.register_modules(
             tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, 
-            transformer_2=transformer_2, scheduler=scheduler, audio_encoder=audio_encoder
+            transformer_2=transformer_2, clip_image_encoder=clip_image_encoder, scheduler=scheduler
         )
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
         self.mask_processor = VaeImageProcessor(
             vae_scale_factor=self.vae.spatial_compression_ratio, do_normalize=False, do_binarize=True, do_convert_grayscale=True
         )
-        self.motion_frames = 73
-        self.audio_sample_m = 0
-        self.drop_first_motion = True
 
     def _get_t5_prompt_embeds(
         self,
@@ -317,47 +275,8 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
         return prompt_embeds, negative_prompt_embeds
 
-    def encode_audio_embeddings(self, audio_path, num_frames, fps, weight_dtype, device):
-        z = self.audio_encoder.extract_audio_feat(
-            audio_path, return_all_layers=True)
-        audio_embed_bucket, num_repeat = self.audio_encoder.get_audio_embed_bucket_fps(
-            z, fps=fps, batch_frames=num_frames, m=self.audio_sample_m)
-        audio_embed_bucket = audio_embed_bucket.to(device,
-                                                   weight_dtype)
-        audio_embed_bucket = audio_embed_bucket.unsqueeze(0)
-        if len(audio_embed_bucket.shape) == 3:
-            audio_embed_bucket = audio_embed_bucket.permute(0, 2, 1)
-        elif len(audio_embed_bucket.shape) == 4:
-            audio_embed_bucket = audio_embed_bucket.permute(0, 2, 3, 1)
-        return audio_embed_bucket, num_repeat
-
-    def encode_pose_latents(self, pose_video, num_repeat, num_frames, size, fps, weight_dtype, device):
-        height, width = size
-        if not pose_video is None:
-            padding_frame_num = num_repeat * num_frames - pose_video.shape[2]
-            pose_video = torch.cat(
-                [
-                    pose_video,
-                    -torch.ones([1, 3, padding_frame_num, height, width])
-                ],
-                dim=2
-            )
-
-            cond_tensors = torch.chunk(pose_video, num_repeat, dim=2)
-        else:
-            cond_tensors = [-torch.ones([1, 3, num_frames, height, width])]
-
-        pose_latents = []
-        for r in range(len(cond_tensors)):
-            cond = cond_tensors[r]
-            cond = torch.cat([cond[:, :, 0:1].repeat(1, 1, 1, 1, 1), cond],
-                             dim=2)
-            cond_lat = self.vae.encode(cond.to(dtype=weight_dtype, device=device))[0].mode()[:, :, 1:]
-            pose_latents.append(cond_lat)
-        return pose_latents
-
     def prepare_latents(
-        self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, latents=None, num_length_latents=None
+        self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, latents=None
     ):
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
@@ -368,7 +287,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         shape = (
             batch_size,
             num_channels_latents,
-            (num_frames - 1) // self.vae.temporal_compression_ratio + 1 if num_length_latents is None else num_length_latents,
+            (num_frames - 1) // self.vae.temporal_compression_ratio + 1,
             height // self.vae.spatial_compression_ratio,
             width // self.vae.spatial_compression_ratio,
         )
@@ -382,6 +301,138 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         if hasattr(self.scheduler, "init_noise_sigma"):
             latents = latents * self.scheduler.init_noise_sigma
         return latents
+
+    def padding_resize(self, img_ori, height=512, width=512, padding_color=(0, 0, 0), interpolation=cv2.INTER_LINEAR):
+        ori_height = img_ori.shape[0]
+        ori_width = img_ori.shape[1]
+        channel = img_ori.shape[2]
+
+        img_pad = np.zeros((height, width, channel))
+        if channel == 1:
+            img_pad[:, :, 0] = padding_color[0]
+        else:
+            img_pad[:, :, 0] = padding_color[0]
+            img_pad[:, :, 1] = padding_color[1]
+            img_pad[:, :, 2] = padding_color[2]
+
+        if (ori_height / ori_width) > (height / width):
+            new_width = int(height / ori_height * ori_width)
+            img = cv2.resize(img_ori, (new_width, height), interpolation=interpolation)
+            padding = int((width - new_width) / 2)
+            if len(img.shape) == 2:
+                img = img[:, :, np.newaxis]  
+            img_pad[:, padding: padding + new_width, :] = img
+        else:
+            new_height = int(width / ori_width * ori_height)
+            img = cv2.resize(img_ori, (width, new_height), interpolation=interpolation)
+            padding = int((height - new_height) / 2)
+            if len(img.shape) == 2:
+                img = img[:, :, np.newaxis]  
+            img_pad[padding: padding + new_height, :, :] = img
+
+        img_pad = np.uint8(img_pad)
+
+        return img_pad
+
+    def inputs_padding(self, x, target_len):
+        ndim = x.ndim
+
+        if ndim == 4:
+            f = x.shape[0]
+            if target_len <= f:
+                return [deepcopy(x[i]) for i in range(target_len)]
+            
+            idx = 0
+            flip = False
+            target_array = []
+            while len(target_array) < target_len:
+                target_array.append(deepcopy(x[idx]))
+                if flip:
+                    idx -= 1
+                else:
+                    idx += 1
+                if idx == 0 or idx == f - 1:
+                    flip = not flip
+            return target_array[:target_len]
+
+        elif ndim == 5:
+            b, c, f, h, w = x.shape
+
+            if target_len <= f:
+                return x[:, :, :target_len, :, :]
+
+            indices = []
+            idx = 0
+            flip = False
+            while len(indices) < target_len:
+                indices.append(idx)
+                if flip:
+                    idx -= 1
+                else:
+                    idx += 1
+                if idx == 0 or idx == f - 1:
+                    flip = not flip
+            indices = indices[:target_len]
+
+            if isinstance(x, torch.Tensor):
+                indices_tensor = torch.tensor(indices, device=x.device, dtype=torch.long)
+                return x[:, :, indices_tensor, :, :]
+            else:
+                indices_array = np.array(indices)
+                return x[:, :, indices_array, :, :]
+        
+        else:
+            raise ValueError(f"Unsupported input dimension: {ndim}. Expected 4D or 5D.")
+
+    def get_valid_len(self, real_len, clip_len=81, overlap=1):
+        real_clip_len = clip_len - overlap
+        last_clip_num = (real_len - overlap) % real_clip_len
+        if last_clip_num == 0:
+            extra = 0
+        else:
+            extra = real_clip_len - last_clip_num
+        target_len = real_len + extra
+        return target_len
+
+    def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
+        pose_video_reader = VideoReader(src_pose_path)
+        pose_len = len(pose_video_reader)
+        pose_idxs = list(range(pose_len))
+        pose_video = pose_video_reader.get_batch(pose_idxs).asnumpy()
+
+        face_video_reader = VideoReader(src_face_path)
+        face_len = len(face_video_reader)
+        face_idxs = list(range(face_len))
+        face_video = face_video_reader.get_batch(face_idxs).asnumpy()
+        height, width = pose_video[0].shape[:2]
+
+        ref_image = cv2.imread(src_ref_path)[..., ::-1]
+        ref_image = self.padding_resize(ref_image, height=height, width=width)
+        return pose_video, face_video, ref_image
+    
+    def prepare_source_for_replace(self, src_bg_path, src_mask_path):
+        bg_video_reader = VideoReader(src_bg_path)
+        bg_len = len(bg_video_reader)
+        bg_idxs = list(range(bg_len))
+        bg_video = bg_video_reader.get_batch(bg_idxs).asnumpy()
+
+        mask_video_reader = VideoReader(src_mask_path)
+        mask_len = len(mask_video_reader)
+        mask_idxs = list(range(mask_len))
+        mask_video = mask_video_reader.get_batch(mask_idxs).asnumpy()
+        mask_video = mask_video[:, :, :, 0] / 255
+        return bg_video, mask_video
+
+    def get_i2v_mask(self, lat_t, lat_h, lat_w, mask_len=1, mask_pixel_values=None, device="cuda"):
+        if mask_pixel_values is None:
+            msk = torch.zeros(1, (lat_t-1) * 4 + 1, lat_h, lat_w, device=device)
+        else:
+            msk = mask_pixel_values.clone()
+        msk[:, :mask_len] = 1
+        msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+        msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
+        msk = msk.transpose(1, 2)
+        return msk
 
     def prepare_control_latents(
         self, control, control_image, batch_size, height, width, dtype, device, generator, do_classifier_free_guidance
@@ -517,11 +568,15 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
         width: int = 720,
-        ref_image: Union[torch.FloatTensor] = None,
-        audio_path = None,
-        pose_video = None,
+        clip_len=77,
         num_frames: int = 49,
         num_inference_steps: int = 50,
+        pose_video = None,
+        face_video = None,
+        ref_image = None,
+        bg_video = None,
+        mask_video = None,
+        replace_flag = True,
         timesteps: Optional[List[int]] = None,
         guidance_scale: float = 6,
         num_videos_per_prompt: int = 1,
@@ -541,8 +596,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         boundary: float = 0.875,
         comfyui_progressbar: bool = False,
         shift: int = 5,
-        fps: int = 16,
-        init_first_frame: bool = False,
+        refert_num = 1,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -553,6 +607,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         Returns:
 
         """
+
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
         num_videos_per_prompt = 1
@@ -587,9 +642,6 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        lat_motion_frames = (self.motion_frames + 3) // 4
-        lat_target_frames = (num_frames + 3 + self.motion_frames) // 4 - lat_motion_frames
-
         # 3. Encode input prompt
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
@@ -608,75 +660,64 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
         if comfyui_progressbar:
             from comfy.utils import ProgressBar
-            pbar = ProgressBar(num_inference_steps + 2)
+            pbar = ProgressBar(num_inference_steps + 1)
 
-        # 5. Prepare latents.
-        latent_channels = self.vae.config.latent_channels
-        if comfyui_progressbar:
-            pbar.update(1)
-
-        video_length = ref_image.shape[2]
-        ref_image = self.image_processor.preprocess(rearrange(ref_image, "b c f h w -> (b f) c h w"), height=height, width=width) 
-        ref_image = ref_image.to(dtype=torch.float32)
-        ref_image = rearrange(ref_image, "(b f) c h w -> b c f h w", f=video_length)
-        
-        ref_image_latentes = self.prepare_control_latents(
-            None,
-            ref_image,
-            batch_size,
-            height,
-            width,
-            weight_dtype,
-            device,
-            generator,
-            do_classifier_free_guidance
-        )[1]
-        ref_image_latentes = ref_image_latentes[:, :, :1]
-
-        # Extract audio emb
-        audio_emb, num_repeat = self.encode_audio_embeddings(
-            audio_path, num_frames=num_frames, fps=fps, weight_dtype=weight_dtype, device=device
-        )
-
-        # Encode the motion latents
-        motion_latents = torch.zeros(
-            [1, 3, self.motion_frames, height, width],
-            dtype=weight_dtype,
-            device=device
-        )
-        videos_last_frames = motion_latents.detach()
-        drop_first_motion = self.drop_first_motion
-        if init_first_frame:
-            drop_first_motion = False
-            motion_latents[:, :, -6:] = ref_image
-        motion_latents = self.vae.encode(motion_latents)[0].mode()
-
-        # Get pose cond input if need
+        # 4. Prepare latents
         if pose_video is not None:
             video_length = pose_video.shape[2]
             pose_video = self.image_processor.preprocess(rearrange(pose_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
             pose_video = pose_video.to(dtype=torch.float32)
             pose_video = rearrange(pose_video, "(b f) c h w -> b c f h w", f=video_length)
-        pose_latents = self.encode_pose_latents(
-            pose_video=pose_video,
-            num_repeat=num_repeat,
-            num_frames=num_frames,
-            size=(height, width), 
-            fps=fps,
-            weight_dtype=weight_dtype, 
-            device=device
-        )
+        else:
+            pose_video = None
+
+        if face_video is not None:
+            video_length = face_video.shape[2]
+            face_video = self.image_processor.preprocess(rearrange(face_video, "b c f h w -> (b f) c h w")) 
+            face_video = face_video.to(dtype=torch.float32)
+            face_video = rearrange(face_video, "(b f) c h w -> b c f h w", f=video_length)
+        else:
+            face_video = None
+
+        real_frame_len = pose_video.size()[2]
+        target_len = self.get_valid_len(real_frame_len, clip_len, overlap=refert_num)
+        print('real frames: {} target frames: {}'.format(real_frame_len, target_len))
+        pose_video = self.inputs_padding(pose_video, target_len).to(device, weight_dtype) 
+        face_video = self.inputs_padding(face_video, target_len).to(device, weight_dtype) 
+        ref_image = self.padding_resize(np.array(ref_image), height=height, width=width)
+        ref_image = torch.tensor(ref_image / 127.5 - 1).unsqueeze(0).permute([3, 0, 1, 2]).unsqueeze(0).to(device, weight_dtype) 
+
+        if replace_flag:
+            if bg_video is not None:
+                video_length = bg_video.shape[2]
+                bg_video = self.image_processor.preprocess(rearrange(bg_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
+                bg_video = bg_video.to(dtype=torch.float32)
+                bg_video = rearrange(bg_video, "(b f) c h w -> b c f h w", f=video_length)
+            else:
+                bg_video = None
+            bg_video = self.inputs_padding(bg_video, target_len).to(device, weight_dtype) 
+            mask_video = self.inputs_padding(mask_video, target_len).to(device, weight_dtype) 
 
         if comfyui_progressbar:
             pbar.update(1)
 
-        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+        # 5. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        videos = []
-        copy_timesteps = copy.deepcopy(timesteps)
-        copy_latents = copy.deepcopy(latents)
-        for r in range(num_repeat):
+        target_shape = (self.vae.latent_channels, (num_frames - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
+        seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
+        
+        # 6. Denoising loop
+        start           = 0
+        end             = clip_len
+        all_out_frames  = []
+        copy_timesteps  = copy.deepcopy(timesteps)
+        copy_latents    = copy.deepcopy(latents)
+        bs              = pose_video.size()[0]
+        while True:
+            if start + refert_num >= pose_video.size()[2]:
+                break
+
             # Prepare timesteps
             if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
                 timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, copy_timesteps, mu=1)
@@ -693,9 +734,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                 timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, copy_timesteps)
             self._num_timesteps = len(timesteps)
 
-            target_shape = (self.vae.latent_channels, lat_target_frames, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
-            seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
-            
+            latent_channels = self.transformer.config.in_channels
             latents = self.prepare_latents(
                 batch_size * num_videos_per_prompt,
                 latent_channels,
@@ -706,9 +745,100 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                 device,
                 generator,
                 copy_latents,
-                num_length_latents=target_shape[1]
             )
-            # 7. Denoising loop
+
+            if start == 0:
+                mask_reft_len = 0
+            else:
+                mask_reft_len = refert_num
+
+            conditioning_pixel_values   = pose_video[:, :, start:end]
+            face_pixel_values           = face_video[:, :, start:end]
+            ref_pixel_values            = ref_image.clone().detach()
+            if start > 0:
+                refer_t_pixel_values = out_frames[:, :, -refert_num:].clone().detach()
+                refer_t_pixel_values = (refer_t_pixel_values - 0.5) / 0.5
+            else:
+                refer_t_pixel_values = torch.zeros(bs, 3, refert_num, height, width)
+            refer_t_pixel_values = refer_t_pixel_values.to(device=device, dtype=weight_dtype)
+            
+            pose_latents, ref_latents = self.prepare_control_latents(
+                conditioning_pixel_values,
+                ref_pixel_values,
+                batch_size,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+                do_classifier_free_guidance
+            )
+
+            mask_ref    = self.get_i2v_mask(1, target_shape[-1], target_shape[-2], 1, device=device)
+            y_ref       = torch.concat([mask_ref, ref_latents], dim=1).to(device=device, dtype=weight_dtype)
+            if mask_reft_len > 0:
+                if replace_flag:
+                    # Image.fromarray(np.array((refer_t_pixel_values[0, :, 0].permute(1,2,0) * 0.5 + 0.5).float().cpu().numpy() *255, np.uint8)).save("1.jpg")
+                    bg_pixel_values = bg_video[:, :, start:end]
+                    y_reft = self.vae.encode(
+                        torch.concat(
+                            [
+                                refer_t_pixel_values[:, :, :mask_reft_len], 
+                                bg_pixel_values[:, :, mask_reft_len:]
+                            ], dim=2
+                        ).to(device=device, dtype=weight_dtype)
+                    )[0].mode()
+
+                    mask_pixel_values = 1 - mask_video[:, :, start:end]
+                    mask_pixel_values = rearrange(mask_pixel_values, "b c t h w -> (b t) c h w")
+                    mask_pixel_values = F.interpolate(mask_pixel_values, size=(target_shape[-1], target_shape[-2]), mode='nearest')
+                    mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b c t h w", b = bs)[:, 0]
+                    msk_reft = self.get_i2v_mask(
+                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
+                    )
+                else:
+                    refer_t_pixel_values = rearrange(refer_t_pixel_values[:, :, :mask_reft_len], "b c t h w -> (b t) c h w")
+                    refer_t_pixel_values = F.interpolate(refer_t_pixel_values, size=(height, width), mode="bicubic")
+                    refer_t_pixel_values = rearrange(refer_t_pixel_values, "(b t) c h w -> b c t h w", b = bs)
+
+                    y_reft = self.vae.encode(
+                        torch.concat(
+                            [
+                                refer_t_pixel_values,
+                                torch.zeros(bs, 3, clip_len - mask_reft_len, height, width).to(device=device, dtype=weight_dtype),
+                            ], dim=2,
+                        ).to(device=device, dtype=weight_dtype)
+                    )[0].mode()
+                    msk_reft = self.get_i2v_mask(
+                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
+                    )
+            else:
+                if replace_flag:
+                    bg_pixel_values = bg_video[:, :, start:end]
+                    y_reft = self.vae.encode(
+                        bg_pixel_values.to(device=device, dtype=weight_dtype)
+                    )[0].mode()
+
+                    mask_pixel_values = 1 - mask_video[:, :, start:end]
+                    mask_pixel_values = rearrange(mask_pixel_values, "b c t h w -> (b t) c h w")
+                    mask_pixel_values = F.interpolate(mask_pixel_values, size=(target_shape[-1], target_shape[-2]), mode='nearest')
+                    mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b c t h w", b = bs)[:, 0]
+                    msk_reft = self.get_i2v_mask(
+                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
+                    )
+                else:
+                    y_reft = self.vae.encode(
+                        torch.zeros(1, 3, clip_len - mask_reft_len, height, width).to(device=device, dtype=weight_dtype)
+                    )[0].mode()
+                    msk_reft = self.get_i2v_mask(
+                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
+                    )
+
+            y_reft = torch.concat([msk_reft, y_reft], dim=1).to(device=device, dtype=weight_dtype)
+            y = torch.concat([y_ref, y_reft], dim=2)
+
+            clip_context = self.clip_image_encoder([ref_pixel_values[0, :, :, :]]).to(device=device, dtype=weight_dtype)
+
             num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
             self.transformer.num_inference_steps = num_inference_steps
             with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -721,21 +851,21 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                     latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                     if hasattr(self.scheduler, "scale_model_input"):
                         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-                        
-                    with torch.no_grad():
-                        left_idx = r * num_frames
-                        right_idx = r * num_frames + num_frames
-                        cond_latents = pose_latents[r] if pose_video is not None else pose_latents[0] * 0
-                        cond_latents = cond_latents.to(dtype=weight_dtype, device=device)
-                        audio_input = audio_emb[..., left_idx:right_idx]
 
-                    pose_latents_input = torch.cat([cond_latents] * 2) if do_classifier_free_guidance else cond_latents
-                    motion_latents_input = torch.cat([motion_latents] * 2) if do_classifier_free_guidance else motion_latents
-                    audio_emb_input = torch.cat([audio_input * 0] + [audio_input]) if do_classifier_free_guidance else audio_input
-                    ref_image_latentes_input = torch.cat([ref_image_latentes] * 2) if do_classifier_free_guidance else ref_image_latentes
-                    motion_frames=[[self.motion_frames, (self.motion_frames + 3) // 4]] * 2 if do_classifier_free_guidance else [[self.motion_frames, (self.motion_frames + 3) // 4]]
+                    y_in = torch.cat([y] * 2) if do_classifier_free_guidance else y
+                    clip_context_input = (
+                        torch.cat([clip_context] * 2) if do_classifier_free_guidance else clip_context
+                    )
+                    pose_latents_input = (
+                        torch.cat([pose_latents] * 2) if do_classifier_free_guidance else pose_latents
+                    )
+                    face_pixel_values_input = (
+                        torch.cat([torch.ones_like(face_pixel_values) * -1] + [face_pixel_values]) if do_classifier_free_guidance else face_pixel_values
+                    )
+
+                    # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                     timestep = t.expand(latent_model_input.shape[0])
-
+                    
                     if self.transformer_2 is not None:
                         if t >= boundary * self.scheduler.config.num_train_timesteps:
                             local_transformer = self.transformer_2
@@ -751,14 +881,13 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                             context=in_prompt_embeds,
                             t=timestep,
                             seq_len=seq_len,
-                            cond_states=pose_latents_input,
-                            motion_latents=motion_latents_input,
-                            ref_latents=ref_image_latentes_input,
-                            audio_input=audio_emb_input,
-                            motion_frames=motion_frames,
-                            drop_motion_frames=drop_first_motion and r == 0,
+                            y=y_in,
+                            clip_fea=clip_context_input,
+                            pose_latents=pose_latents_input,
+                            face_pixel_values=face_pixel_values_input,
                         )
-                    # perform guidance
+
+                    # Perform guidance
                     if do_classifier_free_guidance:
                         if self.transformer_2 is not None and (isinstance(self.guidance_scale, (list, tuple))):
                             sample_guide_scale = self.guidance_scale[1] if t >= self.transformer_2.config.boundary * self.scheduler.config.num_train_timesteps else self.guidance_scale[0]
@@ -767,7 +896,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_text - noise_pred_uncond)
 
-                    # compute the previous noisy sample x_t -> x_t-1
+                    # Compute the previous noisy sample x_t -> x_t-1
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
                     if callback_on_step_end is not None:
@@ -785,30 +914,15 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                     if comfyui_progressbar:
                         pbar.update(1)
 
-            if not (drop_first_motion and r == 0):
-                decode_latents = torch.cat([motion_latents, latents], dim=2)
-            else:
-                decode_latents = torch.cat([ref_image_latentes, latents], dim=2)
+            out_frames = self.decode_latents(latents[:, :, 1:])
+            if start != 0:
+                out_frames = out_frames[:, :, refert_num:]
+            all_out_frames.append(out_frames.cpu())
+            start += clip_len - refert_num
+            end += clip_len - refert_num
 
-            image = self.vae.decode(decode_latents).sample
-            image = image[:, :, -(num_frames):]
-            if (drop_first_motion and r == 0):
-                image = image[:, :, 3:]
+        videos = torch.cat(all_out_frames, dim=2)[:, :, :real_frame_len]
 
-            overlap_frames_num = min(self.motion_frames, image.shape[2])
-            videos_last_frames = torch.cat(
-                [
-                    videos_last_frames[:, :, overlap_frames_num:],
-                    image[:, :, -overlap_frames_num:]
-                ],
-                dim=2
-            ).to(dtype=motion_latents.dtype, device=motion_latents.device)
-            motion_latents = self.vae.encode(videos_last_frames)[0].mode()
-            videos.append(image)
-
-        videos = torch.cat(videos, dim=2)
-        videos = (videos / 2 + 0.5).clamp(0, 1)
-        
         # Offload all models
         self.maybe_free_model_hooks()
 

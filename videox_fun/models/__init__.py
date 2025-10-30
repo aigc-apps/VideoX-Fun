@@ -6,7 +6,9 @@ from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPTextModel,
                           T5EncoderModel, T5Tokenizer, T5TokenizerFast)
 
 try:
-    from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Qwen2VLProcessor, Qwen2_5_VLConfig
+    from transformers import (Qwen2_5_VLConfig,
+                              Qwen2_5_VLForConditionalGeneration,
+                              Qwen2Tokenizer, Qwen2VLProcessor)
 except:
     Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer = None, None
     Qwen2VLProcessor, Qwen2_5_VLConfig = None, None
@@ -14,9 +16,9 @@ except:
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
-from .flux_transformer2d import FluxTransformer2DModel
-from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
+from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
+from .flux_transformer2d import FluxTransformer2DModel
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .wan_audio_encoder import WanAudioEncoder
@@ -24,6 +26,7 @@ from .wan_image_encoder import CLIPModel
 from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
+from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
 from .wan_transformer3d_vace import VaceWanTransformer3DModel
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
