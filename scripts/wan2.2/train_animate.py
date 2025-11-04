@@ -1751,8 +1751,8 @@ def main():
                     else:
                         refert_num = rng.choice([0, 1], p = [0.75, 0.25])
 
-                    background_pixel_values[:, :, :refert_num] = pixel_values[:, :, :refert_num]
-                    mask[:, :, :refert_num] = torch.zeros_like(mask[:, :, :refert_num])
+                    background_pixel_values[:, :refert_num, :] = pixel_values[:, :refert_num, :]
+                    mask[:, :refert_num, :] = torch.zeros_like(mask[:, :refert_num, :])
                     for bs_index in range(background_pixel_values.size()[0]):
                         if rng is None:
                             zero_init_background_pixel_values_conv_in = np.random.choice([0, 1], p = [0.90, 0.10])
