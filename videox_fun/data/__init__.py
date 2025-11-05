@@ -1,5 +1,5 @@
 from .dataset_image import CC15M, ImageEditDataset
-from .dataset_image_video import (ImageVideoControlDataset, ImageVideoDataset,
+from .dataset_image_video import (ImageVideoControlDataset, ImageVideoDataset, TextDataset,
                                   ImageVideoSampler)
 from .dataset_video import VideoDataset, VideoSpeechDataset, VideoAnimateDataset, WebVid10M
 from .utils import (VIDEO_READER_TIMEOUT, Camera, VideoReader_contextmanager,
