@@ -4,6 +4,7 @@ import math
 import os
 from typing import Any, Dict
 
+import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -45,6 +46,10 @@ class AudioCrossAttentionProcessor(nn.Module):
         nn.init.zeros_(self.k_proj.weight)
         nn.init.zeros_(self.v_proj.weight)
 
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
+        self.all_gather = None
+
     def __call__(
         self,
         attn: nn.Module,
@@ -80,7 +85,14 @@ class AudioCrossAttentionProcessor(nn.Module):
         img_x = img_x.flatten(2)
 
         if len(audio_proj.shape) == 4:
-            q = sequence_parallel_all_gather(q, dim=1)
+            if self.sp_world_size > 1:
+                q = self.all_gather(q, dim=1)
+
+                length = int(np.floor(q.size()[1] / latents_num_frames) * latents_num_frames)
+                origin_length = q.size()[1]
+                if origin_length > length:
+                    q_pad = q[:, length:]
+                    q = q[:, :length]
             audio_q = q.view(b * latents_num_frames, -1, n, d)  # [b, 21, l1, n, d]
             ip_key = self.k_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b * latents_num_frames, -1, n, d)
@@ -88,8 +100,11 @@ class AudioCrossAttentionProcessor(nn.Module):
                 audio_q, ip_key, ip_value, k_lens=audio_context_lens, attention_type="NORMAL"
             )
             audio_x = audio_x.view(b, q.size(1), n, d)
+            if self.sp_world_size > 1:
+                if origin_length > length:
+                    audio_x = torch.cat([audio_x, q_pad], dim=1)
+                audio_x = torch.chunk(audio_x, self.sp_world_size, dim=1)[self.sp_world_rank]
             audio_x = audio_x.flatten(2)
-            audio_x = sequence_parallel_chunk(audio_x, dim=1)
         elif len(audio_proj.shape) == 3:
             ip_key = self.k_proj(audio_proj).view(b, -1, n, d)
             ip_value = self.v_proj(audio_proj).view(b, -1, n, d)
@@ -360,6 +375,14 @@ class FantasyTalkingTransformer3DModel(WanTransformer3DModel):
         return torch.stack(sub_sequences, dim=1), torch.tensor(
             k_lens_list, dtype=torch.long
         )
+
+    def enable_multi_gpus_inference(self,):
+        super().enable_multi_gpus_inference()
+        for name, module in self.named_modules():
+            if module.__class__.__name__ == 'AudioCrossAttentionProcessor':
+                module.sp_world_size = self.sp_world_size
+                module.sp_world_rank = self.sp_world_rank
+                module.all_gather = self.all_gather
 
     @cfg_skip()
     def forward(

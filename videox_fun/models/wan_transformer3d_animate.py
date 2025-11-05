@@ -98,7 +98,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
         motion_vec = torch.cat([pad_face, motion_vec], dim=1)
         return x, motion_vec
 
-
     def after_transformer_block(self, block_idx, x, motion_vec, motion_masks=None):
         if block_idx % 5 == 0:
             use_context_parallel = self.sp_world_size > 1
@@ -106,7 +105,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
             residual_out = self.face_adapter.fuser_blocks[block_idx // 5](*adapter_args)
             x = residual_out + x
         return x
-
 
     @cfg_skip()
     def forward(

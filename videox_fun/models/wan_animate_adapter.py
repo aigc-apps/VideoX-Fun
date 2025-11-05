@@ -386,7 +386,7 @@ class FaceBlock(nn.Module):
             q_pad = rearrange(q_pad, "B L H D -> B L (H D)")  
             if origin_length > length:
                 attn = torch.cat([attn, q_pad], dim=1)
-                attn = torch.chunk(attn, sp_world_size, dim=1)[sp_world_rank]
+            attn = torch.chunk(attn, sp_world_size, dim=1)[sp_world_rank]
 
         output = self.linear2(attn)
 
