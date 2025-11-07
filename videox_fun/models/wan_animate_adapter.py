@@ -342,7 +342,7 @@ class FaceBlock(nn.Module):
         sp_world_size=1,
         sp_world_rank=0,
     ) -> torch.Tensor:
-        
+        dtype = x.dtype
         B, T, N, C = motion_vec.shape
         T_comp = T
 
@@ -372,6 +372,7 @@ class FaceBlock(nn.Module):
                 q = q[:, :length]
             
         q = rearrange(q, "B (L S) H D -> (B L) S H D", L=T_comp)  
+        q, k, v = q.to(dtype), k.to(dtype), v.to(dtype)
         # Compute attention.
         attn = attention(
             q,

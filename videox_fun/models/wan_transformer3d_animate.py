@@ -226,6 +226,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                             t,
                             **ckpt_kwargs,
                         )
+                        x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                         x = self.after_transformer_block(idx, x, motion_vec)
                     else:
                         # arguments
@@ -240,6 +241,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                             t=t  
                         )
                         x = block(x, **kwargs)
+                        x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                         x = self.after_transformer_block(idx, x, motion_vec)
                     
                 if cond_flag:
@@ -269,6 +271,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                         t,
                         **ckpt_kwargs,
                     )
+                    x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                     x = self.after_transformer_block(idx, x, motion_vec)
                 else:
                     # arguments
@@ -283,6 +286,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                         t=t  
                     )
                     x = block(x, **kwargs)
+                    x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                     x = self.after_transformer_block(idx, x, motion_vec)
 
         # head
