@@ -994,30 +994,72 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         for key in _state_dict:
                             state_dict[key] = _state_dict[key]
 
+                filtered_state_dict = {}
+                for key in state_dict:
+                    if key in model.state_dict() and model.state_dict()[key].size() == state_dict[key].size():
+                        filtered_state_dict[key] = state_dict[key]
+                    else:
+                        print(f"Skipping key '{key}' due to size mismatch or absence in model.")
+                        
+                model_keys = set(model.state_dict().keys())
+                loaded_keys = set(filtered_state_dict.keys())
+                missing_keys = model_keys - loaded_keys
+
+                def initialize_missing_parameters(missing_keys, model_state_dict, torch_dtype=None):
+                    initialized_dict = {}
+                    
+                    with torch.no_grad():
+                        for key in missing_keys:
+                            param_shape = model_state_dict[key].shape
+                            param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
+                            if 'weight' in key:
+                                if any(norm_type in key for norm_type in ['norm', 'ln_', 'layer_norm', 'group_norm', 'batch_norm']):
+                                    initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
+                                elif 'embedding' in key or 'embed' in key:
+                                    initialized_dict[key] = torch.randn(param_shape, dtype=param_dtype) * 0.02
+                                elif 'head' in key or 'output' in key or 'proj_out' in key:
+                                    initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                elif len(param_shape) >= 2:
+                                    initialized_dict[key] = torch.empty(param_shape, dtype=param_dtype)
+                                    nn.init.xavier_uniform_(initialized_dict[key])
+                                else:
+                                    initialized_dict[key] = torch.randn(param_shape, dtype=param_dtype) * 0.02
+                            elif 'bias' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            elif 'running_mean' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            elif 'running_var' in key:
+                                initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
+                            elif 'num_batches_tracked' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=torch.long)
+                            else:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            
+                    return initialized_dict
+
+                if missing_keys:
+                    print(f"Missing keys will be initialized: {sorted(missing_keys)}")
+                    initialized_params = initialize_missing_parameters(
+                        missing_keys, 
+                        model.state_dict(), 
+                        torch_dtype
+                    )
+                    filtered_state_dict.update(initialized_params)
+
                 if diffusers_version >= "0.33.0":
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
                     # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
                     load_model_dict_into_meta(
                         model,
-                        state_dict,
+                        filtered_state_dict,
                         dtype=torch_dtype,
                         model_name_or_path=pretrained_model_path,
                     )
                 else:
-                    model._convert_deprecated_attention_blocks(state_dict)
-                    # move the params from meta device to cpu
-                    missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
-                    if len(missing_keys) > 0:
-                        raise ValueError(
-                            f"Cannot load {cls} from {pretrained_model_path} because the following keys are"
-                            f" missing: \n {', '.join(missing_keys)}. \n Please make sure to pass"
-                            " `low_cpu_mem_usage=False` and `device_map=None` if you want to randomly initialize"
-                            " those weights or else make sure your checkpoint file is correct."
-                        )
-
+                    model._convert_deprecated_attention_blocks(filtered_state_dict)
                     unexpected_keys = load_model_dict_into_meta(
                         model,
-                        state_dict,
+                        filtered_state_dict,
                         device=param_device,
                         dtype=torch_dtype,
                         model_name_or_path=pretrained_model_path,

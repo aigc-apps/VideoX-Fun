@@ -669,6 +669,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.current_steps = 0
         self.num_inference_steps = None
         self.gradient_checkpointing = False
+        self.all_gather = None
         self.sp_world_size = 1
         self.sp_world_rank = 0
         self.init_weights()

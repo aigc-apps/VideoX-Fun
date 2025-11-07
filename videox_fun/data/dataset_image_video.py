@@ -530,7 +530,7 @@ class ImageVideoControlDataset(Dataset):
                 shuffle(subject_id)
                 subject_images = []
                 for i in range(min(len(subject_id), 4)):
-                    subject_image = Image.open(subject_id[i])
+                    subject_image = Image.open(subject_id[i]).convert('RGB')
                     width, height = subject_image.size
                     total_pixels = width * height
 

@@ -6,7 +6,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_animate.py \
+accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_animate_lora.py \
   --config_path="config/wan2.2/wan_civitai_animate.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -21,9 +21,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_animate.py \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=2e-05 \
-  --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
+  --learning_rate=1e-04 \
   --seed=42 \
   --output_dir="output_dir" \
   --gradient_checkpointing \
@@ -37,5 +35,4 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_animate.py \
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="full" \
-  --low_vram \
-  --trainable_modules "."
+  --low_vram

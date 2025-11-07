@@ -158,7 +158,8 @@ def precalculate_safetensors_hashes(tensors, metadata):
 class LoRANetwork(torch.nn.Module):
     TRANSFORMER_TARGET_REPLACE_MODULE = [
         "CogVideoXTransformer3DModel", "WanTransformer3DModel", \
-        "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel"
+        "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel", \
+        "Wan2_2Transformer3DModel_Animate", "Wan2_2Transformer3DModel_S2V", "FantasyTalkingTransformer3DModel",
     ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
@@ -173,6 +174,7 @@ class LoRANetwork(torch.nn.Module):
         dropout: Optional[float] = None,
         module_class: Type[object] = LoRAModule,
         skip_name: str = None,
+        target_name: str = None,
         varbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
@@ -207,6 +209,15 @@ class LoRANetwork(torch.nn.Module):
                         
                         if skip_name is not None and skip_name in child_name:
                             continue
+                        
+                        if target_name is not None:
+                            target_name_in = False
+                            if isinstance(target_name, str):
+                                target_name_in = target_name in child_name
+                            elif isinstance(target_name, list):
+                                target_name_in = any([_target_name in child_name for _target_name in target_name])
+                            if not target_name_in:
+                                continue
 
                         if is_linear or is_conv2d:
                             lora_name = prefix + "." + name + "." + child_name
@@ -349,6 +360,7 @@ def create_network(
     transformer,
     neuron_dropout: Optional[float] = None,
     skip_name: str = None,
+    target_name = None,
     **kwargs,
 ):
     if network_dim is None:
@@ -364,6 +376,7 @@ def create_network(
         alpha=network_alpha,
         dropout=neuron_dropout,
         skip_name=skip_name,
+        target_name=target_name,
         varbose=True,
     )
     return network
