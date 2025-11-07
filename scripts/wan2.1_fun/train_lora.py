@@ -1338,12 +1338,12 @@ def main():
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device)
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if args.train_mode != "normal":
-        clip_image_encoder.to(accelerator.device, dtype=weight_dtype)
+        clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)

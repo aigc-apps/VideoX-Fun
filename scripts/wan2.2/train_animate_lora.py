@@ -1382,7 +1382,7 @@ def main():
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    transformer3d.to(accelerator.device, dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
@@ -1802,7 +1802,6 @@ def main():
 
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    print(weight_dtype)
                     noise_pred = transformer3d(
                         x=noisy_latents,
                         context=prompt_embeds,

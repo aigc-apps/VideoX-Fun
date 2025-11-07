@@ -1402,7 +1402,7 @@ def main():
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device if not args.low_vram else "cpu")
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if args.train_mode != "normal":
         clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 

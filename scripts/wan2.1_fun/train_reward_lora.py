@@ -1054,7 +1054,7 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device)
-    clip_image_encoder.to(accelerator.device, dtype=weight_dtype)
+    clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(prompt_list) / args.gradient_accumulation_steps)
