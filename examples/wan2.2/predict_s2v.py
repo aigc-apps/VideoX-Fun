@@ -345,7 +345,8 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+    if transformer_2 is not None:
+        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):
