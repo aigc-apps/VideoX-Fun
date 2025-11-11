@@ -621,6 +621,7 @@ def _video_vae(z_dim=None, **kwargs):
 
 
 class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    _supports_gradient_checkpointing = True
 
     @register_to_config
     def __init__(
@@ -646,6 +647,16 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.model = _video_vae(
             z_dim=latent_channels,
         )
+
+        self.gradient_checkpointing = False
+
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [
