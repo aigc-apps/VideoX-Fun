@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use deep speed in CogVideoX-Fun, which can save a lot of video memory. 
+We can choose whether to use deepspeed in CogVideoX-Fun, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in CogVideoX-Fun, you need to add a control_file_path, and [DWPose](https://github.com/IDEA-Research/DWPose) is suggested as tool to generate control file.
 

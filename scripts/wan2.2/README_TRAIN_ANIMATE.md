@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use fsdp in Wan-Animate, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in Wan-Animate, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in Wan, you need to add some new paths in json.
 

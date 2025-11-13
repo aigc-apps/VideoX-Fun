@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use deep speed in Wan, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in Wan, which can save a lot of video memory. 
 
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
