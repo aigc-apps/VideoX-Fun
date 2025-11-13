@@ -1,6 +1,6 @@
 ## Training Code
 
-We can choose whether to use deep speed in Wan-Fun, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in Wan-Fun, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in Wan-Fun, you need to add a control_file_path, and [DWPose](https://github.com/IDEA-Research/DWPose) is suggested as tool to generate control file.
 
