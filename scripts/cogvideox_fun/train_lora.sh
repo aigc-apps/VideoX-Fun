@@ -33,6 +33,10 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2" \
+  --use_peft_lora \
   --low_vram \
   --train_mode="inpaint" 
 
@@ -71,5 +75,9 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
 #   --random_hw_adapt \
 #   --training_with_video_token_length \
 #   --enable_bucket \
+#   --rank=64 \
+#   --network_alpha=32 \
+#   --target_name="to_q,to_k,to_v,ff.0,ff.2" \
+#   --use_peft_lora \
 #   --low_vram \
 #   --train_mode="inpaint" 

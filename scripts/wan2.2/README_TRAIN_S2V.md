@@ -34,6 +34,17 @@ Some parameters in the sh file can be confusing, and they are explained in this 
     - These resolutions combined with their corresponding lengths allow the model to generate videos of different sizes.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 
+When train model with multi machines, please set the params as follows:
+```sh
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/xxx/xxx.py
+```
+
 Wan-S2V without deepspeed:
 
 ```sh
@@ -78,7 +89,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_s2v.py \
   --trainable_modules "."
 ```
 
-Wan-S2V with deepspeed zero-2:
+Wan-S2V with Deepspeed Zero-2:
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-S2V-14B"
@@ -122,7 +133,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --trainable_modules "."
 ```
 
-Wan-S2V with deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+Wan-S2V with DeepSpeed Zero-3:
 
 ```sh
 python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization

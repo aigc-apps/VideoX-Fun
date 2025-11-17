@@ -36,4 +36,8 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_s2v_lora.py \
   --uniform_sampling \
   --boundary_type="full" \
   --control_ref_image="random" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram

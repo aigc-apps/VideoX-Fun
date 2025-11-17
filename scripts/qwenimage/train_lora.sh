@@ -26,4 +26,8 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --use_peft_lora \
   --uniform_sampling

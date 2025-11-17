@@ -38,4 +38,8 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_fun/train_control_lora
   --train_mode="control_ref" \
   --control_ref_image="random" \
   --add_full_ref_image_in_self_attention \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram 

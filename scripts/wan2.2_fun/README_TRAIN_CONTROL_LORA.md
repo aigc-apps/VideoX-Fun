@@ -47,6 +47,10 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `add_full_ref_image_in_self_attention` determines whether to include the reference image in self-attention. This option is used in V1.1, as it supports using a reference image as the control image. It should not be used in V1.0 and Control-Camera models.
 - `add_inpaint_info` determines whether to incorporate inpaint information into the model training. When enabled, this allows the model to support specifying starting and ending images in the controls during generation.
 - `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
+- `target_name` represents the components/modules to which LoRA will be applied, separated by commas.
+- `use_peft_lora` indicates whether to use the PEFT module for adding LoRA. Using this module will be more memory-efficient.
+- `rank` means the dimension of the LoRA update matrices.
+- `network_alpha` means the scale of the LoRA update matrices.
 
 When train model with multi machines, please set the params as follows:
 ```sh
@@ -103,6 +107,10 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_control_lora
   --control_ref_image="random" \
   --add_inpaint_info \
   --add_full_ref_image_in_self_attention \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram 
 ```
 
@@ -151,10 +159,18 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --control_ref_image="random" \
   --add_inpaint_info \
   --add_full_ref_image_in_self_attention \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram 
 ```
 
-Wan-Fun-Control with deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+It is known that DeepSpeed Zero-3 is not compatible with PEFT.
+
+Wan-Fun-Control with DeepSpeed Zero-3:
 
 Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. You must set save_state to True to save the model. After training, you can use the following command to get the final model:
 ```sh
@@ -258,5 +274,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --control_ref_image="random" \
   --add_inpaint_info \
   --add_full_ref_image_in_self_attention \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram 
 ```

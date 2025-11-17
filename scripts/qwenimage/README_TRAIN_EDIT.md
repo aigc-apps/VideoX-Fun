@@ -35,6 +35,17 @@ Some parameters in the sh file can be confusing, and they are explained in this 
   - `qwen_image_edit` is for Qwen-Image-Edit.
   - `qwen_image_edit_plus` is for Qwen-Image-Edit-2509
 
+When train model with multi machines, please set the params as follows:
+```sh
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/xxx/xxx.py
+```
+
 Without deepspeed:
 
 Training qwen-image-edit without DeepSpeed may result in insufficient GPU memory.
@@ -74,7 +85,7 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_edit.py \
   --train_mode "qwen_image_edit"
 ```
 
-With deepspeed zero-2:
+With Deepspeed Zero-2:
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
@@ -112,7 +123,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --train_mode "qwen_image_edit"
 ```
 
-Deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+DeepSpeed Zero-3:
 
 After training, you can use the following command to get the final model:
 ```sh

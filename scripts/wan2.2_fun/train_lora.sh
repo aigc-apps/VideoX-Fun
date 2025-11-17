@@ -37,5 +37,8 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_lora.py \
   --uniform_sampling \
   --train_mode="inpaint" \
   --boundary_type="low" \
-  --lora_skip_name="ffn" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --low_vram

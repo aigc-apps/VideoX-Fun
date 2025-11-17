@@ -150,7 +150,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --trainable_modules "vace"
 ```
 
-Wan-Fun-Control with deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+Wan-Fun-Control with DeepSpeed Zero-3:
 
 Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
 ```sh

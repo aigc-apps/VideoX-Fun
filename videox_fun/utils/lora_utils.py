@@ -111,7 +111,6 @@ class LoRAModule(torch.nn.Module):
 
         return org_forwarded.to(weight_dtype) + lx.to(weight_dtype) * self.multiplier * scale
 
-
 def addnet_hash_legacy(b):
     """Old model hash used by sd-webui-additional-networks for .safetensors format files"""
     m = hashlib.sha256()
@@ -119,7 +118,6 @@ def addnet_hash_legacy(b):
     b.seek(0x100000)
     m.update(b.read(0x10000))
     return m.hexdigest()[0:8]
-
 
 def addnet_hash_safetensors(b):
     """New model hash used by sd-webui-additional-networks for .safetensors format files"""
@@ -137,7 +135,6 @@ def addnet_hash_safetensors(b):
 
     return hash_sha256.hexdigest()
 
-
 def precalculate_safetensors_hashes(tensors, metadata):
     """Precalculate the model hashes needed by sd-webui-additional-networks to
     save time on indexing the model later."""
@@ -153,7 +150,6 @@ def precalculate_safetensors_hashes(tensors, metadata):
     model_hash = addnet_hash_safetensors(b)
     legacy_hash = addnet_hash_legacy(b)
     return model_hash, legacy_hash
-
 
 class LoRANetwork(torch.nn.Module):
     TRANSFORMER_TARGET_REPLACE_MODULE = [
@@ -207,18 +203,18 @@ class LoRANetwork(torch.nn.Module):
                         is_conv2d = child_module.__class__.__name__ == "Conv2d" or child_module.__class__.__name__ == "LoRACompatibleConv"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
                         
-                        if skip_name is not None and skip_name in child_name:
+                        skip_names = skip_name.split(',') if skip_name is not None else []
+                        target_names = target_name.split(',') if target_name is not None else []
+                        
+                        skip_names = [name.strip() for name in skip_names if name.strip()]
+                        target_names = [name.strip() for name in target_names if name.strip()]
+                        
+                        if skip_names and any(skip_n in child_name for skip_n in skip_names):
                             continue
                         
-                        if target_name is not None:
-                            target_name_in = False
-                            if isinstance(target_name, str):
-                                target_name_in = target_name in child_name
-                            elif isinstance(target_name, list):
-                                target_name_in = any([_target_name in child_name for _target_name in target_name])
-                            if not target_name_in:
-                                continue
-
+                        if target_names and not any(target_n in child_name for target_n in target_names):
+                            continue
+                            
                         if is_linear or is_conv2d:
                             lora_name = prefix + "." + name + "." + child_name
                             lora_name = lora_name.replace(".", "_")
@@ -360,7 +356,7 @@ def create_network(
     transformer,
     neuron_dropout: Optional[float] = None,
     skip_name: str = None,
-    target_name = None,
+    target_name: str = None,
     **kwargs,
 ):
     if network_dim is None:
@@ -382,6 +378,9 @@ def create_network(
     return network
 
 def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
+    if lora_path is None:
+        return pipeline
+
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
     if state_dict is None:
@@ -390,20 +389,21 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         state_dict = state_dict
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "diffusion_model" in key:
-            key = key.replace("diffusion_model.", "lora_unet__")
-            key = key.replace("blocks.", "blocks_")
-            key = key.replace(".self_attn.", "_self_attn_")
-            key = key.replace(".cross_attn.", "_cross_attn_")
-            key = key.replace(".ffn.", "_ffn_")
         if "lora_A" in key or "lora_B" in key:
             key = "lora_unet__" + key
-            key = key.replace("blocks.", "blocks_")
-            key = key.replace(".self_attn.", "_self_attn_")
-            key = key.replace(".cross_attn.", "_cross_attn_")
-            key = key.replace(".ffn.", "_ffn_")
-            key = key.replace(".lora_A.default.", ".lora_down.")
-            key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_weight"):
+            key = key[:-14] + ".lora_A.weight"
+        if key.endswith("_lora_B_weight"):
+            key = key[:-14] + ".lora_B.weight"
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
@@ -504,6 +504,9 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
 
 # TODO: Refactor with merge_lora.
 def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32, sub_transformer_name="transformer"):
+    if lora_path is None:
+        return pipeline
+
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -511,20 +514,21 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "diffusion_model" in key:
-            key = key.replace("diffusion_model.", "lora_unet__")
-            key = key.replace("blocks.", "blocks_")
-            key = key.replace(".self_attn.", "_self_attn_")
-            key = key.replace(".cross_attn.", "_cross_attn_")
-            key = key.replace(".ffn.", "_ffn_")
         if "lora_A" in key or "lora_B" in key:
             key = "lora_unet__" + key
-            key = key.replace("blocks.", "blocks_")
-            key = key.replace(".self_attn.", "_self_attn_")
-            key = key.replace(".cross_attn.", "_cross_attn_")
-            key = key.replace(".ffn.", "_ffn_")
-            key = key.replace(".lora_A.default.", ".lora_down.")
-            key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_weight"):
+            key = key[:-14] + ".lora_A.weight"
+        if key.endswith("_lora_B_weight"):
+            key = key[:-14] + ".lora_B.weight"
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 

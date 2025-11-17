@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use deepspeed in CogVideoX-Fun, which can save a lot of video memory. 
+We can choose whether to use deepspeed and fsdp in CogVideoX-Fun, which can save a lot of video memory. 
 
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
@@ -61,12 +61,11 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --use_ema \
   --train_mode="inpaint" \
   --trainable_modules "."
 ```
 
-CogVideoX-Fun with deepspeed:
+CogVideoX-Fun with Deepspeed Zero-2:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -110,7 +109,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --trainable_modules "."
 ```
 
-CogVideoX-Fun with multi machines:
+With FSDP:
+
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-2b-InP"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -120,11 +120,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-NUM_PROCESS=$((WORLD_SIZE * 8))
-
-echo "MASTER_ADDR: ${MASTER_ADDR} MASTER_PORT: ${MASTER_PORT} NUM_PROCESS: ${NUM_PROCESS}"
-
-accelerate launch --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/cogvideox_fun/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap CogVideoXBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/cogvideox_fun/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -133,7 +129,7 @@ accelerate launch --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_POR
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
-  --train_batch_size=4 \
+  --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \

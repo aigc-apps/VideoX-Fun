@@ -20,6 +20,21 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `train_mode` is used to specify the training mode, which can be either normal or inpaint. Since Wan uses the inpaint model to achieve image-to-video generation, the default is set to inpaint mode. If you only wish to achieve text-to-video generation, you can remove this line, and it will default to the text-to-video mode.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 - `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
+- `target_name` represents the components/modules to which LoRA will be applied, separated by commas.
+- `use_peft_lora` indicates whether to use the PEFT module for adding LoRA. Using this module will be more memory-efficient.
+- `rank` means the dimension of the LoRA update matrices.
+- `network_alpha` means the scale of the LoRA update matrices.
+
+When train model with multi machines, please set the params as follows:
+```sh
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/wan2.2_fun/xxx.py
+```
 
 Wan T2V without deepspeed:
 
@@ -63,13 +78,17 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_lora.py \
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="low" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --train_mode="inpaint" \
   --low_vram 
 ```
 
-Wan T2V with deepspeed zero-2:
+Wan T2V with Deepspeed Zero-2:
 
-Wan with DeepSpeed Zero-2 is suitable for training 14B Wan at low resolutions, but training 14B Wan at high resolutions may still result in insufficient GPU memory.
+Wan with Deepspeed Zero-2 is suitable for training 14B Wan at low resolutions, but training 14B Wan at high resolutions may still result in insufficient GPU memory.
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
@@ -110,12 +129,19 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="low" \
-  --use_deepspeed \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --train_mode="inpaint" \
   --low_vram
 ```
 
-Wan T2V with deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+It is known that DeepSpeed Zero-3 is not compatible with PEFT.
+
+Wan T2V with DeepSpeed Zero-3:
 
 Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. You must set save_state to True to save the model. After training, you can use the following command to get the final model:
 ```sh
@@ -162,8 +188,6 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="low" \
-  --save_state \
-  --use_deepspeed \
   --train_mode="inpaint" \
   --low_vram
 ```
@@ -210,8 +234,10 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="low" \
-  --save_state \
-  --use_deepspeed \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --train_mode="inpaint" \
   --low_vram
 ```

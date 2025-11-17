@@ -26,4 +26,8 @@ accelerate launch --mixed_precision="bf16" scripts/flux/train_lora.py \
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
+  --use_peft_lora \
   --uniform_sampling

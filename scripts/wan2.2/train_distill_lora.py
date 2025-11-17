@@ -620,6 +620,9 @@ def parse_args():
         help=("The dimension of the LoRA update matrices."),
     )
     parser.add_argument(
+        "--use_peft_lora", action="store_true", help="Whether or not to use peft lora."
+    )
+    parser.add_argument(
         "--train_text_encoder",
         action="store_true",
         help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
@@ -792,6 +795,12 @@ def parse_args():
         type=str,
         default=None,
         help=("The module is not trained in loras. "),
+    )
+    parser.add_argument(
+        "--target_name",
+        type=str,
+        default=None,
+        help=("The module is trained in loras. "),
     )
 
     args = parser.parse_args()
@@ -997,27 +1006,40 @@ def main():
     fake_score_transformer3d.requires_grad_(False)
 
     # Lora will work with this...
-    network = create_network(
-        1.0,
-        args.rank,
-        args.network_alpha,
-        text_encoder,
-        generator_transformer3d,
-        neuron_dropout=None,
-        skip_name=args.lora_skip_name,
-    )
-    network.apply_to(text_encoder, generator_transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
+    if args.use_peft_lora:
+        from peft import LoraConfig, inject_adapter_in_model, get_peft_model_state_dict
+        lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
+        generator_transformer3d = inject_adapter_in_model(lora_config, generator_transformer3d)
 
-    fake_score_network = create_network(
-        1.0,
-        args.rank,
-        args.network_alpha,
-        None,
-        fake_score_transformer3d,
-        neuron_dropout=None,
-        skip_name=args.lora_skip_name,
-    )
-    fake_score_network.apply_to(None, fake_score_transformer3d, False, True)
+        fake_score_lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
+        fake_score_transformer3d = inject_adapter_in_model(fake_score_lora_config, fake_score_transformer3d)
+
+        network = None
+        fake_score_network = None
+    else:
+        network = create_network(
+            1.0,
+            args.rank,
+            args.network_alpha,
+            text_encoder,
+            generator_transformer3d,
+            neuron_dropout=None,
+            target_name=args.target_name,
+            skip_name=args.lora_skip_name,
+        )
+        network.apply_to(text_encoder, generator_transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
+
+        fake_score_network = create_network(
+            1.0,
+            args.rank,
+            args.network_alpha,
+            None,
+            fake_score_transformer3d,
+            neuron_dropout=None,
+            target_name=args.target_name,
+            skip_name=args.lora_skip_name,
+        )
+        fake_score_network.apply_to(None, fake_score_transformer3d, False, True)
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -1053,13 +1075,14 @@ def main():
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
-
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    network_state_dict = {}
-                    for key in accelerate_state_dict:
-                        if "network" in key:
-                            network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
-
+                    if args.use_peft_lora:
+                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                    else:
+                        network_state_dict = {}
+                        for key in accelerate_state_dict:
+                            if "network" in key:
+                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
@@ -1076,7 +1099,16 @@ def main():
         elif zero_stage == 3:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
+                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
+                    from safetensors.torch import save_file
+                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
+                    if args.use_peft_lora:
+                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                    else:
+                        network_state_dict = accelerate_state_dict
+                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
@@ -1092,7 +1124,11 @@ def main():
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
+                    if args.use_peft_lora:
+                        save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(models[-1])))
+                    else:
+                        save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
+
                     if not args.use_deepspeed:
                         for _ in range(len(weights)):
                             weights.pop()
@@ -1117,6 +1153,7 @@ def main():
     if args.gradient_checkpointing:
         generator_transformer3d.enable_gradient_checkpointing()
         fake_score_transformer3d.enable_gradient_checkpointing()
+        real_score_transformer3d.enable_gradient_checkpointing()
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -1150,14 +1187,22 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
+    if args.use_peft_lora:
+        logging.info("Add peft parameters")
+        trainable_params = list(filter(lambda p: p.requires_grad, generator_transformer3d.parameters()))
+        trainable_params_optim = list(filter(lambda p: p.requires_grad, generator_transformer3d.parameters()))
 
-    logging.info("Add network parameters")
-    trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
-    trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+        logging.info("Add fake score peft parameters")
+        fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
+        fake_trainable_params_optim = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
+    else:
+        logging.info("Add network parameters")
+        trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
+        trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
 
-    logging.info("Add fake_score_network parameters")
-    fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_network.parameters()))
-    fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+        logging.info("Add fake_score_network parameters")
+        fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_network.parameters()))
+        fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1533,14 +1578,19 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    if fsdp_stage != 0:
+    if args.use_peft_lora:
+        generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            generator_transformer3d, optimizer, train_dataloader, lr_scheduler
+        )
+        fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler = accelerator_fake_score_transformer3d.prepare(
+            fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
+        )
+    elif fsdp_stage != 0:
         generator_transformer3d.network = network
-        generator_transformer3d = generator_transformer3d.to(weight_dtype)
         generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             generator_transformer3d, optimizer, train_dataloader, lr_scheduler
         )
         fake_score_transformer3d.network = fake_score_network
-        fake_score_transformer3d = fake_score_transformer3d.to(weight_dtype)
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler = accelerator_fake_score_transformer3d.prepare(
             fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
         )
@@ -1552,29 +1602,20 @@ def main():
             fake_score_network, critic_optimizer, fake_score_lr_scheduler
         )
 
-    if zero_stage == 3:
+    if zero_stage != 0 and not args.use_peft_lora:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         generator_transformer3d = shard_fn(generator_transformer3d)
+        fake_score_transformer3d = shard_fn(fake_score_transformer3d)
 
-        from functools import partial
-
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-        fake_score_network = shard_fn(fake_score_network)
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         real_score_transformer3d = shard_fn(real_score_transformer3d)
-    if fsdp_stage != 0:
-        from functools import partial
-
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
@@ -1655,6 +1696,16 @@ def main():
             accelerator_fake_score_transformer3d.load_state(os.path.join(args.output_dir, fake_score_path))
     else:
         initial_global_step = 0
+
+    # function for saving/removing
+    def save_model(ckpt_file, unwrapped_nw):
+        os.makedirs(args.output_dir, exist_ok=True)
+        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
+        if isinstance(unwrapped_nw, dict):
+            from safetensors.torch import save_file
+            save_file(unwrapped_nw, ckpt_file, metadata={"format": "pt"})
+            return ckpt_file
+        unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -2302,9 +2353,13 @@ def main():
                     return final_loss
 
                 denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
-                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                avg_denoising_loss = accelerator_fake_score_transformer3d.gather(denoising_loss.repeat(args.train_batch_size)).mean()
                 train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
-                
+            
+                if args.low_vram:
+                    generator_transformer3d = generator_transformer3d.to("cpu")
+                    torch.cuda.empty_cache()
+
                 accelerator_fake_score_transformer3d.backward(denoising_loss)
                 if accelerator_fake_score_transformer3d.sync_gradients:
                     accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
@@ -2351,13 +2406,22 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         if not args.save_state:
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            if args.use_peft_lora:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(generator_transformer3d)))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
 
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-fake_score.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(fake_score_network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-fake_score.safetensors")
+                                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(fake_score_transformer3d)))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            else:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-fake_score.safetensors")
+                                save_model(safetensor_save_path, accelerator.unwrap_model(fake_score_network))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
                         else:
                             save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                             fake_score_save_path = os.path.join(save_path, "fake_score")
@@ -2405,16 +2469,35 @@ def main():
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         generator_transformer3d = unwrap_model(generator_transformer3d)
+        fake_score_transformer3d = unwrap_model(fake_score_transformer3d)
 
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-        fake_score_save_path = os.path.join(save_path, "fake_score")
-        accelerator.save_state(save_path)
-        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
-        logger.info(f"Saved state to {save_path}")
+        if not args.save_state:
+            if args.use_peft_lora:
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(generator_transformer3d)))
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
+
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-fake_score.safetensors")
+                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(fake_score_transformer3d)))
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
+            else:
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
+
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-fake_score.safetensors")
+                save_model(safetensor_save_path, accelerator.unwrap_model(fake_score_network))
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
+        else:
+            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+            fake_score_save_path = os.path.join(save_path, "fake_score")
+            accelerator.save_state(save_path)
+            accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+            logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

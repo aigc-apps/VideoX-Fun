@@ -8,6 +8,21 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `random_hw_adapt` is used to enable automatic height and width scaling for images. When `random_hw_adapt` is enabled, the training images will have their height and width set to `image_sample_size` as the maximum and `512` as the minimum. 
   - For example, when `random_hw_adapt` is enabled, `image_sample_size=1024`, the resolution of image inputs for training is `512x512` to `1024x1024`
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
+- `target_name` represents the components/modules to which LoRA will be applied, separated by commas.
+- `use_peft_lora` indicates whether to use the PEFT module for adding LoRA. Using this module will be more memory-efficient.
+- `rank` means the dimension of the LoRA update matrices.
+- `network_alpha` means the scale of the LoRA update matrices.
+
+When train model with multi machines, please set the params as follows:
+```sh
+export MASTER_ADDR="your master address"
+export MASTER_PORT=10086
+export WORLD_SIZE=1 # The number of machines
+export NUM_PROCESS=8 # The number of processes, such as WORLD_SIZE * 8
+export RANK=0 # The rank of this machine
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/xxx/xxx.py
+```
 
 Without deepspeed:
 
@@ -41,10 +56,14 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --use_peft_lora \
   --uniform_sampling
 ```
 
-With deepspeed zero-2:
+With Deepspeed Zero-2:
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
@@ -75,10 +94,18 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --use_peft_lora \
   --uniform_sampling
 ```
 
-Deepspeed zero-3:
+DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+
+It is known that DeepSpeed Zero-3 is not compatible with PEFT.
+
+DeepSpeed Zero-3:
 
 After training, you can use the following command to get the final model:
 ```sh
@@ -149,5 +176,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --use_peft_lora \
   --uniform_sampling
 ```
