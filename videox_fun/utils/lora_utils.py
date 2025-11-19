@@ -396,10 +396,16 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             key = key[:-15] + ".lora_up.weight"
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_default_weight"):
+            key = key[:-21] + ".lora_A.weight"
+        if key.endswith("_lora_B_default_weight"):
+            key = key[:-21] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):
             key = key[:-14] + ".lora_B.weight"
+        if key.endswith("_alpha"):
+            key = key[:-6] + ".alpha"
         key = key.replace(".lora_A.default.", ".lora_down.")
         key = key.replace(".lora_B.default.", ".lora_up.")
         key = key.replace(".lora_A.", ".lora_down.")
@@ -521,10 +527,16 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             key = key[:-15] + ".lora_up.weight"
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_default_weight"):
+            key = key[:-21] + ".lora_A.weight"
+        if key.endswith("_lora_B_default_weight"):
+            key = key[:-21] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):
             key = key[:-14] + ".lora_B.weight"
+        if key.endswith("_alpha"):
+            key = key[:-6] + ".alpha"
         key = key.replace(".lora_A.default.", ".lora_down.")
         key = key.replace(".lora_B.default.", ".lora_up.")
         key = key.replace(".lora_A.", ".lora_down.")
