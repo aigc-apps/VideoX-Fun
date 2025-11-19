@@ -1541,10 +1541,12 @@ def main():
         )
     elif fsdp_stage != 0:
         generator_transformer3d.network = network
+        generator_transformer3d = generator_transformer3d.to(dtype=weight_dtype)
         generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             generator_transformer3d, optimizer, train_dataloader, lr_scheduler
         )
         fake_score_transformer3d.network = fake_score_network
+        fake_score_transformer3d = fake_score_transformer3d.to(dtype=weight_dtype)
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler = accelerator_fake_score_transformer3d.prepare(
             fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
         )
@@ -1574,6 +1576,8 @@ def main():
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    generator_transformer3d.to(accelerator.device, dtype=weight_dtype)
+    fake_score_transformer3d.to(accelerator.device, dtype=weight_dtype)
     real_score_transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu")

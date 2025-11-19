@@ -1371,6 +1371,7 @@ def main():
         )
     elif fsdp_stage != 0:
         transformer3d.network = network
+        transformer3d = transformer3d.to(dtype=weight_dtype)
         transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             transformer3d, optimizer, train_dataloader, lr_scheduler
         )
