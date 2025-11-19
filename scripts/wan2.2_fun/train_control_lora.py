@@ -925,7 +925,7 @@ def main():
             args.rank,
             args.network_alpha,
             text_encoder,
-            generator_transformer3d,
+            transformer3d,
             neuron_dropout=None,
             target_name=args.target_name,
             skip_name=args.lora_skip_name,
