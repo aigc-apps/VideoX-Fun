@@ -23,6 +23,8 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 - `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
 
+If you want to train 5B Wan2.2 TI2V model, please set config to `config/wan2.2/wan_civitai_5b.yaml`, set train_mode to `ti2v` and set boundary_type to `full`. 
+
 When train model with multi machines, please set the params as follows:
 ```sh
 export MASTER_ADDR="your master address"

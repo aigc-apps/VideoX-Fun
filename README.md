@@ -617,7 +617,14 @@ V1.0:
 |--|--|--|--|--|
 | FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/ai-modelscope/flux.1-dev) | Official FLUX.1-dev weights |
 
-## 8. CogVideoX-Fun
+## 8. HunyuanVideo
+
+| Name | Storage | Hugging Face | Model Scope | Description |
+|--|--|--|--|--|
+| HunyuanVideo | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo) | - | HunyuanVideo-diffusers weights |
+| HunyuanVideo-I2V | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V) | - | HunyuanVideo-I2V-diffusers weights |
+
+## 9. CogVideoX-Fun
 
 V1.5:
 

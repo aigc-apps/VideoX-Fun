@@ -21,6 +21,8 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 - `boundary_type`: The Wan2.2 series includes two distinct models that handle different noise levels, specified via the `boundary_type` parameter. `low`: Corresponds to the **low noise model** (low_noise_model). `high`: Corresponds to the **high noise model**. (high_noise_model). `full`: Corresponds to the ti2v 5B model (single mode).
 
+If you want to train 5B Wan2.2 model, please set config to `config/wan2.2/wan_civitai_5b.yaml` and set boundary_type to `full`. 
+
 When train model with multi machines, please set the params as follows:
 ```sh
 export MASTER_ADDR="your master address"
@@ -234,7 +236,54 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --boundary_type="low" \
   --low_vram \
-  --use_deepspeed \
+  --train_mode="inpaint" \
+  --trainable_modules "."
+```
+
+If you want to train 5B Wan2.2 model, please set config to `config/wan2.2/wan_civitai_5b.yaml` and set boundary_type to `full`. Training shell command is as follows:
+
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-5B-InP"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2_fun/train.py \
+  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=1024 \
+  --video_sample_size=256 \
+  --token_sample_size=512 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --boundary_type="full" \
+  --low_vram \
   --train_mode="inpaint" \
   --trainable_modules "."
 ```

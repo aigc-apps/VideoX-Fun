@@ -617,7 +617,14 @@ V1.0:
 |--|--|--|--|--|
 | FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/ai-modelscope/flux.1-dev) | FLUX.1-dev 公式重み |
 
-## 8. CogVideoX-Fun
+## 8. HunyuanVideo
+
+| 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| HunyuanVideo | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo) | - | HunyuanVideo-diffusers 公式重み |
+| HunyuanVideo-I2V | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V) | - | HunyuanVideo-I2V-diffusers 公式重み |
+
+## 9. CogVideoX-Fun
 
 V1.5:
 

@@ -25,6 +25,8 @@ Some parameters in the sh file can be confusing, and they are explained in this 
 - `rank` means the dimension of the LoRA update matrices.
 - `network_alpha` means the scale of the LoRA update matrices.
 
+If you want to train 5B Wan2.2 TI2V model, please set config to `config/wan2.2/wan_civitai_5b.yaml`, set train_mode to `ti2v` and set boundary_type to `full`. 
+
 When train model with multi machines, please set the params as follows:
 ```sh
 export MASTER_ADDR="your master address"
