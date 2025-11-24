@@ -3,6 +3,8 @@ from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
 from .pipeline_fantasy_talking import FantasyTalkingPipeline
 from .pipeline_flux import FluxPipeline
+from .pipeline_hunyuanvideo import HunyuanVideoPipeline
+from .pipeline_hunyuanvideo_i2v import HunyuanVideoI2VPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline

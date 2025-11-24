@@ -17,13 +17,6 @@ class CogVideoXMultiGPUsAttnProcessor2_0:
     """
 
     def __init__(self):
-        if xFuserLongContextAttention is not None:
-            try:
-                self.hybrid_seq_parallel_attn = xFuserLongContextAttention()
-            except Exception:
-                self.hybrid_seq_parallel_attn = None
-        else:
-            self.hybrid_seq_parallel_attn = None
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("CogVideoXAttnProcessor requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
 
@@ -69,29 +62,24 @@ class CogVideoXMultiGPUsAttnProcessor2_0:
             if not attn.is_cross_attention:
                 key[:, :, text_seq_length:] = apply_rotary_emb(key[:, :, text_seq_length:], image_rotary_emb)
 
-        if self.hybrid_seq_parallel_attn is None:
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states = hidden_states
-        else:
-            img_q = query[:, :, text_seq_length:].transpose(1, 2)
-            txt_q = query[:, :, :text_seq_length].transpose(1, 2)
-            img_k = key[:, :, text_seq_length:].transpose(1, 2)
-            txt_k = key[:, :, :text_seq_length].transpose(1, 2)
-            img_v = value[:, :, text_seq_length:].transpose(1, 2)
-            txt_v = value[:, :, :text_seq_length].transpose(1, 2)
+        img_q = query[:, :, text_seq_length:].transpose(1, 2)
+        txt_q = query[:, :, :text_seq_length].transpose(1, 2)
+        img_k = key[:, :, text_seq_length:].transpose(1, 2)
+        txt_k = key[:, :, :text_seq_length].transpose(1, 2)
+        img_v = value[:, :, text_seq_length:].transpose(1, 2)
+        txt_v = value[:, :, :text_seq_length].transpose(1, 2)
 
-            hidden_states = self.hybrid_seq_parallel_attn(
-                None,
-                img_q, img_k, img_v, dropout_p=0.0, causal=False,
-                joint_tensor_query=txt_q,
-                joint_tensor_key=txt_k,
-                joint_tensor_value=txt_v,
-                joint_strategy='front',
-            ).transpose(1, 2)
+        hidden_states = xFuserLongContextAttention()(
+            None,
+            img_q, img_k, img_v, dropout_p=0.0, causal=False,
+            joint_tensor_query=txt_q,
+            joint_tensor_key=txt_k,
+            joint_tensor_value=txt_v,
+            joint_strategy='front',
+        )
 
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.flatten(2, 3)
+        hidden_states = hidden_states.to(query.dtype)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)
