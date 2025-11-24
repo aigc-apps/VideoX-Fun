@@ -138,7 +138,7 @@ text_encoder = LlavaForConditionalGeneration.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-print(text_encoder)
+
 # Get Tokenizer 2
 tokenizer_2 = CLIPTokenizer.from_pretrained(
     os.path.join(model_name, 'tokenizer_2'),
@@ -185,8 +185,7 @@ if ulysses_degree > 1 or ring_degree > 1:
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        print(text_encoder.device, device)
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.layers)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         pipeline.text_encoder = shard_fn(pipeline.text_encoder)
         print("Add FSDP TEXT ENCODER")
 
