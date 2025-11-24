@@ -72,7 +72,7 @@ lora_path           = None
 
 # Other params
 sample_size         = [480, 832]
-video_length        = 121
+video_length        = 81
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16

@@ -221,17 +221,6 @@ def log_validation(vae, text_encoder, text_encoder_2, tokenizer, tokenizer_2, tr
                         os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                         save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
 
-                        sample = pipeline(
-                            args.validation_prompts[i], 
-                            num_frames = args.video_sample_n_frames,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
-
         del pipeline
         del transformer3d_val
         gc.collect()
