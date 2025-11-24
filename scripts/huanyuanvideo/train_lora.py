@@ -72,9 +72,11 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.models import (AutoencoderKLHunyuanVideo, CLIPTextModel,
-                               CLIPTokenizer, HunyuanVideoTransformer3DModel,
-                               LlamaModel, LlamaTokenizerFast)
+from videox_fun.models import (AutoencoderKLHunyuanVideo, CLIPImageProcessor,
+                               CLIPTextModel, CLIPTokenizer,
+                               HunyuanVideoTransformer3DModel, LlamaModel,
+                               LlamaTokenizerFast,
+                               LlavaForConditionalGeneration)
 from videox_fun.pipeline import HunyuanVideoPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (create_network, merge_lora,
@@ -244,7 +246,7 @@ def log_validation(vae, text_encoder, text_encoder_2, tokenizer, tokenizer_2, tr
         print(f"Eval error with info {e}")
         return None
 
-prompt_template = {
+DEFAULT_PROMPT_TEMPLATE = {
     "template": (
         "<|start_header_id|>system<|end_header_id|>\n\nDescribe the video by detailing the following aspects: "
         "1. The main content and theme of the video."
@@ -255,6 +257,24 @@ prompt_template = {
         "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>"
     ),
     "crop_start": 95,
+}
+
+DEFAULT_PROMPT_TEMPLATE_I2V = {
+    "template": (
+        "<|start_header_id|>system<|end_header_id|>\n\n<image>\nDescribe the video by detailing the following aspects according to the reference image: "
+        "1. The main content and theme of the video."
+        "2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects."
+        "3. Actions, events, behaviors temporal relationships, physical movement changes of the objects."
+        "4. background environment, light, style and atmosphere."
+        "5. camera angles, movements, and transitions used in the video:<|eot_id|>\n\n"
+        "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    ),
+    "crop_start": 103,
+    "image_emb_start": 5,
+    "image_emb_end": 581,
+    "image_emb_len": 576,
+    "double_return_token_id": 271,
 }
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
@@ -269,6 +289,49 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
+
+def _expand_input_ids_with_image_tokens(
+    text_input_ids,
+    prompt_attention_mask,
+    max_sequence_length,
+    image_token_index,
+    image_emb_len,
+    image_emb_start,
+    image_emb_end,
+    pad_token_id,
+):
+    special_image_token_mask = text_input_ids == image_token_index
+    num_special_image_tokens = torch.sum(special_image_token_mask, dim=-1)
+    batch_indices, non_image_indices = torch.where(text_input_ids != image_token_index)
+
+    max_expanded_length = max_sequence_length + (num_special_image_tokens.max() * (image_emb_len - 1))
+    new_token_positions = torch.cumsum((special_image_token_mask * (image_emb_len - 1) + 1), -1) - 1
+    text_to_overwrite = new_token_positions[batch_indices, non_image_indices]
+
+    expanded_input_ids = torch.full(
+        (text_input_ids.shape[0], max_expanded_length),
+        pad_token_id,
+        dtype=text_input_ids.dtype,
+        device=text_input_ids.device,
+    )
+    expanded_input_ids[batch_indices, text_to_overwrite] = text_input_ids[batch_indices, non_image_indices]
+    expanded_input_ids[batch_indices, image_emb_start:image_emb_end] = image_token_index
+
+    expanded_attention_mask = torch.zeros(
+        (text_input_ids.shape[0], max_expanded_length),
+        dtype=prompt_attention_mask.dtype,
+        device=prompt_attention_mask.device,
+    )
+    attn_batch_indices, attention_indices = torch.where(expanded_input_ids != pad_token_id)
+    expanded_attention_mask[attn_batch_indices, attention_indices] = 1.0
+    expanded_attention_mask = expanded_attention_mask.to(prompt_attention_mask.dtype)
+    position_ids = (expanded_attention_mask.cumsum(-1) - 1).masked_fill_((expanded_attention_mask == 0), 1)
+
+    return {
+        "input_ids": expanded_input_ids,
+        "attention_mask": expanded_attention_mask,
+        "position_ids": position_ids,
+    }
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -655,6 +718,18 @@ def parse_args():
         help='Max length of tokenizer'
     )
     parser.add_argument(
+        '--num_hidden_layers_to_skip', 
+        type=int,
+        default=2,
+        help='Number of hidden layers to skip'
+    )
+    parser.add_argument(
+        '--image_embed_interleave', 
+        type=int,
+        default=2,
+        help='Image embed interleave'
+    )
+    parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
     )
     parser.add_argument(
@@ -841,6 +916,9 @@ def main():
     tokenizer_2 = CLIPTokenizer.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, 'tokenizer_2'),
     )
+    image_processor = CLIPImageProcessor.from_pretrained(
+        os.path.join(args.pretrained_model_name_or_path, 'image_processor'),
+    )
     
     from contextlib import contextmanager
     @contextmanager
@@ -877,11 +955,18 @@ def main():
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # Get Text encoder
-        text_encoder = LlamaModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
-            low_cpu_mem_usage=True,
-            torch_dtype=weight_dtype,
-        )
+        if args.train_mode == "normal":
+            text_encoder = LlamaModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
+                low_cpu_mem_usage=True,
+                torch_dtype=weight_dtype,
+            )
+        else:
+            text_encoder = LlavaForConditionalGeneration.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
+                low_cpu_mem_usage=True,
+                torch_dtype=weight_dtype,
+            )
         text_encoder_2 = CLIPTextModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, 'text_encoder_2'),
             low_cpu_mem_usage=True,
@@ -1292,19 +1377,7 @@ def main():
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                prompt_ids = tokenizer(
-                    new_examples['text'], 
-                    max_length=args.tokenizer_max_length, 
-                    padding="max_length", 
-                    add_special_tokens=True, 
-                    truncation=True, 
-                    return_tensors="pt"
-                )
-                encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
-                )[0]
-                new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
-                new_examples['encoder_hidden_states'] = encoder_hidden_states
+                raise ValueError("The enable_text_encoder_in_dataloader is not implemented")
 
             return new_examples
         
@@ -1367,7 +1440,10 @@ def main():
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.layers)
+        if args.train_mode == "normal":
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.layers)
+        else:
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
@@ -1509,7 +1585,7 @@ def main():
                             batch['text'] = batch['text'] * 2
                 
                 if args.train_mode != "normal":
-                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
+                    clip_pixel_values = batch["clip_pixel_values"]
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
@@ -1578,17 +1654,6 @@ def main():
                         mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
                         mask = mask[:, :actual_video_length, :, :]
 
-                # Make the inpaint latents to be zeros.
-                if args.train_mode != "normal":
-                    t2v_flag = [(_mask == 1).all() for _mask in mask]
-                    new_t2v_flag = []
-                    for _mask in t2v_flag:
-                        if _mask and np.random.rand() < 0.90:
-                            new_t2v_flag.append(0)
-                        else:
-                            new_t2v_flag.append(1)
-                    t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
-
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
@@ -1617,25 +1682,9 @@ def main():
                     latents = latents * vae.config.scaling_factor
 
                     if args.train_mode != "normal":
-                        mask = rearrange(mask, "b f c h w -> b c f h w")
-                        mask = torch.concat(
-                            [
-                                torch.repeat_interleave(mask[:, :, 0:1], repeats=4, dim=2), 
-                                mask[:, :, 1:]
-                            ], dim=2
-                        )
-                        mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
-                        mask = mask.transpose(1, 2)
-                        mask = resize_mask(1 - mask, latents)
-
                         # Encode inpaint latents.
-                        mask_latents = _batch_encode_vae(mask_pixel_values)
+                        mask_latents = _batch_encode_vae(mask_pixel_values)[:, :, :1]
                         mask_latents = mask_latents * vae.config.scaling_factor
-                        if vae_stream_2 is not None:
-                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
-
-                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
-                        inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
                                                 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1649,49 +1698,174 @@ def main():
                         text_encoder_2.to(accelerator.device)
                 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                    raise ValueError("The enable_text_encoder_in_dataloader is not implemented")
                 else:
                     with torch.no_grad():
-                        prompt = [prompt_template["template"].format(p) for p in batch['text']]
-                        crop_start = prompt_template.get("crop_start", None)
-                        if crop_start is None:
-                            prompt_template_input = tokenizer(
-                                prompt_template["template"],
+                        if args.train_mode != "normal":        
+                            prompt = [DEFAULT_PROMPT_TEMPLATE_I2V["template"].format(p) for p in batch['text']]
+                            crop_start = DEFAULT_PROMPT_TEMPLATE_I2V.get("crop_start", None)
+
+                            image_emb_len = DEFAULT_PROMPT_TEMPLATE_I2V.get("image_emb_len", 576)
+                            image_emb_start = DEFAULT_PROMPT_TEMPLATE_I2V.get("image_emb_start", 5)
+                            image_emb_end = DEFAULT_PROMPT_TEMPLATE_I2V.get("image_emb_end", 581)
+                            double_return_token_id = DEFAULT_PROMPT_TEMPLATE_I2V.get("double_return_token_id", 271)
+
+                            if crop_start is None:
+                                prompt_template_input = tokenizer(
+                                    DEFAULT_PROMPT_TEMPLATE_I2V["template"],
+                                    padding="max_length",
+                                    return_tensors="pt",
+                                    return_length=False,
+                                    return_overflowing_tokens=False,
+                                    return_attention_mask=False,
+                                )
+                                crop_start = prompt_template_input["input_ids"].shape[-1]
+                                # Remove <|start_header_id|>, <|end_header_id|>, assistant, <|eot_id|>, and placeholder {}
+                                crop_start -= 5
+
+                            max_sequence_length = args.tokenizer_max_length + crop_start
+                            num_hidden_layers_to_skip = args.num_hidden_layers_to_skip
+                            image_embed_interleave = args.image_embed_interleave
+                            text_inputs = tokenizer(
+                                prompt,
+                                max_length=max_sequence_length,
                                 padding="max_length",
+                                truncation=True,
                                 return_tensors="pt",
                                 return_length=False,
                                 return_overflowing_tokens=False,
-                                return_attention_mask=False,
+                                return_attention_mask=True,
                             )
-                            crop_start = prompt_template_input["input_ids"].shape[-1]
-                            # Remove <|eot_id|> token and placeholder {}
-                            crop_start -= 2
+                            text_input_ids = text_inputs.input_ids.to(device=accelerator.device)
+                            prompt_attention_mask = text_inputs.attention_mask.to(device=accelerator.device)
 
-                        max_sequence_length = args.tokenizer_max_length + crop_start
-                        num_hidden_layers_to_skip: int = 2
-                        text_inputs = tokenizer(
-                            prompt,
-                            max_length=max_sequence_length,
-                            padding="max_length",
-                            truncation=True,
-                            return_tensors="pt",
-                            return_length=False,
-                            return_overflowing_tokens=False,
-                            return_attention_mask=True,
-                        )
-                        text_input_ids = text_inputs.input_ids.to(accelerator.device)
-                        prompt_attention_mask = text_inputs.attention_mask.to(accelerator.device)
+                            clip_pixel_values = (clip_pixel_values / 255).clamp(0, 1)
+                            image_embeds = image_processor(clip_pixel_values, return_tensors="pt").pixel_values.to(accelerator.device)
 
-                        prompt_embeds = text_encoder(
-                            input_ids=text_input_ids,
-                            attention_mask=prompt_attention_mask,
-                            output_hidden_states=True,
-                        ).hidden_states[-(num_hidden_layers_to_skip + 1)]
-                        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+                            image_token_index = text_encoder.config.image_token_index
+                            pad_token_id = text_encoder.config.pad_token_id
+                            expanded_inputs = _expand_input_ids_with_image_tokens(
+                                text_input_ids,
+                                prompt_attention_mask,
+                                max_sequence_length,
+                                image_token_index,
+                                image_emb_len,
+                                image_emb_start,
+                                image_emb_end,
+                                pad_token_id,
+                            )
+                            prompt_embeds = text_encoder(
+                                **expanded_inputs,
+                                pixel_values=image_embeds,
+                                output_hidden_states=True,
+                            ).hidden_states[-(num_hidden_layers_to_skip + 1)]
+                            prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
 
-                        if crop_start is not None and crop_start > 0:
-                            prompt_embeds = prompt_embeds[:, crop_start:]
-                            prompt_attention_mask = prompt_attention_mask[:, crop_start:]
+                            if crop_start is not None and crop_start > 0:
+                                text_crop_start = crop_start - 1 + image_emb_len
+                                batch_indices, last_double_return_token_indices = torch.where(text_input_ids == double_return_token_id)
+
+                                if last_double_return_token_indices.shape[0] == 3:
+                                    # in case the prompt is too long
+                                    last_double_return_token_indices = torch.cat(
+                                        (last_double_return_token_indices, torch.tensor([text_input_ids.shape[-1]]))
+                                    )
+                                    batch_indices = torch.cat((batch_indices, torch.tensor([0])))
+
+                                last_double_return_token_indices = last_double_return_token_indices.reshape(text_input_ids.shape[0], -1)[
+                                    :, -1
+                                ]
+                                batch_indices = batch_indices.reshape(text_input_ids.shape[0], -1)[:, -1]
+                                assistant_crop_start = last_double_return_token_indices - 1 + image_emb_len - 4
+                                assistant_crop_end = last_double_return_token_indices - 1 + image_emb_len
+                                attention_mask_assistant_crop_start = last_double_return_token_indices - 4
+                                attention_mask_assistant_crop_end = last_double_return_token_indices
+
+                                prompt_embed_list = []
+                                prompt_attention_mask_list = []
+                                image_embed_list = []
+                                image_attention_mask_list = []
+
+                                for i in range(text_input_ids.shape[0]):
+                                    prompt_embed_list.append(
+                                        torch.cat(
+                                            [
+                                                prompt_embeds[i, text_crop_start : assistant_crop_start[i].item()],
+                                                prompt_embeds[i, assistant_crop_end[i].item() :],
+                                            ]
+                                        )
+                                    )
+                                    prompt_attention_mask_list.append(
+                                        torch.cat(
+                                            [
+                                                prompt_attention_mask[i, crop_start : attention_mask_assistant_crop_start[i].item()],
+                                                prompt_attention_mask[i, attention_mask_assistant_crop_end[i].item() :],
+                                            ]
+                                        )
+                                    )
+                                    image_embed_list.append(prompt_embeds[i, image_emb_start:image_emb_end])
+                                    image_attention_mask_list.append(
+                                        torch.ones(image_embed_list[-1].shape[0]).to(prompt_embeds.device).to(prompt_attention_mask.dtype)
+                                    )
+
+                                prompt_embed_list = torch.stack(prompt_embed_list)
+                                prompt_attention_mask_list = torch.stack(prompt_attention_mask_list)
+                                image_embed_list = torch.stack(image_embed_list)
+                                image_attention_mask_list = torch.stack(image_attention_mask_list)
+
+                                if 0 < image_embed_interleave < 6:
+                                    image_embed_list = image_embed_list[:, ::image_embed_interleave, :]
+                                    image_attention_mask_list = image_attention_mask_list[:, ::image_embed_interleave]
+
+                                assert (
+                                    prompt_embed_list.shape[0] == prompt_attention_mask_list.shape[0]
+                                    and image_embed_list.shape[0] == image_attention_mask_list.shape[0]
+                                )
+
+                                prompt_embeds = torch.cat([image_embed_list, prompt_embed_list], dim=1)
+                                prompt_attention_mask = torch.cat([image_attention_mask_list, prompt_attention_mask_list], dim=1)
+
+                        else:
+                            prompt = [DEFAULT_PROMPT_TEMPLATE["template"].format(p) for p in batch['text']]
+                            crop_start = DEFAULT_PROMPT_TEMPLATE.get("crop_start", None)
+                            if crop_start is None:
+                                prompt_template_input = tokenizer(
+                                    DEFAULT_PROMPT_TEMPLATE["template"],
+                                    padding="max_length",
+                                    return_tensors="pt",
+                                    return_length=False,
+                                    return_overflowing_tokens=False,
+                                    return_attention_mask=False,
+                                )
+                                crop_start = prompt_template_input["input_ids"].shape[-1]
+                                # Remove <|eot_id|> token and placeholder {}
+                                crop_start -= 2
+
+                            max_sequence_length = args.tokenizer_max_length + crop_start
+                            num_hidden_layers_to_skip = args.num_hidden_layers_to_skip
+                            text_inputs = tokenizer(
+                                prompt,
+                                max_length=max_sequence_length,
+                                padding="max_length",
+                                truncation=True,
+                                return_tensors="pt",
+                                return_length=False,
+                                return_overflowing_tokens=False,
+                                return_attention_mask=True,
+                            )
+                            text_input_ids = text_inputs.input_ids.to(accelerator.device)
+                            prompt_attention_mask = text_inputs.attention_mask.to(accelerator.device)
+
+                            prompt_embeds = text_encoder(
+                                input_ids=text_input_ids,
+                                attention_mask=prompt_attention_mask,
+                                output_hidden_states=True,
+                            ).hidden_states[-(num_hidden_layers_to_skip + 1)]
+                            prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+
+                            if crop_start is not None and crop_start > 0:
+                                prompt_embeds = prompt_embeds[:, crop_start:]
+                                prompt_attention_mask = prompt_attention_mask[:, crop_start:]
 
                         text_inputs_2 = tokenizer_2(
                             batch['text'],
@@ -1750,6 +1924,11 @@ def main():
                 # Predict the noise residual
                 guidance = torch.tensor([args.guidance_scale] * latents.shape[0], dtype=weight_dtype, device=accelerator.device) * 1000.0
                 
+                # Make first frame input to start image.
+                if args.train_mode != "normal":      
+                    noisy_latents[:, :, :1] = mask_latents
+
+                # Go Go Go
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         hidden_states=noisy_latents,
@@ -1771,9 +1950,12 @@ def main():
                         masked_loss = masked_loss * weighting
                     final_loss = masked_loss.mean()
                     return final_loss
-                
+            
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-                loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
+                if target.shape[2] > 1:
+                    loss = custom_mse_loss(noise_pred.float()[:, :, 1:], target.float()[:, :, 1:], weighting.float())
+                else:
+                    loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float()) * 0
                 loss = loss.mean()
 
                 if args.motion_sub_loss and noise_pred.size()[2] > 2:

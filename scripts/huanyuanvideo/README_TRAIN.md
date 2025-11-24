@@ -227,7 +227,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 HunyuanVideo I2V with FSDP:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
+export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo-I2V"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
