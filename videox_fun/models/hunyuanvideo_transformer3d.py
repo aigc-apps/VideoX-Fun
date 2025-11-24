@@ -1205,6 +1205,8 @@ class HunyuanVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
                     torch.chunk(image_rotary_emb[0], self.sp_world_size, dim=0)[self.sp_world_rank],
                     torch.chunk(image_rotary_emb[1], self.sp_world_size, dim=0)[self.sp_world_rank]
                 )
+            if self.sp_world_rank >=1:
+                first_frame_num_tokens = 0
 
         # 4. Transformer blocks
         if torch.is_grad_enabled() and self.gradient_checkpointing:
