@@ -195,17 +195,15 @@ if compile_dit:
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(transformer, ["modulation",], device=device)
-    transformer.freqs = transformer.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_embedder", "context_embedder", "time_text_embed", "rope", "proj_out"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_embedder", "context_embedder", "time_text_embed", "rope", "proj_out"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
