@@ -7,6 +7,15 @@ We can choose whether to use DeepSpeed and FSDP in HunyuanVideo, which can save 
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
 - `enable_bucket` is used to enable bucket training. When enabled, the model does not crop the images and videos at the center, but instead, it trains the entire images and videos after grouping them into buckets based on resolution.
+- Sample size Configuration Guide
+  - `video_sample_size` represents the resolution size of videos; when `random_hw_adapt` is True, it represents the minimum value between video and image resolutions.
+  - `image_sample_size` represents the resolution size of images; when `random_hw_adapt` is True, it represents the maximum value between video and image resolutions.
+  - `token_sample_size` represents the resolution corresponding to the maximum token length when `training_with_video_token_length` is True.
+  - Due to potential confusion in configuration, **if you don't require arbitrary resolution for finetuning**, it is recommended to set `video_sample_size`, `image_sample_size`, and `token_sample_size` to the same fixed value, such as **(320, 480, 512, 640, 960)**.
+    - **All set to 320** represents **240P**.
+    - **All set to 480** represents **320P**.
+    - **All set to 640** represents **480P**.
+    - **All set to 960** represents **720P**.
 - `random_frame_crop` is used for random cropping on video frames to simulate videos with different frame counts.
 - `random_hw_adapt` is used to enable automatic height and width scaling for images and videos. When `random_hw_adapt` is enabled, the training images will have their height and width set to `image_sample_size` as the maximum and `min(video_sample_size, 512)` as the minimum. For training videos, the height and width will be set to `image_sample_size` as the maximum and `min(video_sample_size, 512)` as the minimum.
   - For example, when `random_hw_adapt` is enabled, with `video_sample_n_frames=49`, `video_sample_size=1024`, and `image_sample_size=1024`, the resolution of image inputs for training is `512x512` to `1024x1024`, and the resolution of video inputs for training is `512x512x49` to `1024x1024x49`.
@@ -52,9 +61,9 @@ accelerate launch --mixed_precision="bf16" scripts/hunyuanvideo/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
-  --token_sample_size=512 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -99,9 +108,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
-  --token_sample_size=512 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -146,9 +155,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
-  --token_sample_size=512 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -193,9 +202,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
-  --token_sample_size=512 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
