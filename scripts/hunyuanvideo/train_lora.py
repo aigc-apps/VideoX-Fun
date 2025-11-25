@@ -905,9 +905,10 @@ def main():
     tokenizer_2 = CLIPTokenizer.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, 'tokenizer_2'),
     )
-    image_processor = CLIPImageProcessor.from_pretrained(
-        os.path.join(args.pretrained_model_name_or_path, 'image_processor'),
-    )
+    if args.train_mode != "normal":
+        image_processor = CLIPImageProcessor.from_pretrained(
+            os.path.join(args.pretrained_model_name_or_path, 'image_processor'),
+        )
     
     from contextlib import contextmanager
     @contextmanager
@@ -944,14 +945,14 @@ def main():
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # Get Text encoder
-        if args.train_mode == "normal":
-            text_encoder = LlamaModel.from_pretrained(
+        if args.train_mode != "normal":
+            text_encoder = LlavaForConditionalGeneration.from_pretrained(
                 os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
                 low_cpu_mem_usage=True,
                 torch_dtype=weight_dtype,
             )
         else:
-            text_encoder = LlavaForConditionalGeneration.from_pretrained(
+            text_encoder = LlamaModel.from_pretrained(
                 os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
                 low_cpu_mem_usage=True,
                 torch_dtype=weight_dtype,
@@ -1429,10 +1430,10 @@ def main():
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        if args.train_mode == "normal":
-            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.layers)
-        else:
+        if args.train_mode != "normal":
             shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
+        else:
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.layers)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
