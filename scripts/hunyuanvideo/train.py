@@ -702,7 +702,7 @@ def parse_args():
     parser.add_argument(
         '--image_embed_interleave', 
         type=int,
-        default=2,
+        default=4,
         help='Image embed interleave'
     )
     parser.add_argument(
@@ -1752,8 +1752,13 @@ def main():
                             text_input_ids = text_inputs.input_ids.to(device=accelerator.device)
                             prompt_attention_mask = text_inputs.attention_mask.to(device=accelerator.device)
 
-                            clip_pixel_values = (clip_pixel_values / 255).clamp(0, 1)
-                            image_embeds = image_processor(clip_pixel_values, return_tensors="pt").pixel_values.to(accelerator.device)
+                            image_embeds = []
+                            for clip_pixel_value in clip_pixel_values:
+                                clip_image = Image.fromarray(np.uint8(clip_pixel_value.float().cpu().numpy()))
+                                _image_embeds = image_processor(clip_image, return_tensors="pt").pixel_values.to(accelerator.device)
+                                print(_image_embeds.size())
+                                image_embeds.append(_image_embeds)
+                            image_embeds = torch.cat(image_embeds, dim=0)
 
                             image_token_index = text_encoder.config.image_token_index
                             pad_token_id = text_encoder.config.pad_token_id
