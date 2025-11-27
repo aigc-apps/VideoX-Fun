@@ -175,10 +175,14 @@ def _patchify_latents(latents):
     latents = latents.reshape(batch_size, num_channels_latents * 4, height // 2, width // 2)
     return latents
 
-def _pack_latents(latents, batch_size, num_channels_latents, height, width):
-    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
-    latents = latents.permute(0, 2, 4, 1, 3, 5)
-    latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
+def _pack_latents(latents):
+    """
+    pack latents: (batch_size, num_channels, height, width) -> (batch_size, height * width, num_channels)
+    """
+
+    batch_size, num_channels, height, width = latents.shape
+    latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+
     return latents
 
 def format_text_input(prompts: List[str], system_message: str = None):
