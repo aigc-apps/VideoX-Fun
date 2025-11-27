@@ -99,6 +99,7 @@ class Flux2MultiGPUsAttnProcessor2_0:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
+        text_seq_len: int = None,
     ) -> torch.FloatTensor:
         # Determine which type of attention we're processing
         is_parallel_self_attn = hasattr(attn, 'to_qkv_mlp_proj') and attn.to_qkv_mlp_proj is not None
@@ -144,14 +145,11 @@ class Flux2MultiGPUsAttnProcessor2_0:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
-        if not is_parallel_self_attn and attn.added_kv_proj_dim is not None:
+        if not is_parallel_self_attn and attn.added_kv_proj_dim is not None and text_seq_len is None:
             text_seq_len = encoder_query.shape[1]
 
-            txt_query, txt_key, txt_value = query[:, :text_seq_len], key[:, :text_seq_len], value[:, :text_seq_len]
-            img_query, img_key, img_value = query[:, text_seq_len:], key[:, text_seq_len:], value[:, text_seq_len:]
-        else:
-            txt_query, txt_key, txt_value = None, None, None
-            img_query, img_key, img_value = query, key, value
+        txt_query, txt_key, txt_value = query[:, :text_seq_len], key[:, :text_seq_len], value[:, :text_seq_len]
+        img_query, img_key, img_value = query[:, text_seq_len:], key[:, text_seq_len:], value[:, text_seq_len:]
 
         half_dtypes = (torch.float16, torch.bfloat16)
         def half(x):

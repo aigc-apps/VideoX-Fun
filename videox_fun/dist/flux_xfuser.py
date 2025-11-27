@@ -129,13 +129,11 @@ class FluxMultiGPUsAttnProcessor2_0:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
-        if attn.added_kv_proj_dim is not None:
+        if attn.added_kv_proj_dim is not None and text_seq_len is None:
             text_seq_len = encoder_query.shape[1]
-            txt_query, txt_key, txt_value = query[:, :text_seq_len], key[:, :text_seq_len], value[:, :text_seq_len]
-            img_query, img_key, img_value = query[:, text_seq_len:], key[:, text_seq_len:], value[:, text_seq_len:]
-        else:
-            txt_query, txt_key, txt_value = None, None, None
-            img_query, img_key, img_value = query, key, value
+
+        txt_query, txt_key, txt_value = query[:, :text_seq_len], key[:, :text_seq_len], value[:, :text_seq_len]
+        img_query, img_key, img_value = query[:, text_seq_len:], key[:, text_seq_len:], value[:, text_seq_len:]
 
         half_dtypes = (torch.float16, torch.bfloat16)
         def half(x):

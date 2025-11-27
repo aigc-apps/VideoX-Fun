@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import inspect
+import json
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -171,6 +174,7 @@ class Flux2AttnProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
+        text_seq_len: int = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Unified processor for both Flux2Attention and Flux2ParallelSelfAttention.
@@ -537,8 +541,6 @@ class Flux2SingleTransformerBlock(nn.Module):
         temb_mod_params: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
-        split_hidden_states: bool = False,
-        text_seq_len: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # If encoder_hidden_states is None, hidden_states is assumed to have encoder_hidden_states already
         # concatenated
@@ -555,6 +557,7 @@ class Flux2SingleTransformerBlock(nn.Module):
         attn_output = self.attn(
             hidden_states=norm_hidden_states,
             image_rotary_emb=image_rotary_emb,
+            text_seq_len=text_seq_len,
             **joint_attention_kwargs,
         )
 
@@ -562,11 +565,8 @@ class Flux2SingleTransformerBlock(nn.Module):
         if hidden_states.dtype == torch.float16:
             hidden_states = hidden_states.clip(-65504, 65504)
 
-        if split_hidden_states:
-            encoder_hidden_states, hidden_states = hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]
-            return encoder_hidden_states, hidden_states
-        else:
-            return hidden_states
+        encoder_hidden_states, hidden_states = hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]
+        return encoder_hidden_states, hidden_states
 
 
 class Flux2TransformerBlock(nn.Module):
@@ -976,15 +976,6 @@ class Flux2Transformer2DModel(
         else:
             lora_scale = 1.0
 
-        if USE_PEFT_BACKEND:
-            # weight the lora layers by setting `lora_scale` for each PEFT layer
-            scale_lora_layers(self, lora_scale)
-        else:
-            if joint_attention_kwargs is not None and joint_attention_kwargs.get("scale", None) is not None:
-                logger.warning(
-                    "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
-                )
-
         num_txt_tokens = encoder_hidden_states.shape[1]
 
         # 1. Calculate timestep embedding and modulation parameters
@@ -1065,8 +1056,6 @@ class Flux2Transformer2DModel(
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-        # Concatenate text and image streams for single-block inference
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
         # 5. Single Stream Transformer Blocks
         for index_block, block in enumerate(self.single_transformer_blocks):
@@ -1077,25 +1066,23 @@ class Flux2Transformer2DModel(
 
                     return custom_forward
                 ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                hidden_states = torch.utils.checkpoint.checkpoint(
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     hidden_states,
-                    None,
+                    encoder_hidden_states,
                     single_stream_mod,
                     concat_rotary_emb,
                     joint_attention_kwargs,
                     **ckpt_kwargs,
                 )
             else:
-                hidden_states = block(
+                encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
-                    encoder_hidden_states=None,
+                    encoder_hidden_states=encoder_hidden_states,
                     temb_mod_params=single_stream_mod,
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-        # Remove text tokens from concatenated stream
-        hidden_states = hidden_states[:, num_txt_tokens:, ...]
 
         # 6. Output layers
         hidden_states = self.norm_out(hidden_states, temb)
@@ -1104,11 +1091,188 @@ class Flux2Transformer2DModel(
         if self.sp_world_size > 1:
             output = self.all_gather(output, dim=1)
 
-        if USE_PEFT_BACKEND:
-            # remove `lora_scale` from each PEFT layer
-            unscale_lora_layers(self, lora_scale)
-
         if not return_dict:
             return (output,)
 
         return Transformer2DModelOutput(sample=output)
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
+        low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
+    ):
+        if subfolder is not None:
+            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
+        print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
+
+        config_file = os.path.join(pretrained_model_path, 'config.json')
+        if not os.path.isfile(config_file):
+            raise RuntimeError(f"{config_file} does not exist")
+        with open(config_file, "r") as f:
+            config = json.load(f)
+
+        from diffusers.utils import WEIGHTS_NAME
+        model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+        model_file_safetensors = model_file.replace(".bin", ".safetensors")
+
+        if "dict_mapping" in transformer_additional_kwargs.keys():
+            for key in transformer_additional_kwargs["dict_mapping"]:
+                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+
+        if low_cpu_mem_usage:
+            try:
+                import re
+
+                from diffusers import __version__ as diffusers_version
+                if diffusers_version >= "0.33.0":
+                    from diffusers.models.model_loading_utils import \
+                        load_model_dict_into_meta
+                else:
+                    from diffusers.models.modeling_utils import \
+                        load_model_dict_into_meta
+                from diffusers.utils import is_accelerate_available
+                if is_accelerate_available():
+                    import accelerate
+                
+                # Instantiate model with empty weights
+                with accelerate.init_empty_weights():
+                    model = cls.from_config(config, **transformer_additional_kwargs)
+
+                param_device = "cpu"
+                if os.path.exists(model_file):
+                    state_dict = torch.load(model_file, map_location="cpu")
+                elif os.path.exists(model_file_safetensors):
+                    from safetensors.torch import load_file, safe_open
+                    state_dict = load_file(model_file_safetensors)
+                else:
+                    from safetensors.torch import load_file, safe_open
+                    model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
+                    state_dict = {}
+                    print(model_files_safetensors)
+                    for _model_file_safetensors in model_files_safetensors:
+                        _state_dict = load_file(_model_file_safetensors)
+                        for key in _state_dict:
+                            state_dict[key] = _state_dict[key]
+
+                filtered_state_dict = {}
+                for key in state_dict:
+                    if key in model.state_dict() and model.state_dict()[key].size() == state_dict[key].size():
+                        filtered_state_dict[key] = state_dict[key]
+                    else:
+                        print(f"Skipping key '{key}' due to size mismatch or absence in model.")
+                        
+                model_keys = set(model.state_dict().keys())
+                loaded_keys = set(filtered_state_dict.keys())
+                missing_keys = model_keys - loaded_keys
+
+                def initialize_missing_parameters(missing_keys, model_state_dict, torch_dtype=None):
+                    initialized_dict = {}
+                    
+                    with torch.no_grad():
+                        for key in missing_keys:
+                            param_shape = model_state_dict[key].shape
+                            param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
+                            if 'weight' in key:
+                                if any(norm_type in key for norm_type in ['norm', 'ln_', 'layer_norm', 'group_norm', 'batch_norm']):
+                                    initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
+                                elif 'embedding' in key or 'embed' in key:
+                                    initialized_dict[key] = torch.randn(param_shape, dtype=param_dtype) * 0.02
+                                elif 'head' in key or 'output' in key or 'proj_out' in key:
+                                    initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                elif len(param_shape) >= 2:
+                                    initialized_dict[key] = torch.empty(param_shape, dtype=param_dtype)
+                                    nn.init.xavier_uniform_(initialized_dict[key])
+                                else:
+                                    initialized_dict[key] = torch.randn(param_shape, dtype=param_dtype) * 0.02
+                            elif 'bias' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            elif 'running_mean' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            elif 'running_var' in key:
+                                initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
+                            elif 'num_batches_tracked' in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=torch.long)
+                            else:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                            
+                    return initialized_dict
+
+                if missing_keys:
+                    print(f"Missing keys will be initialized: {sorted(missing_keys)}")
+                    initialized_params = initialize_missing_parameters(
+                        missing_keys, 
+                        model.state_dict(), 
+                        torch_dtype
+                    )
+                    filtered_state_dict.update(initialized_params)
+
+                if diffusers_version >= "0.33.0":
+                    # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
+                    # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
+                    load_model_dict_into_meta(
+                        model,
+                        filtered_state_dict,
+                        dtype=torch_dtype,
+                        model_name_or_path=pretrained_model_path,
+                    )
+                else:
+                    model._convert_deprecated_attention_blocks(filtered_state_dict)
+                    unexpected_keys = load_model_dict_into_meta(
+                        model,
+                        filtered_state_dict,
+                        device=param_device,
+                        dtype=torch_dtype,
+                        model_name_or_path=pretrained_model_path,
+                    )
+
+                    if cls._keys_to_ignore_on_load_unexpected is not None:
+                        for pat in cls._keys_to_ignore_on_load_unexpected:
+                            unexpected_keys = [k for k in unexpected_keys if re.search(pat, k) is None]
+
+                    if len(unexpected_keys) > 0:
+                        print(
+                            f"Some weights of the model checkpoint were not used when initializing {cls.__name__}: \n {[', '.join(unexpected_keys)]}"
+                        )
+                
+                return model
+            except Exception as e:
+                print(
+                    f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
+                )
+        
+        model = cls.from_config(config, **transformer_additional_kwargs)
+        if os.path.exists(model_file):
+            state_dict = torch.load(model_file, map_location="cpu")
+        elif os.path.exists(model_file_safetensors):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(model_file_safetensors)
+        else:
+            from safetensors.torch import load_file, safe_open
+            model_files_safetensors = glob.glob(os.path.join(pretrained_model_path, "*.safetensors"))
+            state_dict = {}
+            for _model_file_safetensors in model_files_safetensors:
+                _state_dict = load_file(_model_file_safetensors)
+                for key in _state_dict:
+                    state_dict[key] = _state_dict[key]
+        
+        tmp_state_dict = {} 
+        for key in state_dict:
+            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+                tmp_state_dict[key] = state_dict[key]
+            else:
+                print(key, "Size don't match, skip")
+                
+        state_dict = tmp_state_dict
+
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m)
+        
+        params = [p.numel() if "." in n else 0 for n, p in model.named_parameters()]
+        print(f"### All Parameters: {sum(params) / 1e6} M")
+
+        params = [p.numel() if "attn1." in n else 0 for n, p in model.named_parameters()]
+        print(f"### attn1 Parameters: {sum(params) / 1e6} M")
+        
+        model = model.to(torch_dtype)
+        return model
