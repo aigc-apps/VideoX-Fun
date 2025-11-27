@@ -24,6 +24,7 @@ import pickle
 import random
 import shutil
 import sys
+from typing import List, NamedTuple, Optional, Union
 
 import accelerate
 import diffusers
@@ -33,9 +34,6 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import torchvision.transforms.functional as TF
 import transformers
-from typing import NamedTuple, List, Optional, Union
-
-
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
@@ -60,7 +58,6 @@ from transformers.utils import ContextManagers
 
 import datasets
 
-
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
@@ -74,14 +71,14 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.models import (AutoencoderKL, AutoencoderKLWan,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (CLIPImageProcessor, CLIPTextModel,
+from videox_fun.models import (AutoencoderKL, AutoencoderKLWan,
+                               CLIPImageProcessor, CLIPTextModel,
                                CLIPTokenizer, CLIPVisionModelWithProjection,
-                               FluxTransformer2DModel, T5EncoderModel,
-                               T5TokenizerFast)
+                               FluxTransformer2DModel,
+                               Qwen2_5_VLForConditionalGeneration,
+                               Qwen2Tokenizer, QwenImageTransformer2DModel,
+                               T5EncoderModel, T5TokenizerFast)
 from videox_fun.pipeline import FluxPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -109,12 +106,6 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
-
-def _pack_latents(latents, batch_size, num_channels_latents, height, width):
-    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
-    latents = latents.permute(0, 2, 4, 1, 3, 5)
-    latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
-    return latents
     
 def calculate_shift(
     image_seq_len,
@@ -127,6 +118,12 @@ def calculate_shift(
     b = base_shift - m * base_seq_len
     mu = image_seq_len * m + b
     return mu
+
+def _pack_latents(latents, batch_size, num_channels_latents, height, width):
+    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+    latents = latents.permute(0, 2, 4, 1, 3, 5)
+    latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
+    return latents
 
 def _extract_masked_hidden(hidden_states: torch.Tensor, mask: torch.Tensor):
     bool_mask = mask.bool()
@@ -148,20 +145,6 @@ def _prepare_latent_image_ids(batch_size, height, width, device, dtype):
     )
 
     return latent_image_ids.to(device=device, dtype=dtype)
-
-def _pack_latents(latents, batch_size, num_channels_latents, height, width):
-    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
-    latents = latents.permute(0, 2, 4, 1, 3, 5)
-    latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
-    return latents
-
-def _extract_masked_hidden(hidden_states: torch.Tensor, mask: torch.Tensor):
-    bool_mask = mask.bool()
-    valid_lengths = bool_mask.sum(dim=1)
-    selected = hidden_states[bool_mask]
-    split_result = torch.split(selected, valid_lengths.tolist(), dim=0)
-
-    return split_result
 
 def _get_t5_prompt_embeds(
     prompt = None,
@@ -646,12 +629,6 @@ def parse_args():
         help='Enter a list of trainable modules with lower learning rate'
     )
     parser.add_argument(
-        '--tokenizer_max_length', 
-        type=int,
-        default=1024,
-        help='Max length of tokenizer'
-    )
-    parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
     )
     parser.add_argument(
@@ -659,31 +636,6 @@ def parse_args():
     )
     parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
-    )
-    parser.add_argument(
-        "--prompt_template_encode",
-        type=str,
-        default="<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-        help=(
-            'The prompt template for text encoder.'
-        ),
-    )
-    parser.add_argument(
-        "--prompt_template_encode_start_idx",
-        type=int,
-        default=34,
-        help=(
-            'The start idx for prompt template.'
-        ),
-    )
-    parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
-        ),
     )
     parser.add_argument(
         "--abnormal_norm_clip_start",
@@ -1343,6 +1295,7 @@ def main():
 
     if fsdp_stage != 0:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.text_model.encoder.layers)
         text_encoder = shard_fn(text_encoder)
@@ -1435,7 +1388,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()

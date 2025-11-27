@@ -1423,7 +1423,7 @@ def main():
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=transformer3d.transformer_blocks)
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(transformer3d.transformer_blocks) + list(transformer3d.single_transformer_blocks))
         transformer3d = shard_fn(transformer3d)
 
     if fsdp_stage != 0 or zero_stage != 0:

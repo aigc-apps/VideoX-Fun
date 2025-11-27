@@ -1,11 +1,12 @@
 import importlib.util
 
 from diffusers import AutoencoderKL
-from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPTextModel,
-                          CLIPTokenizer, CLIPVisionModelWithProjection,
-                          LlamaModel, LlamaTokenizerFast,
-                          LlavaForConditionalGeneration, T5EncoderModel,
-                          T5Tokenizer, T5TokenizerFast)
+from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
+                          CLIPTextModel, CLIPTokenizer,
+                          CLIPVisionModelWithProjection, LlamaModel,
+                          LlamaTokenizerFast, LlavaForConditionalGeneration,
+                          Mistral3ForConditionalGeneration, PixtralProcessor,
+                          T5EncoderModel, T5Tokenizer, T5TokenizerFast)
 
 try:
     from transformers import (Qwen2_5_VLConfig,
@@ -20,9 +21,10 @@ from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
+from .flux2_image_processor import Flux2ImageProcessor
+from .flux2_transformer2d import Flux2Transformer2DModel
+from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
-from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
-from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .wan_audio_encoder import WanAudioEncoder

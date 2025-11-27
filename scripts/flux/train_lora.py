@@ -16,6 +16,7 @@
 # See the License for the specific language governing permissions and
 
 import argparse
+import copy
 import gc
 import logging
 import math
@@ -24,7 +25,7 @@ import pickle
 import random
 import shutil
 import sys
-import copy
+from typing import List, NamedTuple, Optional, Union
 
 import accelerate
 import diffusers
@@ -34,9 +35,6 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import torchvision.transforms.functional as TF
 import transformers
-from typing import NamedTuple, List, Optional, Union
-
-
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
@@ -73,14 +71,14 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.models import (AutoencoderKL, AutoencoderKLWan,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (CLIPImageProcessor, CLIPTextModel,
+from videox_fun.models import (AutoencoderKL, AutoencoderKLWan,
+                               CLIPImageProcessor, CLIPTextModel,
                                CLIPTokenizer, CLIPVisionModelWithProjection,
-                               FluxTransformer2DModel, T5EncoderModel,
-                               T5TokenizerFast)
+                               FluxTransformer2DModel,
+                               Qwen2_5_VLForConditionalGeneration,
+                               Qwen2Tokenizer, QwenImageTransformer2DModel,
+                               T5EncoderModel, T5TokenizerFast)
 from videox_fun.pipeline import FluxPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (create_network, merge_lora,
@@ -643,12 +641,6 @@ def parse_args():
     parser.add_argument("--save_state", action="store_true", help="Whether or not to save state.")
 
     parser.add_argument(
-        '--tokenizer_max_length', 
-        type=int,
-        default=1024,
-        help='Max length of tokenizer'
-    )
-    parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
     )
     parser.add_argument(
@@ -656,31 +648,6 @@ def parse_args():
     )
     parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
-    )
-    parser.add_argument(
-        "--prompt_template_encode",
-        type=str,
-        default="<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-        help=(
-            'The prompt template for text encoder.'
-        ),
-    )
-    parser.add_argument(
-        "--prompt_template_encode_start_idx",
-        type=int,
-        default=34,
-        help=(
-            'The start idx for prompt template.'
-        ),
-    )
-    parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"inpaint"`.'
-        ),
     )
     parser.add_argument(
         "--weighting_scheme",
@@ -904,7 +871,8 @@ def main():
 
     # Lora will work with this...
     if args.use_peft_lora:
-        from peft import LoraConfig, inject_adapter_in_model, get_peft_model_state_dict
+        from peft import (LoraConfig, get_peft_model_state_dict,
+                          inject_adapter_in_model)
         lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
         transformer3d = inject_adapter_in_model(lora_config, transformer3d)
 
@@ -1310,7 +1278,7 @@ def main():
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=transformer3d.transformer_blocks)
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(transformer3d.transformer_blocks) + list(transformer3d.single_transformer_blocks))
         transformer3d = shard_fn(transformer3d)
 
     if fsdp_stage != 0 or zero_stage != 0:
@@ -1474,7 +1442,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()

@@ -69,7 +69,7 @@ negative_prompt     = "The video is not of a high quality, it has a low resoluti
 guidance_scale      = 1.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 0.70
+lora_weight         = 0.55
 save_path           = "samples/flux-t2i"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
@@ -151,13 +151,11 @@ if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.single_transformer_blocks))
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        from functools import partial
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.text_model.encoder.layers)
         text_encoder = shard_fn(text_encoder)
         print("Add FSDP TEXT ENCODER")
 

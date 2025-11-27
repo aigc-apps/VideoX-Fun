@@ -1,6 +1,7 @@
 import importlib.util
 
 from .cogvideox_xfuser import CogVideoXMultiGPUsAttnProcessor2_0
+from .flux2_xfuser import Flux2MultiGPUsAttnProcessor2_0
 from .flux_xfuser import FluxMultiGPUsAttnProcessor2_0
 from .fsdp import shard_model
 from .fuser import (get_sequence_parallel_rank,

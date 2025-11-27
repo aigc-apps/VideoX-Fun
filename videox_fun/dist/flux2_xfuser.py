@@ -82,7 +82,7 @@ def apply_rotary_emb(
         return x_out.type_as(x)
 
 
-class FluxMultiGPUsAttnProcessor2_0:
+class Flux2MultiGPUsAttnProcessor2_0:
     r"""
     Processor for implementing scaled dot-product attention for the CogVideoX model. It applies a rotary embedding on
     query and key vectors, but does not include spatial normalization.
@@ -90,29 +90,44 @@ class FluxMultiGPUsAttnProcessor2_0:
 
     def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError("FluxMultiGPUsAttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
+            raise ImportError("Flux2MultiGPUsAttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
 
     def __call__(
         self,
         attn: "FluxAttention",
         hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
-        text_seq_len: int = None,
     ) -> torch.FloatTensor:
-        query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
-            attn, hidden_states, encoder_hidden_states
-        )
+        # Determine which type of attention we're processing
+        is_parallel_self_attn = hasattr(attn, 'to_qkv_mlp_proj') and attn.to_qkv_mlp_proj is not None
 
+        if is_parallel_self_attn:
+            # Parallel in (QKV + MLP in) projection
+            hidden_states = attn.to_qkv_mlp_proj(hidden_states)
+            qkv, mlp_hidden_states = torch.split(
+                hidden_states, [3 * attn.inner_dim, attn.mlp_hidden_dim * attn.mlp_mult_factor], dim=-1
+            )
+
+            # Handle the attention logic
+            query, key, value = qkv.chunk(3, dim=-1)
+            
+        else:
+            query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
+                attn, hidden_states, encoder_hidden_states
+            )
+
+        # Common processing for query, key, value
         query = query.unflatten(-1, (attn.heads, -1))
         key = key.unflatten(-1, (attn.heads, -1))
         value = value.unflatten(-1, (attn.heads, -1))
 
         query = attn.norm_q(query)
         key = attn.norm_k(key)
-        
-        if attn.added_kv_proj_dim is not None:
+
+        # Handle encoder projections (only for standard attention)
+        if not is_parallel_self_attn and attn.added_kv_proj_dim is not None:
             encoder_query = encoder_query.unflatten(-1, (attn.heads, -1))
             encoder_key = encoder_key.unflatten(-1, (attn.heads, -1))
             encoder_value = encoder_value.unflatten(-1, (attn.heads, -1))
@@ -129,8 +144,9 @@ class FluxMultiGPUsAttnProcessor2_0:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
-        if attn.added_kv_proj_dim is not None:
+        if not is_parallel_self_attn and attn.added_kv_proj_dim is not None:
             text_seq_len = encoder_query.shape[1]
+
             txt_query, txt_key, txt_value = query[:, :text_seq_len], key[:, :text_seq_len], value[:, :text_seq_len]
             img_query, img_key, img_value = query[:, text_seq_len:], key[:, text_seq_len:], value[:, text_seq_len:]
         else:
@@ -149,19 +165,32 @@ class FluxMultiGPUsAttnProcessor2_0:
             joint_tensor_value=half(txt_value) if txt_value is not None else None,
             joint_strategy='front',
         )
-
-        # Reshape back
         hidden_states = hidden_states.flatten(2, 3)
-        hidden_states = hidden_states.to(img_query.dtype)
+        hidden_states = hidden_states.to(query.dtype)
 
-        if encoder_hidden_states is not None:
-            encoder_hidden_states, hidden_states = hidden_states.split_with_sizes(
-                [encoder_hidden_states.shape[1], hidden_states.shape[1] - encoder_hidden_states.shape[1]], dim=1
-            )
+        if is_parallel_self_attn:
+            # Handle the feedforward (FF) logic
+            mlp_hidden_states = attn.mlp_act_fn(mlp_hidden_states)
+
+            # Concatenate and parallel output projection
+            hidden_states = torch.cat([hidden_states, mlp_hidden_states], dim=-1)
+            hidden_states = attn.to_out(hidden_states)
+            
+            return hidden_states
+            
+        else:
+            # Split encoder and latent hidden states if encoder was used
+            if encoder_hidden_states is not None:
+                encoder_hidden_states, hidden_states = hidden_states.split_with_sizes(
+                    [encoder_hidden_states.shape[1], hidden_states.shape[1] - encoder_hidden_states.shape[1]], dim=1
+                )
+                encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
+
+            # Project output
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
-            encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-            return hidden_states, encoder_hidden_states
-        else:
-            return hidden_states
+            if encoder_hidden_states is not None:
+                return hidden_states, encoder_hidden_states
+            else:
+                return hidden_states
