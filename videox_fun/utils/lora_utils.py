@@ -156,7 +156,7 @@ class LoRANetwork(torch.nn.Module):
         "CogVideoXTransformer3DModel", "WanTransformer3DModel", \
         "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel", \
         "Wan2_2Transformer3DModel_Animate", "Wan2_2Transformer3DModel_S2V", "FantasyTalkingTransformer3DModel", \
-        "HunyuanVideoTransformer3DModel"
+        "HunyuanVideoTransformer3DModel", "Flux2Transformer2DModel"
     ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
