@@ -1610,27 +1610,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    if not args.use_deepspeed and not args.use_fsdp:
-                        trainable_params_grads = [p.grad for p in trainable_params if p.grad is not None]
-                        trainable_params_total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in trainable_params_grads]), 2)
-                        max_grad_norm = linear_decay(args.max_grad_norm * args.initial_grad_norm_ratio, args.max_grad_norm, args.abnormal_norm_clip_start, global_step)
-                        if trainable_params_total_norm / max_grad_norm > 5 and global_step > args.abnormal_norm_clip_start:
-                            actual_max_grad_norm = max_grad_norm / min((trainable_params_total_norm / max_grad_norm), 10)
-                        else:
-                            actual_max_grad_norm = max_grad_norm
-                    else:
-                        actual_max_grad_norm = args.max_grad_norm
-
-                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
-                        if trainable_params_total_norm > 1 and global_step > args.abnormal_norm_clip_start:
-                            for name, param in transformer3d.named_parameters():
-                                if param.requires_grad:
-                                    writer.add_scalar(f'gradients/before_clip_norm/{name}', param.grad.norm(), global_step=global_step)
-
-                    norm_sum = accelerator.clip_grad_norm_(trainable_params, actual_max_grad_norm)
-                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
-                        writer.add_scalar(f'gradients/norm_sum', norm_sum, global_step=global_step)
-                        writer.add_scalar(f'gradients/actual_max_grad_norm', actual_max_grad_norm, global_step=global_step)
+                    accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
