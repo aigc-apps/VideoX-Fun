@@ -604,7 +604,8 @@ V1.0:
 
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
-| FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/ai-modelscope/flux.1-dev) | FLUX.1-dev官方权重 |
+| FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev) | FLUX.1-dev官方权重 |
+| FLUX.2-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.2-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.2-dev) | FLUX.2-dev官方权重 |
 
 ## 8. HunyuanVideo
 
@@ -652,6 +653,9 @@ V1.1:
 - Diffusers: https://github.com/huggingface/diffusers
 - Qwen-Image: https://github.com/QwenLM/Qwen-Image
 - Self-Forcing: https://github.com/guandeh17/Self-Forcing
+- Flux: https://github.com/black-forest-labs/flux
+- Flux2: https://github.com/black-forest-labs/flux2
+- HunyuanVideo: https://github.com/Tencent-Hunyuan/HunyuanVideo
 - ComfyUI-KJNodes: https://github.com/kijai/ComfyUI-KJNodes
 - ComfyUI-EasyAnimateWrapper: https://github.com/kijai/ComfyUI-EasyAnimateWrapper
 - ComfyUI-CameraCtrl-Wrapper: https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper
