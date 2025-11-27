@@ -17,6 +17,7 @@ import math
 from typing import Tuple
 
 import PIL.Image
+
 from diffusers.configuration_utils import register_to_config
 from diffusers.image_processor import VaeImageProcessor
 

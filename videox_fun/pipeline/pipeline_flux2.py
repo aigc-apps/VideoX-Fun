@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import inspect
+from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
+                             replace_example_docstring)
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -22,13 +24,12 @@ import PIL
 import torch
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
+from diffusers.utils import (is_torch_xla_available, logging,
                              replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 
-from ..models import (AutoencoderKLFlux2, AutoProcessor, Flux2ImageProcessor,
-                      Flux2Transformer2DModel,
-                      Mistral3ForConditionalGeneration)
+from ..models import (AutoencoderKLFlux2, Flux2ImageProcessor,
+                      Flux2Transformer2DModel, Mistral3ForConditionalGeneration, AutoProcessor)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm

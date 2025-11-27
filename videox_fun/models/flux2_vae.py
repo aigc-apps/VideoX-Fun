@@ -23,7 +23,8 @@ from diffusers.models.attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS, CROSS_ATTENTION_PROCESSORS, Attention,
     AttentionProcessor, AttnAddedKVProcessor, AttnProcessor,
     FusedAttnProcessor2_0)
-from diffusers.models.autoencoders.vae import (Decoder, DecoderOutput,
+from diffusers.models.autoencoders.vae import (Decoder,
+                                               DecoderOutput,
                                                DiagonalGaussianDistribution,
                                                Encoder)
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
