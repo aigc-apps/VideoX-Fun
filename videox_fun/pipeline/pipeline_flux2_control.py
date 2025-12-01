@@ -765,7 +765,7 @@ class Flux2ControlPipeline(DiffusionPipeline):
             init_image = init_image.to(dtype=weight_dtype, device=device) * (mask_condition < 0.5)
             inpaint_latent = self.vae.encode(init_image)[0].mode()
         else:
-            inpaint_latent = torch.zeros((batch_size, num_channels_latents * 4, height // 2, width // 2)).to(device, weight_dtype)
+            inpaint_latent = torch.zeros((batch_size, num_channels_latents * 4, height // 2 // self.vae_scale_factor, width // 2 // self.vae_scale_factor)).to(device, weight_dtype)
 
         if control_image is not None:
             control_image = self.diffusers_image_processor.preprocess(control_image, height=height, width=width) 
@@ -783,9 +783,10 @@ class Flux2ControlPipeline(DiffusionPipeline):
             inpaint_latent = (inpaint_latent - latents_bn_mean) / latents_bn_std
             inpaint_latent = self._pack_latents(inpaint_latent)
 
-        control_latents = self._patchify_latents(control_latents)
-        control_latents = (control_latents - latents_bn_mean) / latents_bn_std
-        control_latents = self._pack_latents(control_latents)
+        if control_image is not None:
+            control_latents = self._patchify_latents(control_latents)
+            control_latents = (control_latents - latents_bn_mean) / latents_bn_std
+            control_latents = self._pack_latents(control_latents)
         control_context = torch.concat([control_latents, mask_condition, inpaint_latent], dim=2)
 
         # 3. prepare text embeddings
