@@ -1,8 +1,11 @@
 import os
 import sys
 
+import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
+from omegaconf import OmegaConf
+from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -52,6 +55,8 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
+# Config and model path
+config_path         = "config/flux2/flux2_control.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/FLUX.2-dev"
 
@@ -73,7 +78,7 @@ image               = "asset/8.png"
 control_image       = "asset/pose.jpg"
 inpaint_image       = None
 mask_image          = None
-vace_context_scale  = 0.80
+control_context_scale  = 0.75
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
@@ -86,12 +91,14 @@ lora_weight         = 0.55
 save_path           = "samples/flux2-t2i-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
+config = OmegaConf.load(config_path)
 
 transformer = Flux2ControlTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
+    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -217,7 +224,7 @@ with torch.no_grad():
         mask_image          = mask_image,
         control_image       = control_image,
         num_inference_steps = num_inference_steps,
-        vace_context_scale  = vace_context_scale,
+        control_context_scale  = control_context_scale,
     ).images
 
 if lora_path is not None:
