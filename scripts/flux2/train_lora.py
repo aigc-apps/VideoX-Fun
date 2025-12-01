@@ -82,6 +82,8 @@ from videox_fun.models import (AutoencoderKLFlux2,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.pipeline import Flux2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.lora_utils import (create_network, merge_lora,
+                                         unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():

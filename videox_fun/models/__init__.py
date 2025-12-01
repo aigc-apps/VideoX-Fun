@@ -23,6 +23,7 @@ from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
 from .flux2_image_processor import Flux2ImageProcessor
 from .flux2_transformer2d import Flux2Transformer2DModel
+from .flux2_transformer2d_control import Flux2ControlTransformer2DModel
 from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
