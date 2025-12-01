@@ -1,0 +1,5 @@
+format: diffusers
+pipeline: flux2
+transformer_additional_kwargs:
+    control_layers: [0, 2, 4, 6]
+    control_in_dim: 260
