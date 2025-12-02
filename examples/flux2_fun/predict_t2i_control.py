@@ -198,7 +198,10 @@ if lora_path is not None:
 
 with torch.no_grad():
     if image is not None:
-        image = get_image(image)
+        if not isinstance(image, list):
+            image = get_image(image)
+        else:
+            image = [get_image(_image) for _image in image]
 
     if inpaint_image is not None:
         inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]

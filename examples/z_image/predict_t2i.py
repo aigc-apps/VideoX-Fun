@@ -1,11 +1,8 @@
 import os
 import sys
 
-import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
-from omegaconf import OmegaConf
-from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,20 +10,15 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLFlux2,
-                               Mistral3ForConditionalGeneration,
-                               PixtralProcessor, Flux2ControlTransformer2DModel)
+from videox_fun.models import (AutoencoderKL, AutoTokenizer, Qwen3ForCausalLM,
+                               ZImageTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Flux2ControlPipeline
+from videox_fun.pipeline import ZImagePipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image, get_image_latent,
-                                    get_image_to_video_latent,
-                                    get_video_to_video_latent,
-                                    save_videos_grid)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -55,16 +47,14 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# Config and model path
-config_path         = "config/flux2/flux2_control.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/FLUX.2-dev"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union.safetensors" 
+transformer_path    = None
 vae_path            = None
 lora_path           = None
 
@@ -74,31 +64,23 @@ sample_size         = [1728, 992]
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-image               = "asset/8.png"
-control_image       = "asset/pose.jpg"
-inpaint_image       = None
-mask_image          = None
-control_context_scale  = 0.75
-
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt              = "This is a panoramic portrait photo of a young woman. She has flowing long hair and a soft lavender like color. She is wearing a white sleeveless dress with a blue ribbon bow tied around the collar. She has a confident posture, with her left hand naturally hanging down and her right hand in her pocket, and her legs slightly apart. Look straight at the camera. The sea breeze gently brushed her long hair, and they stood on the sunny seaside path, surrounded by blooming purple seaside flowers and smooth pebbles, with the sparkling sea and blue sky behind them. The screen presents a bright summer atmosphere, with soft and natural lighting, realistic details, and 8K ultra high definition image quality, clearly presenting fine textures such as clothing and hair. "
+prompt              = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
 negative_prompt     = " "
-guidance_scale      = 4.00
+guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 50
+num_inference_steps = 9
 lora_weight         = 0.55
-save_path           = "samples/flux2-t2i-control"
+save_path           = "samples/z-image-t2i"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
-config = OmegaConf.load(config_path)
 
-transformer = Flux2ControlTransformer2DModel.from_pretrained(
+transformer = ZImageTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -114,7 +96,7 @@ if transformer_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKLFlux2.from_pretrained(
+vae = AutoencoderKL.from_pretrained(
     model_name, 
     subfolder="vae"
 ).to(weight_dtype)
@@ -132,10 +114,10 @@ if vae_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get tokenizer and text_encoder
-tokenizer = PixtralProcessor.from_pretrained(
+tokenizer = AutoTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
-text_encoder = Mistral3ForConditionalGeneration.from_pretrained(
+text_encoder = Qwen3ForCausalLM.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
     low_cpu_mem_usage=True,
 )
@@ -151,7 +133,7 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = Flux2ControlPipeline(
+pipeline = ZImagePipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
@@ -197,37 +179,13 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
-    if image is not None:
-        if not isinstance(image, list):
-            image = get_image(image)
-        else:
-            image = [get_image(_image) for _image in image]
-
-    if inpaint_image is not None:
-        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
-    else:
-        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
-
-    if mask_image is not None:
-        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
-    else:
-        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
-
-    if control_image is not None:
-        control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
-
     sample = pipeline(
-        prompt              = prompt, 
-        height              = sample_size[0],
-        width               = sample_size[1],
-        generator           = generator,
-        guidance_scale      = guidance_scale,
-        image               = image,
-        inpaint_image       = inpaint_image,
-        mask_image          = mask_image,
-        control_image       = control_image,
+        prompt      = prompt, 
+        height      = sample_size[0],
+        width       = sample_size[1],
+        generator   = generator,
+        guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        control_context_scale  = control_context_scale,
     ).images
 
 if lora_path is not None:

@@ -782,10 +782,16 @@ class Flux2ControlPipeline(DiffusionPipeline):
             inpaint_latent = self._patchify_latents(inpaint_latent)
             inpaint_latent = (inpaint_latent - latents_bn_mean) / latents_bn_std
             inpaint_latent = self._pack_latents(inpaint_latent)
+        else:
+            inpaint_latent = self._patchify_latents(inpaint_latent)
+            inpaint_latent = self._pack_latents(inpaint_latent)
 
         if control_image is not None:
             control_latents = self._patchify_latents(control_latents)
             control_latents = (control_latents - latents_bn_mean) / latents_bn_std
+            control_latents = self._pack_latents(control_latents)
+        else:
+            control_latents = self._patchify_latents(control_latents)
             control_latents = self._pack_latents(control_latents)
         control_context = torch.concat([control_latents, mask_condition, inpaint_latent], dim=2)
 

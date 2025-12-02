@@ -13,6 +13,7 @@ from .fuser import (get_sequence_parallel_rank,
 from .hunyuanvideo_xfuser import HunyuanVideoMultiGPUsAttnProcessor2_0
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
 from .wan_xfuser import usp_attn_forward, usp_attn_s2v_forward
+from .z_image_xfuser import ZMultiGPUsSingleStreamAttnProcessor
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("paifuser") is not None:
