@@ -2,4 +2,4 @@ format: diffusers
 pipeline: flux2
 transformer_additional_kwargs:
     control_layers_places: [0, 5, 10, 15, 20, 25]
-    control_in_dim: 33
+    control_in_dim: 16

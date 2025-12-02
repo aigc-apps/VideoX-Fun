@@ -648,7 +648,6 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 dim=0,
             )
             all_cap_feats_out.append(cap_padded_feat)
-            print(cap_ori_len + cap_padding_len, cap_padded_feat.size())
 
             ### Process Image
             C, F, H, W = image.size()
