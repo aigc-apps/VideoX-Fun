@@ -183,7 +183,6 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         all_x_embedder = {}
         for patch_idx, (patch_size, f_patch_size) in enumerate(zip(all_patch_size, all_f_patch_size)):
             x_embedder = nn.Linear(f_patch_size * patch_size * patch_size * self.control_in_dim, dim, bias=True)
-            print(f_patch_size * patch_size * patch_size * self.control_in_dim, dim)
             all_x_embedder[f"{patch_size}-{f_patch_size}"] = x_embedder
 
         self.control_all_x_embedder = nn.ModuleDict(all_x_embedder)
@@ -242,10 +241,6 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         for i, seq_len in enumerate(x_item_seqlens):
             x_attn_mask[i, :seq_len] = 1
 
-        # Context Parallel
-        if self.sp_world_size > 1:
-            control_context = torch.chunk(control_context, self.sp_world_size, dim=1)[self.sp_world_rank]
-
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for layer in self.control_noise_refiner:
                 def create_custom_forward(module):
@@ -263,6 +258,10 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
             for layer in self.control_noise_refiner:
                 control_context = layer(control_context, x_attn_mask, x_freqs_cis, adaln_input)
 
+        # Context Parallel
+        if self.sp_world_size > 1:
+            control_context = torch.chunk(control_context, self.sp_world_size, dim=1)[self.sp_world_rank]
+
         # unified
         cap_item_seqlens = [len(_) for _ in cap_feats]
         control_context_unified = []
@@ -272,10 +271,6 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
             control_context_unified.append(torch.cat([control_context[i][:x_len], cap_feats[i][:cap_len]]))
         control_context_unified = pad_sequence(control_context_unified, batch_first=True, padding_value=0.0)
         c = control_context_unified
-
-        # Context Parallel
-        if self.sp_world_size > 1:
-            c = torch.chunk(c, self.sp_world_size, dim=1)[self.sp_world_rank]
 
         # arguments
         new_kwargs = dict(x=x)
@@ -348,10 +343,6 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         for i, seq_len in enumerate(x_item_seqlens):
             x_attn_mask[i, :seq_len] = 1
 
-        # Context Parallel
-        if self.sp_world_size > 1:
-            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
-
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for layer in self.noise_refiner:
                 def create_custom_forward(module):
@@ -404,6 +395,20 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         else:
             for layer in self.context_refiner:
                 cap_feats = layer(cap_feats, cap_attn_mask, cap_freqs_cis)
+
+        # Context Parallel
+        if self.sp_world_size > 1:
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+
+            x_item_seqlens = [len(_) for _ in x]
+            assert all(_ % SEQ_MULTI_OF == 0 for _ in x_item_seqlens)
+            x_max_item_seqlen = max(x_item_seqlens)
+            x_attn_mask = torch.zeros((bsz, x_max_item_seqlen), dtype=torch.bool, device=device)
+            for i, seq_len in enumerate(x_item_seqlens):
+                x_attn_mask[i, :seq_len] = 1
+
+            if x_freqs_cis is not None:
+                x_freqs_cis = torch.chunk(x_freqs_cis, self.sp_world_size, dim=1)[self.sp_world_rank]
 
         # unified
         unified = []
@@ -458,11 +463,17 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
             else:
                 unified = layer(unified, **kwargs)
 
+        if self.sp_world_size > 1:
+            unified_out = []
+            for i in range(bsz):
+                x_len = x_item_seqlens[i]
+                unified_out.append(unified[i, :x_len])
+            unified = torch.stack(unified_out)
+            unified = self.all_gather(unified, dim=1)
+
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))
         x = self.unpatchify(unified, x_size, patch_size, f_patch_size)
 
-        if self.sp_world_size > 1:
-            x = self.all_gather(x, dim=1)
         x = torch.stack(x)
         return x, {}

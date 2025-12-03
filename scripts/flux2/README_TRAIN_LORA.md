@@ -1,6 +1,6 @@
 ## Lora Training Code
 
-We can choose whether to use deepspeed or fsdp in flux, which can save a lot of video memory. 
+We can choose whether to use deepspeed or fsdp in flux2, which can save a lot of video memory. 
 
 Some parameters in the sh file can be confusing, and they are explained in this document:
 
@@ -26,9 +26,9 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 
 Without deepspeed:
 
-Training flux without DeepSpeed may result in insufficient GPU memory.
+Training flux2 without DeepSpeed may result in insufficient GPU memory.
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -36,12 +36,12 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/flux/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/flux2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1024 \
+  --image_sample_size=1328 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -66,7 +66,7 @@ accelerate launch --mixed_precision="bf16" scripts/flux/train_lora.py \
 With Deepspeed Zero-2:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -74,12 +74,12 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/flux/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/flux2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1024 \
+  --image_sample_size=1328 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -104,7 +104,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 With FSDP:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -112,12 +112,12 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap Flux2SingleTransformerBlock,Flux2TransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/flux/train_lora.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap Flux2SingleTransformerBlock,Flux2TransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/flux2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1024 \
+  --image_sample_size=1328 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -132,5 +132,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
+  --use_peft_lora \
   --uniform_sampling
 ```

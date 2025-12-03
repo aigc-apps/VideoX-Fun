@@ -104,7 +104,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 With FSDP:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -132,5 +132,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
+  --use_peft_lora \
   --uniform_sampling
 ```
