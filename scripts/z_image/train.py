@@ -24,8 +24,8 @@ import pickle
 import random
 import shutil
 import sys
-from typing import List, NamedTuple, Optional, Union
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import (Any, Callable, Dict, List, NamedTuple, Optional, Tuple,
+                    Union)
 
 import accelerate
 import diffusers
@@ -73,20 +73,19 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKL,
-                               CLIPImageProcessor, Qwen3ForCausalLM,
-                               AutoTokenizer, CLIPVisionModelWithProjection,
-                               ZImageTransformer2DModel,
-                               Qwen3ForCausalLM,
+from videox_fun.models import (AutoencoderKL, AutoTokenizer,
+                               CLIPImageProcessor,
+                               CLIPVisionModelWithProjection,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+                               Qwen2Tokenizer, Qwen3ForCausalLM,
+                               QwenImageTransformer2DModel,
+                               ZImageTransformer2DModel)
 from videox_fun.pipeline import Flux2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
     import wandb
-
 
 def filter_kwargs(cls, kwargs):
     import inspect
@@ -136,54 +135,6 @@ def calculate_shift(
     b = base_shift - m * base_seq_len
     mu = image_seq_len * m + b
     return mu
-
-def _prepare_latent_ids(
-    latents: torch.Tensor,  # (B, C, H, W)
-):
-    r"""
-    Generates 4D position coordinates (T, H, W, L) for latent tensors.
-
-    Args:
-        latents (torch.Tensor):
-            Latent tensor of shape (B, C, H, W)
-
-    Returns:
-        torch.Tensor:
-            Position IDs tensor of shape (B, H*W, 4) All batches share the same coordinate structure: T=0,
-            H=[0..H-1], W=[0..W-1], L=0
-    """
-
-    batch_size, _, height, width = latents.shape
-
-    t = torch.arange(1)  # [0] - time dimension
-    h = torch.arange(height)
-    w = torch.arange(width)
-    l = torch.arange(1)  # [0] - layer dimension
-
-    # Create position IDs: (H*W, 4)
-    latent_ids = torch.cartesian_prod(t, h, w, l)
-
-    # Expand to batch: (B, H*W, 4)
-    latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
-
-    return latent_ids
-
-def _patchify_latents(latents):
-    batch_size, num_channels_latents, height, width = latents.shape
-    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
-    latents = latents.permute(0, 1, 3, 5, 2, 4)
-    latents = latents.reshape(batch_size, num_channels_latents * 4, height // 2, width // 2)
-    return latents
-
-def _pack_latents(latents):
-    """
-    pack latents: (batch_size, num_channels, height, width) -> (batch_size, height * width, num_channels)
-    """
-
-    batch_size, num_channels, height, width = latents.shape
-    latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
-
-    return latents
 
 def encode_prompt(
     prompt: Union[str, List[str]],
@@ -587,14 +538,6 @@ def parse_args():
         help="Fix Sample size [height, width] when using bucket and collate_fn."
     )
     parser.add_argument(
-        "--config_path",
-        type=str,
-        default=None,
-        help=(
-            "The config of the model in training."
-        ),
-    )
-    parser.add_argument(
         "--transformer_path",
         type=str,
         default=None,
@@ -650,15 +593,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
-        ),
-    )
-    parser.add_argument(
         "--abnormal_norm_clip_start",
         type=int,
         default=1000,
@@ -692,12 +626,6 @@ def parse_args():
         type=float,
         default=1.29,
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
-    )
-    parser.add_argument(
-        "--guidance_scale",
-        type=float,
-        default=3.5,
-        help="the FLUX.1 dev variant is a guidance distilled model",
     )
 
     args = parser.parse_args()
@@ -1397,7 +1325,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
