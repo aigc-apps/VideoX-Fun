@@ -1172,7 +1172,13 @@ class Flux2Transformer2DModel(
                         for key in missing_keys:
                             param_shape = model_state_dict[key].shape
                             param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
-                            if 'weight' in key:
+                            if "control" in key and key.replace("control_", "") in filtered_state_dict.keys():
+                                initialized_dict[key] = filtered_state_dict[key.replace("control_", "")].clone()
+                                print(f"Initializing missing parameter '{key}' with model.state_dict().")
+                            elif "after_proj" in key or "before_proj" in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                print(f"Initializing missing parameter '{key}' with zero.")
+                            elif 'weight' in key:
                                 if any(norm_type in key for norm_type in ['norm', 'ln_', 'layer_norm', 'group_norm', 'batch_norm']):
                                     initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
                                 elif 'embedding' in key or 'embed' in key:
@@ -1234,6 +1240,11 @@ class Flux2Transformer2DModel(
                             f"Some weights of the model checkpoint were not used when initializing {cls.__name__}: \n {[', '.join(unexpected_keys)]}"
                         )
                 
+                params = [p.numel() if "." in n else 0 for n, p in model.named_parameters()]
+                print(f"### All Parameters: {sum(params) / 1e6} M")
+
+                params = [p.numel() if "attn1." in n else 0 for n, p in model.named_parameters()]
+                print(f"### attn1 Parameters: {sum(params) / 1e6} M")
                 return model
             except Exception as e:
                 print(

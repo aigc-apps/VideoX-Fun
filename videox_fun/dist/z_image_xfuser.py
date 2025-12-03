@@ -30,6 +30,7 @@ class ZMultiGPUsSingleStreamAttnProcessor:
         self,
         attn: Attention,
         hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         freqs_cis: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -67,11 +68,13 @@ class ZMultiGPUsSingleStreamAttnProcessor:
         if attention_mask is not None and attention_mask.ndim == 2:
             attention_mask = attention_mask[:, None, None, :]
 
-        # Compute joint attention
+        half_dtypes = (torch.float16, torch.bfloat16)
+        def half(x):
+            return x if x.dtype in half_dtypes else x.to(torch.bfloat16)
+
         hidden_states = xFuserLongContextAttention()(
-            query,
-            key,
-            value,
+            None,
+            half(query), half(key), half(value), dropout_p=0.0, causal=False,
         )
 
         # Reshape back

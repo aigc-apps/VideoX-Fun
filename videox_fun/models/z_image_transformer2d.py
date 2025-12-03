@@ -224,6 +224,66 @@ class ZImageTransformerBlock(nn.Module):
                 nn.Linear(min(dim, ADALN_EMBED_DIM), 4 * dim, bias=True),
             )
 
+    @property
+    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors
+    def attn_processors(self) -> Dict[str, AttentionProcessor]:
+        r"""
+        Returns:
+            `dict` of attention processors: A dictionary containing all attention processors used in the model with
+            indexed by its weight name.
+        """
+        # set recursively
+        processors = {}
+
+        def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors: Dict[str, AttentionProcessor]):
+            if hasattr(module, "get_processor"):
+                processors[f"{name}.processor"] = module.get_processor()
+
+            for sub_name, child in module.named_children():
+                fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
+
+            return processors
+
+        for name, module in self.named_children():
+            fn_recursive_add_processors(name, module, processors)
+
+        return processors
+
+    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
+    def set_attn_processor(self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]):
+        r"""
+        Sets the attention processor to use to compute attention.
+
+        Parameters:
+            processor (`dict` of `AttentionProcessor` or only `AttentionProcessor`):
+                The instantiated processor class or a dictionary of processor classes that will be set as the processor
+                for **all** `Attention` layers.
+
+                If `processor` is a dict, the key needs to define the path to the corresponding cross attention
+                processor. This is strongly recommended when setting trainable attention processors.
+
+        """
+        count = len(self.attn_processors.keys())
+
+        if isinstance(processor, dict) and len(processor) != count:
+            raise ValueError(
+                f"A dict of processors was passed, but the number of processors {len(processor)} does not match the"
+                f" number of attention layers: {count}. Please make sure to pass {count} processor classes."
+            )
+
+        def fn_recursive_attn_processor(name: str, module: torch.nn.Module, processor):
+            if hasattr(module, "set_processor"):
+                if not isinstance(processor, dict):
+                    module.set_processor(processor)
+                else:
+                    module.set_processor(processor.pop(f"{name}.processor"))
+
+            for sub_name, child in module.named_children():
+                fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
+
+        for name, module in self.named_children():
+            fn_recursive_attn_processor(name, module, processor)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -448,7 +508,8 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
         self.all_gather = get_sp_group().all_gather
-        self.set_attn_processor(ZMultiGPUsSingleStreamAttnProcessor())
+        for layer in self.layers:
+            layer.set_attn_processor(ZMultiGPUsSingleStreamAttnProcessor())
 
     @property
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors
@@ -747,10 +808,6 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         for i, seq_len in enumerate(x_item_seqlens):
             x_attn_mask[i, :seq_len] = 1
 
-        # Context Parallel
-        if self.sp_world_size > 1:
-            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
-
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for layer in self.noise_refiner:
                 def create_custom_forward(module):
@@ -804,6 +861,20 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             for layer in self.context_refiner:
                 cap_feats = layer(cap_feats, cap_attn_mask, cap_freqs_cis)
 
+        # Context Parallel
+        if self.sp_world_size > 1:
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+
+            x_item_seqlens = [len(_) for _ in x]
+            assert all(_ % SEQ_MULTI_OF == 0 for _ in x_item_seqlens)
+            x_max_item_seqlen = max(x_item_seqlens)
+            x_attn_mask = torch.zeros((bsz, x_max_item_seqlen), dtype=torch.bool, device=device)
+            for i, seq_len in enumerate(x_item_seqlens):
+                x_attn_mask[i, :seq_len] = 1
+
+            if x_freqs_cis is not None:
+                x_freqs_cis = torch.chunk(x_freqs_cis, self.sp_world_size, dim=1)[self.sp_world_rank]
+
         # unified
         unified = []
         unified_freqs_cis = []
@@ -815,7 +886,6 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         unified_item_seqlens = [a + b for a, b in zip(cap_item_seqlens, x_item_seqlens)]
         assert unified_item_seqlens == [len(_) for _ in unified]
         unified_max_item_seqlen = max(unified_item_seqlens)
-
         unified = pad_sequence(unified, batch_first=True, padding_value=0.0)
         unified_freqs_cis = pad_sequence(unified_freqs_cis, batch_first=True, padding_value=0.0)
         unified_attn_mask = torch.zeros((bsz, unified_max_item_seqlen), dtype=torch.bool, device=device)
@@ -842,12 +912,18 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             for layer in self.layers:
                 unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
 
+        if self.sp_world_size > 1:
+            unified_out = []
+            for i in range(bsz):
+                x_len = x_item_seqlens[i]
+                unified_out.append(unified[i, :x_len])
+            unified = torch.stack(unified_out)
+            unified = self.all_gather(unified, dim=1)
+            
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))
         x = self.unpatchify(unified, x_size, patch_size, f_patch_size)
 
-        if self.sp_world_size > 1:
-            x = self.all_gather(x, dim=1)
         x = torch.stack(x)
         return x, {}
     

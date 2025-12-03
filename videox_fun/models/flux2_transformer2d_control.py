@@ -1,4 +1,4 @@
-# Modified from https://github.com/ali-vilab/VACE/blob/main/control/models/wan/wan_control.py
+# Modified from https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/wan_vace.py
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
 
