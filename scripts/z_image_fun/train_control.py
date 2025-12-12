@@ -86,7 +86,6 @@ from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
 from videox_fun.pipeline import Flux2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
-from videox_fun.utils.utils_yolo import ObjectInstanceDetector
 
 if is_wandb_available():
     import wandb
@@ -842,7 +841,6 @@ def main():
         low_cpu_mem_usage=True,
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
-    yolo_instance = ObjectInstanceDetector(device=accelerator.device)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
