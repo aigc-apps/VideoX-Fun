@@ -56,7 +56,7 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/z_image/z_image_control_2.0.yaml"
 # model path
-model_name          = "/dev/shm/Z-Image-Turbo/"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo/"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -78,8 +78,7 @@ mask_image          = "asset/mask.png"
 control_context_scale  = 0.75
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
-prompt              = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
+prompt              = "一位年轻女子站在阳光明媚的海岸线上，画面为全身竖构图，身体微微侧向右侧，左手自然下垂，右臂弯曲扶在腰间，她的手指清晰可见，站姿放松而略带羞涩。她身穿轻盈的白色连衣裙，裙摆在海风中轻轻飘动，布料半透、质感柔软。女子拥有一头鲜艳的及腰紫色长发，被海风吹起，在身侧轻盈飞舞，发间系着一个精致的黑色蝴蝶结，与发色形成对比。她面容清秀，眉目精致，肤色白皙细腻，表情温柔略显羞涩，微微低头，眼神静静望向远处的海平线，流露出甜美的青春气息与若有所思的神情。背景是辽阔无垠的海洋与蔚蓝天空，阳光从侧前方洒下，海面波光粼粼，泛着温暖的金色光晕，天空清澈明亮，云朵稀薄，整体色调清新唯美。"
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
