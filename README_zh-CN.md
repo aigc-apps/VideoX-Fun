@@ -611,6 +611,7 @@ V1.0:
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
 | Z-Image-Turbo-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union) | Z-Image-Turbo 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
+| Z-Image-Turbo-Fun-Controlnet-Union-2.0 | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.0) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.0) | Z-Image-Turbo 的 ControlNet 权重，相比第一版在更多层进行添加，也训练了更长时间，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
 
 ## 9. Flux
 
