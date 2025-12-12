@@ -82,7 +82,7 @@ prompt              = "一位年轻女子站在阳光明媚的海岸线上，画
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 9
+num_inference_steps = 25
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i-control"
 
