@@ -319,6 +319,8 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         height: Optional[int] = None,
         width: Optional[int] = None,
         
+        image: Union[torch.FloatTensor] = None,
+        mask_image: Union[torch.FloatTensor] = None,
         control_image: Union[torch.FloatTensor] = None,
         control_context_scale: float = 1.0,
 
@@ -449,6 +451,20 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         weight_dtype = self.text_encoder.dtype
         num_channels_latents = self.transformer.in_channels
 
+        # Prepare mask latent variables
+        if num_channels_latents != self.transformer.control_in_dim:
+            if mask_image is not None:
+                mask_condition = self.mask_processor.preprocess(mask_image, height=height, width=width) 
+                mask_condition = torch.tile(mask_condition, [1, 3, 1, 1]).to(dtype=weight_dtype, device=device)
+            
+            if image is not None:
+                init_image = self.image_processor.preprocess(image, height=height, width=width)
+                init_image = init_image.to(dtype=weight_dtype, device=device) * (mask_condition < 0.5)
+                inpaint_latent = self.vae.encode(init_image)[0].mode()
+                inpaint_latent = (inpaint_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            else:
+                inpaint_latent = torch.zeros((batch_size, num_channels_latents, 2 * (int(height) // (self.vae_scale_factor * 2)), 2 * (int(width) // (self.vae_scale_factor * 2)))).to(device, weight_dtype)
+
         if control_image is not None:
             control_image = self.image_processor.preprocess(control_image, height=height, width=width) 
             control_image = control_image.to(dtype=weight_dtype, device=device)
@@ -457,8 +473,20 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         else:
             control_latents = torch.zeros_like(inpaint_latent)
 
-        control_context = control_latents.unsqueeze(2)
+        # Unsqueeze
+        if num_channels_latents != self.transformer.control_in_dim:
+            inpaint_latent = inpaint_latent.unsqueeze(2)
+            mask_condition = F.interpolate(1 - mask_condition[:, :1], size=inpaint_latent.size()[-2:], mode='nearest').to(device, weight_dtype)
+            mask_condition = mask_condition.unsqueeze(2)
 
+        control_latents = control_latents.unsqueeze(2)
+
+        # Concat
+        if num_channels_latents != self.transformer.control_in_dim:
+            control_context = torch.concat([control_latents, mask_condition, inpaint_latent], dim=1)
+        else:
+            control_context = control_latents
+        
         # If prompt_embeds is provided and prompt is None, skip encoding
         if prompt_embeds is not None and prompt is None:
             if self.do_classifier_free_guidance and negative_prompt_embeds is None:
