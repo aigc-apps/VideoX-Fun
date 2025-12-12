@@ -1004,7 +1004,7 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         for key in missing_keys:
                             param_shape = model_state_dict[key].shape
                             param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
-                            if "control" in key and key.replace("control_", "") in filtered_state_dict.keys():
+                            if "control" in key and key.replace("control_", "") in filtered_state_dict.keys() and model.state_dict()[key].size() == filtered_state_dict[key.replace("control_", "")].size():
                                 initialized_dict[key] = filtered_state_dict[key.replace("control_", "")].clone()
                                 print(f"Initializing missing parameter '{key}' with model.state_dict().")
                             elif "after_proj" in key or "before_proj" in key:

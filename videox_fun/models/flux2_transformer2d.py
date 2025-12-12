@@ -1272,6 +1272,11 @@ class Flux2Transformer2DModel(
                 tmp_state_dict[key] = state_dict[key]
             else:
                 print(key, "Size don't match, skip")
+        
+        for key in model.state_dict():
+            if "control" in key and key.replace("control_", "") in state_dict.keys() and model.state_dict()[key].size() == state_dict[key.replace("control_", "")].size():
+                tmp_state_dict[key] = state_dict[key.replace("control_", "")].clone()
+                print(f"Initializing missing parameter '{key}' with model.state_dict().")
                 
         state_dict = tmp_state_dict
 

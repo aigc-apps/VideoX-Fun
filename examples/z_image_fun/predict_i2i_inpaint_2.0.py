@@ -54,7 +54,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # Config and model path
-config_path         = "config/z_image/z_image_control.yaml"
+config_path         = "config/z_image/z_image_control_2.0.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Z-Image-Turbo/"
 
@@ -62,7 +62,7 @@ model_name          = "models/Diffusion_Transformer/Z-Image-Turbo/"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.0.safetensors" 
 vae_path            = None
 lora_path           = None
 
@@ -73,6 +73,8 @@ sample_size         = [1728, 992]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
+inpaint_image       = "asset/8.png"
+mask_image          = "asset/mask.png"
 control_context_scale  = 0.75
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
@@ -80,7 +82,7 @@ prompt              = "一位年轻女子站在阳光明媚的海岸线上，画
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 9
+num_inference_steps = 25
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i-control"
 
@@ -191,6 +193,16 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
+    if inpaint_image is not None:
+        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
+    else:
+        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
+
+    if mask_image is not None:
+        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
+    else:
+        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
+
     if control_image is not None:
         control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
 
@@ -201,6 +213,8 @@ with torch.no_grad():
         width       = sample_size[1],
         generator   = generator,
         guidance_scale = guidance_scale,
+        image               = inpaint_image,
+        mask_image          = mask_image,
         control_image       = control_image,
         num_inference_steps = num_inference_steps,
         control_context_scale = control_context_scale,
