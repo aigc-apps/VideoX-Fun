@@ -108,6 +108,7 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         control_refiner_layers_places=None,
         control_in_dim=None,
         add_control_noise_refiner=False,
+        add_control_noise_refiner_correctly=False,
         all_patch_size=(2,),
         all_f_patch_size=(1,),
         in_channels=16,
@@ -190,6 +191,8 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
             all_x_embedder[f"{patch_size}-{f_patch_size}"] = x_embedder
 
         self.control_all_x_embedder = nn.ModuleDict(all_x_embedder)
+        self.add_control_noise_refiner = add_control_noise_refiner
+        self.add_control_noise_refiner_correctly = add_control_noise_refiner_correctly
         if self.add_control_noise_refiner:
             del self.noise_refiner
             self.noise_refiner = nn.ModuleList(
@@ -381,6 +384,7 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         )
         new_kwargs.update(kwargs)
         
+        local_layers =  self.control_noise_refiner if self.add_control_noise_refiner_correctly else self.control_layers
         for layer in self.control_layers:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module, **static_kwargs):
