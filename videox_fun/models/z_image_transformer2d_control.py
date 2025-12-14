@@ -385,7 +385,7 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         new_kwargs.update(kwargs)
         
         local_layers =  self.control_noise_refiner if self.add_control_noise_refiner_correctly else self.control_layers
-        for layer in self.control_layers:
+        for layer in local_layers:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module, **static_kwargs):
                     def custom_forward(*inputs):
