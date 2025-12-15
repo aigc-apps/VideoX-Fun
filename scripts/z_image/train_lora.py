@@ -80,8 +80,10 @@ from videox_fun.models import (AutoencoderKL, AutoTokenizer,
                                Qwen2Tokenizer, Qwen3ForCausalLM,
                                QwenImageTransformer2DModel,
                                ZImageTransformer2DModel)
-from videox_fun.pipeline import Flux2Pipeline
+from videox_fun.pipeline import ZImagePipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.lora_utils import (create_network, merge_lora,
+                                         unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -201,7 +203,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
             subfolder="scheduler"
         )
         transformer3d = transformer3d.to("cpu")
-        pipeline = Flux2Pipeline(
+        pipeline = ZImagePipeline(
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
