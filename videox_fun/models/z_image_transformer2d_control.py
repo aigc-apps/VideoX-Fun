@@ -301,6 +301,7 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
         # Context Parallel
         if self.sp_world_size > 1:
             control_context = torch.chunk(control_context, self.sp_world_size, dim=1)[self.sp_world_rank]
+            x_item_seqlens = [len(_) for _ in control_context]
 
         # unified
         cap_item_seqlens = [len(_) for _ in cap_feats]
@@ -402,6 +403,10 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
  
         hints = torch.unbind(c)[:-1]
         control_context = torch.unbind(c)[-1]
+
+        if self.sp_world_size > 1:
+            control_context = torch.chunk(control_context, self.sp_world_size, dim=1)[self.sp_world_rank]
+            control_context_item_seqlens = [len(_) for _ in control_context]
         return hints, control_context, control_context_item_seqlens
 
     def forward_control_2_0_layers(
