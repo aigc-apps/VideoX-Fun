@@ -171,7 +171,7 @@ if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.transformer_blocks))
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:

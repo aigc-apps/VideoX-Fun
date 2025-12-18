@@ -838,6 +838,20 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                     if cond_flag:
                         rel_l1_distance = self.teacache.compute_rel_l1_distance(self.teacache.previous_modulated_input, modulated_inp)
                         self.teacache.accumulated_rel_l1_distance += self.teacache.rescale_func(rel_l1_distance)
+
+                    if torch.distributed.is_initialized():
+                        if not isinstance(self.teacache.accumulated_rel_l1_distance, torch.Tensor):
+                            accumulated_distance_tensor = torch.tensor(
+                                self.teacache.accumulated_rel_l1_distance, 
+                                device=hidden_states.device,
+                                dtype=torch.float32
+                            )
+                        else:
+                            accumulated_distance_tensor = self.teacache.accumulated_rel_l1_distance.clone()
+                        
+                        torch.distributed.broadcast(accumulated_distance_tensor, src=0)
+                        self.teacache.accumulated_rel_l1_distance = accumulated_distance_tensor.item()
+
                     if self.teacache.accumulated_rel_l1_distance < self.teacache.rel_l1_thresh:
                         self.should_calc = False
                     else:
