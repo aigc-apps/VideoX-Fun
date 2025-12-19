@@ -390,7 +390,9 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         state_dict = state_dict
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
             key = "lora_unet__" + key
         key = key.replace(".", "_")
         if key.endswith("_lora_up_weight"):
@@ -398,9 +400,9 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
         if key.endswith("_lora_A_default_weight"):
-            key = key[:-21] + ".lora_A.weight"
+            key = key[:-22] + ".lora_A.weight"
         if key.endswith("_lora_B_default_weight"):
-            key = key[:-21] + ".lora_B.weight"
+            key = key[:-22] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):
@@ -521,7 +523,9 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
             key = "lora_unet__" + key
         key = key.replace(".", "_")
         if key.endswith("_lora_up_weight"):
@@ -529,9 +533,9 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
         if key.endswith("_lora_A_default_weight"):
-            key = key[:-21] + ".lora_A.weight"
+            key = key[:-22] + ".lora_A.weight"
         if key.endswith("_lora_B_default_weight"):
-            key = key[:-21] + ".lora_B.weight"
+            key = key[:-22] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):
