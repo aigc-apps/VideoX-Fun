@@ -58,12 +58,11 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 import videox_fun.reward.reward_fn as reward_fn
-from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, WanT5EncoderModel,
-                               Wan2_2Transformer3DModel)
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+                               Wan2_2Transformer3DModel, WanT5EncoderModel)
 from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
 from videox_fun.utils.lora_utils import create_network, merge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
-
 
 if is_wandb_available():
     import wandb
@@ -981,7 +980,8 @@ def main():
 
         # Some reward models comes from `transformers`. We also need `unset_hf_deepspeed_config` to prevent the 
         # model from being partitioned during `zero.Init`.
-        from transformers.integrations.deepspeed import unset_hf_deepspeed_config
+        from transformers.integrations.deepspeed import \
+            unset_hf_deepspeed_config
         unset_hf_deepspeed_config()
 
         # loss function
@@ -1195,6 +1195,7 @@ def main():
 
     if zero_stage == 3:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
 
@@ -1207,6 +1208,7 @@ def main():
 
     if fsdp_stage != 0:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)

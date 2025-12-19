@@ -57,11 +57,11 @@ for project_root in project_roots:
 
 import videox_fun.reward.reward_fn as reward_fn
 from videox_fun.models import (AutoencoderKLCogVideoX,
-                              CogVideoXTransformer3DModel, T5EncoderModel,
-                              T5Tokenizer)
-from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (CogVideoXFunInpaintPipeline,
-                                                               get_3d_rotary_pos_embed,
-                                                               get_resize_crop_region_for_grid)
+                               CogVideoXTransformer3DModel, T5EncoderModel,
+                               T5Tokenizer)
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
+    CogVideoXFunInpaintPipeline, get_3d_rotary_pos_embed,
+    get_resize_crop_region_for_grid)
 from videox_fun.utils.lora_utils import create_network, merge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 

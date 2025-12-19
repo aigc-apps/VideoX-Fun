@@ -378,6 +378,21 @@ def create_network(
     )
     return network
 
+def convert_peft_lora_to_kohya_lora(state_dict):
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
+            key = "lora_unet__" + key
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
+        key = key.replace(".", "_")
+        new_state_dict[key] = value
+    return new_state_dict
+
 def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     if lora_path is None:
         return pipeline

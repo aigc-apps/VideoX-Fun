@@ -24,8 +24,8 @@ import pickle
 import random
 import shutil
 import sys
-from typing import List, NamedTuple, Optional, Union
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import (Any, Callable, Dict, List, NamedTuple, Optional, Tuple,
+                    Union)
 
 import accelerate
 import diffusers
@@ -73,16 +73,17 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLFlux2,
-                               CLIPImageProcessor, Mistral3ForConditionalGeneration,
-                               PixtralProcessor, CLIPVisionModelWithProjection,
+from videox_fun.models import (AutoencoderKLFlux2, CLIPImageProcessor,
+                               CLIPVisionModelWithProjection,
                                Flux2Transformer2DModel,
                                Mistral3ForConditionalGeneration,
+                               PixtralProcessor,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.pipeline import Flux2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import (create_network, merge_lora,
+from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
+                                         create_network, merge_lora,
                                          unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -989,9 +990,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict = {
-                            "diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()
-                        }
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                     else:
                         network_state_dict = {}
                         for key in accelerate_state_dict:
@@ -1019,7 +1018,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict = {"diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()}
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                     else:
                         network_state_dict = accelerate_state_dict
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
@@ -1041,7 +1040,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]))
-                        network_state_dict = {"diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()}
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                         save_model(safetensor_save_path, network_state_dict)
                     else:
                         save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
@@ -1060,6 +1059,9 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+
+        accelerator.register_save_state_pre_hook(save_model_hook)
+        accelerator.register_load_state_pre_hook(load_model_hook)
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)

@@ -57,27 +57,30 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                           ASPECT_RATIO_RANDOM_CROP_512,
-                                           ASPECT_RATIO_RANDOM_CROP_PROB,
-                                           AspectRatioBatchImageVideoSampler,
-                                           RandomSampler, get_closest_ratio)
+                                            ASPECT_RATIO_RANDOM_CROP_512,
+                                            ASPECT_RATIO_RANDOM_CROP_PROB,
+                                            AspectRatioBatchImageVideoSampler,
+                                            RandomSampler, get_closest_ratio)
 from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
-                                                ImageVideoDataset,
-                                                ImageVideoSampler,
-                                                get_random_mask)
+                                                 ImageVideoDataset,
+                                                 ImageVideoSampler,
+                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLCogVideoX,
-                              CogVideoXTransformer3DModel, T5EncoderModel,
-                              T5Tokenizer)
-from videox_fun.pipeline import (CogVideoXFunPipeline,
-                                CogVideoXFunControlPipeline,
-                                CogVideoXFunInpaintPipeline)
+                               CogVideoXTransformer3DModel, T5EncoderModel,
+                               T5Tokenizer)
+from videox_fun.pipeline import (CogVideoXFunControlPipeline,
+                                 CogVideoXFunInpaintPipeline,
+                                 CogVideoXFunPipeline)
 from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
+from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
+                                         create_network, merge_lora,
+                                         unmerge_lora)
 from videox_fun.utils.utils import (get_image_to_video_latent,
-                                   get_video_to_video_latent, save_videos_grid)
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -864,7 +867,8 @@ def main():
 
     # Lora will work with this...
     if args.use_peft_lora:
-        from peft import LoraConfig, inject_adapter_in_model, get_peft_model_state_dict
+        from peft import (LoraConfig, get_peft_model_state_dict,
+                          inject_adapter_in_model)
         lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
         transformer3d = inject_adapter_in_model(lora_config, transformer3d)
 
@@ -920,9 +924,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict = {
-                            "diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()
-                        }
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                     else:
                         network_state_dict = {}
                         for key in accelerate_state_dict:
@@ -950,7 +952,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict = {"diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()}
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                     else:
                         network_state_dict = accelerate_state_dict
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
@@ -972,7 +974,7 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]))
-                        network_state_dict = {"diffusion_model." + key:network_state_dict[key] for key in network_state_dict.keys()}
+                        network_state_dict = convert_peft_lora_to_kohya_lora(network_state_dict)
                         save_model(safetensor_save_path, network_state_dict)
                     else:
                         save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
