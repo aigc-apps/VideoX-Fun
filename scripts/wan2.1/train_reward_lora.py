@@ -59,8 +59,8 @@ for project_root in project_roots:
 
 import videox_fun.reward.reward_fn as reward_fn
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
-from videox_fun.pipeline import WanPipeline, WanI2VPipeline
+                               WanTransformer3DModel)
+from videox_fun.pipeline import WanI2VPipeline, WanPipeline
 from videox_fun.utils.lora_utils import create_network, merge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 

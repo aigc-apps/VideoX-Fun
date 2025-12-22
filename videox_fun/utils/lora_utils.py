@@ -378,6 +378,25 @@ def create_network(
     )
     return network
 
+def convert_peft_lora_to_kohya_lora(state_dict):
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
+            key = "lora_unet__" + key
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        new_state_dict[key] = value
+    return new_state_dict
+
 def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     if lora_path is None:
         return pipeline
@@ -390,7 +409,9 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         state_dict = state_dict
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
             key = "lora_unet__" + key
         key = key.replace(".", "_")
         if key.endswith("_lora_up_weight"):
@@ -398,9 +419,9 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
         if key.endswith("_lora_A_default_weight"):
-            key = key[:-21] + ".lora_A.weight"
+            key = key[:-22] + ".lora_A.weight"
         if key.endswith("_lora_B_default_weight"):
-            key = key[:-21] + ".lora_B.weight"
+            key = key[:-22] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):
@@ -521,7 +542,9 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
             key = "lora_unet__" + key
         key = key.replace(".", "_")
         if key.endswith("_lora_up_weight"):
@@ -529,9 +552,9 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
         if key.endswith("_lora_A_default_weight"):
-            key = key[:-21] + ".lora_A.weight"
+            key = key[:-22] + ".lora_A.weight"
         if key.endswith("_lora_B_default_weight"):
-            key = key[:-21] + ".lora_B.weight"
+            key = key[:-22] + ".lora_B.weight"
         if key.endswith("_lora_A_weight"):
             key = key[:-14] + ".lora_A.weight"
         if key.endswith("_lora_B_weight"):

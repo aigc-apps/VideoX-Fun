@@ -62,7 +62,7 @@ model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
@@ -78,11 +78,11 @@ mask_image          = None
 control_context_scale  = 0.75
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-prompt              = "一位年轻女子站在阳光明媚的海岸线上，画面为全身竖构图，身体微微侧向右侧，左手自然下垂，右臂弯曲扶在腰间，她的手指清晰可见，站姿放松而略带羞涩。她身穿轻盈的白色连衣裙，质感柔软。女子拥有一头鲜艳的及腰紫色长发，被海风吹起，在身侧轻盈飞舞，发间系着一个精致的黑色蝴蝶结，与发色形成对比。她面容清秀，眉目精致，肤色白皙细腻，表情温柔略显羞涩，微微低头，眼神静静望向远处的海平线，流露出甜美的青春气息与若有所思的神情。背景是辽阔无垠的海洋与蔚蓝天空，阳光从侧前方洒下，海面波光粼粼，泛着温暖的金色光晕，天空清澈明亮，云朵稀薄，整体色调清新唯美。"
+prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境，宛如二次元世界与现实海景的完美融合。"
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 25
+num_inference_steps = 8
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i-control"
 
@@ -159,11 +159,11 @@ if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.single_transformer_blocks))
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.layers))
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers, ignored_modules=[text_encoder.language_model.embed_tokens], transformer_layer_cls_to_wrap=["MistralDecoderLayer", "PixtralTransformer"])
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(text_encoder.model.layers))
         text_encoder = shard_fn(text_encoder)
         print("Add FSDP TEXT ENCODER")
 

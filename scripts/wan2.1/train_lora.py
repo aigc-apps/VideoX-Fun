@@ -61,18 +61,20 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                           ASPECT_RATIO_RANDOM_CROP_512,
-                                           ASPECT_RATIO_RANDOM_CROP_PROB,
-                                           AspectRatioBatchImageVideoSampler,
-                                           RandomSampler, get_closest_ratio)
+                                            ASPECT_RATIO_RANDOM_CROP_512,
+                                            ASPECT_RATIO_RANDOM_CROP_PROB,
+                                            AspectRatioBatchImageVideoSampler,
+                                            RandomSampler, get_closest_ratio)
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
-                                                ImageVideoSampler,
-                                                get_random_mask)
+                                                 ImageVideoSampler,
+                                                 get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
-from videox_fun.pipeline import WanPipeline, WanI2VPipeline
+                               WanTransformer3DModel)
+from videox_fun.pipeline import WanI2VPipeline, WanPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
+from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
+                                         create_network, merge_lora,
+                                         unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -920,7 +922,8 @@ def main():
 
     # Lora will work with this...
     if args.use_peft_lora:
-        from peft import LoraConfig, inject_adapter_in_model, get_peft_model_state_dict
+        from peft import (LoraConfig, get_peft_model_state_dict,
+                          inject_adapter_in_model)
         lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
         transformer3d = inject_adapter_in_model(lora_config, transformer3d)
 
@@ -976,6 +979,9 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
+                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                     else:
                         network_state_dict = {}
                         for key in accelerate_state_dict:
@@ -1003,6 +1009,9 @@ def main():
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
                         network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
+                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                     else:
                         network_state_dict = accelerate_state_dict
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
@@ -1023,7 +1032,12 @@ def main():
                 if accelerator.is_main_process:
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
                     if args.use_peft_lora:
-                        save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(models[-1])))
+                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]))
+                        save_model(safetensor_save_path, network_state_dict)
+
+                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
+                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                     else:
                         save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
 
@@ -1041,6 +1055,9 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+
+        accelerator.register_save_state_pre_hook(save_model_hook)
+        accelerator.register_load_state_pre_hook(load_model_hook)
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1880,7 +1897,12 @@ def main():
                         if not args.save_state:
                             if args.use_peft_lora:
                                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(transformer3d)))
+                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                                save_model(safetensor_save_path, network_state_dict)
+
+                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                                 logger.info(f"Saved safetensor to {safetensor_save_path}")
                             else:
                                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
@@ -1938,7 +1960,12 @@ def main():
         if not args.save_state:
             if args.use_peft_lora:
                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(transformer3d)))
+                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                save_model(safetensor_save_path, network_state_dict)
+
+                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                 logger.info(f"Saved safetensor to {safetensor_save_path}")
             else:
                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
