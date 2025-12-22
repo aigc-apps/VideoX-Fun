@@ -84,8 +84,7 @@ sample_size         = [1344, 768]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 image               = "asset/8.png"
-# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+# Please use as detailed a prompt as possible to describe the object that needs to be generated.
 prompt              = "一位年轻女子站在阳光明媚的海岸线上，身穿清爽的白色衬衫与裙子，在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
 negative_prompt     = " "
 guidance_scale      = 4.0

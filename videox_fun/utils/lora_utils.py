@@ -390,6 +390,10 @@ def convert_peft_lora_to_kohya_lora(state_dict):
         key = key.replace(".lora_A.", ".lora_down.")
         key = key.replace(".lora_B.", ".lora_up.")
         key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
         new_state_dict[key] = value
     return new_state_dict
 

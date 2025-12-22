@@ -84,8 +84,7 @@ sample_size         = [1344, 768]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 image               = ["asset/8.png", "asset/ref_1.png"]
-# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+# Please use as detailed a prompt as possible to describe the object that needs to be generated.
 prompt              = "女生拿着相机"
 negative_prompt     = " "
 guidance_scale      = 4.0

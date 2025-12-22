@@ -1,9 +1,11 @@
 import os
 import sys
 
+import numpy as np
 import torch
-
-from diffusers import (FlowMatchEulerDiscreteScheduler)
+from diffusers import FlowMatchEulerDiscreteScheduler
+from omegaconf import OmegaConf
+from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -11,16 +13,18 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLQwenImage,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+from videox_fun.models import (AutoencoderKL, AutoTokenizer,
+                               Qwen3ForCausalLM, ZImageControlTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import QwenImagePipeline
+from videox_fun.pipeline import ZImageControlPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, get_image,
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -35,7 +39,7 @@ from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
+GPU_memory_mode     = "model_cpu_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -49,54 +53,49 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# Support TeaCache.
-enable_teacache     = True
-# Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
-# but it may cause slight differences between the generated content and the original content.
-teacache_threshold  = 0.250
-# The number of steps to skip TeaCache at the beginning of the inference process, which can
-# reduce the impact of TeaCache on generated video quality.
-num_skip_start_steps = 5
-# Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
-teacache_offload    = False
-
-# Skip some cfg steps in inference for acceleration
-# Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0
-
+# Config and model path
+config_path         = "config/z_image/z_image_control_2.1.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Qwen-Image"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = None
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Tile-2.1-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [1344, 768]
+sample_size         = [1728, 992]
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
+control_image       = "asset/low_res.png"
+# The inpaint_image and mask_image is useless in tile model, just set them to None.
+inpaint_image       = None
+mask_image          = None
+control_context_scale = 0.80
+
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
-prompt              = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
+prompt              = "这是一张充满都市气息的户外人物肖像照片。画面中是一位年轻男性，他展现出时尚而自信的形象。人物拥有精心打理的短发发型，两侧修剪得较短，顶部保留一定长度，呈现出流行的Undercut造型。他佩戴着一副时尚的浅色墨镜或透明镜框眼镜，为整体造型增添了潮流感。脸上洋溢着温和友善的笑容，神情放松自然，给人以阳光开朗的印象。他身穿一件经典的牛仔外套，这件单品永不过时，展现出休闲又有型的穿衣风格。牛仔外套的蓝色调与整体氛围十分协调，领口处隐约可见内搭的衣物。照片的背景是典型的城市街景，可以看到模糊的建筑物、街道和行人，营造出繁华都市的氛围。背景经过了恰当的虚化处理，使人物主体更加突出。光线明亮而柔和，可能是白天的自然光，为照片带来清新通透的视觉效果。整张照片构图专业，景深控制得当，完美捕捉了一个现代都市年轻人充满活力和自信的瞬间，展现出积极向上的生活态度。"
 negative_prompt     = " "
-guidance_scale      = 4.0
+guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 50
+num_inference_steps = 8
 lora_weight         = 0.55
-save_path           = "samples/qwenimage-t2i"
+save_path           = "samples/z-image-t2i-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
+config = OmegaConf.load(config_path)
 
-transformer = QwenImageTransformer2DModel.from_pretrained(
+transformer = ZImageControlTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
+    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -112,7 +111,7 @@ if transformer_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKLQwenImage.from_pretrained(
+vae = AutoencoderKL.from_pretrained(
     model_name, 
     subfolder="vae"
 ).to(weight_dtype)
@@ -130,11 +129,12 @@ if vae_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get tokenizer and text_encoder
-tokenizer = Qwen2Tokenizer.from_pretrained(
+tokenizer = AutoTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
-text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    model_name, subfolder="text_encoder", torch_dtype=weight_dtype
+text_encoder = Qwen3ForCausalLM.from_pretrained(
+    model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
+    low_cpu_mem_usage=True,
 )
 
 # Get Scheduler
@@ -148,7 +148,7 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = QwenImagePipeline(
+pipeline = ZImageControlPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
@@ -160,13 +160,11 @@ if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.transformer_blocks))
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.layers))
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        from functools import partial
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(text_encoder.model.layers))
         text_encoder = shard_fn(text_encoder)
         print("Add FSDP TEXT ENCODER")
 
@@ -190,31 +188,37 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
 else:
     pipeline.to(device=device)
 
-coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
-if coefficients is not None:
-    print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
-    pipeline.transformer.enable_teacache(
-        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
-    )
-
-if cfg_skip_ratio is not None:
-    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
-    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
+    if inpaint_image is not None:
+        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
+    else:
+        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
+
+    if mask_image is not None:
+        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
+    else:
+        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
+
+    if control_image is not None:
+        control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
+
     sample = pipeline(
-        prompt, 
+        prompt      = prompt, 
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
         generator   = generator,
-        true_cfg_scale = guidance_scale,
+        guidance_scale = guidance_scale,
+        image               = inpaint_image,
+        mask_image          = mask_image,
+        control_image       = control_image,
         num_inference_steps = num_inference_steps,
+        control_context_scale = control_context_scale,
     ).images
 
 if lora_path is not None:
