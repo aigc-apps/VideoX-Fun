@@ -1603,7 +1603,12 @@ def main():
                         if not args.save_state:
                             if args.use_peft_lora:
                                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(transformer3d)))
+                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                                save_model(safetensor_save_path, network_state_dict)
+
+                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                                 logger.info(f"Saved safetensor to {safetensor_save_path}")
                             else:
                                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
@@ -1657,7 +1662,12 @@ def main():
         if not args.save_state:
             if args.use_peft_lora:
                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                save_model(safetensor_save_path, get_peft_model_state_dict(accelerator.unwrap_model(transformer3d)))
+                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                save_model(safetensor_save_path, network_state_dict)
+
+                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                 logger.info(f"Saved safetensor to {safetensor_save_path}")
             else:
                 safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
