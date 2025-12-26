@@ -187,7 +187,7 @@
         "Node name for S&R": "LoadZImageVAEModel"
       },
       "widgets_values": [
-        "z-image-ae.safetensors",
+        "ae.safetensors",
         "bf16"
       ]
     },
