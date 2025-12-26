@@ -1,6 +1,6 @@
 # Z-Image-Turbo Model Setup Guide
 
-## 1. Model Links and Storage Locations
+## a. Model Links and Storage Locations
 
 **Chunked loading is recommended** as it better aligns with ComfyUI's standard workflow.
 
@@ -10,11 +10,12 @@ For chunked loading, it is recommended to directly download the Z-Image weights 
 
 **Core Model Files:**
 
-| Component | File Name | Type |
-|-----------|-----------|------|
-| Text Encoder | [`qwen_3_4b.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors) | Text Encoder |
-| Diffusion Model | [`z_image_turbo_bf16.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors) | Diffusion Model |
-| VAE | [`ae.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors) | VAE |
+| Component | File Name | 
+|-----------|-----------| 
+| Text Encoder | [`qwen_3_4b.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors) |
+| Diffusion Model | [`z_image_turbo_bf16.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors) | 
+| VAE | [`ae.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors) | 
+| tokenizer(Qwen3-4B) | [`tokenizer`](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/tree/main/tokenizer) | 
 
 **ControlNet Model Files:**
 
@@ -34,6 +35,8 @@ For chunked loading, it is recommended to directly download the Z-Image weights 
 │ │ └── z_image_turbo_bf16.safetensors
 │ ├── 📂 vae/
 │ │ └── ae.safetensors
+│ ├── 📂 Fun_Models/
+│ │ └── Qwen3-4B/
 │ └── 📂 model_patches/
 │   └── Z-Image-Turbo-Fun-Controlnet-Union.safetensors
 ```
@@ -83,7 +86,7 @@ For full model loading, use the diffusers version of Z-Image Turbo and place the
 │   └── 📂 Z-Image-Turbo
 ```
 
-## 2. ComfyUI Json Workflows
+## b. ComfyUI Json Workflows
 
 ### 1. Chunked Loading (Recommended)
 
