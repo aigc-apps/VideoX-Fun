@@ -341,6 +341,7 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        comfyui_progressbar: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -473,7 +474,7 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
             control_latents = self.vae.encode(control_image)[0].mode()
             control_latents = (control_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
         else:
-            control_latents = torch.zeros_like(inpaint_latent)
+            control_latents = torch.ones_like(inpaint_latent) * -1
 
         # Unsqueeze
         if num_channels_latents != self.transformer.control_in_dim:
@@ -550,6 +551,10 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         )
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(num_inference_steps + 1)
+            pbar.update(1)
 
         # 6. Denoising loop
         with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -645,6 +650,8 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
+                if comfyui_progressbar:
+                    pbar.update(1)
 
         if output_type == "latent":
             image = latents

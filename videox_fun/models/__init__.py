@@ -2,7 +2,7 @@ import importlib.util
 
 from diffusers import AutoencoderKL
 from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
-                          CLIPTextModel, CLIPTokenizer,
+                          CLIPTextModel, CLIPTokenizer, Qwen3Config,
                           CLIPVisionModelWithProjection, LlamaModel,
                           LlamaTokenizerFast, LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,

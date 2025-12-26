@@ -1,0 +1,614 @@
+{
+  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "revision": 0,
+  "last_node_id": 102,
+  "last_link_id": 96,
+  "nodes": [
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        18,
+        -46
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 91,
+      "type": "LoadZImageTextEncoderModel",
+      "pos": [
+        283.53765869140625,
+        -280.6837463378906
+      ],
+      "size": [
+        407.4130859375,
+        102
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            80
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            81
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageTextEncoderModel"
+      },
+      "widgets_values": [
+        "qwen_3_4b.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        -50
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            88
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "A photo of Sakura, a 17-year-old high school student from Japan, captured in a candid, high-fidelity cinematic moment on a rainy evening. She is squatting low on the rain-slicked asphalt of an urban sidewalk, holding a transparent vinyl umbrella with a white handle resting over her shoulder in one hand, her other hand resting on her knee. The clear plastic canopy is streaked with rivulets of water and beaded with droplets that catch the ambient city light. A profound, silent interaction defines the scene: Sakura is looking directly downward, her expression gentle and focused, locking eyes with a small black cat sitting on the wet ground in front of her.\n\nSakura has long, lustrous black hair styled in a precise hime cut with blunt bangs across her forehead and sidelocks framing her cheeks, damp strands clinging subtly to her jacket, with a single red ribbon tied on the left side. Her visible pores on her nose, and a soft sheen of moisture on her cheeks. She wears a dark navy sailor-style school uniform (seifuku) featuring a white collar with red linear detailing and a bright red necktie loosely knotted at the chest; a simple black choker encircles her neck. The uniform jacket has oversized sleeves. Her lower body features a short, dark pleated miniskirt that fans slightly over clean white ankle socks that provide a stark contrast to the wet asphalt, ending in dark leather loafers that gleam with moisture.\n\nThe black cat sits upright in a shallow puddle, its short fur slicked by the rain, tilting its head back to stare intently up into Sakura's face, establishing a clear line of sight. The background is anchored by a large, illuminated red vending machine standing against the darkness, its cool bluish-white interior light spilling onto Sakura's profile and the umbrella. The ground reflects the red chassis and the neon streetlights in distorted patches on the wet pavement. Additional cool rain streaks fall through the frame, some caught in sharp focus and others blurred into vertical lines against the background lights. The scene is rendered with a wide-aperture lens creating a shallow depth of field, keeping the girl and cat in sharp focus while softening the background into gentle bokeh, with the texture of fine-grain 35mm film stock.\n"
+      ]
+    },
+    {
+      "id": 73,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        160
+      ],
+      "size": [
+        383.7149963378906,
+        183.83506774902344
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            89
+          ]
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 97,
+      "type": "Note",
+      "pos": [
+        -354.4680507215508,
+        -433.6570714778354
+      ],
+      "size": [
+        598.1623727144193,
+        233.48501180428053
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].\nmodel_full_load means that the entire model will be moved to the GPU.\n\nmodel_full_load_and_qfloat8 means that the entire model will be moved to the GPU,\nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nmodel_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.\n\nmodel_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, \nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nsequential_cpu_offload means that each layer of the model will be moved to the CPU after use, \nresulting in slower speeds but saving a large amount of GPU memory."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 93,
+      "type": "LoadZImageVAEModel",
+      "pos": [
+        1168.1599508804559,
+        -314.8650476692169
+      ],
+      "size": [
+        377.8583984375,
+        84.69844055175781
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            79
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageVAEModel"
+      },
+      "widgets_values": [
+        "z-image-ae.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 96,
+      "type": "CombineZImagePipeline",
+      "pos": [
+        790.3572998046875,
+        -328.7134094238281
+      ],
+      "size": [
+        342.5804748535156,
+        162
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 96
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 79
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 80
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 81
+        },
+        {
+          "name": "processor",
+          "shape": 7,
+          "type": "Processor",
+          "link": null
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            87
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineZImagePipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1049.1402001998824,
+        -52.699751832945104
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 90
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 100,
+      "type": "LoadImage",
+      "pos": [
+        396.48551767952716,
+        419.158511044569
+      ],
+      "size": [
+        270,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            86
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "a7kXeQ5l9Dhspes7q3x3G (1).png",
+        "image"
+      ]
+    },
+    {
+      "id": 92,
+      "type": "LoadZImageTransformerModel",
+      "pos": [
+        275.9798278808594,
+        -465.2391052246094
+      ],
+      "size": [
+        416.3677673339844,
+        106.13789367675781
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            95
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            82
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageTransformerModel"
+      },
+      "widgets_values": [
+        "z_image_turbo_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 102,
+      "type": "LoadZImageControlNetInModel",
+      "pos": [
+        779.793189390101,
+        -457.3825558553134
+      ],
+      "size": [
+        589.8698159570357,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 95
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            96
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageControlNetInModel"
+      },
+      "widgets_values": [
+        "z_image/z_image_control_2.1.yaml",
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors"
+      ]
+    },
+    {
+      "id": 99,
+      "type": "ZImageControlSampler",
+      "pos": [
+        727.2482831521481,
+        -52.41010988674983
+      ],
+      "size": [
+        270,
+        350
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 87
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 88
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 89
+        },
+        {
+          "name": "control_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 86
+        },
+        {
+          "name": "inpaint_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "mask_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            90
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageControlSampler"
+      },
+      "widgets_values": [
+        1184,
+        1568,
+        43,
+        "fixed",
+        8,
+        0,
+        "Flow",
+        3,
+        0.8
+      ]
+    }
+  ],
+  "links": [
+    [
+      79,
+      93,
+      0,
+      96,
+      1,
+      "VAEModel"
+    ],
+    [
+      80,
+      91,
+      0,
+      96,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      81,
+      91,
+      1,
+      96,
+      3,
+      "Tokenizer"
+    ],
+    [
+      82,
+      92,
+      1,
+      96,
+      5,
+      "STRING"
+    ],
+    [
+      86,
+      100,
+      0,
+      99,
+      3,
+      "IMAGE"
+    ],
+    [
+      87,
+      96,
+      0,
+      99,
+      0,
+      "FunModels"
+    ],
+    [
+      88,
+      75,
+      0,
+      99,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      89,
+      73,
+      0,
+      99,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      90,
+      99,
+      0,
+      88,
+      0,
+      "IMAGE"
+    ],
+    [
+      95,
+      92,
+      0,
+      102,
+      0,
+      "TransformerModel"
+    ],
+    [
+      96,
+      102,
+      0,
+      96,
+      0,
+      "TransformerModel"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Load Model",
+      "bounding": [
+        227.96267700195312,
+        -546.4359741210938,
+        1350.4793699732413,
+        404.87677206390265
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        218,
+        -127,
+        450,
+        483
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9594420649225085,
+      "offset": [
+        96.69529077203181,
+        609.5309015132086
+      ]
+    },
+    "frontendVersion": "1.36.11",
+    "workflowRendererVersion": "LG",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "CogVideoX-Fun": "244f11053106af1a58ac25fd0bbb508fd7b89c0f",
+      "comfy-core": "0.6.0"
+    }
+  },
+  "version": 0.4
+}

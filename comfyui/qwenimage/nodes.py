@@ -691,7 +691,6 @@ class LoadQwenImageLora:
             "required": {
                 "funmodels": ("FunModels",),
                 "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
-                "lora_high_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
                 "lora_cache":([False, True],  {"default": False,}),
             }
@@ -701,14 +700,12 @@ class LoadQwenImageLora:
     FUNCTION = "load_lora"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def load_lora(self, funmodels, lora_name, lora_high_name, strength_model, lora_cache):
+    def load_lora(self, funmodels, lora_name, strength_model, lora_cache):
         new_funmodels = dict(funmodels)
         if lora_name is not None:
             loras = list(new_funmodels.get("loras", [])) + [folder_paths.get_full_path("loras", lora_name)]
-            loras_high = list(new_funmodels.get("loras_high", [])) + [folder_paths.get_full_path("loras", lora_high_name)]
             strength_models = list(new_funmodels.get("strength_model", [])) + [strength_model]
             new_funmodels['loras'] = loras
-            new_funmodels['loras_high'] = loras_high
             new_funmodels['strength_model'] = strength_models
             new_funmodels['lora_cache'] = lora_cache
         return (new_funmodels,)
@@ -776,9 +773,7 @@ class QwenImageT2VSampler:
 
     def process(self, funmodels, prompt, negative_prompt, width, height, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio):
         global transformer_cpu_cache
-        global transformer_high_cpu_cache
         global lora_path_before
-        global lora_high_path_before
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 
@@ -923,9 +918,7 @@ class QwenImageEditSampler:
 
     def process(self, funmodels, prompt, negative_prompt, width, height, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, image=None):
         global transformer_cpu_cache
-        global transformer_high_cpu_cache
         global lora_path_before
-        global lora_high_path_before
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 

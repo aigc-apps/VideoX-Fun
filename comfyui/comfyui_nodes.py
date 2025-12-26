@@ -19,6 +19,10 @@ from .qwenimage.nodes import (CombineQwenImagePipeline, LoadQwenImageLora,
                               LoadQwenImageTextEncoderModel,
                               LoadQwenImageTransformerModel,
                               LoadQwenImageVAEModel, QwenImageT2VSampler)
+from .z_image.nodes import (CombineZImagePipeline, LoadZImageLora,
+                              LoadZImageModel, LoadZImageTextEncoderModel, LoadZImageControlNetInPipeline,
+                              LoadZImageTransformerModel, LoadZImageControlNetInModel,
+                              LoadZImageVAEModel, ZImageT2ISampler, ZImageControlSampler)
 from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
                            LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
                            LoadWanTransformerModel, LoadWanVAEModel,
@@ -458,6 +462,18 @@ NODE_CLASS_MAPPINGS = {
     "LoadQwenImageModel": LoadQwenImageModel,
     "QwenImageT2VSampler": QwenImageT2VSampler,
     "QwenImageEditSampler": QwenImageEditSampler,
+    
+    "LoadZImageLora": LoadZImageLora,
+    "LoadZImageTextEncoderModel": LoadZImageTextEncoderModel,
+    "LoadZImageTransformerModel": LoadZImageTransformerModel,
+    "LoadZImageVAEModel": LoadZImageVAEModel, 
+    "CombineZImagePipeline": CombineZImagePipeline, 
+    "LoadZImageControlNetInPipeline": LoadZImageControlNetInPipeline,
+    "LoadZImageControlNetInModel": LoadZImageControlNetInModel,
+
+    "LoadZImageModel": LoadZImageModel,
+    "ZImageT2ISampler": ZImageT2ISampler,
+    "ZImageControlSampler": ZImageControlSampler,
                                 
     "LoadWanClipEncoderModel": LoadWanClipEncoderModel,
     "LoadWanTextEncoderModel": LoadWanTextEncoderModel,
@@ -512,6 +528,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunRiflex": "FunRiflex",
     "FunCompile": "FunCompile",
     "FunAttention": "FunAttention",
+    "LoadZImageControlNetInPipeline": "LoadZImageControlNetInPipeline",
+    "LoadZImageControlNetInModel": "LoadZImageControlNetInModel",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
@@ -529,6 +547,16 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadQwenImageModel": "Load QwenImage Model",
     "QwenImageT2VSampler": "QwenImage T2V Sampler",
     "QwenImageEditSampler": "QwenImage Edit Sampler",
+    
+    "LoadZImageLora": "Load ZImage Lora",
+    "LoadZImageTextEncoderModel": "Load ZImage TextEncoder Model",
+    "LoadZImageTransformerModel": "Load ZImage Transformer Model",
+    "LoadZImageVAEModel": "Load ZImage VAE Model", 
+    "CombineZImagePipeline": "Combine ZImage Pipeline", 
+
+    "LoadZImageModel": "Load ZImage Model",
+    "ZImageT2ISampler": "ZImage T2I Sampler",
+    "ZImageControlSampler": "ZImage Control Sampler",
 
     "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
     "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",
