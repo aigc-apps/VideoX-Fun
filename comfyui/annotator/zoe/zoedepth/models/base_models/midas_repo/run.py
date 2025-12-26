@@ -1,18 +1,16 @@
 """Compute depth maps for images in the input folder.
 """
-import os
-import glob
-import torch
-import utils
-import cv2
 import argparse
+import glob
+import os
 import time
 
+import cv2
 import numpy as np
-
+import torch
+import utils
 from imutils.video import VideoStream
 from midas.model_loader import default_models, load_model
-
 from modules import devices
 
 first_execution = True

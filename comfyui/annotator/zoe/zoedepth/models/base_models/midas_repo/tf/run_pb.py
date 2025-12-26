@@ -1,14 +1,14 @@
 """Compute depth maps for images in the input folder.
 """
-import os
-import glob
-import utils
-import cv2
 import argparse
+import glob
+import os
 
+import cv2
 import tensorflow as tf
+import utils
+from transforms import NormalizeImage, PrepareForNet, Resize
 
-from transforms import Resize, NormalizeImage, PrepareForNet
 
 def run(input_path, output_path, model_path, model_type="large"):
     """Run MonoDepthNN to compute depth maps.

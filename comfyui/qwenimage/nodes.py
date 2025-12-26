@@ -20,20 +20,22 @@ from PIL import Image
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                                get_closest_ratio)
 from ...videox_fun.models import (AutoencoderKLQwenImage, Qwen2_5_VLConfig,
-                                  Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor,
-                                  Qwen2Tokenizer, QwenImageTransformer2DModel)
+                                  Qwen2_5_VLForConditionalGeneration,
+                                  Qwen2Tokenizer, Qwen2VLProcessor,
+                                  QwenImageTransformer2DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ...videox_fun.pipeline import QwenImagePipeline, QwenImageEditPipeline
+from ...videox_fun.pipeline import QwenImageEditPipeline, QwenImagePipeline
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
-    replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import filter_kwargs, get_image, get_autocast_dtype
-from ..comfyui_utils import (eas_cache_dir, script_directory, to_pil,
+from ...videox_fun.utils.utils import (filter_kwargs, get_autocast_dtype,
+                                       get_image)
+from ..comfyui_utils import (eas_cache_dir, script_directory,
                              search_model_in_possible_folders,
-                             search_sub_dir_in_possible_folders)
+                             search_sub_dir_in_possible_folders, to_pil)
 
 # Used in lora cache
 transformer_cpu_cache       = {}
@@ -220,7 +222,8 @@ class LoadQwenImageVAEModel:
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
         if use_wan_compiled_vae:
-            from ...videox_fun.models.wan_vae import AutoencoderKLWanCompileQwenImage
+            from ...videox_fun.models.wan_vae import \
+                AutoencoderKLWanCompileQwenImage
             vae = AutoencoderKLWanCompileQwenImage(**accepted)
         else:
             vae = AutoencoderKLQwenImage(**accepted)

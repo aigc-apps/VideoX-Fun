@@ -1,11 +1,10 @@
-import timm
+from pathlib import Path
 
+import timm
 import torch.nn as nn
 
-from pathlib import Path
-from .utils import activations, forward_default, get_activation
-
 from ..external.next_vit.classification.nextvit import *
+from .utils import activations, forward_default, get_activation
 
 
 def forward_next_vit(pretrained, x):

@@ -1,5 +1,6 @@
 """Modified from https://github.com/kijai/ComfyUI-EasyAnimateWrapper/blob/main/nodes.py
 """
+import copy
 import gc
 import json
 import os
@@ -7,7 +8,6 @@ import os
 import comfy.model_management as mm
 import cv2
 import folder_paths
-import copy
 import numpy as np
 import torch
 from comfy.utils import ProgressBar, load_torch_file
@@ -16,19 +16,20 @@ from einops import rearrange
 from PIL import Image
 
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                              get_closest_ratio)
+                                               get_closest_ratio)
 from ...videox_fun.models import (AutoencoderKLCogVideoX,
-                                 CogVideoXTransformer3DModel, T5EncoderModel,
-                                 T5Tokenizer)
-from ...videox_fun.pipeline import (CogVideoXFunPipeline,
-                                   CogVideoXFunControlPipeline,
-                                   CogVideoXFunInpaintPipeline)
+                                  CogVideoXTransformer3DModel, T5EncoderModel,
+                                  T5Tokenizer)
+from ...videox_fun.pipeline import (CogVideoXFunControlPipeline,
+                                    CogVideoXFunInpaintPipeline,
+                                    CogVideoXFunPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
+from ...videox_fun.utils.fp8_optimization import (
+    convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (get_image_to_video_latent,
-                                      get_video_to_video_latent,
-                                      save_videos_grid)
-from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper
+                                       get_video_to_video_latent,
+                                       save_videos_grid)
 from ..comfyui_utils import (eas_cache_dir, script_directory,
                              search_model_in_possible_folders, to_pil)
 

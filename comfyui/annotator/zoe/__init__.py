@@ -1,11 +1,12 @@
 # This folder is modified from the https://github.com/Mikubill/sd-webui-controlnet
 import os
+
 import cv2
 import numpy as np
 import torch
+from einops import rearrange
 from torch import nn
 
-from einops import rearrange
 from .zoedepth.models.zoedepth.zoedepth_v1 import ZoeDepth
 from .zoedepth.utils.config import get_config
 
