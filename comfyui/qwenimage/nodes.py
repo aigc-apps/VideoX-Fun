@@ -20,20 +20,22 @@ from PIL import Image
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                                get_closest_ratio)
 from ...videox_fun.models import (AutoencoderKLQwenImage, Qwen2_5_VLConfig,
-                                  Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor,
-                                  Qwen2Tokenizer, QwenImageTransformer2DModel)
+                                  Qwen2_5_VLForConditionalGeneration,
+                                  Qwen2Tokenizer, Qwen2VLProcessor,
+                                  QwenImageTransformer2DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ...videox_fun.pipeline import QwenImagePipeline, QwenImageEditPipeline
+from ...videox_fun.pipeline import QwenImageEditPipeline, QwenImagePipeline
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
-    replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import filter_kwargs, get_image, get_autocast_dtype
-from ..comfyui_utils import (eas_cache_dir, script_directory, to_pil,
+from ...videox_fun.utils.utils import (filter_kwargs, get_autocast_dtype,
+                                       get_image)
+from ..comfyui_utils import (eas_cache_dir, script_directory,
                              search_model_in_possible_folders,
-                             search_sub_dir_in_possible_folders)
+                             search_sub_dir_in_possible_folders, to_pil)
 
 # Used in lora cache
 transformer_cpu_cache       = {}
@@ -220,7 +222,8 @@ class LoadQwenImageVAEModel:
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
         if use_wan_compiled_vae:
-            from ...videox_fun.models.wan_vae import AutoencoderKLWanCompileQwenImage
+            from ...videox_fun.models.wan_vae import \
+                AutoencoderKLWanCompileQwenImage
             vae = AutoencoderKLWanCompileQwenImage(**accepted)
         else:
             vae = AutoencoderKLQwenImage(**accepted)
@@ -691,7 +694,6 @@ class LoadQwenImageLora:
             "required": {
                 "funmodels": ("FunModels",),
                 "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
-                "lora_high_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
                 "lora_cache":([False, True],  {"default": False,}),
             }
@@ -701,14 +703,12 @@ class LoadQwenImageLora:
     FUNCTION = "load_lora"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def load_lora(self, funmodels, lora_name, lora_high_name, strength_model, lora_cache):
+    def load_lora(self, funmodels, lora_name, strength_model, lora_cache):
         new_funmodels = dict(funmodels)
         if lora_name is not None:
             loras = list(new_funmodels.get("loras", [])) + [folder_paths.get_full_path("loras", lora_name)]
-            loras_high = list(new_funmodels.get("loras_high", [])) + [folder_paths.get_full_path("loras", lora_high_name)]
             strength_models = list(new_funmodels.get("strength_model", [])) + [strength_model]
             new_funmodels['loras'] = loras
-            new_funmodels['loras_high'] = loras_high
             new_funmodels['strength_model'] = strength_models
             new_funmodels['lora_cache'] = lora_cache
         return (new_funmodels,)
@@ -776,9 +776,7 @@ class QwenImageT2VSampler:
 
     def process(self, funmodels, prompt, negative_prompt, width, height, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio):
         global transformer_cpu_cache
-        global transformer_high_cpu_cache
         global lora_path_before
-        global lora_high_path_before
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 
@@ -923,9 +921,7 @@ class QwenImageEditSampler:
 
     def process(self, funmodels, prompt, negative_prompt, width, height, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, image=None):
         global transformer_cpu_cache
-        global transformer_high_cpu_cache
         global lora_path_before
-        global lora_high_path_before
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 

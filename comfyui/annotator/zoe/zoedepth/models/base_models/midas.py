@@ -1,6 +1,11 @@
 # MIT License
 import os
 
+import numpy as np
+import torch
+import torch.nn as nn
+from torchvision.transforms import Normalize
+
 # Copyright (c) 2022 Intelligent Systems Lab Org
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,10 +28,6 @@ import os
 
 # File author: Shariq Farooq Bhat
 
-import torch
-import torch.nn as nn
-import numpy as np
-from torchvision.transforms import Normalize
 
 
 def denormalize(x):

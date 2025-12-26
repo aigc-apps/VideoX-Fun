@@ -26,12 +26,13 @@ from ...videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ...videox_fun.pipeline import Wan2_2VaceFunPipeline
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
-    replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
+from ...videox_fun.utils.utils import (filter_kwargs, get_autocast_dtype,
+                                       get_image_latent,
                                        get_image_to_video_latent,
-                                       get_video_to_video_latent, get_autocast_dtype)
+                                       get_video_to_video_latent)
 from ..comfyui_utils import (script_directory,
                              search_model_in_possible_folders, to_pil)
 from ..wan2_1.nodes import get_wan_scheduler

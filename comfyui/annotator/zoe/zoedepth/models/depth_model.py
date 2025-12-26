@@ -22,14 +22,15 @@
 
 # File author: Shariq Farooq Bhat
 
+from typing import Union
+
 import numpy as np
+import PIL.Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import transforms
-import PIL.Image
 from PIL import Image
-from typing import Union
+from torchvision import transforms
 
 
 class DepthModel(nn.Module):

@@ -6,17 +6,16 @@ import inspect
 import json
 import os
 
+import comfy.model_management as mm
 import cv2
+import folder_paths
 import numpy as np
 import torch
+from comfy.utils import ProgressBar, load_torch_file
 from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
-
-import comfy.model_management as mm
-import folder_paths
-from comfy.utils import ProgressBar, load_torch_file
 
 from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                                get_closest_ratio)
@@ -30,16 +29,16 @@ from ...videox_fun.pipeline import (Wan2_2FunControlPipeline,
                                     Wan2_2Pipeline, Wan2_2TI2VPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
-    replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (filter_kwargs,
+from ...videox_fun.utils.utils import (filter_kwargs, get_autocast_dtype,
                                        get_image_to_video_latent,
                                        get_video_to_video_latent,
-                                       save_videos_grid, get_autocast_dtype)
-from ..wan2_1.nodes import get_wan_scheduler
+                                       save_videos_grid)
 from ..comfyui_utils import (eas_cache_dir, script_directory,
                              search_model_in_possible_folders, to_pil)
+from ..wan2_1.nodes import get_wan_scheduler
 
 # Used in lora cache
 transformer_cpu_cache       = {}

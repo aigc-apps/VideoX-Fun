@@ -145,7 +145,7 @@ class ZImageControlTransformer2DModel(ZImageTransformer2DModel):
 
         self.control_layers_places = [i for i in range(0, n_layers, 2)] if control_layers_places is None else control_layers_places
         self.control_refiner_layers_places = [i for i in range(0, n_refiner_layers)] if control_refiner_layers_places is None else control_refiner_layers_places
-        self.control_in_dim = self.in_dim if control_in_dim is None else control_in_dim
+        self.control_in_dim = self.in_channels if control_in_dim is None else control_in_dim
 
         assert 0 in self.control_layers_places
         self.control_layers_mapping = {i: n for n, i in enumerate(self.control_layers_places)}

@@ -1,7 +1,8 @@
 import math
-import numpy as np
-import matplotlib
+
 import cv2
+import matplotlib
+import numpy as np
 
 eps = 0.01
 

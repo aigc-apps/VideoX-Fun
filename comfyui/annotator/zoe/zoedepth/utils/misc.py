@@ -24,8 +24,6 @@
 
 """Miscellaneous utility functions."""
 
-from scipy import ndimage
-
 import base64
 import math
 import re
@@ -41,6 +39,7 @@ import torch.nn
 import torch.nn as nn
 import torch.utils.data.distributed
 from PIL import Image
+from scipy import ndimage
 from torchvision.transforms import ToTensor
 
 
