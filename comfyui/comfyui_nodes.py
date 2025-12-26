@@ -7,7 +7,8 @@ import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
-from .annotator.nodes import VideoToCanny, VideoToDepth, VideoToPose
+from .annotator.nodes import (ImageToCanny, ImageToDepth, ImageToPose,
+                              VideoToCanny, VideoToDepth, VideoToPose)
 from .camera_utils import CAMERA, combine_camera_motion, get_camera_motion
 from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunT2VSampler,
@@ -512,7 +513,10 @@ NODE_CLASS_MAPPINGS = {
 
     "LoadWan2_2VaceFunModel": LoadWan2_2VaceFunModel,
     "Wan2_2VaceFunSampler": Wan2_2VaceFunSampler,
-
+    
+    "ImageToCanny": ImageToCanny,
+    "ImageToPose": ImageToPose,
+    "ImageToDepth": ImageToDepth,
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
     "VideoToOpenpose": VideoToPose,
@@ -595,6 +599,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWan2_2VaceFunModel": "Load Wan2_2 Vace Fun Model",
     "Wan2_2VaceFunSampler": "Wan2_2 Vace Fun Sampler",
     
+    "ImageToCanny": "Image To Canny",
+    "ImageToPose": "Image To Pose",
+    "ImageToDepth": "Image To Depth",
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
     "VideoToOpenpose": "Video To Pose",
