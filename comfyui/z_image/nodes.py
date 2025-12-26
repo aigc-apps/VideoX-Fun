@@ -907,10 +907,10 @@ class ZImageT2ISampler:
                     "STRING_PROMPT", 
                 ),
                 "width": (
-                    "INT", {"default": 1568, "min": 64, "max": 2048, "step": 16}
+                    "INT", {"default": 1568, "min": 64, "max": 20480, "step": 16}
                 ),
                 "height": (
-                    "INT", {"default": 1184, "min": 64, "max": 2048, "step": 16}
+                    "INT", {"default": 1184, "min": 64, "max": 20480, "step": 16}
                 ),
                 "seed": (
                     "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
@@ -1021,10 +1021,10 @@ class ZImageControlSampler:
                     "STRING_PROMPT", 
                 ),
                 "width": (
-                    "INT", {"default": 1568, "min": 64, "max": 2048, "step": 16}
+                    "INT", {"default": 1568, "min": 64, "max": 20480, "step": 16}
                 ),
                 "height": (
-                    "INT", {"default": 1184, "min": 64, "max": 2048, "step": 16}
+                    "INT", {"default": 1184, "min": 64, "max": 20480, "step": 16}
                 ),
                 "seed": (
                     "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
