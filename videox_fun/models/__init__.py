@@ -7,7 +7,7 @@ from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
                           LlamaTokenizerFast, LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,
                           Qwen3ForCausalLM, T5EncoderModel, T5Tokenizer,
-                          T5TokenizerFast)
+                          Siglip2VisionModel, T5TokenizerFast)
 
 try:
     from transformers import (Qwen2_5_VLConfig,
@@ -43,6 +43,7 @@ from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
 from .z_image_transformer2d import ZImageTransformer2DModel
 from .z_image_transformer2d_control import ZImageControlTransformer2DModel
+from .z_image_transformer2d_omni import ZImageOmniTransformer2DModel
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("paifuser") is not None:
