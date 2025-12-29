@@ -456,6 +456,9 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
         if num_channels_latents != self.transformer.control_in_dim:
             if mask_image is not None:
                 mask_condition = self.mask_processor.preprocess(mask_image, height=height, width=width) 
+                mask_condition = torch.where(mask_condition >= 0.5, 
+                                            torch.ones_like(mask_condition), 
+                                            torch.zeros_like(mask_condition))
                 mask_condition = torch.tile(mask_condition, [1, 3, 1, 1]).to(dtype=weight_dtype, device=device)
             else:
                 mask_condition = torch.zeros([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
