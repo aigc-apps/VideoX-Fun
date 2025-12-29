@@ -6,12 +6,15 @@
 # 4th Edited by ControlNet (added face and correct hands)
 
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
-import torch
 import numpy as np
+import torch
+
 from . import util
 from .wholebody import Wholebody
+
 
 def draw_pose(poses, H, W):
     canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)

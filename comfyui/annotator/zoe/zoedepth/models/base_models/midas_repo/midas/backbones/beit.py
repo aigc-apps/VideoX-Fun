@@ -1,14 +1,14 @@
-import timm
-import torch
 import types
+from typing import Optional
 
 import numpy as np
+import timm
+import torch
 import torch.nn.functional as F
-
-from .utils import forward_adapted_unflatten, make_backbone_default
 from timm.models.beit import gen_relative_position_index
 from torch.utils.checkpoint import checkpoint
-from typing import Optional
+
+from .utils import forward_adapted_unflatten, make_backbone_default
 
 
 def forward_beit(pretrained, x):

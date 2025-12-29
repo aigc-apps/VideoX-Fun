@@ -24,12 +24,11 @@
 
 import json
 import os
-
-from .easydict import EasyDict as edict
-from .arg_utils import infer_type
-
 import pathlib
 import platform
+
+from .arg_utils import infer_type
+from .easydict import EasyDict as edict
 
 ROOT = pathlib.Path(__file__).parent.parent.resolve()
 
