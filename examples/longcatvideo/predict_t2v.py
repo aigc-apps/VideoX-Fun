@@ -68,7 +68,7 @@ negative_prompt     = "Bright tones, overexposed, static, blurred details, subti
 guidance_scale      = 4.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 0.90
+lora_weight         = 0.55
 save_path           = "samples/longcat-videos-t2v"
 
 device = set_multi_gpus_devices(1, 1)

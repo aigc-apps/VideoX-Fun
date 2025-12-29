@@ -39,9 +39,6 @@ from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "sequential_cpu_offload"
-# Use FSDP to save more GPU memory in multi gpus.
-fsdp_dit            = False
-fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
@@ -73,7 +70,7 @@ negative_prompt     = "Bright tones, overexposed, static, blurred details, subti
 guidance_scale      = 4.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 0.90
+lora_weight         = 0.55
 save_path           = "samples/longcat-videos-i2v"
 
 device = set_multi_gpus_devices(1, 1)
