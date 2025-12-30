@@ -7,6 +7,7 @@ from .pipeline_flux2 import Flux2Pipeline
 from .pipeline_flux2_control import Flux2ControlPipeline
 from .pipeline_hunyuanvideo import HunyuanVideoPipeline
 from .pipeline_hunyuanvideo_i2v import HunyuanVideoI2VPipeline
+from .pipeline_longcatvideo import LongCatVideoPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline

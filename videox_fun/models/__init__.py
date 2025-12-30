@@ -2,12 +2,13 @@ import importlib.util
 
 from diffusers import AutoencoderKL
 from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
-                          CLIPTextModel, CLIPTokenizer, Qwen3Config,
+                          CLIPTextModel, CLIPTokenizer,
                           CLIPVisionModelWithProjection, LlamaModel,
                           LlamaTokenizerFast, LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,
-                          Qwen3ForCausalLM, T5EncoderModel, T5Tokenizer,
-                          Siglip2VisionModel, T5TokenizerFast)
+                          Qwen3Config, Qwen3ForCausalLM, Siglip2VisionModel,
+                          T5EncoderModel, T5Tokenizer, T5TokenizerFast,
+                          UMT5EncoderModel)
 
 try:
     from transformers import (Qwen2_5_VLConfig,
@@ -29,6 +30,8 @@ from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
+from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
+from .longcatvideo_vae import AutoencoderKLLongCatVideo
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .wan_audio_encoder import WanAudioEncoder
