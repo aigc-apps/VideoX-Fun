@@ -40,6 +40,44 @@ except:
         sageattn = None
         SAGE_ATTENTION_AVAILABLE = False
 
+
+def flash_attention_naive(
+    q,
+    k,
+    v,
+    cu_seqlens_q=None,
+    cu_seqlens_k=None,
+    max_seqlen_q=None,
+    max_seqlen_k=None,
+):
+    # apply attention
+    if FLASH_ATTN_3_AVAILABLE:
+        # Note: dropout_p, window_size are not supported in FA3 now.
+        x = flash_attn_interface.flash_attn_varlen_func(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+        )[0]
+    else:
+        assert FLASH_ATTN_2_AVAILABLE
+        x = flash_attn.flash_attn_varlen_func(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+        )
+
+    # output
+    return x.type(q.dtype)
+
+
 def flash_attention(
     q,
     k,
