@@ -1291,15 +1291,6 @@ def main():
                 control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 control_pixel_values = control_pixel_values / 255.
 
-                _, channel, h, w = pixel_values.size()
-                new_subject_image = torch.zeros(4, channel, h, w)
-                num_subject = len(example["subject_image"])
-                if num_subject != 0:
-                    subject_image = torch.from_numpy(example["subject_image"]).permute(0, 3, 1, 2).contiguous()
-                    new_subject_image[:num_subject] = subject_image
-                subject_image = new_subject_image / 255.
-                subject_flag  = torch.from_numpy(np.array([1] * num_subject + [0] * (4 - num_subject)))
-
                 if args.fix_sample_size is not None:
                     # Get adapt hw for resize
                     fix_sample_size = list(map(lambda x: int(x), fix_sample_size))

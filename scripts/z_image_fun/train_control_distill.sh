@@ -7,6 +7,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control_distill.py \
+  --config_path="config/z_image/z_image_control_2.1.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -30,6 +31,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control_dis
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
+  --add_inpaint_info \
   --trainable_modules "control" \
   --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
   --random_hw_adapt \
