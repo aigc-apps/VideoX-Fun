@@ -1125,7 +1125,6 @@ class ZImageControlSampler:
 
             if control_image is not None:
                 control_image = [to_pil(control_image) for control_image in control_image][0]
-                control_image.save("/root/zhoumo/AICamera/ComfyUI/custom_nodes/CogVideoX-Fun/1.jpg")
                 control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
 
             sample = pipeline(
