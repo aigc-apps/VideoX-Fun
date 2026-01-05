@@ -77,12 +77,12 @@ from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
-                               CLIPVisionModelWithProjection,
-                               Qwen2Tokenizer, Qwen3ForCausalLM,
-                               QwenImageTransformer2DModel, Siglip2VisionModel,
+                               CLIPVisionModelWithProjection, Qwen2Tokenizer,
+                               Qwen3ForCausalLM, QwenImageTransformer2DModel,
+                               Siglip2VisionModel,
                                ZImageOmniTransformer2DModel)
 from videox_fun.models.flux2_image_processor import Flux2ImageProcessor
-from videox_fun.pipeline import Flux2Pipeline
+from videox_fun.pipeline import ZImageOmniPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (create_network, merge_lora,
                                          unmerge_lora)
@@ -216,7 +216,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
             subfolder="scheduler"
         )
         transformer3d = transformer3d.to("cpu")
-        pipeline = Flux2Pipeline(
+        pipeline = ZImageOmniPipeline(
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
@@ -1672,7 +1672,6 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
-                    tokenizer_2,
                     transformer3d,
                     network,
                     args,
