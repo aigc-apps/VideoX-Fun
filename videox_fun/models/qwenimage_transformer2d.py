@@ -15,14 +15,14 @@
 
 
 import functools
-import inspect
 import glob
+import inspect
 import json
 import math
-from math import prod
 import os
 import types
 import warnings
+from math import prod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -53,9 +53,9 @@ from torch import nn
 from ..dist import (QwenImageMultiGPUsAttnProcessor2_0,
                     get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group)
+from ..utils import cfg_skip
 from .attention_utils import attention
 from .cache_utils import TeaCache
-from ..utils import cfg_skip
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -282,6 +282,7 @@ class QwenEmbedRope(nn.Module):
 
         freqs = torch.cat([freqs_frame, freqs_height, freqs_width], dim=-1).reshape(seq_lens, -1)
         return freqs.clone().contiguous()
+
 
 class QwenEmbedLayer3DRope(nn.Module):
     def __init__(self, theta: int, axes_dim: List[int], scale_rope=False):
@@ -922,7 +923,6 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         txt_seq_lens: Optional[List[int]] = None,
         guidance: torch.Tensor = None,  # TODO: this should probably be removed
         attention_kwargs: Optional[Dict[str, Any]] = None,
-        controlnet_block_samples=None,
         additional_t_cond=None,
         cond_flag: bool = True,
         return_dict: bool = True,
@@ -1075,6 +1075,8 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                             encoder_hidden_states_mask,
                             temb,
                             image_rotary_emb,
+                            attention_kwargs,
+                            modulate_index,
                             **ckpt_kwargs,
                         )
 
@@ -1110,6 +1112,8 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         encoder_hidden_states_mask,
                         temb,
                         image_rotary_emb,
+                        attention_kwargs,
+                        modulate_index,
                         **ckpt_kwargs,
                     )
 
