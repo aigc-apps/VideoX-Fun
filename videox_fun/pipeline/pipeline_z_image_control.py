@@ -477,7 +477,7 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
             control_latents = self.vae.encode(control_image)[0].mode()
             control_latents = (control_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
         else:
-            control_latents = torch.ones_like(inpaint_latent) * -1
+            control_latents = torch.zeros_like(inpaint_latent)
 
         # Unsqueeze
         if num_channels_latents != self.transformer.control_in_dim:
