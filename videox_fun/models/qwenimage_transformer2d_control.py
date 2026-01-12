@@ -108,7 +108,7 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
             ]
         )
 
-        # vace blocks
+        # control blocks
         self.control_blocks = nn.ModuleList(
             [
                 QwenImageControlTransformerBlock(
@@ -122,10 +122,10 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
             ]
         )
 
-        # vace patch embeddings
+        # control patch embeddings
         self.control_img_in = nn.Linear(self.control_in_dim, self.inner_dim)
 
-    def forward_vace(
+    def forward_control(
         self,
         x,
         control_context,
@@ -240,7 +240,7 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
             joint_attention_kwargs=attention_kwargs,
             modulate_index=modulate_index,
         )
-        hints = self.forward_vace(
+        hints = self.forward_control(
             hidden_states, control_context, kwargs
         )
 
