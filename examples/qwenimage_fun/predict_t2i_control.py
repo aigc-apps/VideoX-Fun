@@ -52,9 +52,9 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# model path
+# Config path
 config_path         = "config/qwenimage/qwenimage_control.yaml"
-# model path
+# Model path
 model_name          = "models/Diffusion_Transformer/Qwen-Image-2512"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
