@@ -54,7 +54,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # Config and model path
-config_path         = "config/z_image/z_image_control_2.1_light.yaml"
+config_path         = "config/z_image/z_image_control_2.1_lite.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
@@ -73,11 +73,11 @@ sample_size         = [1728, 992]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
-inpaint_image       = None
-mask_image          = None
+inpaint_image       = "asset/8.png"
+mask_image          = "asset/mask.png"
 control_context_scale  = 0.85
 
-# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
+# Please use as detailed a prompt as possible to describe the object that needs to be generated.
 prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境，宛如二次元世界与现实海景的完美融合。"
 negative_prompt     = " "
 guidance_scale      = 0.00
