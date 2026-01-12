@@ -611,39 +611,46 @@ V1.0:
 | Qwen-Image-Edit | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit) | Qwen-Image-Edit 公式重み |
 | Qwen-Image-Edit-2509 | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit-2509) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509) | Qwen-Image-Edit-2509 公式重み |
 
-## 7. Z-Image
+## 7. Qwen-Image-Fun
+
+| 名前 | ストレージ | Hugging Face | Model Scope | 説明 |
+|--|--|--|--|--|
+| Qwen-Image-2512-Fun-Controlnet-Union | - | [🤗リンク](https://huggingface.co/alibaba-pai/Qwen-Image-2512-Fun-Controlnet-Union) | [😄リンク](https://modelscope.cn/models/PAI/Qwen-Image-2512-Fun-Controlnet-Union) | Qwen-Image-2512のControlNet重み。Canny、Depth、Pose、MLSD、Scribbleなど、複数の制御条件をサポートします。 |
+
+## 8. Z-Image
 
 | 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
 |--|--|--|--|--|
 | Z-Image-Turbo | [🤗リンク](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) | [😄リンク](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image-Turbo) | Z-Image-Turboの公式重み |
 
-## 8. Z-Image-Fun
+## 9. Z-Image-Fun
 
 | 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
 |--|--|--|--|--|
 | Z-Image-Turbo-Fun-Controlnet-Union | - | [🤗リンク](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union) | [😄リンク](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union) | Z-Image-Turbo用のControlNet重み。Canny、Depth、Pose、MLSDなど複数の制御条件をサポート。 |
 | Z-Image-Turbo-Fun-Controlnet-Union-2.1 | - | [🤗リンク](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | [😄リンク](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | Z-Image-TurboのControlNet重み。第1版と比較して、より多くの層に追加され、より長時間トレーニングされています。Canny、Depth、Pose、MLSDなど、複数の制御条件をサポートしています。 |
-## 9. Flux
+
+## 10. Flux
 
 | 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
 |--|--|--|--|--|
 | FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev)| FLUX.1-dev 公式重み |
 | FLUX.2-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.2-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.2-dev) | FLUX.2-dev 公式重み |
 
-## 10. Flux-Fun
+## 11. Flux-Fun
 
 | 名前 | ストレージ | Hugging Face | ModelScope | 説明 |
 |--|--|--|--|--|
 | Flux.2-dev-Fun-Controlnet-Union | - | [🤗リンク](https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union) | [😄リンク](https://modelscope.cn/models/PAI/FLUX.2-dev-Fun-Controlnet-Union) | Flux.2-dev 用の ControlNet 重みで、Canny、Depth、Pose、MLSD など様々な制御条件をサポートします。 |
 
-## 11. HunyuanVideo
+## 12. HunyuanVideo
 
 | 名称 | ストレージ | Hugging Face | Model Scope | 説明 |
 |--|--|--|--|--|
 | HunyuanVideo | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo) | - | HunyuanVideo-diffusers 公式重み |
 | HunyuanVideo-I2V | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V) | - | HunyuanVideo-I2V-diffusers 公式重み |
 
-## 12. CogVideoX-Fun
+## 13. CogVideoX-Fun
 
 V1.5:
 
