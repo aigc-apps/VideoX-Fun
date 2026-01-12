@@ -600,40 +600,46 @@ V1.0:
 | Qwen-Image-Edit | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit) | Qwen-Image-Edit官方权重 |
 | Qwen-Image-Edit-2509 | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit-2509) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509) | Qwen-Image-Edit-2509官方权重 |
 
-## 7. Z-Image
+## 7. Qwen-Image-Fun
+
+| 名称 | 存储 | Hugging Face | Model Scope | 描述 |
+|--|--|--|--|--|
+| Qwen-Image-2512-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/Qwen-Image-2512-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/Qwen-Image-2512-Fun-Controlnet-Union) | Qwen-Image-2512的ControlNet权重,支持多种控制条件,如Canny、Depth、Pose、MLSD、Scribble等。 |
+
+## 8. Z-Image
 
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
 | Z-Image-Turbo | [🤗Link](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) | [😄Link](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image-Turbo) | Z-Image-Turbo官方权重 |
 
-## 8. Z-Image-Fun
+## 9. Z-Image-Fun
 
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
 | Z-Image-Turbo-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union) | Z-Image-Turbo 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
 | Z-Image-Turbo-Fun-Controlnet-Union-2.1 | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | Z-Image-Turbo 的 ControlNet 权重，相比第一版在更多层进行添加，也训练了更长时间，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
 
-## 9. Flux
+## 10. Flux
 
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
 | FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev) | FLUX.1-dev官方权重 |
 | FLUX.2-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.2-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.2-dev) | FLUX.2-dev官方权重 |
 
-## 10. Flux-Fun
+## 11. Flux-Fun
 
 | 名称 | 存储 | Hugging Face | 魔搭社区（ModelScope） | 描述 |
 |--|--|--|--|--|
 | Flux.2-dev-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/FLUX.2-dev-Fun-Controlnet-Union) | Flux.2-dev 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
 
-## 11. HunyuanVideo
+## 12. HunyuanVideo
 
 | 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
 |--|--|--|--|--|
 | HunyuanVideo | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo) | - | HunyuanVideo-diffusers权重 |
 | HunyuanVideo-I2V | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V) | - | HunyuanVideo-I2V-diffusers权重 |
 
-## 12. CogVideoX-Fun
+## 13. CogVideoX-Fun
 
 V1.5:
 

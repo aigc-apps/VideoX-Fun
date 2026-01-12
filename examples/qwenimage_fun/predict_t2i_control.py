@@ -1,11 +1,10 @@
 import os
 import sys
 
-import numpy as np
 import torch
-from diffusers import FlowMatchEulerDiscreteScheduler
+
 from omegaconf import OmegaConf
-from PIL import Image
+from diffusers import (FlowMatchEulerDiscreteScheduler)
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,10 +12,10 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKL, AutoTokenizer,
-                               Qwen3ForCausalLM, ZImageControlTransformer2DModel)
-from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import ZImageControlPipeline
+from videox_fun.models import (AutoencoderKLQwenImage,
+                               Qwen2_5_VLForConditionalGeneration,
+                               Qwen2Tokenizer, QwenImageControlTransformer2DModel)
+from videox_fun.pipeline import QwenImageControlPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -39,7 +38,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, ge
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload"
+GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -53,44 +52,44 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# Config and model path
-config_path         = "config/z_image/z_image_control_2.1.yaml"
-# model path
-model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
+# Config path
+config_path         = "config/qwenimage/qwenimage_control.yaml"
+# Model path
+model_name          = "models/Diffusion_Transformer/Qwen-Image-2512"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Tile-2.1-8steps.safetensors" 
+transformer_path    = "models/Personalized_Model/Qwen-Image-2512-Fun-Controlnet-Union.safetensors"
 vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [1328, 1328]
+sample_size         = [1728, 992]
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-control_image       = "asset/low_res.png"
-# The inpaint_image and mask_image is useless in tile model, just set them to None.
+control_image       = "asset/pose.jpg"
 inpaint_image       = None
 mask_image          = None
-control_context_scale = 0.85
+control_context_scale = 0.80
 
-# Please use as detailed a prompt as possible to describe the object that needs to be generated.
-prompt              = "这是一张充满都市气息的户外人物肖像照片。画面中是一位年轻男性，他展现出时尚而自信的形象。人物拥有精心打理的短发发型，两侧修剪得较短，顶部保留一定长度，呈现出流行的Undercut造型。他佩戴着一副时尚的浅色墨镜或透明镜框眼镜，为整体造型增添了潮流感。脸上洋溢着温和友善的笑容，神情放松自然，给人以阳光开朗的印象。他身穿一件经典的牛仔外套，这件单品永不过时，展现出休闲又有型的穿衣风格。牛仔外套的蓝色调与整体氛围十分协调，领口处隐约可见内搭的衣物。照片的背景是典型的城市街景，可以看到模糊的建筑物、街道和行人，营造出繁华都市的氛围。背景经过了恰当的虚化处理，使人物主体更加突出。光线明亮而柔和，可能是白天的自然光，为照片带来清新通透的视觉效果。整张照片构图专业，景深控制得当，完美捕捉了一个现代都市年轻人充满活力和自信的瞬间，展现出积极向上的生活态度。"
+# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
+# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比。"
 negative_prompt     = " "
-guidance_scale      = 0.00
+guidance_scale      = 4.0
 seed                = 43
-num_inference_steps = 8
+num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/z-image-t2i-control"
+save_path           = "samples/qwenimage-t2i-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
 
-transformer = ZImageControlTransformer2DModel.from_pretrained(
+transformer = QwenImageControlTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
@@ -101,7 +100,7 @@ transformer = ZImageControlTransformer2DModel.from_pretrained(
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
     if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(transformer_path)
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
@@ -111,7 +110,7 @@ if transformer_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKL.from_pretrained(
+vae = AutoencoderKLQwenImage.from_pretrained(
     model_name, 
     subfolder="vae"
 ).to(weight_dtype)
@@ -119,7 +118,7 @@ vae = AutoencoderKL.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -129,12 +128,11 @@ if vae_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get tokenizer and text_encoder
-tokenizer = AutoTokenizer.from_pretrained(
+tokenizer = Qwen2Tokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
-text_encoder = Qwen3ForCausalLM.from_pretrained(
-    model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
-    low_cpu_mem_usage=True,
+text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model_name, subfolder="text_encoder", torch_dtype=weight_dtype
 )
 
 # Get Scheduler
@@ -148,7 +146,7 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = ZImageControlPipeline(
+pipeline = QwenImageControlPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
@@ -160,11 +158,13 @@ if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(transformer.layers))
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=list(text_encoder.model.layers))
+        from functools import partial
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
         print("Add FSDP TEXT ENCODER")
 
@@ -195,30 +195,31 @@ if lora_path is not None:
 
 with torch.no_grad():
     if inpaint_image is not None:
-        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
+        inpaint_image_input = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
     else:
-        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
+        inpaint_image_input = torch.zeros([1, 3, sample_size[0], sample_size[1]])
 
     if mask_image is not None:
-        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
+        mask_image_input = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
     else:
-        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
+        mask_image_input = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
 
     if control_image is not None:
-        control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
-
+        control_image_input = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
+    
     sample = pipeline(
-        prompt      = prompt, 
+        prompt, 
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
         generator   = generator,
-        guidance_scale = guidance_scale,
-        image               = inpaint_image,
-        mask_image          = mask_image,
-        control_image       = control_image,
+        true_cfg_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        control_context_scale = control_context_scale,
+
+        image               = inpaint_image_input,
+        mask_image          = mask_image_input,
+        control_image       = control_image_input,
+        control_context_scale  = control_context_scale
     ).images
 
 if lora_path is not None:
@@ -230,9 +231,9 @@ def save_results():
 
     index = len([path for path in os.listdir(save_path)]) + 1
     prefix = str(index).zfill(8)
-    video_path = os.path.join(save_path, prefix + ".png")
+    image_path = os.path.join(save_path, prefix + ".png")
     image = sample[0]
-    image.save(video_path)
+    image.save(image_path)
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

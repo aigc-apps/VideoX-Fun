@@ -1223,7 +1223,13 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         for key in missing_keys:
                             param_shape = model_state_dict[key].shape
                             param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
-                            if 'weight' in key:
+                            if "control" in key and key.replace("control_", "transformer_") in filtered_state_dict.keys() and model.state_dict()[key].size() == filtered_state_dict[key.replace("control_", "transformer_")].size():
+                                initialized_dict[key] = filtered_state_dict[key.replace("control_", "transformer_")].clone()
+                                print(f"Initializing missing parameter '{key}' with model.state_dict().")
+                            elif "after_proj" in key or "before_proj" in key:
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                print(f"Initializing missing parameter '{key}' with zero.")
+                            elif 'weight' in key:
                                 if any(norm_type in key for norm_type in ['norm', 'ln_', 'layer_norm', 'group_norm', 'batch_norm']):
                                     initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
                                 elif 'embedding' in key or 'embed' in key:
@@ -1312,6 +1318,11 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                 tmp_state_dict[key] = state_dict[key]
             else:
                 print(key, "Size don't match, skip")
+        
+        for key in model.state_dict():
+            if "control" in key and key.replace("control_", "transformer_") in state_dict.keys() and model.state_dict()[key].size() == state_dict[key.replace("control_", "transformer_")].size():
+                tmp_state_dict[key] = state_dict[key.replace("control_", "transformer_")].clone()
+                print(f"Initializing missing parameter '{key}' with model.state_dict().")
                 
         state_dict = tmp_state_dict
 
