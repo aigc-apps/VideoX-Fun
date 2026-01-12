@@ -67,7 +67,7 @@ vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [1728, 992]
+sample_size         = [1328, 1328]
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16

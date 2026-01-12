@@ -695,6 +695,7 @@ class LoadZImageControlNetInPipeline:
             "required": {
                 "config": (
                     [
+                        "z_image/z_image_control_2.1_lite.yaml",
                         "z_image/z_image_control_2.1.yaml",
                         "z_image/z_image_control_2.0.yaml",
                         "z_image/z_image_control_1.0.yaml",
@@ -818,6 +819,7 @@ class LoadZImageControlNetInModel:
             "required": {
                 "config": (
                     [
+                        "z_image/z_image_control_2.1_lite.yaml",
                         "z_image/z_image_control_2.1.yaml",
                         "z_image/z_image_control_2.0.yaml",
                         "z_image/z_image_control_1.0.yaml",
