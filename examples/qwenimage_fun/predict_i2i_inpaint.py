@@ -52,27 +52,6 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# Support TeaCache.
-enable_teacache     = True
-# Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
-# but it may cause slight differences between the generated content and the original content.
-teacache_threshold  = 0.250
-# The number of steps to skip TeaCache at the beginning of the inference process, which can
-# reduce the impact of TeaCache on generated video quality.
-num_skip_start_steps = 5
-# Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
-teacache_offload    = False
-
-# Skip some cfg steps in inference for acd_Model/Qwen-Image-2512-Fun-Controlnet-Union.safetensors"
-vae_path            = None
-lora_path           = None
-
-# Other params
-sample_size         = [1728, 992]
-celeration
-# Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0
-
 # model path
 config_path         = "config/qwenimage/qwenimage_control.yaml"
 # model path
@@ -82,11 +61,17 @@ model_name          = "models/Diffusion_Transformer/Qwen-Image-2512"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalize
+transformer_path    = "models/Personalized_Model/Qwen-Image-2512-Fun-Controlnet-Union.safetensors"
+vae_path            = None
+lora_path           = None
+
+# Other params
+sample_size         = [1728, 992]
+
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-control_image       = "asset/pose.jpg" # "asset/pose.jpg"
+control_image       = "asset/pose.jpg"
 inpaint_image       = "asset/8.png"
 mask_image          = "asset/mask.png"
 control_context_scales  = 0.80
@@ -202,17 +187,6 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
-
-coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
-if coefficients is not None:
-    print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
-    pipeline.transformer.enable_teacache(
-        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
-    )
-
-if cfg_skip_ratio is not None:
-    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
-    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
