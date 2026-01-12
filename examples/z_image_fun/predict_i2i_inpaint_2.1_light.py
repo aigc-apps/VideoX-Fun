@@ -39,7 +39,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, ge
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_full_load"
+GPU_memory_mode     = "model_cpu_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -56,13 +56,13 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/z_image/z_image_control_2.1_light.yaml"
 # model path
-model_name          = "/dev/shm/Z-Image-Turbo/"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "/mnt/data/Code/CogVideoX-Fun-Github/models/Diffusion_Transformer/Z-Image-Turbo-Fun-Controlnet-Union-2.0/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
@@ -74,18 +74,17 @@ sample_size         = [1728, 992]
 weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
 inpaint_image       = "asset/8.png"
-mask_image          = "/mnt/data/Code/VideoX-Fun-Flux2/asset/mask.png"
-mask_image          = "./asset/mask.png"
-control_context_scales  = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+mask_image          = "asset/mask.png"
+control_context_scale  = 0.85
 
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
-prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境。"
+prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境，宛如二次元世界与现实海景的完美融合。"
 negative_prompt     = " "
-guidance_scale      = 0
+guidance_scale      = 0.00
 seed                = 43
 num_inference_steps = 8
 lora_weight         = 0.55
-save_path           = "samples/z-image-t2i-control-light-2026-01-08-17700+7400+600-control-only-1.25"
+save_path           = "samples/z-image-t2i-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -193,52 +192,50 @@ generator = torch.Generator(device=device).manual_seed(seed)
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
-if inpaint_image is not None:
-    inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
-else:
-    inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
-
-if mask_image is not None:
-    mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
-else:
-    mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
-
-if control_image is not None:
-    control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
-
-for control_context_scale in control_context_scales:
-    with torch.no_grad():
-
-        sample = pipeline(
-            prompt      = prompt, 
-            negative_prompt = negative_prompt,
-            height      = sample_size[0],
-            width       = sample_size[1],
-            generator   = generator,
-            guidance_scale = guidance_scale,
-            image               = inpaint_image,
-            mask_image          = mask_image,
-            control_image       = control_image,
-            num_inference_steps = num_inference_steps,
-            control_context_scale = control_context_scale,
-        ).images
-
-    if lora_path is not None:
-        pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-
-    def save_results():
-        if not os.path.exists(save_path):
-            os.makedirs(save_path, exist_ok=True)
-
-        index = len([path for path in os.listdir(save_path)]) + 1
-        prefix = str(index).zfill(8)
-        video_path = os.path.join(save_path, prefix + f"-control_context_scale-{control_context_scale}.png")
-        image = sample[0]
-        image.save(video_path)
-
-    if ulysses_degree * ring_degree > 1:
-        import torch.distributed as dist
-        if dist.get_rank() == 0:
-            save_results()
+with torch.no_grad():
+    if inpaint_image is not None:
+        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
     else:
+        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
+
+    if mask_image is not None:
+        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
+    else:
+        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
+
+    if control_image is not None:
+        control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
+
+    sample = pipeline(
+        prompt      = prompt, 
+        negative_prompt = negative_prompt,
+        height      = sample_size[0],
+        width       = sample_size[1],
+        generator   = generator,
+        guidance_scale = guidance_scale,
+        image               = inpaint_image,
+        mask_image          = mask_image,
+        control_image       = control_image,
+        num_inference_steps = num_inference_steps,
+        control_context_scale = control_context_scale,
+    ).images
+
+if lora_path is not None:
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+
+def save_results():
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+
+    index = len([path for path in os.listdir(save_path)]) + 1
+    prefix = str(index).zfill(8)
+    video_path = os.path.join(save_path, prefix + ".png")
+    image = sample[0]
+    image.save(video_path)
+
+if ulysses_degree * ring_degree > 1:
+    import torch.distributed as dist
+    if dist.get_rank() == 0:
         save_results()
+else:
+    save_results()
