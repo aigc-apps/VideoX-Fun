@@ -74,7 +74,7 @@ weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
 inpaint_image       = "asset/8.png"
 mask_image          = "asset/mask.png"
-control_context_scales  = 0.80
+control_context_scale = 0.80
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
