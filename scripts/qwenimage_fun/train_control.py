@@ -1079,17 +1079,10 @@ def main():
 
             # Used in Control Mode
             new_examples["control_pixel_values"] = []
-            # Used in Control Ref Mode
-            new_examples["ref_pixel_values"] = []
-            new_examples["clip_pixel_values"] = []
-            new_examples["clip_idx"] = []
                 
             # Used in Inpaint mode 
             new_examples["mask_pixel_values"] = []
             new_examples["mask"] = []
-            
-            new_examples["subject_images"] = []
-            new_examples["subject_flags"] = []
 
             # Get downsample ratio in image 
             pixel_value     = examples[0]["pixel_values"]
@@ -1382,12 +1375,12 @@ def main():
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
                     save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.gif", rescale=True)
                 
+                mask_pixel_values, mask, texts = batch['mask_pixel_values'].cpu(), batch['mask'].cpu(), batch['text']
                 mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
                 mask = torch.tile(rearrange(mask, "b f c h w -> b c f h w"), [1, 3, 1, 1, 1])
-                for idx, (clip_pixel_value, pixel_value, _mask, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, mask, texts)):
+                for idx, (pixel_value, _mask, text) in enumerate(zip(mask_pixel_values, mask, texts)):
                     pixel_value = pixel_value[None, ...]
                     _mask = _mask[None, ...]
-                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_pixel_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
                     save_videos_grid(_mask, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
 
