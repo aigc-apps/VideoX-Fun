@@ -923,6 +923,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         txt_seq_lens: Optional[List[int]] = None,
         guidance: torch.Tensor = None,  # TODO: this should probably be removed
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        controlnet_block_samples=None,
         additional_t_cond=None,
         cond_flag: bool = True,
         return_dict: bool = True,
@@ -1091,11 +1092,17 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                             modulate_index=modulate_index,
                         )
 
+                    if controlnet_block_samples is not None:
+                        interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                        interval_control = int(np.ceil(interval_control))
+                        hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
+
                 if cond_flag:
                     self.teacache.previous_residual_cond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
                 else:
                     self.teacache.previous_residual_uncond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
                 del ori_hidden_states
+
         else:
             for index_block, block in enumerate(self.transformer_blocks):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -1127,6 +1134,12 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         joint_attention_kwargs=attention_kwargs,
                         modulate_index=modulate_index,
                     )
+
+                # controlnet residual
+                if controlnet_block_samples is not None:
+                    interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                    interval_control = int(np.ceil(interval_control))
+                    hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
         if self.zero_cond_t:
             temb = temb.chunk(2, dim=0)[0]

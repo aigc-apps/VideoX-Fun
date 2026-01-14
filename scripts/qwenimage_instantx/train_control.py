@@ -37,15 +37,14 @@ from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import (EMAModel,
-                                      compute_density_for_timestep_sampling,
+from diffusers.training_utils import (compute_density_for_timestep_sampling,
                                       compute_loss_weighting_for_sd3)
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
-from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
+from qwen_vl_utils import process_vision_info
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -68,9 +67,10 @@ from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
 from videox_fun.models import (AutoencoderKLQwenImage,
+                               QwenImageInstantXControlNetModel,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageControlTransformer2DModel)
-from videox_fun.pipeline import QwenImageControlPipeline
+                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+from videox_fun.pipeline import QwenImageControlNetPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import save_videos_grid
 
@@ -133,25 +133,19 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, cn_transformer, args, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
-
-        transformer3d_val = QwenImageControlTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype,
-            low_cpu_mem_usage=True,
-        ).to(weight_dtype)
-        transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
         scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="scheduler"
         )
-        transformer3d = transformer3d.to("cpu")
-        pipeline = QwenImageControlPipeline(
+        pipeline = QwenImageControlNetPipeline(
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
-            transformer=transformer3d_val,
+            transformer=transformer3d,
+            controlnet=cn_transformer,
             scheduler=scheduler,
         )
         pipeline = pipeline.to(accelerator.device)
@@ -197,6 +191,13 @@ def parse_args():
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--cn_pretrained_model_name_or_path",
+        type=str,
+        default="InstantX/Qwen-Image-ControlNet-Union",
+        required=False,
+        help="Path to controlnet pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
         "--revision",
@@ -330,7 +331,6 @@ def parse_args():
             " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
         ),
     )
-    parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
     parser.add_argument(
         "--non_ema_revision",
         type=str,
@@ -479,6 +479,12 @@ def parse_args():
         help="Run train_sampling_steps.",
     )
     parser.add_argument(
+        "--video_sample_size",
+        type=int,
+        default=512,
+        help="Sample size of the video.",
+    )
+    parser.add_argument(
         "--image_sample_size",
         type=int,
         default=512,
@@ -488,14 +494,6 @@ def parse_args():
         "--fix_sample_size", 
         nargs=2, type=int, default=None,
         help="Fix Sample size [height, width] when using bucket and collate_fn."
-    )
-    parser.add_argument(
-        "--config_path",
-        type=str,
-        default=None,
-        help=(
-            "The config of the model in training."
-        ),
     )
     parser.add_argument(
         "--transformer_path",
@@ -734,8 +732,6 @@ def main():
 
         return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
 
-    config = OmegaConf.load(args.config_path)
-
     # Currently Accelerate doesn't know how to handle multiple models under Deepspeed ZeRO stage 3.
     # For this to work properly all models must be run through `accelerate.prepare`. But accelerate
     # will try to assign the same optimizer with the same weights to all models during
@@ -762,13 +758,13 @@ def main():
         latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, vae.config.z_dim, 1, 1, 1).to(accelerator.device)
 
     # Get Transformer
-    transformer3d = QwenImageControlTransformer2DModel.from_pretrained(
+    transformer3d = QwenImageTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=weight_dtype,
         low_cpu_mem_usage=True,
-        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
+    cn_transformer = QwenImageInstantXControlNetModel.from_pretrained(args.cn_pretrained_model_name_or_path, torch_dtype=weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
@@ -804,29 +800,16 @@ def main():
     # A good trainable modules is showed below now.
     # For 3D Patch: trainable_modules = ['ff.net', 'pos_embed', 'attn2', 'proj_out', 'timepositionalencoding', 'h_position', 'w_position']
     # For 2D Patch: trainable_modules = ['ff.net', 'attn2', 'timepositionalencoding', 'h_position', 'w_position']
-    transformer3d.train()
+    cn_transformer.train()
     if accelerator.is_main_process:
         accelerator.print(
             f"Trainable modules '{args.trainable_modules}'."
         )
-    for name, param in transformer3d.named_parameters():
+    for name, param in cn_transformer.named_parameters():
         for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
             if trainable_module_name in name:
                 param.requires_grad = True
                 break
-
-    # Create EMA for the transformer3d.
-    if args.use_ema:
-        if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
-
-        ema_transformer3d = QwenImageControlTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path, 
-            subfolder="transformer",
-            torch_dtype=weight_dtype,
-        ).to(weight_dtype)
-
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=QwenImageControlTransformer2DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -875,9 +858,6 @@ def main():
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
-                    if args.use_ema:
-                        ema_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
-
                     models[0].save_pretrained(os.path.join(output_dir, "transformer"))
                     if not args.use_deepspeed:
                         weights.pop()
@@ -886,25 +866,12 @@ def main():
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
             def load_model_hook(models, input_dir):
-                if args.use_ema:
-                    ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = QwenImageControlTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = QwenImageControlTransformer2DModel.from_pretrained(
-                        input_dir, subfolder="transformer_ema",
-                    )
-                    load_model = EMAModel(load_model.parameters(), model_cls=QwenImageControlTransformer2DModel, model_config=load_model.config)
-                    load_model.load_state_dict(ema_kwargs)
-
-                    ema_transformer3d.load_state_dict(load_model.state_dict())
-                    ema_transformer3d.to(accelerator.device)
-                    del load_model
-
                 for i in range(len(models)):
                     # pop models so that they are not loaded again
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = QwenImageControlTransformer2DModel.from_pretrained(
+                    load_model = QwenImageTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer"
                     )
                     model.register_to_config(**load_model.config)
@@ -924,6 +891,7 @@ def main():
 
     if args.gradient_checkpointing:
         transformer3d.enable_gradient_checkpointing()
+        cn_transformer.enable_gradient_checkpointing()
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -957,13 +925,13 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
+    trainable_params = list(filter(lambda p: p.requires_grad, cn_transformer.parameters()))
     trainable_params_optim = [
         {'params': [], 'lr': args.learning_rate},
         {'params': [], 'lr': args.learning_rate / 2},
     ]
     in_already = []
-    for name, param in transformer3d.named_parameters():
+    for name, param in cn_transformer.named_parameters():
         high_lr_flag = False
         if name in in_already:
             continue
@@ -1012,9 +980,10 @@ def main():
         args.train_data_meta, args.train_data_dir,
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, 
-        enable_inpaint=True,
+        enable_inpaint=False,
         enable_camera_info=False,
-        enable_subject_info=False,
+        enable_subject_info=True,
+        video_sample_n_frames=81,
     )
 
     def worker_init_fn(_seed):
@@ -1079,10 +1048,17 @@ def main():
 
             # Used in Control Mode
             new_examples["control_pixel_values"] = []
+            # Used in Control Ref Mode
+            new_examples["ref_pixel_values"] = []
+            new_examples["clip_pixel_values"] = []
+            new_examples["clip_idx"] = []
                 
             # Used in Inpaint mode 
             new_examples["mask_pixel_values"] = []
             new_examples["mask"] = []
+            
+            new_examples["subject_images"] = []
+            new_examples["subject_flags"] = []
 
             # Get downsample ratio in image 
             pixel_value     = examples[0]["pixel_values"]
@@ -1114,9 +1090,40 @@ def main():
                 # To 0~1
                 pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
-                
+
+                def _create_special_list(length):
+                    if length == 1:
+                        return [1.0]
+                    if length >= 2:
+                        first_element = 0.001
+                        remaining_sum = 1.0 - first_element
+                        other_elements_value = remaining_sum / (length - 1)
+                        special_list = [first_element] + [other_elements_value] * (length - 1)
+                        return special_list
+                number_list_prob = np.array(_create_special_list(len(pixel_values)))
+                clip_index = np.random.choice(list(range(len(pixel_values))), p = number_list_prob)
+                new_examples["clip_idx"].append(clip_index)
+
+                ref_pixel_values = pixel_values[clip_index].permute(1, 2, 0).contiguous()
+                ref_pixel_values = Image.fromarray(np.uint8(ref_pixel_values * 255))
+                ref_pixel_values = (torch.tensor(np.array(ref_pixel_values)).unsqueeze(0).permute(0, 3, 1, 2).contiguous() / 255 - 0.5) / 0.5
+                new_examples["ref_pixel_values"].append(ref_pixel_values)
+
+                clip_pixel_values = pixel_values[clip_index].permute(1, 2, 0).contiguous()
+                clip_pixel_values = clip_pixel_values * 255
+                new_examples["clip_pixel_values"].append(clip_pixel_values)
+
                 control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 control_pixel_values = control_pixel_values / 255.
+
+                _, channel, h, w = pixel_values.size()
+                new_subject_image = torch.zeros(4, channel, h, w)
+                num_subject = len(example["subject_image"])
+                if num_subject != 0:
+                    subject_image = torch.from_numpy(example["subject_image"]).permute(0, 3, 1, 2).contiguous()
+                    new_subject_image[:num_subject] = subject_image
+                subject_image = new_subject_image / 255.
+                subject_flag  = torch.from_numpy(np.array([1] * num_subject + [0] * (4 - num_subject)))
 
                 if args.fix_sample_size is not None:
                     # Get adapt hw for resize
@@ -1165,14 +1172,24 @@ def main():
                 mask = get_random_mask(new_examples["pixel_values"][-1].size())
                 mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
 
+                # Wan 2.1 use 0 for masked pixels
+                # + torch.ones_like(new_examples["pixel_values"][-1]) * -1 * mask
                 new_examples["mask_pixel_values"].append(mask_pixel_values[:1])
                 new_examples["mask"].append(mask[:1])
+
+                new_examples["subject_images"].append(transform(subject_image))
+                new_examples["subject_flags"].append(subject_flag)
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
             new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
+            new_examples["ref_pixel_values"] = torch.stack([example for example in new_examples["ref_pixel_values"]])
+            new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
+            new_examples["clip_idx"] = torch.tensor(new_examples["clip_idx"])
             new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
             new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
+            new_examples["subject_images"] = torch.stack([example for example in new_examples["subject_images"]])
+            new_examples["subject_flags"] = torch.stack([example for example in new_examples["subject_flags"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
@@ -1243,8 +1260,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer3d, optimizer, train_dataloader, lr_scheduler
+    cn_transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        cn_transformer, optimizer, train_dataloader, lr_scheduler
     )
 
     if fsdp_stage != 0:
@@ -1254,13 +1271,11 @@ def main():
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
-    if args.use_ema:
-        ema_transformer3d.to(accelerator.device)
-
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1341,7 +1356,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
@@ -1355,12 +1370,6 @@ def main():
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
-            with torch.no_grad():
-                pixel_values = batch['pixel_values'].clone()
-                pixel_values = rearrange(pixel_values, "b f c h w -> b f h w c")
-                pixel_values = (pixel_values * 0.5 + 0.5) * 255
-                bs, f, h, w, c = pixel_values.size()
-
             # Data batch sanity check
             if epoch == first_epoch and step < 1:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
@@ -1374,22 +1383,11 @@ def main():
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
                     save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.gif", rescale=True)
-                
-                mask_pixel_values, mask, texts = batch['mask_pixel_values'].cpu(), batch['mask'].cpu(), batch['text']
-                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
-                mask = torch.tile(rearrange(mask, "b f c h w -> b c f h w"), [1, 3, 1, 1, 1])
-                for idx, (pixel_value, _mask, text) in enumerate(zip(mask_pixel_values, mask, texts)):
-                    pixel_value = pixel_value[None, ...]
-                    _mask = _mask[None, ...]
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_pixel_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
-                    save_videos_grid(_mask, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
-
-            with accelerator.accumulate(transformer3d):
+    
+            with accelerator.accumulate(cn_transformer):
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
                 control_pixel_values = batch["control_pixel_values"].to(weight_dtype)
-                mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
-                mask = batch["mask"].to(weight_dtype)
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1419,36 +1417,6 @@ def main():
                         
                     control_latents = _batch_encode_vae(control_pixel_values)
                     control_latents = ((control_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
-
-                    for bs_index in range(control_latents.size()[0]):
-                        if rng is None:
-                            zero_init_control_conv_in = np.random.choice([0, 1], p = [0.90, 0.10])
-                        else:
-                            zero_init_control_conv_in = rng.choice([0, 1], p = [0.90, 0.10])
-                        if zero_init_control_conv_in:
-                            control_latents[bs_index] = control_latents[bs_index] * 0
-                    
-                    mask = mask.squeeze(1)
-                    # mask = rearrange(mask, "b f c h w -> b c f h w")
-                    mask_conditions = F.interpolate(1 - mask[:, :1], size=control_latents.size()[-2:], mode='nearest').to(accelerator.device, weight_dtype)
-                    mask_conditions = mask_conditions.unsqueeze(2)
-
-                    # Encode inpaint latents.
-                    t2v_flag = [(_mask == 1).all() for _mask in mask]
-                    new_t2v_flag = []
-                    for _mask in t2v_flag:
-                        if _mask and np.random.rand() < 0.90:
-                            new_t2v_flag.append(0)
-                        else:
-                            new_t2v_flag.append(1)
-                    t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
-
-                    mask_latents = _batch_encode_vae(mask_pixel_values)
-                    mask_latents = ((mask_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
-                    mask_latents = t2v_flag[:, None, None] * mask_latents
-
-                    inpaint_latents = torch.concat([mask_conditions, mask_latents], dim=1)
-                    control_context = torch.cat([control_latents, inpaint_latents], dim=1)
 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1498,7 +1466,7 @@ def main():
                 bsz, channel, num_frame, height, width = latents.size()
                 latents = _pack_latents(latents, bsz, channel, height, width, num_frame=num_frame)
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                control_context = _pack_latents(control_context, bsz, control_context.size(1), height, width, num_frame=num_frame)
+                control_latents = _pack_latents(control_latents, bsz, control_latents.size(1), height, width, num_frame=num_frame)
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1552,6 +1520,17 @@ def main():
 
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                    controlnet_block_samples = cn_transformer(
+                        hidden_states=noisy_latents,
+                        timestep=timesteps / 1000,
+                        controlnet_cond=control_latents,
+                        encoder_hidden_states_mask=encoder_attention_mask,
+                        encoder_hidden_states=prompt_embeds,
+                        img_shapes=img_shapes,
+                        txt_seq_lens=txt_seq_lens,
+                        conditioning_scale=1,
+                        return_dict=False,
+                    )
                     noise_pred = transformer3d(
                         hidden_states=noisy_latents,
                         timestep=timesteps / 1000,
@@ -1559,7 +1538,7 @@ def main():
                         encoder_hidden_states=prompt_embeds,
                         img_shapes=img_shapes,
                         txt_seq_lens=txt_seq_lens,
-                        control_context=control_context,
+                        controlnet_block_samples=controlnet_block_samples,
                         return_dict=False,
                     )
 
@@ -1613,9 +1592,6 @@ def main():
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-
-                if args.use_ema:
-                    ema_transformer3d.step(transformer3d.parameters())
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
@@ -1652,23 +1628,17 @@ def main():
 
                 if accelerator.is_main_process:
                     if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        if args.use_ema:
-                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                            ema_transformer3d.store(transformer3d.parameters())
-                            ema_transformer3d.copy_to(transformer3d.parameters())
                         log_validation(
                             vae,
                             text_encoder,
                             tokenizer,
                             transformer3d,
+                            cn_transformer,
                             args,
                             accelerator,
                             weight_dtype,
                             global_step,
                         )
-                        if args.use_ema:
-                            # Switch back to the original transformer3d parameters.
-                            ema_transformer3d.restore(transformer3d.parameters())
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1678,23 +1648,18 @@ def main():
 
         if accelerator.is_main_process:
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                if args.use_ema:
-                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_transformer3d.store(transformer3d.parameters())
-                    ema_transformer3d.copy_to(transformer3d.parameters())
                 log_validation(
                     vae,
                     text_encoder,
                     tokenizer,
+                    tokenizer_2,
                     transformer3d,
+                    cn_transformer,
                     args,
                     accelerator,
                     weight_dtype,
                     global_step,
                 )
-                if args.use_ema:
-                    # Switch back to the original transformer3d parameters.
-                    ema_transformer3d.restore(transformer3d.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
