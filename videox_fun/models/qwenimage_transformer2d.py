@@ -1061,7 +1061,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                 ori_hidden_states = hidden_states.clone().cpu() if self.teacache.offload else hidden_states.clone()
 
                 # 4. Transformer blocks
-                for i, block in enumerate(self.transformer_blocks):
+                for index_block, block in enumerate(self.transformer_blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
                         def create_custom_forward(module):
                             def custom_forward(*inputs):

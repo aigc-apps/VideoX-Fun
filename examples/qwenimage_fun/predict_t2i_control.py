@@ -15,6 +15,7 @@ from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, QwenImageControlTransformer2DModel)
+from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import QwenImageControlPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -51,6 +52,21 @@ fsdp_text_encoder   = False
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
+
+# Support TeaCache.
+enable_teacache     = True
+# Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
+# but it may cause slight differences between the generated content and the original content.
+teacache_threshold  = 0.30
+# The number of steps to skip TeaCache at the beginning of the inference process, which can
+# reduce the impact of TeaCache on generated video quality.
+num_skip_start_steps = 5
+# Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
+teacache_offload    = False
+
+# Skip some cfg steps in inference for acceleration
+# Recommended to be set between 0.00 and 0.25
+cfg_skip_ratio      = 0
 
 # Config path
 config_path         = "config/qwenimage/qwenimage_control.yaml"
@@ -187,6 +203,17 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
+
+coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
+if coefficients is not None:
+    print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+    pipeline.transformer.enable_teacache(
+        coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
+    )
+
+if cfg_skip_ratio is not None:
+    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
+    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
