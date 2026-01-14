@@ -12,17 +12,17 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLQwenImage,
+from videox_fun.models import (AutoencoderKLQwenImage, QwenImageInstantXControlNetModel, 
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageControlTransformer2DModel)
+                               Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import QwenImageControlPipeline
+from videox_fun.pipeline import QwenImageControlNetPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, get_image,
+from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image,
                                     get_video_to_video_latent,
                                     save_videos_grid)
 
@@ -68,16 +68,17 @@ teacache_offload    = False
 # Recommended to be set between 0.00 and 0.25
 cfg_skip_ratio      = 0
 
-# Config path
-config_path         = "config/qwenimage/qwenimage_control.yaml"
 # Model path
-model_name          = "models/Diffusion_Transformer/Qwen-Image-2512"
+model_name          = "models/Diffusion_Transformer/Qwen-Image"
+# Controlnet Model path
+model_name_controlnet = "models/Diffusion_Transformer/Qwen-Image-ControlNet-Union"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Qwen-Image-2512-Fun-Controlnet-Union.safetensors"
+transformer_path    = None
+controlnet_path     = None
 vae_path            = None
 lora_path           = None
 
@@ -88,9 +89,7 @@ sample_size         = [1728, 992]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
-inpaint_image       = "asset/8.png"
-mask_image          = "asset/mask.png"
-control_context_scale = 0.80
+controlnet_conditioning_scale = 0.80
 
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
@@ -100,17 +99,21 @@ guidance_scale      = 4.0
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/qwenimage-t2i-control"
+save_path           = "samples/qwenimage-t2i-instantx-control"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
-config = OmegaConf.load(config_path)
 
-transformer = QwenImageControlTransformer2DModel.from_pretrained(
+transformer = QwenImageTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+).to(weight_dtype)
+
+controlnet = QwenImageInstantXControlNetModel.from_pretrained(
+    model_name_controlnet, 
+    low_cpu_mem_usage=True,
+    torch_dtype=weight_dtype,
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -123,6 +126,18 @@ if transformer_path is not None:
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
     m, u = transformer.load_state_dict(state_dict, strict=False)
+    print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+
+if controlnet_path is not None:
+    print(f"From checkpoint: {controlnet_path}")
+    if controlnet_path.endswith("safetensors"):
+        from safetensors.torch import load_file
+        state_dict = load_file(controlnet_path)
+    else:
+        state_dict = torch.load(controlnet_path, map_location="cpu")
+    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+
+    m, u = controlnet.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
@@ -162,12 +177,13 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = QwenImageControlPipeline(
+pipeline = QwenImageControlNetPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
     transformer=transformer,
     scheduler=scheduler,
+    controlnet=controlnet,
 )
 
 if ulysses_degree > 1 or ring_degree > 1:
@@ -221,21 +237,10 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
-    if inpaint_image is not None:
-        inpaint_image_input = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
-    else:
-        inpaint_image_input = torch.zeros([1, 3, sample_size[0], sample_size[1]])
-
-    if mask_image is not None:
-        mask_image_input = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
-    else:
-        mask_image_input = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
-
-    if control_image is not None:
-        control_image_input = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
+    control_image_input = get_image(control_image)
     
     sample = pipeline(
-        prompt, 
+        prompt=prompt,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
@@ -243,10 +248,8 @@ with torch.no_grad():
         true_cfg_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
 
-        image               = inpaint_image_input,
-        mask_image          = mask_image_input,
-        control_image       = control_image_input,
-        control_context_scale  = control_context_scale
+        control_image = control_image_input,
+        controlnet_conditioning_scale = controlnet_conditioning_scale
     ).images
 
 if lora_path is not None:

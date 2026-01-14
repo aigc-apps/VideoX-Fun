@@ -33,6 +33,7 @@ from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
+from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel

@@ -172,6 +172,7 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
         guidance: torch.Tensor = None,  # TODO: this should probably be removed
         attention_kwargs: Optional[Dict[str, Any]] = None,
         additional_t_cond=None,
+        cond_flag: bool=True,
         control_context=None,
         control_context_scale=1.0,
         return_dict: bool = True,
@@ -231,20 +232,105 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
                     image_rotary_emb[1]
                 )
 
-        # Arguments
-        kwargs = dict(
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_hidden_states_mask=encoder_hidden_states_mask,
-            temb=temb,
-            image_rotary_emb=image_rotary_emb,
-            joint_attention_kwargs=attention_kwargs,
-            modulate_index=modulate_index,
-        )
-        hints = self.forward_control(
-            hidden_states, control_context, kwargs
-        )
+        # TeaCache
+        if self.teacache is not None:
+            if cond_flag:
+                inp = hidden_states.clone()
+                temb_ = temb.clone()
+                encoder_hidden_states_ = encoder_hidden_states.clone()
 
-        for index_block, block in enumerate(self.transformer_blocks):
+                img_mod_params_ = self.transformer_blocks[0].img_mod(temb_)
+                img_mod1_, img_mod2_ = img_mod_params_.chunk(2, dim=-1) 
+                img_normed_ = self.transformer_blocks[0].img_norm1(inp)
+                modulated_inp, img_gate1_ = self.transformer_blocks[0]._modulate(img_normed_, img_mod1_)
+
+                skip_flag = self.teacache.cnt < self.teacache.num_skip_start_steps
+                if skip_flag:
+                    self.should_calc = True
+                    self.teacache.accumulated_rel_l1_distance = 0
+                else:
+                    if cond_flag:
+                        rel_l1_distance = self.teacache.compute_rel_l1_distance(self.teacache.previous_modulated_input, modulated_inp)
+                        self.teacache.accumulated_rel_l1_distance += self.teacache.rescale_func(rel_l1_distance)
+
+                    if torch.distributed.is_initialized():
+                        if not isinstance(self.teacache.accumulated_rel_l1_distance, torch.Tensor):
+                            accumulated_distance_tensor = torch.tensor(
+                                self.teacache.accumulated_rel_l1_distance, 
+                                device=hidden_states.device,
+                                dtype=torch.float32
+                            )
+                        else:
+                            accumulated_distance_tensor = self.teacache.accumulated_rel_l1_distance.clone()
+                        
+                        torch.distributed.broadcast(accumulated_distance_tensor, src=0)
+                        self.teacache.accumulated_rel_l1_distance = accumulated_distance_tensor.item()
+
+                    if self.teacache.accumulated_rel_l1_distance < self.teacache.rel_l1_thresh:
+                        self.should_calc = False
+                    else:
+                        self.should_calc = True
+                        self.teacache.accumulated_rel_l1_distance = 0
+                self.teacache.previous_modulated_input = modulated_inp
+                self.teacache.should_calc = self.should_calc
+            else:
+                self.should_calc = self.teacache.should_calc
+
+        # TeaCache
+        if self.teacache is not None:
+            if not self.should_calc:
+                previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
+                hidden_states = hidden_states + previous_residual.to(hidden_states.device)[-hidden_states.size()[0]:,]
+            else:
+                ori_hidden_states = hidden_states.clone().cpu() if self.teacache.offload else hidden_states.clone()
+
+                # Arguments
+                kwargs = dict(
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states_mask=encoder_hidden_states_mask,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    joint_attention_kwargs=attention_kwargs,
+                    modulate_index=modulate_index,
+                )
+                hints = self.forward_control(
+                    hidden_states, control_context, kwargs
+                )
+                # 4. Transformer blocks
+                for index_block, block in enumerate(self.transformer_blocks):
+                    # Arguments
+                    kwargs = dict(
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_hidden_states_mask=encoder_hidden_states_mask,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                        joint_attention_kwargs=attention_kwargs,
+                        modulate_index=modulate_index,
+                        hints=hints,
+                        context_scale=control_context_scale
+                    )
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
+                        def create_custom_forward(module, **static_kwargs):
+                            def custom_forward(*inputs):
+                                return module(*inputs, **static_kwargs)
+                            return custom_forward
+
+                        ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
+                        encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block, **kwargs),
+                            hidden_states,
+                            **ckpt_kwargs,
+                        )
+                    else:
+                        encoder_hidden_states, hidden_states = block(hidden_states, **kwargs)
+                if cond_flag:
+                    self.teacache.previous_residual_cond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
+                else:
+                    self.teacache.previous_residual_uncond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
+                del ori_hidden_states
+
+        else:
             # Arguments
             kwargs = dict(
                 encoder_hidden_states=encoder_hidden_states,
@@ -253,24 +339,37 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
                 image_rotary_emb=image_rotary_emb,
                 joint_attention_kwargs=attention_kwargs,
                 modulate_index=modulate_index,
-                hints=hints,
-                context_scale=control_context_scale
             )
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module, **static_kwargs):
-                    def custom_forward(*inputs):
-                        return module(*inputs, **static_kwargs)
-                    return custom_forward
-
-                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
-                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block, **kwargs),
-                    hidden_states,
-                    **ckpt_kwargs,
+            hints = self.forward_control(
+                hidden_states, control_context, kwargs
+            )
+            for index_block, block in enumerate(self.transformer_blocks):
+                # Arguments
+                kwargs = dict(
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states_mask=encoder_hidden_states_mask,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    joint_attention_kwargs=attention_kwargs,
+                    modulate_index=modulate_index,
+                    hints=hints,
+                    context_scale=control_context_scale
                 )
-            else:
-                encoder_hidden_states, hidden_states = block(hidden_states, **kwargs)
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    def create_custom_forward(module, **static_kwargs):
+                        def custom_forward(*inputs):
+                            return module(*inputs, **static_kwargs)
+                        return custom_forward
+
+                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
+                    encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block, **kwargs),
+                        hidden_states,
+                        **ckpt_kwargs,
+                    )
+                else:
+                    encoder_hidden_states, hidden_states = block(hidden_states, **kwargs)
 
         if self.zero_cond_t:
             temb = temb.chunk(2, dim=0)[0]
@@ -285,4 +384,8 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
             # remove `lora_scale` from each PEFT layer
             unscale_lora_layers(self, lora_scale)
 
+        if self.teacache is not None and cond_flag:
+            self.teacache.cnt += 1
+            if self.teacache.cnt == self.teacache.num_steps:
+                self.teacache.reset()
         return output
