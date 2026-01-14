@@ -745,7 +745,7 @@ class QwenImageControlPipeline(DiffusionPipeline):
                 self._current_timestep = t
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0]).to(latent_model_input.dtype)
-                print(latent_model_input.size(), control_context_input.size())
+
                 with torch.cuda.amp.autocast(dtype=latents.dtype), torch.cuda.device(device=latents.device):
                     noise_pred = self.transformer.forward_bs(
                         x=latent_model_input,
