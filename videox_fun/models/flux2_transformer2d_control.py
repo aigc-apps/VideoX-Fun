@@ -237,6 +237,21 @@ class Flux2ControlTransformer2DModel(Flux2Transformer2DModel):
             torch.cat([text_rotary_emb[1], image_rotary_emb[1]], dim=0),
         )
 
+        # Context Parallel
+        if self.sp_world_size > 1:
+            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=1)[self.sp_world_rank]
+            if concat_rotary_emb is not None:
+                txt_rotary_emb = (
+                    concat_rotary_emb[0][:encoder_hidden_states.shape[1]], 
+                    concat_rotary_emb[1][:encoder_hidden_states.shape[1]]
+                )
+                concat_rotary_emb = (
+                    torch.chunk(concat_rotary_emb[0][encoder_hidden_states.shape[1]:], self.sp_world_size, dim=0)[self.sp_world_rank],
+                    torch.chunk(concat_rotary_emb[1][encoder_hidden_states.shape[1]:], self.sp_world_size, dim=0)[self.sp_world_rank],
+                )
+                concat_rotary_emb = [torch.cat([_txt_rotary_emb, _image_rotary_emb], dim=0) \
+                    for _txt_rotary_emb, _image_rotary_emb in zip(txt_rotary_emb, concat_rotary_emb)]
+
         # Arguments
         kwargs = dict(
             encoder_hidden_states=encoder_hidden_states,
@@ -305,6 +320,9 @@ class Flux2ControlTransformer2DModel(Flux2Transformer2DModel):
         # 6. Output layers
         hidden_states = self.norm_out(hidden_states, temb)
         output = self.proj_out(hidden_states)
+
+        if self.sp_world_size > 1:
+            output = self.all_gather(output, dim=1)
 
         if not return_dict:
             return (output,)
