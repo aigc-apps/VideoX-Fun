@@ -23,6 +23,8 @@ import pickle
 import random
 import shutil
 import sys
+from typing import (Any, Callable, Dict, List, NamedTuple, Optional, Tuple,
+                    Union)
 
 import accelerate
 import diffusers
@@ -30,12 +32,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+import torchvision.transforms.functional as TF
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from diffusers import FlowMatchEulerDiscreteScheduler
+from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (EMAModel,
                                       compute_density_for_timestep_sampling,
@@ -50,6 +53,7 @@ from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
+from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
 import datasets
@@ -59,23 +63,32 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
+from qwen_vl_utils import process_vision_info
+
 from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
                                             ASPECT_RATIO_RANDOM_CROP_512,
                                             ASPECT_RATIO_RANDOM_CROP_PROB,
                                             AspectRatioBatchImageVideoSampler,
                                             RandomSampler, get_closest_ratio)
 from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
+                                                 ImageVideoDataset,
                                                  ImageVideoSampler,
-                                                 get_random_mask)
-from videox_fun.models import (AutoencoderKLQwenImage,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageControlTransformer2DModel)
-from videox_fun.pipeline import QwenImageControlPipeline
+                                                 get_random_mask,
+                                                 process_pose_file,
+                                                 process_pose_params)
+from videox_fun.dist import set_multi_gpus_devices, shard_model
+from videox_fun.models import (AutoencoderKLFlux2, AutoProcessor,
+                               Flux2ControlTransformer2DModel,
+                               Mistral3ForConditionalGeneration,
+                               PixtralProcessor)
+from videox_fun.pipeline import Flux2ControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils.utils_yolo import ObjectInstanceDetector
 
 if is_wandb_available():
-    pass
+    import wandb
+
 
 def filter_kwargs(cls, kwargs):
     import inspect
@@ -97,25 +110,23 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
 
-def _pack_latents(latents, batch_size, num_channels_latents, height, width, num_frame=None):
-    if num_frame is None:
-        latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
-        latents = latents.permute(0, 2, 4, 1, 3, 5)
-        latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
-    else:
-        latents = latents.view(batch_size, num_channels_latents, num_frame, height // 2, 2, width // 2, 2)
-        latents = latents.permute(0, 2, 3, 5, 1, 4, 6)
-        latents = latents.reshape(batch_size, num_frame * (height // 2) * (width // 2), num_channels_latents * 4)
-    return latents
+def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
+    a1, b1 = 8.73809524e-05, 1.89833333
+    a2, b2 = 0.00016927, 0.45666666
 
-def _extract_masked_hidden(hidden_states: torch.Tensor, mask: torch.Tensor):
-    bool_mask = mask.bool()
-    valid_lengths = bool_mask.sum(dim=1)
-    selected = hidden_states[bool_mask]
-    split_result = torch.split(selected, valid_lengths.tolist(), dim=0)
+    if image_seq_len > 4300:
+        mu = a2 * image_seq_len + b2
+        return float(mu)
 
-    return split_result
-    
+    m_200 = a2 * image_seq_len + b2
+    m_10 = a1 * image_seq_len + b1
+
+    a = (m_200 - m_10) / 190.0
+    b = m_200 - 200.0 * a
+    mu = a * num_steps + b
+
+    return float(mu)
+
 def calculate_shift(
     image_seq_len,
     base_seq_len: int = 256,
@@ -128,6 +139,177 @@ def calculate_shift(
     mu = image_seq_len * m + b
     return mu
 
+def _prepare_latent_ids(
+    latents: torch.Tensor,  # (B, C, H, W)
+):
+    r"""
+    Generates 4D position coordinates (T, H, W, L) for latent tensors.
+
+    Args:
+        latents (torch.Tensor):
+            Latent tensor of shape (B, C, H, W)
+
+    Returns:
+        torch.Tensor:
+            Position IDs tensor of shape (B, H*W, 4) All batches share the same coordinate structure: T=0,
+            H=[0..H-1], W=[0..W-1], L=0
+    """
+
+    batch_size, _, height, width = latents.shape
+
+    t = torch.arange(1)  # [0] - time dimension
+    h = torch.arange(height)
+    w = torch.arange(width)
+    l = torch.arange(1)  # [0] - layer dimension
+
+    # Create position IDs: (H*W, 4)
+    latent_ids = torch.cartesian_prod(t, h, w, l)
+
+    # Expand to batch: (B, H*W, 4)
+    latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+    return latent_ids
+
+def _patchify_latents(latents):
+    batch_size, num_channels_latents, height, width = latents.shape
+    latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+    latents = latents.permute(0, 1, 3, 5, 2, 4)
+    latents = latents.reshape(batch_size, num_channels_latents * 4, height // 2, width // 2)
+    return latents
+
+def _pack_latents(latents):
+    """
+    pack latents: (batch_size, num_channels, height, width) -> (batch_size, height * width, num_channels)
+    """
+
+    batch_size, num_channels, height, width = latents.shape
+    latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+
+    return latents
+
+def format_text_input(prompts: List[str], system_message: str = None):
+    # Remove [IMG] tokens from prompts to avoid Pixtral validation issues
+    # when truncation is enabled. The processor counts [IMG] tokens and fails
+    # if the count changes after truncation.
+    cleaned_txt = [prompt.replace("[IMG]", "") for prompt in prompts]
+
+    return [
+        [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_message}],
+            },
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        ]
+        for prompt in cleaned_txt
+    ]
+
+def _get_mistral_3_small_prompt_embeds(
+    text_encoder: Mistral3ForConditionalGeneration,
+    tokenizer: PixtralProcessor,
+    prompt: Union[str, List[str]],
+    dtype: Optional[torch.dtype] = None,
+    device: Optional[torch.device] = None,
+    max_sequence_length: int = 512,
+    # fmt: off
+    system_message: str = "You are an AI that reasons about image descriptions. You give structured responses focusing on object relationships, object attribution and actions without speculation.",
+    # fmt: on
+    hidden_states_layers: List[int] = (10, 20, 30),
+):
+    dtype = text_encoder.dtype if dtype is None else dtype
+    device = text_encoder.device if device is None else device
+
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+
+    # Format input messages
+    messages_batch = format_text_input(prompts=prompt, system_message=system_message)
+
+    # Process all messages at once
+    inputs = tokenizer.apply_chat_template(
+        messages_batch,
+        add_generation_prompt=False,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        max_length=max_sequence_length,
+    )
+
+    # Move to device
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+
+    # Forward pass through the model
+    output = text_encoder(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
+        use_cache=False,
+    )
+
+    # Only use outputs from intermediate layers and stack them
+    out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
+    out = out.to(dtype=dtype, device=device)
+
+    batch_size, num_channels, seq_len, hidden_dim = out.shape
+    prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+    return prompt_embeds
+
+def _prepare_text_ids(
+    x: torch.Tensor,  # (B, L, D) or (L, D)
+    t_coord: Optional[torch.Tensor] = None,
+):
+    B, L, _ = x.shape
+    out_ids = []
+
+    for i in range(B):
+        t = torch.arange(1) if t_coord is None else t_coord[i]
+        h = torch.arange(1)
+        w = torch.arange(1)
+        l = torch.arange(L)
+
+        coords = torch.cartesian_prod(t, h, w, l)
+        out_ids.append(coords)
+
+    return torch.stack(out_ids)
+
+def encode_prompt(
+    prompt: Union[str, List[str]],
+    device: Optional[torch.device] = None,
+    text_encoder=None, 
+    tokenizer=None, 
+    num_images_per_prompt: int = 1,
+    prompt_embeds: Optional[torch.Tensor] = None,
+    max_sequence_length: int = 512,
+    text_encoder_out_layers: Tuple[int] = (10, 20, 30),
+    system_message = "You are an AI that reasons about image descriptions. You give structured responses focusing on object relationships, object attribution and actions without speculation."
+):
+    if prompt is None:
+        prompt = ""
+
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+
+    if prompt_embeds is None:
+        prompt_embeds = _get_mistral_3_small_prompt_embeds(
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            device=device,
+            max_sequence_length=max_sequence_length,
+            system_message=system_message,
+            hidden_states_layers=text_encoder_out_layers,
+        )
+
+    batch_size, seq_len, _ = prompt_embeds.shape
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+
+    text_ids = _prepare_text_ids(prompt_embeds)
+    text_ids = text_ids.to(device)
+    return prompt_embeds, text_ids
+
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
 
@@ -137,9 +319,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = QwenImageControlTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype,
-            low_cpu_mem_usage=True,
+        transformer3d_val = Flux2ControlTransformer2DModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype, low_cpu_mem_usage=True,
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
         scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
@@ -147,7 +328,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
             subfolder="scheduler"
         )
         transformer3d = transformer3d.to("cpu")
-        pipeline = QwenImageControlPipeline(
+        pipeline = Flux2ControlPipeline(
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
@@ -467,12 +648,6 @@ def parse_args():
         "--random_hw_adapt", action="store_true", help="Whether enable random adapt height and width in datasets."
     )
     parser.add_argument(
-        "--token_sample_size",
-        type=int,
-        default=512,
-        help="Sample size of the token.",
-    )
-    parser.add_argument(
         "--train_sampling_steps",
         type=int,
         default=1000,
@@ -524,7 +699,7 @@ def parse_args():
     parser.add_argument(
         '--tokenizer_max_length', 
         type=int,
-        default=1024,
+        default=512,
         help='Max length of tokenizer'
     )
     parser.add_argument(
@@ -550,6 +725,15 @@ def parse_args():
         default=34,
         help=(
             'The start idx for prompt template.'
+        ),
+    )
+    parser.add_argument(
+        "--train_mode",
+        type=str,
+        default="normal",
+        help=(
+            'The format of training data. Support `"normal"`'
+            ' (default), `"i2v"`.'
         ),
     )
     parser.add_argument(
@@ -720,7 +904,7 @@ def main():
     )
 
     # Get Tokenizer
-    tokenizer = Qwen2Tokenizer.from_pretrained(
+    tokenizer = PixtralProcessor.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="tokenizer"
     )
 
@@ -743,26 +927,25 @@ def main():
     #
     # For now the following workaround will partially support Deepspeed ZeRO-3, by excluding the 2
     # frozen models from being partitioned during `zero.Init` which gets called during
-    # `from_pretrained` So CLIPTextModel and AutoencoderKL will not enjoy the parameter sharding
+    # `from_pretrained` So Mistral3ForConditionalGeneration and AutoencoderKLFlux2 will not enjoy the parameter sharding
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # Get Text encoder
-        text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        text_encoder = Mistral3ForConditionalGeneration.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", torch_dtype=weight_dtype
         )
         text_encoder = text_encoder.eval()
-
         # Get Vae
-        vae = AutoencoderKLQwenImage.from_pretrained(
+        vae = AutoencoderKLFlux2.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="vae"
         ).to(weight_dtype)
         vae.eval()
-        latents_mean = (torch.tensor(vae.config.latents_mean).view(1, vae.config.z_dim, 1, 1, 1)).to(accelerator.device)
-        latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, vae.config.z_dim, 1, 1, 1).to(accelerator.device)
-
+        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device, weight_dtype)
+        latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(accelerator.device, weight_dtype)
+        
     # Get Transformer
-    transformer3d = QwenImageControlTransformer2DModel.from_pretrained(
+    transformer3d = Flux2ControlTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=weight_dtype,
@@ -778,7 +961,7 @@ def main():
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
         if args.transformer_path.endswith("safetensors"):
-            from safetensors.torch import load_file
+            from safetensors.torch import load_file, safe_open
             state_dict = load_file(args.transformer_path)
         else:
             state_dict = torch.load(args.transformer_path, map_location="cpu")
@@ -791,7 +974,7 @@ def main():
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
         if args.vae_path.endswith("safetensors"):
-            from safetensors.torch import load_file
+            from safetensors.torch import load_file, safe_open
             state_dict = load_file(args.vae_path)
         else:
             state_dict = torch.load(args.vae_path, map_location="cpu")
@@ -820,13 +1003,13 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("FSDP does not support EMA.")
 
-        ema_transformer3d = QwenImageControlTransformer2DModel.from_pretrained(
+        ema_transformer3d = Flux2ControlTransformer2DModel.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="transformer",
             torch_dtype=weight_dtype,
         ).to(weight_dtype)
 
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=QwenImageControlTransformer2DModel, model_config=ema_transformer3d.config)
+        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=Flux2ControlTransformer2DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -888,11 +1071,11 @@ def main():
             def load_model_hook(models, input_dir):
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = QwenImageControlTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = QwenImageControlTransformer2DModel.from_pretrained(
+                    _, ema_kwargs = Flux2ControlTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = Flux2ControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                     )
-                    load_model = EMAModel(load_model.parameters(), model_cls=QwenImageControlTransformer2DModel, model_config=load_model.config)
+                    load_model = EMAModel(load_model.parameters(), model_cls=Flux2ControlTransformer2DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
 
                     ema_transformer3d.load_state_dict(load_model.state_dict())
@@ -904,7 +1087,7 @@ def main():
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = QwenImageControlTransformer2DModel.from_pretrained(
+                    load_model = Flux2ControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer"
                     )
                     model.register_to_config(**load_model.config)
@@ -1243,14 +1426,15 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
+    transformer3d.requires_grad_(True)
     transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         transformer3d, optimizer, train_dataloader, lr_scheduler
     )
 
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
-        from videox_fun.dist import shard_model
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
@@ -1349,6 +1533,7 @@ def main():
         vae_stream_1 = None
         vae_stream_2 = None
 
+    # Calculate the index we need】
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 
     for epoch in range(first_epoch, args.num_train_epochs):
@@ -1394,7 +1579,7 @@ def main():
                 with torch.no_grad():
                     # This way is quicker when batch grows up
                     def _batch_encode_vae(pixel_values):
-                        pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                        pixel_values = pixel_values.squeeze(1)
                         bs = args.vae_mini_batch
                         new_pixel_values = []
                         for i in range(0, pixel_values.shape[0], bs):
@@ -1409,10 +1594,12 @@ def main():
                             latents = _batch_encode_vae(pixel_values)
                     else:
                         latents = _batch_encode_vae(pixel_values)
-                    latents = ((latents - latents_mean) * latents_std).to(dtype=weight_dtype)
-                        
+
+                    # Control Latents
                     control_latents = _batch_encode_vae(control_pixel_values)
-                    control_latents = ((control_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
+                    control_latents = _patchify_latents(control_latents)
+                    control_latents = ((control_latents - latents_bn_mean) / latents_bn_std).to(dtype=weight_dtype)
+                    control_latents = _pack_latents(control_latents)
 
                     for bs_index in range(control_latents.size()[0]):
                         if rng is None:
@@ -1421,13 +1608,12 @@ def main():
                             zero_init_control_conv_in = rng.choice([0, 1], p = [0.90, 0.10])
                         if zero_init_control_conv_in:
                             control_latents[bs_index] = control_latents[bs_index] * 0
-                    
-                    mask = mask.squeeze(1)
-                    # mask = rearrange(mask, "b f c h w -> b c f h w")
-                    mask_conditions = F.interpolate(1 - mask[:, :1], size=control_latents.size()[-2:], mode='nearest').to(accelerator.device, weight_dtype)
-                    mask_conditions = mask_conditions.unsqueeze(2)
 
-                    # Encode inpaint latents.
+                    mask = rearrange(mask, "b f c h w -> b c f h w").squeeze(2)
+                    mask_conditions = F.interpolate(1 - mask, size=latents.size()[-2:], mode='nearest').to(accelerator.device, weight_dtype)
+                    mask_conditions = _patchify_latents(mask_conditions)
+                    mask_conditions = _pack_latents(mask_conditions)
+
                     t2v_flag = [(_mask == 1).all() for _mask in mask]
                     new_t2v_flag = []
                     for _mask in t2v_flag:
@@ -1436,13 +1622,16 @@ def main():
                         else:
                             new_t2v_flag.append(1)
                     t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
-
+                    
+                    # Encode inpaint latents.
                     mask_latents = _batch_encode_vae(mask_pixel_values)
-                    mask_latents = ((mask_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
+                    mask_latents = _patchify_latents(mask_latents)
+                    mask_latents = ((mask_latents - latents_bn_mean) / latents_bn_std).to(dtype=weight_dtype)
+                    mask_latents = _pack_latents(mask_latents)
                     mask_latents = t2v_flag[:, None, None] * mask_latents
 
-                    inpaint_latents = torch.concat([mask_conditions, mask_latents], dim=1)
-                    control_context = torch.cat([control_latents, inpaint_latents], dim=1)
+                    inpaint_latents = torch.concat([mask_conditions, mask_latents], dim=2)
+                    control_context = torch.cat([control_latents, inpaint_latents], dim=2)
 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1455,44 +1644,30 @@ def main():
                         text_encoder.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
-                    encoder_attention_mask = batch['encoder_attention_mask']
+                    prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    text_ids = batch['text_ids']
                 else:
                     with torch.no_grad():
-                        template = args.prompt_template_encode
-                        drop_idx = args.prompt_template_encode_start_idx
-
-                        txt = [template.format(e) for e in batch['text']]
-                        txt_tokens = tokenizer(
-                            txt, max_length=args.tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
-                        ).to(accelerator.device)
-                        encoder_hidden_states = text_encoder(
-                            input_ids=txt_tokens.input_ids,
-                            attention_mask=txt_tokens.attention_mask,
-                            output_hidden_states=True,
+                        prompt_embeds, text_ids = encode_prompt(
+                            batch['text'], device=accelerator.device,
+                            text_encoder=text_encoder, 
+                            tokenizer=tokenizer,
                         )
-                        hidden_states = encoder_hidden_states.hidden_states[-1]
-                        split_hidden_states = _extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
-                        split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-                        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
-                        max_seq_len = max([e.size(0) for e in split_hidden_states])
-                        prompt_embeds = torch.stack(
-                            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
-                        )
-                        encoder_attention_mask = torch.stack(
-                            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
-                        )
-
-                        prompt_embeds = prompt_embeds.to(dtype=latents.dtype, device=accelerator.device)
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
 
-                bsz, channel, num_frame, height, width = latents.size()
-                latents = _pack_latents(latents, bsz, channel, height, width, num_frame=num_frame)
+                bsz, channel, height, width = latents.size()
+                latents = _patchify_latents(latents)
+                latent_image_ids = _prepare_latent_ids(latents)
+                latents = ((latents - latents_bn_mean) / latents_bn_std).to(dtype=weight_dtype)
+                latents = _pack_latents(latents)
+
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                control_context = _pack_latents(control_context, bsz, control_context.size(1), height, width, num_frame=num_frame)
+                # handle guidance
+                guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
+                guidance = guidance.expand(latents.shape[0])
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1541,21 +1716,18 @@ def main():
                 # Add noise
                 target = noise - latents
 
-                img_shapes = [[(num_frame, height // 2, width // 2)]] * latents.size(0)
-                txt_seq_lens = encoder_attention_mask.sum(dim=1).tolist() if encoder_attention_mask is not None else None
-
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         hidden_states=noisy_latents,
                         timestep=timesteps / 1000,
-                        encoder_hidden_states_mask=encoder_attention_mask,
+                        guidance=guidance,
                         encoder_hidden_states=prompt_embeds,
-                        img_shapes=img_shapes,
-                        txt_seq_lens=txt_seq_lens,
+                        txt_ids=text_ids,
+                        img_ids=latent_image_ids,
                         control_context=control_context,
                         return_dict=False,
-                    )
+                    )[0]
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
@@ -1641,7 +1813,14 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+
+                        for name, param in transformer3d.named_parameters():
+                            for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+                                if trainable_module_name not in name:
+                                    param.requires_grad = False
+                                    break
                         accelerator.save_state(save_path)
+                        transformer3d.requires_grad_(True)
                         logger.info(f"Saved state to {save_path}")
 
                 if accelerator.is_main_process:
