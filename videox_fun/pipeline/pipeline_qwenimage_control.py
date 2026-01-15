@@ -648,8 +648,8 @@ class QwenImageControlPipeline(DiffusionPipeline):
                                         torch.zeros_like(mask_condition))
             mask_condition = torch.tile(mask_condition, [1, 3, 1, 1]).to(dtype=weight_dtype, device=device)
         else:
-            mask_condition = torch.zeros([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
-        
+            mask_condition = torch.ones([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
+
         if image is not None:
             init_image = self.image_processor.preprocess(image, height=height, width=width)
             init_image = init_image.to(dtype=weight_dtype, device=device) * (mask_condition < 0.5)

@@ -90,7 +90,9 @@ from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                ZImageControlTransformer2DModel)
 from videox_fun.pipeline import ZImageControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    get_image_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -197,56 +199,67 @@ logger = get_logger(__name__, log_level="INFO")
 
 def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
-        logger.info("Running validation... ")
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            logger.info("Running validation... ")
+            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                args.pretrained_model_name_or_path, 
+                subfolder="scheduler"
+            )
+            pipeline = ZImageControlPipeline(
+                vae=vae, 
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                transformer=transformer3d,
+                scheduler=scheduler,
+            )
+            pipeline = pipeline.to(accelerator.device)
 
-        transformer3d_val = ZImageControlTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype,
-            low_cpu_mem_usage=True,
-        ).to(weight_dtype)
-        transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-            args.pretrained_model_name_or_path, 
-            subfolder="scheduler"
-        )
-        transformer3d = transformer3d.to("cpu")
-        pipeline = ZImageControlPipeline(
-            vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-            text_encoder=accelerator.unwrap_model(text_encoder),
-            tokenizer=tokenizer,
-            transformer=transformer3d_val,
-            scheduler=scheduler,
-        )
-        pipeline = pipeline.to(accelerator.device)
+            if args.seed is None:
+                generator = None
+            else:
+                rank_seed = args.seed + accelerator.process_index
+                generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
+                logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-        if args.seed is None:
-            generator = None
-        else:
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
-        for i in range(len(args.validation_prompts)):
-            with torch.no_grad():
+            for i in range(len(args.validation_prompts)):
+                control_image = Image.open(args.validation_paths[i])
+                width, height = control_image.width, control_image.height
+                width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
+                control_image = get_image_latent(control_image, sample_size=(height, width))[:, :, 0]
+                
                 sample = pipeline(
                     args.validation_prompts[i], 
                     negative_prompt = "bad detailed",
-                    height      = args.image_sample_size,
-                    width       = args.image_sample_size,
-                    generator   = generator
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    guidance_scale = 0,
+                    num_inference_steps = 8,
+                    control_image = control_image,
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                image = sample[0].save(os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
+                image = sample[0].save(
+                    os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.jpg"
+                    )
+                )
 
-        del pipeline
-        del transformer3d_val
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-        transformer3d = transformer3d.to(accelerator.device)
+            del pipeline
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+            if not args.enable_text_encoder_in_dataloader:
+                text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error with info {e}")
-        transformer3d = transformer3d.to(accelerator.device)
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -304,6 +317,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -957,19 +977,6 @@ def main():
             if trainable_module_name in name:
                 param.requires_grad = True
                 break
-
-    # Create EMA for the transformer3d.
-    if args.use_ema:
-        if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
-
-        ema_transformer3d = ZImageControlTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path, 
-            subfolder="transformer",
-            torch_dtype=weight_dtype,
-        ).to(weight_dtype)
-
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=ZImageControlTransformer2DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -1998,25 +2005,17 @@ def main():
                         accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                if accelerator.is_main_process:
-                    if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        if args.use_ema:
-                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                            ema_transformer3d.store(transformer3d.parameters())
-                            ema_transformer3d.copy_to(transformer3d.parameters())
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            transformer3d,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
-                        if args.use_ema:
-                            # Switch back to the original transformer3d parameters.
-                            ema_transformer3d.restore(transformer3d.parameters())
+                if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        generator_transformer3d,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
 
             logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2024,25 +2023,17 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                if args.use_ema:
-                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_transformer3d.store(transformer3d.parameters())
-                    ema_transformer3d.copy_to(transformer3d.parameters())
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    transformer3d,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
-                if args.use_ema:
-                    # Switch back to the original transformer3d parameters.
-                    ema_transformer3d.restore(transformer3d.parameters())
+        if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                generator_transformer3d,
+                args,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

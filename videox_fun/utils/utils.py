@@ -1,5 +1,6 @@
 import gc
 import inspect
+import math
 import os
 import shutil
 import subprocess
@@ -141,6 +142,15 @@ def merge_video_audio(video_path: str, audio_path: str):
         if os.path.exists(temp_output):
             os.remove(temp_output)
         print(f"merge_video_audio failed with error: {e}")
+
+def calculate_dimensions(target_area, ratio):
+    width = math.sqrt(target_area * ratio)
+    height = width / ratio
+
+    width = round(width / 32) * 32
+    height = round(height / 32) * 32
+
+    return width, height
 
 def get_image_to_video_latent(validation_image_start, validation_image_end, video_length, sample_size):
     if validation_image_start is not None and validation_image_end is not None:
