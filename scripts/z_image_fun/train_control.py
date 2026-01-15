@@ -81,9 +81,8 @@ from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
                                CLIPVisionModelWithProjection, Qwen2Tokenizer,
                                Qwen3ForCausalLM, QwenImageTransformer2DModel,
-                               ZImageControlTransformer2DModel,
-                               ZImageTransformer2DModel)
-from videox_fun.pipeline import Flux2Pipeline
+                               ZImageControlTransformer2DModel)
+from videox_fun.pipeline import ZImageControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -190,11 +189,11 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = ZImageTransformer2DModel.from_pretrained(
+        transformer3d_val = ZImageControlTransformer2DModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype,
             low_cpu_mem_usage=True,
         ).to(weight_dtype)
@@ -204,7 +203,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
             subfolder="scheduler"
         )
         transformer3d = transformer3d.to("cpu")
-        pipeline = Flux2Pipeline(
+        pipeline = ZImageControlPipeline(
             vae=accelerator.unwrap_model(vae).to(weight_dtype), 
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
@@ -892,13 +891,13 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("FSDP does not support EMA.")
 
-        ema_transformer3d = ZImageTransformer2DModel.from_pretrained(
+        ema_transformer3d = ZImageControlTransformer2DModel.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="transformer",
             torch_dtype=weight_dtype,
         ).to(weight_dtype)
 
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=ZImageTransformer2DModel, model_config=ema_transformer3d.config)
+        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=ZImageControlTransformer2DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -960,11 +959,11 @@ def main():
             def load_model_hook(models, input_dir):
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = ZImageTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = ZImageTransformer2DModel.from_pretrained(
+                    _, ema_kwargs = ZImageControlTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = ZImageControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                     )
-                    load_model = EMAModel(load_model.parameters(), model_cls=ZImageTransformer2DModel, model_config=load_model.config)
+                    load_model = EMAModel(load_model.parameters(), model_cls=ZImageControlTransformer2DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
 
                     ema_transformer3d.load_state_dict(load_model.state_dict())
@@ -976,7 +975,7 @@ def main():
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = ZImageTransformer2DModel.from_pretrained(
+                    load_model = ZImageControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer"
                     )
                     model.register_to_config(**load_model.config)
@@ -1676,7 +1675,6 @@ def main():
                             text_encoder,
                             tokenizer,
                             transformer3d,
-                            network,
                             args,
                             accelerator,
                             weight_dtype,
@@ -1702,9 +1700,7 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
-                    tokenizer_2,
                     transformer3d,
-                    network,
                     args,
                     accelerator,
                     weight_dtype,
