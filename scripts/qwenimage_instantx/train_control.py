@@ -72,7 +72,9 @@ from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.pipeline import QwenImageControlNetPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    get_image_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     pass
@@ -135,50 +137,73 @@ logger = get_logger(__name__, log_level="INFO")
 
 def log_validation(vae, text_encoder, tokenizer, transformer3d, cn_transformer, args, accelerator, weight_dtype, global_step):
     try:
-        logger.info("Running validation... ")
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-            args.pretrained_model_name_or_path, 
-            subfolder="scheduler"
-        )
-        pipeline = QwenImageControlNetPipeline(
-            vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-            text_encoder=accelerator.unwrap_model(text_encoder),
-            tokenizer=tokenizer,
-            transformer=transformer3d,
-            controlnet=cn_transformer,
-            scheduler=scheduler,
-        )
-        pipeline = pipeline.to(accelerator.device)
+        is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
+        if is_deepspeed:
+            origin_config = transformer3d.config
+            transformer3d.config = accelerator.unwrap_model(transformer3d).config
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            logger.info("Running validation... ")
+            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                args.pretrained_model_name_or_path, 
+                subfolder="scheduler"
+            )
+            pipeline = QwenImageControlNetPipeline(
+                vae=vae, 
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                transformer=transformer3d,
+                controlnet=cn_transformer,
+                scheduler=scheduler,
+            )
+            pipeline = pipeline.to(accelerator.device)
 
-        if args.seed is None:
-            generator = None
-        else:
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+            if args.seed is None:
+                generator = None
+            else:
+                rank_seed = args.seed + accelerator.process_index
+                generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
+                logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-        for i in range(len(args.validation_prompts)):
-            with torch.no_grad():
+            for i in range(len(args.validation_prompts)):
+                control_image = Image.open(args.validation_paths[i])
+                width, height = control_image.width, control_image.height
+                width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
+
                 sample = pipeline(
                     args.validation_prompts[i], 
                     negative_prompt = "bad detailed",
-                    height      = args.image_sample_size,
-                    width       = args.image_sample_size,
-                    generator   = generator
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
+                    true_cfg_scale = 4.0,
+                    num_inference_steps = 20,
+                    controlnet_conditioning_scale = 0.90,
+                    control_image = control_image,
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                image = sample[0].save(os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
-
-        del pipeline
-        del transformer3d_val
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-        transformer3d = transformer3d.to(accelerator.device)
+                image = sample[0].save(
+                    os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.jpg"
+                    )
+                )
+            del pipeline
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+            if not args.enable_text_encoder_in_dataloader:
+                text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if is_deepspeed:
+            transformer3d.config = origin_config
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error with info {e}")
-        transformer3d = transformer3d.to(accelerator.device)
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -243,6 +268,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -500,6 +532,12 @@ def parse_args():
         type=str,
         default=None,
         help=("If you want to load the weight from other transformers, input its path."),
+    )
+    parser.add_argument(
+        "--controlnet_path",
+        type=str,
+        default=None,
+        help=("If you want to load the weight from other controlnet, input its path."),
     )
     parser.add_argument(
         "--vae_path",
@@ -781,6 +819,19 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+
+    if args.controlnet_path is not None:
+        print(f"From checkpoint: {args.controlnet_path}")
+        if args.controlnet_path.endswith("safetensors"):
+            from safetensors.torch import load_file
+            state_dict = load_file(args.controlnet_path)
+        else:
+            state_dict = torch.load(args.controlnet_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+
+        m, u = cn_transformer.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
@@ -1275,7 +1326,7 @@ def main():
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    transformer3d.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1626,19 +1677,18 @@ def main():
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                if accelerator.is_main_process:
-                    if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            transformer3d,
-                            cn_transformer,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
+                if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        transformer3d,
+                        cn_transformer,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1646,20 +1696,19 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    tokenizer_2,
-                    transformer3d,
-                    cn_transformer,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
+        if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                tokenizer_2,
+                transformer3d,
+                cn_transformer,
+                args,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
