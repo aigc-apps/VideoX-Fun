@@ -41,6 +41,26 @@ except:
         SAGE_ATTENTION_AVAILABLE = False
 
 
+def convert_qkv_dtype(q, k, v):
+    try:
+        """Unify the dtype of q, k, v tensors"""
+        dtypes = {q.dtype, k.dtype, v.dtype}
+        
+        # If any tensor is float16/bfloat16
+        if torch.float16 in dtypes or torch.bfloat16 in dtypes:
+            target_dtype = torch.bfloat16 if torch.bfloat16 in dtypes else torch.float16
+        # If all tensors are float32
+        elif dtypes == {torch.float32}:
+            target_dtype = torch.bfloat16 if (torch.cuda.is_available() and 
+                                            torch.cuda.get_device_capability()[0] >= 8) else torch.float16
+        else:
+            return q, k, v  # No conversion for other cases
+        
+        return q.to(target_dtype), k.to(target_dtype), v.to(target_dtype)
+    except:
+        return q, k, v
+
+
 def flash_attention_naive(
     q,
     k,
@@ -214,6 +234,7 @@ def attention(
                 'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
             )
 
+        q, k, v = convert_qkv_dtype(q, k, v)
         out = sageattn(
             q, k, v, attn_mask=attn_mask, tensor_layout="NHD", is_causal=causal, dropout_p=dropout_p)
 

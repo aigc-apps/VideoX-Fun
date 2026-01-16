@@ -758,14 +758,19 @@ class Flux2ControlPipeline(DiffusionPipeline):
         # Prepare mask latent variables
         if mask_image is not None:
             mask_condition = self.mask_processor.preprocess(mask_image, height=height, width=width) 
+            mask_condition = torch.where(mask_condition >= 0.5, 
+                                        torch.ones_like(mask_condition), 
+                                        torch.zeros_like(mask_condition))
             mask_condition = torch.tile(mask_condition, [1, 3, 1, 1]).to(dtype=weight_dtype, device=device)
+        else:
+            mask_condition = torch.ones([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
 
         if inpaint_image is not None:
             init_image = self.diffusers_image_processor.preprocess(inpaint_image, height=height, width=width)
             init_image = init_image.to(dtype=weight_dtype, device=device) * (mask_condition < 0.5)
             inpaint_latent = self.vae.encode(init_image)[0].mode()
         else:
-            inpaint_latent = torch.zeros((batch_size, num_channels_latents * 4, height // 2 // self.vae_scale_factor, width // 2 // self.vae_scale_factor)).to(device, weight_dtype)
+            inpaint_latent = torch.zeros((batch_size, num_channels_latents, height // self.vae_scale_factor, width // self.vae_scale_factor)).to(device, weight_dtype)
 
         if control_image is not None:
             control_image = self.diffusers_image_processor.preprocess(control_image, height=height, width=width) 

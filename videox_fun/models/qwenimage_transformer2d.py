@@ -859,60 +859,6 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         self.teacache = None
 
     @cfg_skip()
-    def forward_bs(self, x, *args, **kwargs):
-        func = self.forward
-        sig = inspect.signature(func)
-        
-        bs          = len(x)
-        bs_half     = int(bs // 2)
-
-        if bs >= 2:
-            # cond
-            x_i = x[bs_half:]
-            args_i = [
-                arg[bs_half:] if
-                isinstance(arg,
-                            (torch.Tensor, list, tuple, np.ndarray)) and
-                len(arg) == bs else arg for arg in args
-            ]
-            kwargs_i = {
-                k: (v[bs_half:] if
-                isinstance(v,
-                    (torch.Tensor, list, tuple,
-                    np.ndarray)) and len(v) == bs else v
-                ) for k, v in kwargs.items()
-            }
-            if 'cond_flag' in sig.parameters:
-                kwargs_i["cond_flag"] = True
-        
-            cond_out = func(x_i, *args_i, **kwargs_i)
-            
-            # uncond
-            uncond_x_i = x[:bs_half]
-            uncond_args_i = [
-                arg[:bs_half] if
-                isinstance(arg,
-                            (torch.Tensor, list, tuple, np.ndarray)) and
-                len(arg) == bs else arg for arg in args
-            ]
-            uncond_kwargs_i = {
-                k: (v[:bs_half] if
-                    isinstance(v,
-                                (torch.Tensor, list, tuple,
-                                np.ndarray)) and len(v) == bs else v
-                    ) for k, v in kwargs.items()
-            }
-            if 'cond_flag' in sig.parameters:
-                uncond_kwargs_i["cond_flag"] = False
-            uncond_out = func(uncond_x_i, *uncond_args_i,
-                                **uncond_kwargs_i)
-
-            x = torch.cat([uncond_out, cond_out], dim=0)
-        else:
-            x = func(x, *args, **kwargs)
-
-        return x
-
     def forward(
         self,
         hidden_states: torch.Tensor,

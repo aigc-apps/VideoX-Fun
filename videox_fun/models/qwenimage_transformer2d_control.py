@@ -13,6 +13,7 @@ from diffusers.utils import (USE_PEFT_BACKEND, is_torch_version,
 
 from .qwenimage_transformer2d import (QwenImageTransformer2DModel,
                                       QwenImageTransformerBlock)
+from ..utils import cfg_skip
 
 
 class QwenImageControlTransformerBlock(QwenImageTransformerBlock):
@@ -161,6 +162,7 @@ class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
         hints = torch.unbind(c)[:-1]
         return hints
 
+    @cfg_skip()
     def forward(
         self,
         hidden_states: torch.Tensor,
