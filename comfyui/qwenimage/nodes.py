@@ -121,7 +121,7 @@ class LoadQwenImageTransformerModel:
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
         
-        model_name_in_pipeline = model_name
+        model_name_in_pipeline = "Qwen-Image"
         kwargs = {
             "attention_head_dim": 128,
             "axes_dims_rope": [
@@ -596,8 +596,8 @@ class CombineQwenImagePipeline:
             )
 
         pipeline.remove_all_hooks()
+        safe_remove_group_offloading(pipeline)
         undo_convert_weight_dtype_wrapper(transformer)
-        pipeline.to(device=offload_device)
         transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
