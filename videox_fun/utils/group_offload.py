@@ -1177,6 +1177,52 @@ def _maybe_remove_and_reapply_group_offloading(module: torch.nn.Module) -> None:
     _apply_group_offloading(module, top_level_group_offload_hook.config)
 
 
+def remove_group_offloading(
+    module: torch.nn.Module,
+    exclude_modules: Optional[Union[str, List[str]]] = None,
+) -> None:
+    """
+    Removes group offloading hooks from a module and its submodules.
+    
+    Args:
+        module (`torch.nn.Module`):
+            The module from which to remove group offloading hooks.
+        exclude_modules (`Union[str, List[str]]`, *optional*, defaults to `None`):
+            List of modules to exclude from hook removal.
+    """
+    if isinstance(exclude_modules, str):
+        exclude_modules = [exclude_modules]
+    elif exclude_modules is None:
+        exclude_modules = []
+    
+    # Check if this is a pipeline with components
+    if hasattr(module, 'components'):
+        unknown = set(exclude_modules) - module.components.keys()
+        if unknown:
+            logger.info(
+                f"The following modules are not present in pipeline: {', '.join(unknown)}. Ignore if this is expected."
+            )
+        
+        # Remove hooks from each component
+        for name, component in module.components.items():
+            if name not in exclude_modules and isinstance(component, torch.nn.Module):
+                registry = HookRegistry.check_if_exists_or_initialize(component)
+                registry.remove_hook(_GROUP_OFFLOADING, recurse=True)
+                registry.remove_hook(_LAYER_EXECUTION_TRACKER, recurse=True)
+                registry.remove_hook(_LAZY_PREFETCH_GROUP_OFFLOADING, recurse=True)
+    else:
+        # Original behavior for single modules
+        registry = HookRegistry.check_if_exists_or_initialize(module)
+        registry.remove_hook(_GROUP_OFFLOADING, recurse=True)
+        registry.remove_hook(_LAYER_EXECUTION_TRACKER, recurse=True)
+        registry.remove_hook(_LAZY_PREFETCH_GROUP_OFFLOADING, recurse=True)
+
+
+def safe_remove_group_offloading(obj, *args, **kwargs):
+    """Safely call remove_group_offloading"""
+    return remove_group_offloading(obj, *args, **kwargs)
+
+
 def enable_group_offload(
     self,
     onload_device: torch.device,
