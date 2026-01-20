@@ -1,17 +1,20 @@
 import importlib.util
 
+from .cfg_optimization import cfg_skip
+from .discrete_sampler import DiscreteSampling
 from .fm_solvers import FlowDPMSolverMultistepScheduler
 from .fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .fp8_optimization import (autocast_model_forward,
                                convert_model_weight_to_float8,
                                convert_weight_dtype_wrapper,
                                replace_parameters_by_name)
+from .group_offload import (register_auto_device_hook,
+                            safe_enable_group_offload,
+                            safe_remove_group_offloading)
 from .lora_utils import merge_lora, unmerge_lora
-from .utils import (filter_kwargs, get_image_latent, get_image_to_video_latent, get_autocast_dtype,
-                    get_video_to_video_latent, save_videos_grid)
-from .cfg_optimization import cfg_skip
-from .discrete_sampler import DiscreteSampling
-
+from .utils import (filter_kwargs, get_autocast_dtype, get_image_latent,
+                    get_image_to_video_latent, get_video_to_video_latent,
+                    save_videos_grid)
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("paifuser") is not None:
@@ -19,7 +22,8 @@ if importlib.util.find_spec("paifuser") is not None:
     #   FP8 Linear Kernel
     # --------------------------------------------------------------- #
     from paifuser.ops import (convert_model_weight_to_float8,
-                                convert_weight_dtype_wrapper)
+                              convert_weight_dtype_wrapper)
+
     from . import fp8_optimization
     fp8_optimization.convert_model_weight_to_float8 = convert_model_weight_to_float8
     fp8_optimization.convert_weight_dtype_wrapper = convert_weight_dtype_wrapper

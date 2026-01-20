@@ -70,7 +70,7 @@ class LoadZImageTransformerModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("diffusion_models"),
-                    {"default": "Wan2_1-T2V-1_3B_bf16.safetensors,"},
+                    {"default": "z_image_turbo_bf16.safetensors", },
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -89,7 +89,7 @@ class LoadZImageTransformerModel:
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
 
         mm.unload_all_models()
-        mm.cleanup_models()
+        mm.cleanup_models_gc()
         mm.soft_empty_cache()
         transformer = None
 
@@ -196,7 +196,7 @@ class LoadZImageVAEModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("vae"),
-                    {"default": "ZImage2.1_VAE.pth"}
+                    {"default": "ae.safetensors", }
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -371,7 +371,7 @@ class LoadZImageTextEncoderModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("text_encoders"),
-                    {"default": "models_t5_umt5-xxl-enc-bf16.pth"}
+                    {"default": "qwen_3_4b.safetensors", }
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -569,7 +569,7 @@ class LoadZImageModel:
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
         mm.unload_all_models()
-        mm.cleanup_models()
+        mm.cleanup_models_gc()
         mm.soft_empty_cache()
 
         # Init processbar
@@ -726,9 +726,13 @@ class LoadZImageControlNetInPipeline:
     def loadmodel(self, config, model_name, sub_transformer_name, funmodels):
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
+        
         # Get Transformer
         transformer = getattr(funmodels["pipeline"], sub_transformer_name)
         transformer = transformer.cpu()
+
+        # Remove hooks
+        funmodels["pipeline"].remove_all_hooks()
 
         # Load config
         config_path = f"{script_directory}/config/{config}"
@@ -797,14 +801,14 @@ class LoadZImageControlNetInPipeline:
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
-            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
-            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.to(device=device)
         else:
             pipeline.to(device=device)
@@ -830,7 +834,7 @@ class LoadZImageControlNetInModel:
                 ),
                 "model_name": (
                     folder_paths.get_filename_list("model_patches"),
-                    {"default": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",},
+                    {"default": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors", },
                 ),
                 "transformer": ("TransformerModel",),
             },

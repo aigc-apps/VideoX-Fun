@@ -16,7 +16,8 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
 from .qwenimage.nodes import (CombineQwenImagePipeline, LoadQwenImageLora,
-                              LoadQwenImageModel, LoadQwenImageProcessor,
+                              LoadQwenImageModel, LoadQwenImageProcessor, LoadQwenImageControlNetInPipeline, 
+                              LoadQwenImageControlNetInModel, QwenImageControlSampler, QwenImageEditPlusSampler,
                               LoadQwenImageTextEncoderModel,
                               LoadQwenImageTransformerModel,
                               LoadQwenImageVAEModel, QwenImageEditSampler,
@@ -461,10 +462,14 @@ NODE_CLASS_MAPPINGS = {
     "LoadQwenImageVAEModel": LoadQwenImageVAEModel, 
     "LoadQwenImageProcessor": LoadQwenImageProcessor,
     "CombineQwenImagePipeline": CombineQwenImagePipeline, 
+    "LoadQwenImageControlNetInPipeline": LoadQwenImageControlNetInPipeline, 
+    "LoadQwenImageControlNetInModel": LoadQwenImageControlNetInModel, 
 
     "LoadQwenImageModel": LoadQwenImageModel,
     "QwenImageT2VSampler": QwenImageT2VSampler,
     "QwenImageEditSampler": QwenImageEditSampler,
+    "QwenImageEditPlusSampler": QwenImageEditPlusSampler,
+    "QwenImageControlSampler": QwenImageControlSampler,
     
     "LoadZImageLora": LoadZImageLora,
     "LoadZImageTextEncoderModel": LoadZImageTextEncoderModel,
@@ -549,10 +554,14 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadQwenImageVAEModel": "Load QwenImage VAE Model", 
     "LoadQwenImageProcessor": "Load QwenImage Processor",
     "CombineQwenImagePipeline": "Combine QwenImage Pipeline", 
+    "LoadQwenImageControlNetInPipeline": "Load QwenImage ControlNet In Pipeline", 
+    "LoadQwenImageControlNetInModel": "Load QwenImage ControlNet In Model", 
 
     "LoadQwenImageModel": "Load QwenImage Model",
     "QwenImageT2VSampler": "QwenImage T2V Sampler",
     "QwenImageEditSampler": "QwenImage Edit Sampler",
+    "QwenImageEditPlusSampler": "QwenImage Edit Plus Sampler",
+    "QwenImageControlSampler": "QwenImage Control Sampler",
     
     "LoadZImageLora": "Load ZImage Lora",
     "LoadZImageTextEncoderModel": "Load ZImage TextEncoder Model",

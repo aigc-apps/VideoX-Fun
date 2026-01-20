@@ -2,9 +2,8 @@ import os
 import sys
 
 import torch
-
+from diffusers import FlowMatchEulerDiscreteScheduler
 from omegaconf import OmegaConf
-from diffusers import (FlowMatchEulerDiscreteScheduler)
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -14,17 +13,18 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageControlTransformer2DModel)
+                               Qwen2Tokenizer,
+                               QwenImageControlTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import QwenImageControlPipeline
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, get_image,
-                                    get_video_to_video_latent,
-                                    save_videos_grid)
+from videox_fun.utils.utils import get_image_latent, save_videos_grid
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -37,9 +37,12 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, ge
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
 # and the transformer model has been quantized to float8, which can save more GPU memory. 
 # 
+# model_group_offload transfers internal layer groups between CPU/CUDA, 
+# balancing memory efficiency and speed between full-module and leaf-level offloading methods.
+# 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
+GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -179,6 +182,7 @@ if ulysses_degree > 1 or ring_degree > 1:
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
@@ -191,6 +195,9 @@ if compile_dit:
 
 if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)

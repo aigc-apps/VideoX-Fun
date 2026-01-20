@@ -28,7 +28,6 @@ from .qwenimage_transformer2d import (USE_PEFT_BACKEND, ConfigMixin,
                                       register_to_config, scale_lora_layers,
                                       unscale_lora_layers)
 
-
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
