@@ -1,6 +1,6 @@
 [project]
 name = "videox-fun"
-version = "1.0.0"
+version = "1.0.1"
 description = "VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and Lora models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and Lora models to perform specific style transformations."
 license = { file = "LICENSE" }
 dependencies = [
