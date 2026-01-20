@@ -34,17 +34,11 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.attention import Attention, FeedForward
-from diffusers.models.attention_processor import (
-    Attention, AttentionProcessor, CogVideoXAttnProcessor2_0,
-    FusedCogVideoXAttnProcessor2_0)
-from diffusers.models.embeddings import (CogVideoXPatchEmbed,
-                                         TimestepEmbedding, Timesteps,
-                                         get_3d_sincos_pos_embed)
+from diffusers.models.attention_processor import Attention, AttentionProcessor
+from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import (AdaLayerNorm,
-                                            AdaLayerNormContinuous,
-                                            CogVideoXLayerNormZero, RMSNorm)
+from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
 from diffusers.utils import (USE_PEFT_BACKEND, is_torch_version, logging,
                              scale_lora_layers, unscale_lora_layers)
 from diffusers.utils.torch_utils import maybe_allow_in_graph

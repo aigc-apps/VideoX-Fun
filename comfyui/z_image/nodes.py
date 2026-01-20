@@ -726,9 +726,13 @@ class LoadZImageControlNetInPipeline:
     def loadmodel(self, config, model_name, sub_transformer_name, funmodels):
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
+        
         # Get Transformer
         transformer = getattr(funmodels["pipeline"], sub_transformer_name)
         transformer = transformer.cpu()
+
+        # Remove hooks
+        funmodels["pipeline"].remove_all_hooks()
 
         # Load config
         config_path = f"{script_directory}/config/{config}"
@@ -797,14 +801,14 @@ class LoadZImageControlNetInPipeline:
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
-            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
-            convert_weight_dtype_wrapper(transformer, weight_dtype)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.to(device=device)
         else:
             pipeline.to(device=device)
