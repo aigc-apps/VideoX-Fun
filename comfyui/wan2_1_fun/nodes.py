@@ -105,7 +105,7 @@ class LoadWanFunModel:
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
         mm.unload_all_models()
-        mm.cleanup_models()
+        mm.cleanup_models_gc()
         mm.soft_empty_cache()
 
         # Init processbar
