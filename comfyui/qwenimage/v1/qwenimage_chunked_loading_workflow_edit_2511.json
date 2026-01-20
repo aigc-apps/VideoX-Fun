@@ -451,7 +451,7 @@
         "Node name for S&R": "LoadQwenImageTransformerModel"
       },
       "widgets_values": [
-        "qwen_image_edit_2511_fp8mixed.safetensors",
+        "qwen_image_edit_2511_bf16.safetensors",
         true,
         "bf16"
       ]
