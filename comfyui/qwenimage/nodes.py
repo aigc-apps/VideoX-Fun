@@ -121,7 +121,7 @@ class LoadQwenImageTransformerModel:
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
         
-        model_name_in_pipeline = "Qwen-Image"
+        model_name_in_pipeline = model_name
         kwargs = {
             "attention_head_dim": 128,
             "axes_dims_rope": [
@@ -167,7 +167,7 @@ class LoadQwenImageTransformerModel:
             unexpected_keys = load_model_dict_into_meta(
                 transformer,
                 transformer_state_dict,
-                device="cpu",
+                device=offload_device,
                 dtype=weight_dtype,
                 model_name_or_path="",
             )
@@ -560,14 +560,24 @@ class CombineQwenImagePipeline:
 
         if model_type == "Inpaint":
             if processor is not None:
-                pipeline = QwenImageEditPipeline(
-                    vae=vae,
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    transformer=transformer,
-                    scheduler=None,
-                    processor=processor,
-                )
+                if "2509" in model_name or "2511" in model_name:
+                    pipeline = QwenImageEditPlusPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        scheduler=None,
+                        processor=processor,
+                    )
+                else:
+                    pipeline = QwenImageEditPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        scheduler=None,
+                        processor=processor,
+                    )
             else:
                 pipeline = QwenImagePipeline(
                     vae=vae,
@@ -594,7 +604,7 @@ class CombineQwenImagePipeline:
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_group_offload":
             register_auto_device_hook(pipeline.transformer)
-            safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
@@ -630,6 +640,7 @@ class LoadQwenImageModel:
                         'Qwen-Image-2512',
                         'Qwen-Image-Edit',
                         'Qwen-Image-Edit-2509',
+                        'Qwen-Image-Edit-2511',
                     ],
                     {
                         "default": 'Qwen-Image',
@@ -727,14 +738,24 @@ class LoadQwenImageModel:
         model_type = "Inpaint"
         if model_type == "Inpaint":
             if need_processor:
-                pipeline = QwenImageEditPipeline(
-                    vae=vae,
-                    tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    transformer=transformer,
-                    scheduler=None,
-                    processor=processor,
-                )
+                if "2509" in model_name or "2511" in model_name:
+                    pipeline = QwenImageEditPlusPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        scheduler=None,
+                        processor=processor,
+                    )
+                else:
+                    pipeline = QwenImageEditPipeline(
+                        vae=vae,
+                        tokenizer=tokenizer,
+                        text_encoder=text_encoder,
+                        transformer=transformer,
+                        scheduler=None,
+                        processor=processor,
+                    )
             else:
                 pipeline = QwenImagePipeline(
                     vae=vae,
@@ -753,7 +774,7 @@ class LoadQwenImageModel:
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_group_offload":
             register_auto_device_hook(pipeline.transformer)
-            safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
@@ -906,12 +927,12 @@ class LoadQwenImageControlNetInPipeline:
             load_model_dict_into_meta(
                 control_transformer,
                 state_dict,
-                device="cpu",
+                device=offload_device,
                 dtype=weight_dtype,
                 model_name_or_path="",
             )
 
-        pipeline        = QwenImageControlPipeline(
+        pipeline = QwenImageControlPipeline(
             vae=funmodels["pipeline"].vae,
             tokenizer=funmodels["pipeline"].tokenizer,
             text_encoder=funmodels["pipeline"].text_encoder,
@@ -926,7 +947,7 @@ class LoadQwenImageControlNetInPipeline:
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_group_offload":
             register_auto_device_hook(pipeline.transformer)
-            safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(control_transformer, weight_dtype)
@@ -970,7 +991,8 @@ class LoadQwenImageControlNetInModel:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, config, model_name, transformer):
-        dtype       = transformer.dtype
+        offload_device  = mm.unet_offload_device()
+        dtype           = transformer.dtype
         
         # Get Transformer
         transformer = transformer.cpu()
@@ -1031,7 +1053,7 @@ class LoadQwenImageControlNetInModel:
             load_model_dict_into_meta(
                 control_transformer,
                 state_dict,
-                device="cpu",
+                device=offload_device,
                 dtype=dtype,
                 model_name_or_path="",
             )
