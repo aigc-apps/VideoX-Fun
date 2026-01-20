@@ -1,8 +1,8 @@
 {
   "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
   "revision": 0,
-  "last_node_id": 102,
-  "last_link_id": 103,
+  "last_node_id": 105,
+  "last_link_id": 108,
   "nodes": [
     {
       "id": 78,
@@ -216,7 +216,7 @@
         415.4429626464844
       ],
       "flags": {},
-      "order": 11,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -232,43 +232,6 @@
       "widgets_values": []
     },
     {
-      "id": 100,
-      "type": "LoadImage",
-      "pos": [
-        408.7071040151891,
-        403.5792288936819
-      ],
-      "size": [
-        270,
-        314
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            102
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "a7kXeQ5l9Dhspes7q3x3G (1).png",
-        "image"
-      ]
-    },
-    {
       "id": 93,
       "type": "LoadQwenImageVAEModel",
       "pos": [
@@ -280,7 +243,7 @@
         84.69844055175781
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -312,7 +275,7 @@
         162
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -379,7 +342,7 @@
         156.71620178222656
       ],
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -401,6 +364,109 @@
       ]
     },
     {
+      "id": 104,
+      "type": "MaskToImage",
+      "pos": [
+        665.9127469276586,
+        458.2047154396486
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 105
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            104,
+            106
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MaskToImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 105,
+      "type": "LoadImage",
+      "pos": [
+        360.8304806417201,
+        460.85158208210487
+      ],
+      "size": [
+        270,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            108
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            105
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "image": "clipspace/clipspace-painted-masked-1766731857414.png [input]"
+      },
+      "widgets_values": [
+        "clipspace/clipspace-painted-masked-1766731857414.png [input]",
+        "image"
+      ]
+    },
+    {
+      "id": 103,
+      "type": "PreviewImage",
+      "pos": [
+        839.792105488772,
+        453.4970846240923
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 104
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
       "id": 102,
       "type": "QwenImageControlSampler",
       "pos": [
@@ -412,7 +478,7 @@
         470
       ],
       "flags": {},
-      "order": 10,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -434,19 +500,19 @@
           "name": "control_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 102
+          "link": null
         },
         {
           "name": "inpaint_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 108
         },
         {
           "name": "mask_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 106
         }
       ],
       "outputs": [
@@ -464,7 +530,7 @@
       "widgets_values": [
         1184,
         1568,
-        563555207707640,
+        284014972131965,
         "randomize",
         40,
         4,
@@ -553,19 +619,43 @@
       "STRING_PROMPT"
     ],
     [
-      102,
-      100,
-      0,
-      102,
-      3,
-      "IMAGE"
-    ],
-    [
       103,
       102,
       0,
       88,
       0,
+      "IMAGE"
+    ],
+    [
+      104,
+      104,
+      0,
+      103,
+      0,
+      "IMAGE"
+    ],
+    [
+      105,
+      105,
+      1,
+      104,
+      0,
+      "MASK"
+    ],
+    [
+      106,
+      104,
+      0,
+      102,
+      5,
+      "IMAGE"
+    ],
+    [
+      108,
+      105,
+      0,
+      102,
+      4,
       "IMAGE"
     ]
   ],
@@ -602,8 +692,8 @@
     "ds": {
       "scale": 0.7034334668812453,
       "offset": [
-        519.2334278821429,
-        649.1136351768466
+        333.2705669168081,
+        543.6154736676693
       ]
     },
     "frontendVersion": "1.36.14",

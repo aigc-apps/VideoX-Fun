@@ -149,7 +149,7 @@
       },
       "widgets_values": [
         "Qwen-Image",
-        "model_cpu_offload_and_qfloat8",
+        "model_group_offload",
         "bf16"
       ]
     },

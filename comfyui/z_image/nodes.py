@@ -70,7 +70,7 @@ class LoadZImageTransformerModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("diffusion_models"),
-                    {"default": "Wan2_1-T2V-1_3B_bf16.safetensors,"},
+                    {"default": "z_image_turbo_bf16.safetensors", },
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -196,7 +196,7 @@ class LoadZImageVAEModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("vae"),
-                    {"default": "ZImage2.1_VAE.pth"}
+                    {"default": "ae.safetensors", }
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -371,7 +371,7 @@ class LoadZImageTextEncoderModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("text_encoders"),
-                    {"default": "models_t5_umt5-xxl-enc-bf16.pth"}
+                    {"default": "qwen_3_4b.safetensors", }
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -834,7 +834,7 @@ class LoadZImageControlNetInModel:
                 ),
                 "model_name": (
                     folder_paths.get_filename_list("model_patches"),
-                    {"default": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",},
+                    {"default": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors", },
                 ),
                 "transformer": ("TransformerModel",),
             },

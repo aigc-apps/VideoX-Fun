@@ -1,8 +1,8 @@
 {
   "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
   "revision": 0,
-  "last_node_id": 102,
-  "last_link_id": 103,
+  "last_node_id": 97,
+  "last_link_id": 81,
   "nodes": [
     {
       "id": 78,
@@ -50,7 +50,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            101
+            75
           ]
         }
       ],
@@ -88,123 +88,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 91,
-      "type": "LoadQwenImageTextEncoderModel",
-      "pos": [
-        283.53765869140625,
-        -280.6837463378906
-      ],
-      "size": [
-        407.4130859375,
-        102
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "text_encoder",
-          "type": "TextEncoderModel",
-          "links": [
-            80
-          ]
-        },
-        {
-          "name": "tokenizer",
-          "type": "Tokenizer",
-          "links": [
-            81
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageTextEncoderModel"
-      },
-      "widgets_values": [
-        "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-        "bf16"
-      ]
-    },
-    {
-      "id": 92,
-      "type": "LoadQwenImageTransformerModel",
-      "pos": [
-        275.9798278808594,
-        -465.2391052246094
-      ],
-      "size": [
-        416.3677673339844,
-        106.13789367675781
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "links": [
-            87
-          ]
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "links": [
-            82
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageTransformerModel"
-      },
-      "widgets_values": [
-        "qwen_image_2512_fp8_e4m3fn.safetensors",
-        false,
-        "bf16"
-      ]
-    },
-    {
-      "id": 98,
-      "type": "LoadQwenImageControlNetInModel",
-      "pos": [
-        753.1154601481974,
-        -466.61377999428464
-      ],
-      "size": [
-        543.8293619798113,
-        82
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "link": 87
-        }
-      ],
-      "outputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "links": [
-            88
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageControlNetInModel"
-      },
-      "widgets_values": [
-        "qwenimage/qwenimage_control.yaml",
-        "Qwen-Image-2512-Fun-Controlnet-Union.safetensors"
-      ]
-    },
-    {
       "id": 88,
       "type": "PreviewImage",
       "pos": [
@@ -216,13 +99,13 @@
         415.4429626464844
       ],
       "flags": {},
-      "order": 11,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 103
+          "link": 77
         }
       ],
       "outputs": [],
@@ -232,122 +115,57 @@
       "widgets_values": []
     },
     {
-      "id": 100,
-      "type": "LoadImage",
+      "id": 86,
+      "type": "LoadQwenImageModel",
       "pos": [
-        408.7071040151891,
-        403.5792288936819
+        314.6495666503906,
+        -281.51666259765625
       ],
       "size": [
-        270,
-        314
+        276.705078125,
+        106
       ],
       "flags": {},
-      "order": 5,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
         {
-          "name": "IMAGE",
-          "type": "IMAGE",
+          "name": "funmodels",
+          "type": "FunModels",
           "links": [
-            102
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "a7kXeQ5l9Dhspes7q3x3G (1).png",
-        "image"
-      ]
-    },
-    {
-      "id": 93,
-      "type": "LoadQwenImageVAEModel",
-      "pos": [
-        1133.7959245028942,
-        -257.8118537612475
-      ],
-      "size": [
-        377.8583984375,
-        84.69844055175781
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "links": [
-            79
+            71
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadQwenImageVAEModel"
+        "Node name for S&R": "LoadQwenImageModel"
       },
       "widgets_values": [
-        "qwen_image_vae.safetensors",
+        "Qwen-Image-2512",
+        "model_group_offload",
         "bf16"
       ]
     },
     {
-      "id": 96,
-      "type": "CombineQwenImagePipeline",
+      "id": 92,
+      "type": "LoadQwenImageControlNetInPipeline",
       "pos": [
-        754.4458784421624,
-        -332.72602712957854
+        644.9080724681564,
+        -284.9326871492188
       ],
       "size": [
-        342.5804748535156,
-        162
+        513.0712528489155,
+        106
       ],
       "flags": {},
-      "order": 9,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "link": 88
-        },
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "link": 79
-        },
-        {
-          "name": "text_encoder",
-          "type": "TextEncoderModel",
-          "link": 80
-        },
-        {
-          "name": "tokenizer",
-          "type": "Tokenizer",
-          "link": 81
-        },
-        {
-          "name": "processor",
-          "shape": 7,
-          "type": "Processor",
-          "link": null
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "widget": {
-            "name": "model_name"
-          },
-          "link": 82
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 71
         }
       ],
       "outputs": [
@@ -355,16 +173,17 @@
           "name": "funmodels",
           "type": "FunModels",
           "links": [
-            99
+            73
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "CombineQwenImagePipeline"
+        "Node name for S&R": "LoadQwenImageControlNetInPipeline"
       },
       "widgets_values": [
-        "",
-        "model_group_offload"
+        "qwenimage/qwenimage_control.yaml",
+        "Qwen-Image-2512-Fun-Controlnet-Union.safetensors",
+        "transformer"
       ]
     },
     {
@@ -379,7 +198,7 @@
         156.71620178222656
       ],
       "flags": {},
-      "order": 7,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -388,7 +207,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            100
+            74
           ]
         }
       ],
@@ -401,52 +220,79 @@
       ]
     },
     {
-      "id": 102,
+      "id": 95,
+      "type": "PreviewImage",
+      "pos": [
+        726.8217221845972,
+        452.93109914645987
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 78
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 93,
       "type": "QwenImageControlSampler",
       "pos": [
-        743.3433452139876,
-        -72.05094395600588
+        723.0842521497987,
+        -74.3739187955474
       ],
       "size": [
         289.5494140625,
         470
       ],
       "flags": {},
-      "order": 10,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 99
+          "link": 73
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 100
+          "link": 74
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 101
+          "link": 75
         },
         {
           "name": "control_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 102
+          "link": null
         },
         {
           "name": "inpaint_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 80
         },
         {
           "name": "mask_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 81
         }
       ],
       "outputs": [
@@ -454,7 +300,7 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            103
+            77
           ]
         }
       ],
@@ -464,7 +310,7 @@
       "widgets_values": [
         1184,
         1568,
-        563555207707640,
+        427877921479533,
         "randomize",
         40,
         4,
@@ -477,95 +323,155 @@
         0,
         0.8
       ]
+    },
+    {
+      "id": 96,
+      "type": "MaskToImage",
+      "pos": [
+        552.9423636234835,
+        457.6387299620162
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 79
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            78,
+            81
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MaskToImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 97,
+      "type": "LoadImage",
+      "pos": [
+        247.8600973375456,
+        460.28559660447246
+      ],
+      "size": [
+        270,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            80
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            79
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "image": "clipspace/clipspace-painted-masked-1766731857414.png [input]"
+      },
+      "widgets_values": [
+        "clipspace/clipspace-painted-masked-1766731857414.png [input]",
+        "image"
+      ]
     }
   ],
   "links": [
     [
-      79,
-      93,
+      71,
+      86,
       0,
-      96,
-      1,
-      "VAEModel"
-    ],
-    [
-      80,
-      91,
-      0,
-      96,
-      2,
-      "TextEncoderModel"
-    ],
-    [
-      81,
-      91,
-      1,
-      96,
-      3,
-      "Tokenizer"
-    ],
-    [
-      82,
       92,
-      1,
-      96,
-      5,
-      "STRING"
-    ],
-    [
-      87,
-      92,
-      0,
-      98,
-      0,
-      "TransformerModel"
-    ],
-    [
-      88,
-      98,
-      0,
-      96,
-      0,
-      "TransformerModel"
-    ],
-    [
-      99,
-      96,
-      0,
-      102,
       0,
       "FunModels"
     ],
     [
-      100,
+      73,
+      92,
+      0,
+      93,
+      0,
+      "FunModels"
+    ],
+    [
+      74,
       75,
       0,
-      102,
+      93,
       1,
       "STRING_PROMPT"
     ],
     [
-      101,
+      75,
       73,
       0,
-      102,
+      93,
       2,
       "STRING_PROMPT"
     ],
     [
-      102,
-      100,
-      0,
-      102,
-      3,
-      "IMAGE"
-    ],
-    [
-      103,
-      102,
+      77,
+      93,
       0,
       88,
       0,
+      "IMAGE"
+    ],
+    [
+      78,
+      96,
+      0,
+      95,
+      0,
+      "IMAGE"
+    ],
+    [
+      79,
+      97,
+      1,
+      96,
+      0,
+      "MASK"
+    ],
+    [
+      80,
+      97,
+      0,
+      93,
+      4,
+      "IMAGE"
+    ],
+    [
+      81,
+      96,
+      0,
+      93,
+      5,
       "IMAGE"
     ]
   ],
@@ -574,10 +480,10 @@
       "id": 1,
       "title": "Load Model",
       "bounding": [
-        227.96267700195312,
-        -546.4359741210938,
-        1350.7047455077704,
-        391.2301145558972
+        220,
+        -380,
+        954.3592031237638,
+        226.9206439292882
       ],
       "color": "#b06634",
       "font_size": 24,
@@ -600,10 +506,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7034334668812453,
+      "scale": 0.7117155733630676,
       "offset": [
-        519.2334278821429,
-        649.1136351768466
+        359.457252578857,
+        482.3639645185654
       ]
     },
     "frontendVersion": "1.36.14",

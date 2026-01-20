@@ -92,7 +92,10 @@ class LoadQwenImageTransformerModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("diffusion_models"),
-                    {"default": "Wan2_1-T2V-1_3B_bf16.safetensors,"},
+                    {"default": "qwen_image_fp8_e4m3fn.safetensors",},
+                ),
+                "zero_cond_t":(
+                    [False, True],  {"default": False,}
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -104,7 +107,7 @@ class LoadQwenImageTransformerModel:
     FUNCTION    = "loadmodel"
     CATEGORY    = "CogVideoXFUNWrapper"
 
-    def loadmodel(self, model_name, precision):
+    def loadmodel(self, model_name, zero_cond_t, precision):
         # Init weight_dtype and device
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
@@ -133,7 +136,7 @@ class LoadQwenImageTransformerModel:
             "num_layers": 60,
             "out_channels": 16,
             "patch_size": 2,
-            "pooled_projection_dim": 768
+            "zero_cond_t": zero_cond_t,
         }
 
         sig = inspect.signature(QwenImageTransformer2DModel)
@@ -179,7 +182,7 @@ class LoadQwenImageVAEModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("vae"),
-                    {"default": "QwenImage2.1_VAE.pth"}
+                    {"default": "qwen_image_vae.safetensors"}
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -282,7 +285,7 @@ class LoadQwenImageTextEncoderModel:
             "required": {
                 "model_name": (
                     folder_paths.get_filename_list("text_encoders"),
-                    {"default": "models_t5_umt5-xxl-enc-bf16.pth"}
+                    {"default": "qwen_2.5_vl_7b_fp8_scaled.safetensors", }
                 ),
                 "precision": (["fp16", "bf16"],
                     {"default": "bf16"}
@@ -955,7 +958,7 @@ class LoadQwenImageControlNetInModel:
                 ),
                 "model_name": (
                     folder_paths.get_filename_list("model_patches"),
-                    {"default": "Qwen-Image-2512-Fun-Controlnet-Union.safetensors",},
+                    {"default": "Qwen-Image-2512-Fun-Controlnet-Union.safetensors", },
                 ),
                 "transformer": ("TransformerModel",),
             },

@@ -1,8 +1,8 @@
 {
-  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "id": "0afeb9a9-c8d6-4e64-b303-61e02e44da9e",
   "revision": 0,
-  "last_node_id": 98,
-  "last_link_id": 79,
+  "last_node_id": 100,
+  "last_link_id": 86,
   "nodes": [
     {
       "id": 78,
@@ -55,106 +55,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 93,
-      "type": "LoadQwenImageVAEModel",
-      "pos": [
-        775.0554809570312,
-        -470.7688293457031
-      ],
-      "size": [
-        377.8583984375,
-        84.69844055175781
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "links": [
-            68
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageVAEModel"
-      },
-      "widgets_values": [
-        "Qwen-Image-vae_bf16.safetensors",
-        "bf16"
-      ]
-    },
-    {
-      "id": 91,
-      "type": "LoadQwenImageTextEncoderModel",
-      "pos": [
-        283.53765869140625,
-        -280.6837463378906
-      ],
-      "size": [
-        407.4130859375,
-        102
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "text_encoder",
-          "type": "TextEncoderModel",
-          "links": [
-            70
-          ]
-        },
-        {
-          "name": "tokenizer",
-          "type": "Tokenizer",
-          "links": [
-            73
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageTextEncoderModel"
-      },
-      "widgets_values": [
-        "Qwen-Image-text_encoder_bf16.safetensors",
-        "bf16"
-      ]
-    },
-    {
-      "id": 96,
-      "type": "LoadQwenImageProcessor",
-      "pos": [
-        706.2975463867188,
-        -275.1779479980469
-      ],
-      "size": [
-        226.6099609375,
-        26
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "processor",
-          "type": "Processor",
-          "links": [
-            74
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageProcessor"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 73,
       "type": "FunTextBox",
       "pos": [
@@ -166,7 +66,7 @@
         183.83506774902344
       ],
       "flags": {},
-      "order": 5,
+      "order": 2,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -175,7 +75,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            77
+            84
           ]
         }
       ],
@@ -199,7 +99,7 @@
         314.0000305175781
       ],
       "flags": {},
-      "order": 6,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -207,7 +107,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            79
+            83
           ]
         },
         {
@@ -236,13 +136,13 @@
         415.4429626464844
       ],
       "flags": {},
-      "order": 11,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 75
+          "link": 82
         }
       ],
       "outputs": [],
@@ -250,46 +150,6 @@
         "Node name for S&R": "PreviewImage"
       },
       "widgets_values": []
-    },
-    {
-      "id": 92,
-      "type": "LoadQwenImageTransformerModel",
-      "pos": [
-        275.9798278808594,
-        -465.2391052246094
-      ],
-      "size": [
-        416.3677673339844,
-        106.13789367675781
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "links": [
-            69
-          ]
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "links": [
-            71
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadQwenImageTransformerModel"
-      },
-      "widgets_values": [
-        "Qwen-Image-Edit_bf16.safetensors",
-        false,
-        "bf16"
-      ]
     },
     {
       "id": 75,
@@ -303,7 +163,7 @@
         156.71620178222656
       ],
       "flags": {},
-      "order": 8,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -312,7 +172,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            76
+            85
           ]
         }
       ],
@@ -325,40 +185,73 @@
       ]
     },
     {
-      "id": 97,
-      "type": "QwenImageEditSampler",
+      "id": 99,
+      "type": "LoadQwenImageModel",
       "pos": [
-        747.4175415039062,
-        -76.30315399169922
+        294.5816650390625,
+        -309.4810485839844
       ],
       "size": [
-        280.724609375,
+        318.1009826660156,
+        106
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            86
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadQwenImageModel"
+      },
+      "widgets_values": [
+        "Qwen-Image-Edit-2509",
+        "model_group_offload",
+        "bf16"
+      ]
+    },
+    {
+      "id": 100,
+      "type": "QwenImageEditPlusSampler",
+      "pos": [
+        732.0558807778726,
+        -67.107393762887
+      ],
+      "size": [
+        298.1490234375,
         406
       ],
       "flags": {},
-      "order": 10,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
           "name": "funmodels",
           "type": "FunModels",
-          "link": 78
+          "link": 86
         },
         {
           "name": "prompt",
           "type": "STRING_PROMPT",
-          "link": 76
+          "link": 85
         },
         {
           "name": "negative_prompt",
           "type": "STRING_PROMPT",
-          "link": 77
+          "link": 84
         },
         {
           "name": "image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 79
+          "link": 83
         }
       ],
       "outputs": [
@@ -366,19 +259,19 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            75
+            82
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "QwenImageEditSampler"
+        "Node name for S&R": "QwenImageEditPlusSampler"
       },
       "widgets_values": [
         1728,
         992,
-        373336117071181,
+        437532779396225,
         "randomize",
-        40,
+        50,
         4,
         "Flow",
         1,
@@ -388,163 +281,48 @@
         true,
         0
       ]
-    },
-    {
-      "id": 94,
-      "type": "CombineQwenImagePipeline",
-      "pos": [
-        945.2576293945312,
-        -330.913330078125
-      ],
-      "size": [
-        321.2720642089844,
-        162
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "link": 69
-        },
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "link": 68
-        },
-        {
-          "name": "text_encoder",
-          "type": "TextEncoderModel",
-          "link": 70
-        },
-        {
-          "name": "tokenizer",
-          "type": "Tokenizer",
-          "link": 73
-        },
-        {
-          "name": "processor",
-          "shape": 7,
-          "type": "Processor",
-          "link": 74
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "widget": {
-            "name": "model_name"
-          },
-          "link": 71
-        }
-      ],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            78
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "CombineQwenImagePipeline"
-      },
-      "widgets_values": [
-        "",
-        "model_group_offload"
-      ]
     }
   ],
   "links": [
     [
-      68,
-      93,
-      0,
-      94,
-      1,
-      "VAEModel"
-    ],
-    [
-      69,
-      92,
-      0,
-      94,
-      0,
-      "TransformerModel"
-    ],
-    [
-      70,
-      91,
-      0,
-      94,
-      2,
-      "TextEncoderModel"
-    ],
-    [
-      71,
-      92,
-      1,
-      94,
-      5,
-      "STRING"
-    ],
-    [
-      73,
-      91,
-      1,
-      94,
-      3,
-      "Tokenizer"
-    ],
-    [
-      74,
-      96,
-      0,
-      94,
-      4,
-      "Processor"
-    ],
-    [
-      75,
-      97,
+      82,
+      100,
       0,
       88,
       0,
       "IMAGE"
     ],
     [
-      76,
-      75,
+      83,
+      98,
       0,
-      97,
-      1,
-      "STRING_PROMPT"
+      100,
+      3,
+      "IMAGE"
     ],
     [
-      77,
+      84,
       73,
       0,
-      97,
+      100,
       2,
       "STRING_PROMPT"
     ],
     [
-      78,
-      94,
+      85,
+      75,
       0,
-      97,
-      0,
-      "FunModels"
+      100,
+      1,
+      "STRING_PROMPT"
     ],
     [
-      79,
-      98,
+      86,
+      99,
       0,
-      97,
-      3,
-      "IMAGE"
+      100,
+      0,
+      "FunModels"
     ]
   ],
   "groups": [
@@ -552,10 +330,10 @@
       "id": 1,
       "title": "Load Model",
       "bounding": [
-        227.96267700195312,
-        -546.4359741210938,
-        1053.5875244140625,
-        397.3387756347656
+        226.02244567871094,
+        -405.3177185058594,
+        440.6474914550781,
+        238.3169403076172
       ],
       "color": "#b06634",
       "font_size": 24,
@@ -580,8 +358,8 @@
     "ds": {
       "scale": 0.6905497838871149,
       "offset": [
-        397.7447678565184,
-        611.2107698221871
+        456.52379392690324,
+        557.1551088532143
       ]
     },
     "frontendVersion": "1.36.14",
@@ -589,7 +367,7 @@
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "ac114cc14285c8e0073a3e08e27525263d1264a7",
+      "CogVideoX-Fun": "13a802b574c3a4397e193a0b8ca4e90c480cc217",
       "comfy-core": "0.9.2"
     },
     "workflowRendererVersion": "LG"
