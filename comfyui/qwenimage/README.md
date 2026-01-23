@@ -6,7 +6,7 @@
 
 ### 1. Chunked Loading Weights (Recommended)
 
-For chunked loading, it is recommended to directly download the Z-Image weights provided by ComfyUI official. Please organize the files according to the following directory structure:
+For chunked loading, it is recommended to directly download the Qwen-Image weights provided by ComfyUI official. Please organize the files according to the following directory structure:
 
 **Core Model Files:**
 

@@ -172,7 +172,7 @@ class LoadQwenImageTransformerModel:
                 model_name_or_path="",
             )
 
-        transformer = transformer.eval()
+        transformer = transformer.eval().to(weight_dtype)
         return (transformer, model_name_in_pipeline)
 
 class LoadQwenImageVAEModel:
@@ -863,13 +863,13 @@ class LoadQwenImageControlNetInPipeline:
         GPU_memory_mode = funmodels["GPU_memory_mode"]
         weight_dtype    = funmodels['dtype']
 
-        # Get Transformer
-        transformer = getattr(funmodels["pipeline"], sub_transformer_name)
-        transformer = transformer.cpu()
-
         # Remove hooks
         funmodels["pipeline"].remove_all_hooks()
         safe_remove_group_offloading(funmodels["pipeline"])
+
+        # Get Transformer
+        transformer = getattr(funmodels["pipeline"], sub_transformer_name)
+        transformer = transformer.cpu()
 
         # Get state_dict
         transformer_state_dict = transformer.state_dict()

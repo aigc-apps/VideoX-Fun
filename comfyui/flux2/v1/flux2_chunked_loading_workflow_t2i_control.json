@@ -1,0 +1,568 @@
+{
+  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "revision": 0,
+  "last_node_id": 112,
+  "last_link_id": 126,
+  "nodes": [
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -92,
+        -294
+      ],
+      "size": [
+        351.1499938964844,
+        130.12660217285156
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 20B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用20B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        24.634203125000003,
+        -2.051003906249974
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 106,
+      "type": "LoadFlux2TextEncoderModel",
+      "pos": [
+        294.0149063096997,
+        -294.99910663408474
+      ],
+      "size": [
+        436.84259765624995,
+        102
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            107
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            108
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2TextEncoderModel"
+      },
+      "widgets_values": [
+        "mistral_3_small_flux2_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1070.207763671875,
+        -73.63389587402344
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 126
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 100,
+      "type": "LoadFlux2TransformerModel",
+      "pos": [
+        313.73034380969943,
+        -465.4970871028352
+      ],
+      "size": [
+        407.57818359374994,
+        102
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            113
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            93
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2TransformerModel"
+      },
+      "widgets_values": [
+        "flux2_dev_fp8mixed.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 108,
+      "type": "LoadFlux2ControlNetInModel",
+      "pos": [
+        778.396083325503,
+        -461.64928225980117
+      ],
+      "size": [
+        545.4199394818678,
+        82
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 113
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            114
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2ControlNetInModel"
+      },
+      "widgets_values": [
+        "flux2/flux2_control.yaml",
+        "FLUX.2-dev-Fun-Controlnet-Union.safetensors"
+      ]
+    },
+    {
+      "id": 99,
+      "type": "LoadFlux2VAEModel",
+      "pos": [
+        1157.6607036173684,
+        -291.70678153123094
+      ],
+      "size": [
+        378.0969752517299,
+        82
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            89
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2VAEModel"
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 98,
+      "type": "CombineFlux2Pipeline",
+      "pos": [
+        765.0797227159495,
+        -326.5219699153354
+      ],
+      "size": [
+        370.22844140624966,
+        142
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 114
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 89
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 107
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 108
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 93
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            123
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineFlux2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload"
+      ]
+    },
+    {
+      "id": 110,
+      "type": "LoadImage",
+      "pos": [
+        401.58427058709873,
+        257.2700309330294
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            125
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "a7kXeQ5l9Dhspes7q3x3G (1).png",
+        "image"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        260.6739960937499,
+        -1.205332031249991
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            124
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "A photo of Sakura, a 17-year-old high school student from Japan, captured in a candid, high-fidelity cinematic moment on a rainy evening. She is squatting low on the rain-slicked asphalt of an urban sidewalk, holding a transparent vinyl umbrella with a white handle resting over her shoulder in one hand, her other hand resting on her knee. The clear plastic canopy is streaked with rivulets of water and beaded with droplets that catch the ambient city light. A profound, silent interaction defines the scene: Sakura is looking directly downward, her expression gentle and focused, locking eyes with a small black cat sitting on the wet ground in front of her.\\n\\nSakura has long, lustrous black hair styled in a precise hime cut with blunt bangs across her forehead and sidelocks framing her cheeks, damp strands clinging subtly to her jacket, with a single red ribbon tied on the left side. Her visible pores on her nose, and a soft sheen of moisture on her cheeks. She wears a dark navy sailor-style school uniform (seifuku) featuring a white collar with red linear detailing and a bright red necktie loosely knotted at the chest; a simple black choker encircles her neck. The uniform jacket has oversized sleeves. Her lower body features a short, dark pleated miniskirt that fans slightly over clean white ankle socks that provide a stark contrast to the wet asphalt, ending in dark leather loafers that gleam with moisture.\\n\\nThe black cat sits upright in a shallow puddle, its short fur slicked by the rain, tilting its head back to stare intently up into Sakura's face, establishing a clear line of sight. The background is anchored by a large, illuminated red vending machine standing against the darkness, its cool bluish-white interior light spilling onto Sakura's profile and the umbrella. The ground reflects the red chassis and the neon streetlights in distorted patches on the wet pavement. Additional cool rain streaks fall through the frame, some caught in sharp focus and others blurred into vertical lines against the background lights. The scene is rendered with a wide-aperture lens creating a shallow depth of field, keeping the girl and cat in sharp focus while softening the background into gentle bokeh, with the texture of fine-grain 35mm film stock."
+      ]
+    },
+    {
+      "id": 112,
+      "type": "Flux2ControlSampler",
+      "pos": [
+        726.6810910994532,
+        -44.26206223716924
+      ],
+      "size": [
+        286.765625,
+        330
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 123
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 124
+        },
+        {
+          "name": "control_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 125
+        },
+        {
+          "name": "inpaint_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "mask_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            126
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Flux2ControlSampler"
+      },
+      "widgets_values": [
+        1184,
+        1568,
+        43,
+        "randomize",
+        25,
+        4,
+        "Flow",
+        3,
+        0.75
+      ]
+    }
+  ],
+  "links": [
+    [
+      89,
+      99,
+      0,
+      98,
+      1,
+      "VAEModel"
+    ],
+    [
+      93,
+      100,
+      1,
+      98,
+      4,
+      "STRING"
+    ],
+    [
+      107,
+      106,
+      0,
+      98,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      108,
+      106,
+      1,
+      98,
+      3,
+      "Tokenizer"
+    ],
+    [
+      113,
+      100,
+      0,
+      108,
+      0,
+      "TransformerModel"
+    ],
+    [
+      114,
+      108,
+      0,
+      98,
+      0,
+      "TransformerModel"
+    ],
+    [
+      123,
+      98,
+      0,
+      112,
+      0,
+      "FunModels"
+    ],
+    [
+      124,
+      75,
+      0,
+      112,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      125,
+      110,
+      0,
+      112,
+      2,
+      "IMAGE"
+    ],
+    [
+      126,
+      112,
+      0,
+      88,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Load Model",
+      "bounding": [
+        227.96267700195312,
+        -546.4359741210938,
+        1324.985509221171,
+        399.185002734652
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        228.67399609375008,
+        -78.20533203124995,
+        449.1265312500001,
+        257.2759179687498
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6806385776128846,
+      "offset": [
+        597.5416992665371,
+        751.7438792427187
+      ]
+    },
+    "frontendVersion": "1.37.11",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "VideoX-Fun": "7671af8b16701319cf043358941277b9a5a1cb75",
+      "comfy-core": "0.10.0"
+    },
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}
