@@ -84,7 +84,7 @@ def get_flux2_scheduler(sampler_name, shift=1.0):
     return scheduler
 
 
-def convert_flux_to_diffusers(original_state_dict):
+def convert_flux2_to_diffusers(original_state_dict):
     weight_dtype = get_autocast_dtype()
     converted = OrderedDict()
     
@@ -294,13 +294,15 @@ class LoadFlux2TransformerModel:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, model_name, precision):
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
+        # Init weight_dtype and device
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
 
         mm.unload_all_models()
         mm.cleanup_models_gc()
         mm.soft_empty_cache()
+        transformer = None
 
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
@@ -331,12 +333,11 @@ class LoadFlux2TransformerModel:
 
         sig = inspect.signature(Flux2Transformer2DModel)
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
-        
         with accelerate.init_empty_weights():
             transformer = Flux2Transformer2DModel(**accepted)
 
         if 'time_in.in_layer.weight' in transformer_state_dict.keys():
-            transformer_state_dict = convert_flux_to_diffusers(transformer_state_dict)
+            transformer_state_dict = convert_flux2_to_diffusers(transformer_state_dict)
 
         filtered_state_dict = {}
         for key in transformer_state_dict:
@@ -365,9 +366,8 @@ class LoadFlux2TransformerModel:
                 model_name_or_path="",
             )
 
-        transformer = transformer.eval()
+        transformer = transformer.eval().to(weight_dtype)
         return (transformer, model_name_in_pipeline)
-
 
 class LoadFlux2VAEModel:
     @classmethod
@@ -391,8 +391,8 @@ class LoadFlux2VAEModel:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, model_name, precision):
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
         
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
         model_path = folder_paths.get_full_path("vae", model_name)
@@ -444,7 +444,6 @@ class LoadFlux2VAEModel:
         vae = AutoencoderKLFlux2(**accepted)
         vae.load_state_dict(vae_state_dict)
         vae = vae.eval().to(device=offload_device, dtype=weight_dtype)
-        
         return (vae,)
 
 
@@ -470,8 +469,8 @@ class LoadFlux2TextEncoderModel:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, model_name, precision):
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
         
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
         model_path = folder_paths.get_full_path("text_encoders", model_name)
@@ -498,7 +497,7 @@ class LoadFlux2TextEncoderModel:
                 "max_position_embeddings": 131072,
                 "model_type": "mistral",
                 "num_attention_heads": 32,
-                "num_hidden_layers": 30,
+                "num_hidden_layers": 40,
                 "num_key_value_heads": 8,
                 "rms_norm_eps": 1e-05,
                 "rope_theta": 1000000000.0,
@@ -525,97 +524,88 @@ class LoadFlux2TextEncoderModel:
             },
             "vision_feature_layer": -1
         }
-        
         config = Mistral3Config(**config_kwargs)
         text_encoder = Mistral3ForConditionalGeneration._from_config(config)
         
-        def convert_mistral3_to_diffusers(state_dict):
-            new_state_dict = {}
-            
-            for key, value in state_dict.items():
-                new_key = key
-
-                if key.startswith("vision_tower."):
-                    new_key = "model." + key
-
-                elif key.startswith("multi_modal_projector."):
-                    new_key = "model." + key
-
-                elif key.startswith("model."):
-                    if key.startswith("model.layers."):
-                        new_key = key.replace("model.layers.", "model.language_model.layers.")
-                    elif key == "model.embed_tokens.weight":
-                        new_key = "model.language_model.embed_tokens.weight"
+        if "tekken_model" in text_state_dict.keys():
+            def convert_mistral3_to_diffusers(state_dict):
+                new_state_dict = {}
+                
+                for key, value in state_dict.items():
+                    if key == "tekken_model":
+                        continue
+                    if key.startswith("vision_tower."):
+                        new_key = "model." + key
+                    
+                    elif key.startswith("multi_modal_projector."):
+                        new_key = "model." + key
+                    
+                    elif key.startswith("model.layers."):
+                        new_key = "model.language_" + key
+                    
+                    elif key.startswith("model.embed_tokens."):
+                        new_key = "model.language_" + key
+                    
                     elif key == "model.norm.weight":
                         new_key = "model.language_model.norm.weight"
+                    
+                    elif key.startswith("lm_head."):
+                        new_key = key
+                    
+                    else:
+                        print(f"Warning: Unmapped key: {key}")
+                        new_key = key
+                    
+                    new_state_dict[new_key] = value
+                
+                return new_state_dict
+        else:
+            def convert_mistral3_to_diffusers(state_dict):
+                new_state_dict = {}
+                
+                for key, value in state_dict.items():
+                    if key.startswith('vision_tower.'):
+                        new_key = 'model.' + key
+                        
+                    elif key.startswith('multi_modal_projector.'):
+                        new_key = 'model.' + key
+                        
+                    elif key.startswith('language_model.model.embed_tokens.'):
+                        new_key = key.replace('language_model.model.', 'model.language_model.')
+                        
+                    elif key.startswith('language_model.model.layers.'):
+                        new_key = key.replace('language_model.model.', 'model.language_model.')
+                        
+                    elif key.startswith('language_model.model.norm.'):
+                        new_key = key.replace('language_model.model.', 'model.language_model.')
+                        
+                    elif key.startswith('language_model.lm_head.'):
+                        new_key = key.replace('language_model.', '')
+                        
                     else:
                         new_key = key
-
-                elif key == "lm_head.weight":
-                    new_key = "lm_head.weight"
-                elif key == "tekken_model":
-                    print(f"Skipping key: {key}")
-                    continue
+                        
+                    new_state_dict[new_key] = value
                 
-                new_state_dict[new_key] = value
-            
-            return new_state_dict
-        
-        new_state_dict = convert_mistral3_to_diffusers(text_state_dict)
-        text_encoder.load_state_dict(new_state_dict, strict=False)
+                return new_state_dict
+
+        text_state_dict = convert_mistral3_to_diffusers(text_state_dict)
+    
+        text_encoder.load_state_dict(text_state_dict, strict=False)
         text_encoder = text_encoder.eval().to(device=offload_device, dtype=weight_dtype)
 
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI", "FLUX"] + \
-            [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-                         "models/Diffusion_Transformer")]
-        
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI", "Qwen"] + \
+            [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         try:
             tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="flux2_tokenizer")
         except:
             try:
-                tokenizer_path = os.path.join(
-                    search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="FLUX.2-dev"), 
-                    "tokenizer"
-                )
+                tokenizer_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="FLUX.2-dev"), "tokenizer")
             except:
                 tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Mistral-Nemo-Instruct-2407")
 
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-        
+        tokenizer = PixtralProcessor.from_pretrained(tokenizer_path)
         return (text_encoder, tokenizer)
-
-
-class LoadFlux2Processor:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {},
-        }
-
-    RETURN_TYPES = ("Processor",)
-    RETURN_NAMES = ("processor",)
-    FUNCTION = "loadmodel"
-    CATEGORY = "CogVideoXFUNWrapper"
-
-    def loadmodel(self):
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI", "FLUX"] + \
-            [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-                         "models/Diffusion_Transformer")]
-        
-        try:
-            processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="flux2_processor")
-        except:
-            try:
-                processor_path = os.path.join(
-                    search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="FLUX.2-dev"), 
-                    "processor"
-                )
-            except:
-                processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Pixtral-12B-2409")
-
-        processor = PixtralProcessor.from_pretrained(processor_path)
-        return (processor,)
 
 
 class CombineFlux2Pipeline:
@@ -685,29 +675,15 @@ class CombineFlux2Pipeline:
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_group_offload":
             register_auto_device_hook(pipeline.transformer)
-            safe_enable_group_offload(
-                pipeline, 
-                onload_device=device, 
-                offload_device=offload_device, 
-                offload_type="leaf_level", 
-                use_stream=True
-            )
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(
-                transformer, 
-                exclude_module_name=["img_in", "txt_in", "timestep"], 
-                device=device
-            )
+            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(
-                transformer, 
-                exclude_module_name=["img_in", "txt_in", "timestep"], 
-                device=device
-            )
+            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.to(device=device)
         else:
@@ -718,7 +694,7 @@ class CombineFlux2Pipeline:
             'GPU_memory_mode': GPU_memory_mode,
             'dtype': weight_dtype,
             'model_name': model_name,
-            'model_type': 'T2I',
+            'model_type': model_type,
             'loras': [],
             'strength_model': []
         }
@@ -736,20 +712,19 @@ class LoadFlux2Model:
                     ],
                     {"default": 'FLUX.2-dev'}
                 ),
-                "GPU_memory_mode": (
+                "GPU_memory_mode":(
                     [
-                        "model_full_load", 
-                        "model_full_load_and_qfloat8", 
-                        "model_cpu_offload", 
-                        "model_cpu_offload_and_qfloat8", 
-                        "model_group_offload", 
-                        "sequential_cpu_offload"
-                    ],
-                    {"default": "model_cpu_offload"}
+                        "model_full_load", "model_full_load_and_qfloat8", "model_cpu_offload", 
+                        "model_cpu_offload_and_qfloat8", "model_group_offload", "sequential_cpu_offload"],
+                    {
+                        "default": "model_cpu_offload",
+                    }
                 ),
                 "precision": (
                     ['fp16', 'bf16'],
-                    {"default": 'bf16'}
+                    {
+                        "default": 'fp16'
+                    }
                 ),
             },
         }
@@ -760,8 +735,9 @@ class LoadFlux2Model:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def loadmodel(self, GPU_memory_mode, model, precision):
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
+        # Init weight_dtype and device
+        device          = mm.get_torch_device()
+        offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
         mm.unload_all_models()
@@ -770,10 +746,10 @@ class LoadFlux2Model:
 
         pbar = ProgressBar(5)
 
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI", "FLUX"] + \
-            [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-                         "models/Diffusion_Transformer")]
-        
+        # Detect model is existing or not
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
+                [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
+        # Initialize model_name as None
         model_name = search_model_in_possible_folders(possible_folders, model)
 
         print("Loading VAE...")
@@ -830,29 +806,15 @@ class LoadFlux2Model:
             pipeline.enable_sequential_cpu_offload(device=device)
         elif GPU_memory_mode == "model_group_offload":
             register_auto_device_hook(pipeline.transformer)
-            safe_enable_group_offload(
-                pipeline, 
-                onload_device=device, 
-                offload_device=offload_device, 
-                offload_type="leaf_level", 
-                use_stream=True
-            )
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(
-                transformer, 
-                exclude_module_name=["img_in", "txt_in", "timestep"], 
-                device=device
-            )
+            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(
-                transformer, 
-                exclude_module_name=["img_in", "txt_in", "timestep"], 
-                device=device
-            )
+            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.to(device=device)
         else:
@@ -863,7 +825,7 @@ class LoadFlux2Model:
             'GPU_memory_mode': GPU_memory_mode,
             'dtype': weight_dtype,
             'model_name': model_name,
-            'model_type': 'T2I',
+            'model_type': model_type,
             'loras': [],
             'strength_model': []
         }
@@ -876,12 +838,11 @@ class LoadFlux2Lora:
         return {
             "required": {
                 "funmodels": ("FunModels",),
-                "lora_name": (folder_paths.get_filename_list("loras"), {"default": None}),
+                "lora_name": (folder_paths.get_filename_list("loras"), {"default": None,}),
                 "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
-                "lora_cache": ([False, True], {"default": False}),
+                "lora_cache": ([False, True], {"default": False,}),
             }
         }
-    
     RETURN_TYPES = ("FunModels",)
     RETURN_NAMES = ("funmodels",)
     FUNCTION = "load_lora"
@@ -1181,24 +1142,27 @@ class Flux2T2ISampler:
     ):
         global transformer_cpu_cache
         global lora_path_before
-        
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 
         mm.soft_empty_cache()
         gc.collect()
 
+        # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
         weight_dtype = funmodels['dtype']
 
+        # Load Sampler
         pipeline.scheduler = get_flux2_scheduler(scheduler, shift)
 
         generator = torch.Generator(device).manual_seed(seed)
 
         with torch.no_grad():
+            # Apply lora
             if funmodels.get("lora_cache", False):
                 if len(funmodels.get("loras", [])) != 0:
+                    # Save the original weights to cpu
                     if len(transformer_cpu_cache) == 0:
                         print('Save transformer state_dict to cpu memory')
                         transformer_state_dict = pipeline.transformer.state_dict()
@@ -1212,8 +1176,10 @@ class Flux2T2ISampler:
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
                             pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
+                   
             else:
                 print('Merge Lora')
+                # Clear lora when switch from lora_cache=True to lora_cache=False.
                 if len(transformer_cpu_cache) != 0:
                     pipeline.transformer.load_state_dict(transformer_cpu_cache)
                     transformer_cpu_cache = {}
@@ -1239,8 +1205,7 @@ class Flux2T2ISampler:
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
                     pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
-        
-        return (image,)
+        return (image,)   
 
 
 class Flux2ControlSampler:
@@ -1298,18 +1263,19 @@ class Flux2ControlSampler:
     def process(self, funmodels, prompt, width, height, seed, steps, cfg, scheduler, shift, control_context_scale, control_image=None, inpaint_image=None, mask_image=None, image=None):
         global transformer_cpu_cache
         global lora_path_before
-        
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
 
         mm.soft_empty_cache()
         gc.collect()
 
+        # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
         weight_dtype = funmodels['dtype']
         sample_size = [height, width]
 
+        # Load Sampler
         pipeline.scheduler = get_flux2_scheduler(scheduler, shift)
 
         generator = torch.Generator(device).manual_seed(seed)
@@ -1367,20 +1333,19 @@ class Flux2ControlSampler:
 
             # Generate
             sample = pipeline(
-                prompt=prompt, 
-                height=height,
-                width=width,
-                generator=generator,
-                guidance_scale=cfg,
-                num_inference_steps=steps,
-                inpaint_image=inpaint_image,
-                mask_image=mask_image,
-                control_image=control_image,
-                image=image,
-                control_context_scale=control_context_scale,
-                comfyui_progressbar=True,
+                prompt              = prompt, 
+                height              = sample_size[0],
+                width               = sample_size[1],
+                generator           = generator,
+                guidance_scale      = cfg,
+                image               = image,
+                inpaint_image       = inpaint_image,
+                mask_image          = mask_image,
+                control_image       = control_image,
+                num_inference_steps = steps,
+                control_context_scale   = control_context_scale,
+                comfyui_progressbar     = True,
             ).images
-            
             image = torch.Tensor(np.array(sample[0])).unsqueeze(0) / 255
 
             # Unmerge lora
@@ -1388,5 +1353,4 @@ class Flux2ControlSampler:
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
                     pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
-                    
-        return (image,)
+        return (image,)   

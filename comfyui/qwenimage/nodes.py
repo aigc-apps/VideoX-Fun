@@ -306,9 +306,6 @@ class LoadQwenImageTextEncoderModel:
         model_path = folder_paths.get_full_path("text_encoders", model_name)
         text_state_dict = load_torch_file(model_path, safe_load=True)
 
-        if not any(k.startswith("model.") for k in text_state_dict.keys()):
-            text_state_dict = {f"model.{k}": v for k, v in text_state_dict.items()}
-
         kwargs = {
             "attention_dropout": 0.0,
             "bos_token_id": 151643,
@@ -443,6 +440,9 @@ class LoadQwenImageTextEncoderModel:
         }
         config = Qwen2_5_VLConfig(**kwargs)
         text_encoder = Qwen2_5_VLForConditionalGeneration._from_config(config)
+
+        if not any(k.startswith("model.") for k in text_state_dict.keys()):
+            text_state_dict = {f"model.{k}": v for k, v in text_state_dict.items()}
 
         new_state_dict = {}
         scale_dict = {}
