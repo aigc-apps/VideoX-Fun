@@ -172,7 +172,7 @@ class LoadQwenImageTransformerModel:
                 model_name_or_path="",
             )
 
-        transformer = transformer.eval()
+        transformer = transformer.eval().to(weight_dtype)
         return (transformer, model_name_in_pipeline)
 
 class LoadQwenImageVAEModel:
@@ -305,9 +305,6 @@ class LoadQwenImageTextEncoderModel:
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
         model_path = folder_paths.get_full_path("text_encoders", model_name)
         text_state_dict = load_torch_file(model_path, safe_load=True)
-
-        if not any(k.startswith("model.") for k in text_state_dict.keys()):
-            text_state_dict = {f"model.{k}": v for k, v in text_state_dict.items()}
 
         kwargs = {
             "attention_dropout": 0.0,
@@ -443,6 +440,9 @@ class LoadQwenImageTextEncoderModel:
         }
         config = Qwen2_5_VLConfig(**kwargs)
         text_encoder = Qwen2_5_VLForConditionalGeneration._from_config(config)
+
+        if not any(k.startswith("model.") for k in text_state_dict.keys()):
+            text_state_dict = {f"model.{k}": v for k, v in text_state_dict.items()}
 
         new_state_dict = {}
         scale_dict = {}
@@ -863,13 +863,13 @@ class LoadQwenImageControlNetInPipeline:
         GPU_memory_mode = funmodels["GPU_memory_mode"]
         weight_dtype    = funmodels['dtype']
 
-        # Get Transformer
-        transformer = getattr(funmodels["pipeline"], sub_transformer_name)
-        transformer = transformer.cpu()
-
         # Remove hooks
         funmodels["pipeline"].remove_all_hooks()
         safe_remove_group_offloading(funmodels["pipeline"])
+
+        # Get Transformer
+        transformer = getattr(funmodels["pipeline"], sub_transformer_name)
+        transformer = transformer.cpu()
 
         # Get state_dict
         transformer_state_dict = transformer.state_dict()

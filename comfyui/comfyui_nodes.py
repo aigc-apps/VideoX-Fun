@@ -15,12 +15,20 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
-from .qwenimage.nodes import (CombineQwenImagePipeline, LoadQwenImageLora,
-                              LoadQwenImageModel, LoadQwenImageProcessor, LoadQwenImageControlNetInPipeline, 
-                              LoadQwenImageControlNetInModel, QwenImageControlSampler, QwenImageEditPlusSampler,
+from .flux2.nodes import (CombineFlux2Pipeline, Flux2ControlSampler,
+                          Flux2T2ISampler, LoadFlux2ControlNetInModel,
+                          LoadFlux2ControlNetInPipeline, LoadFlux2Lora,
+                          LoadFlux2Model, LoadFlux2TextEncoderModel,
+                          LoadFlux2TransformerModel, LoadFlux2VAEModel)
+from .qwenimage.nodes import (CombineQwenImagePipeline,
+                              LoadQwenImageControlNetInModel,
+                              LoadQwenImageControlNetInPipeline,
+                              LoadQwenImageLora, LoadQwenImageModel,
+                              LoadQwenImageProcessor,
                               LoadQwenImageTextEncoderModel,
                               LoadQwenImageTransformerModel,
-                              LoadQwenImageVAEModel, QwenImageEditSampler,
+                              LoadQwenImageVAEModel, QwenImageControlSampler,
+                              QwenImageEditPlusSampler, QwenImageEditSampler,
                               QwenImageT2VSampler)
 from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
                            LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
@@ -470,6 +478,18 @@ NODE_CLASS_MAPPINGS = {
     "QwenImageEditSampler": QwenImageEditSampler,
     "QwenImageEditPlusSampler": QwenImageEditPlusSampler,
     "QwenImageControlSampler": QwenImageControlSampler,
+
+    "LoadFlux2Lora": LoadFlux2Lora,
+    "LoadFlux2TransformerModel": LoadFlux2TransformerModel,
+    "LoadFlux2VAEModel": LoadFlux2VAEModel,
+    "LoadFlux2TextEncoderModel": LoadFlux2TextEncoderModel,
+    "CombineFlux2Pipeline": CombineFlux2Pipeline,
+    "LoadFlux2ControlNetInModel": LoadFlux2ControlNetInModel,
+    "LoadFlux2ControlNetInPipeline": LoadFlux2ControlNetInPipeline,
+
+    "LoadFlux2Model": LoadFlux2Model,
+    "Flux2T2ISampler": Flux2T2ISampler,
+    "Flux2ControlSampler": Flux2ControlSampler,
     
     "LoadZImageLora": LoadZImageLora,
     "LoadZImageTextEncoderModel": LoadZImageTextEncoderModel,
@@ -562,6 +582,18 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "QwenImageEditSampler": "QwenImage Edit Sampler",
     "QwenImageEditPlusSampler": "QwenImage Edit Plus Sampler",
     "QwenImageControlSampler": "QwenImage Control Sampler",
+    
+    "LoadFlux2Lora": "Load FLUX2 Lora",
+    "LoadFlux2TransformerModel": "Load FLUX2 Transformer Model",
+    "LoadFlux2VAEModel": "Load FLUX2 VAE Model",
+    "LoadFlux2TextEncoderModel": "Load FLUX2 Text Encoder Model",
+    "CombineFlux2Pipeline": "Combine FLUX2 Pipeline",
+    "LoadFlux2ControlNetInModel": "Load Flux2 ControlNet In Model",
+    "LoadFlux2ControlNetInPipeline": "Load Flux2 ControlNet In Pipeline",
+
+    "LoadFlux2Model": "Load FLUX2 Model",
+    "Flux2T2ISampler": "FLUX2 Text to Image Sampler",
+    "Flux2ControlSampler": "FLUX2 Control Sampler",
     
     "LoadZImageLora": "Load ZImage Lora",
     "LoadZImageTextEncoderModel": "Load ZImage TextEncoder Model",
