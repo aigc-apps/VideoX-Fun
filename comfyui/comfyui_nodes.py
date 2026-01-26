@@ -18,9 +18,8 @@ from .comfyui_utils import script_directory
 from .flux2.nodes import (CombineFlux2Pipeline, Flux2ControlSampler,
                           Flux2T2ISampler, LoadFlux2ControlNetInModel,
                           LoadFlux2ControlNetInPipeline, LoadFlux2Lora,
-                          LoadFlux2Model, LoadFlux2Processor,
-                          LoadFlux2TextEncoderModel, LoadFlux2TransformerModel,
-                          LoadFlux2VAEModel)
+                          LoadFlux2Model, LoadFlux2TextEncoderModel,
+                          LoadFlux2TransformerModel, LoadFlux2VAEModel)
 from .qwenimage.nodes import (CombineQwenImagePipeline,
                               LoadQwenImageControlNetInModel,
                               LoadQwenImageControlNetInPipeline,
@@ -484,7 +483,6 @@ NODE_CLASS_MAPPINGS = {
     "LoadFlux2TransformerModel": LoadFlux2TransformerModel,
     "LoadFlux2VAEModel": LoadFlux2VAEModel,
     "LoadFlux2TextEncoderModel": LoadFlux2TextEncoderModel,
-    "LoadFlux2Processor": LoadFlux2Processor,
     "CombineFlux2Pipeline": CombineFlux2Pipeline,
     "LoadFlux2ControlNetInModel": LoadFlux2ControlNetInModel,
     "LoadFlux2ControlNetInPipeline": LoadFlux2ControlNetInPipeline,
@@ -589,7 +587,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadFlux2TransformerModel": "Load FLUX2 Transformer Model",
     "LoadFlux2VAEModel": "Load FLUX2 VAE Model",
     "LoadFlux2TextEncoderModel": "Load FLUX2 Text Encoder Model",
-    "LoadFlux2Processor": "Load FLUX2 Processor",
     "CombineFlux2Pipeline": "Combine FLUX2 Pipeline",
     "LoadFlux2ControlNetInModel": "Load Flux2 ControlNet In Model",
     "LoadFlux2ControlNetInPipeline": "Load Flux2 ControlNet In Pipeline",

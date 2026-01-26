@@ -791,6 +791,7 @@ class LoadFlux2Model:
         )
         pbar.update(1)
 
+        model_type = "Inpaint"
         pipeline = Flux2Pipeline(
             vae=vae,
             tokenizer=tokenizer,
