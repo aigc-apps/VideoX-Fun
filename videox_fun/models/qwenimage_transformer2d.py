@@ -34,17 +34,11 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.attention import Attention, FeedForward
-from diffusers.models.attention_processor import (
-    Attention, AttentionProcessor, CogVideoXAttnProcessor2_0,
-    FusedCogVideoXAttnProcessor2_0)
-from diffusers.models.embeddings import (CogVideoXPatchEmbed,
-                                         TimestepEmbedding, Timesteps,
-                                         get_3d_sincos_pos_embed)
+from diffusers.models.attention_processor import Attention, AttentionProcessor
+from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import (AdaLayerNorm,
-                                            AdaLayerNormContinuous,
-                                            CogVideoXLayerNormZero, RMSNorm)
+from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
 from diffusers.utils import (USE_PEFT_BACKEND, is_torch_version, logging,
                              scale_lora_layers, unscale_lora_layers)
 from diffusers.utils.torch_utils import maybe_allow_in_graph
@@ -859,60 +853,6 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         self.teacache = None
 
     @cfg_skip()
-    def forward_bs(self, x, *args, **kwargs):
-        func = self.forward
-        sig = inspect.signature(func)
-        
-        bs          = len(x)
-        bs_half     = int(bs // 2)
-
-        if bs >= 2:
-            # cond
-            x_i = x[bs_half:]
-            args_i = [
-                arg[bs_half:] if
-                isinstance(arg,
-                            (torch.Tensor, list, tuple, np.ndarray)) and
-                len(arg) == bs else arg for arg in args
-            ]
-            kwargs_i = {
-                k: (v[bs_half:] if
-                isinstance(v,
-                    (torch.Tensor, list, tuple,
-                    np.ndarray)) and len(v) == bs else v
-                ) for k, v in kwargs.items()
-            }
-            if 'cond_flag' in sig.parameters:
-                kwargs_i["cond_flag"] = True
-        
-            cond_out = func(x_i, *args_i, **kwargs_i)
-            
-            # uncond
-            uncond_x_i = x[:bs_half]
-            uncond_args_i = [
-                arg[:bs_half] if
-                isinstance(arg,
-                            (torch.Tensor, list, tuple, np.ndarray)) and
-                len(arg) == bs else arg for arg in args
-            ]
-            uncond_kwargs_i = {
-                k: (v[:bs_half] if
-                    isinstance(v,
-                                (torch.Tensor, list, tuple,
-                                np.ndarray)) and len(v) == bs else v
-                    ) for k, v in kwargs.items()
-            }
-            if 'cond_flag' in sig.parameters:
-                uncond_kwargs_i["cond_flag"] = False
-            uncond_out = func(uncond_x_i, *uncond_args_i,
-                                **uncond_kwargs_i)
-
-            x = torch.cat([uncond_out, cond_out], dim=0)
-        else:
-            x = func(x, *args, **kwargs)
-
-        return x
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -923,6 +863,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         txt_seq_lens: Optional[List[int]] = None,
         guidance: torch.Tensor = None,  # TODO: this should probably be removed
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        controlnet_block_samples=None,
         additional_t_cond=None,
         cond_flag: bool = True,
         return_dict: bool = True,
@@ -1060,7 +1001,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                 ori_hidden_states = hidden_states.clone().cpu() if self.teacache.offload else hidden_states.clone()
 
                 # 4. Transformer blocks
-                for i, block in enumerate(self.transformer_blocks):
+                for index_block, block in enumerate(self.transformer_blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
                         def create_custom_forward(module):
                             def custom_forward(*inputs):
@@ -1091,11 +1032,17 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                             modulate_index=modulate_index,
                         )
 
+                    if controlnet_block_samples is not None:
+                        interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                        interval_control = int(np.ceil(interval_control))
+                        hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
+
                 if cond_flag:
                     self.teacache.previous_residual_cond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
                 else:
                     self.teacache.previous_residual_uncond = hidden_states.cpu() - ori_hidden_states if self.teacache.offload else hidden_states - ori_hidden_states
                 del ori_hidden_states
+
         else:
             for index_block, block in enumerate(self.transformer_blocks):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -1127,6 +1074,12 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         joint_attention_kwargs=attention_kwargs,
                         modulate_index=modulate_index,
                     )
+
+                # controlnet residual
+                if controlnet_block_samples is not None:
+                    interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                    interval_control = int(np.ceil(interval_control))
+                    hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
         if self.zero_cond_t:
             temb = temb.chunk(2, dim=0)[0]

@@ -201,9 +201,9 @@
         "Node name for S&R": "QwenImageEditSampler"
       },
       "widgets_values": [
-        1344,
-        768,
-        686934831068040,
+        1728,
+        992,
+        578345222670916,
         "randomize",
         40,
         4,
@@ -278,7 +278,7 @@
       },
       "widgets_values": [
         "Qwen-Image-Edit",
-        "model_cpu_offload_and_qfloat8",
+        "model_group_offload",
         "bf16"
       ]
     }
@@ -358,18 +358,19 @@
     "ds": {
       "scale": 0.6905497838871149,
       "offset": [
-        542.3419639311205,
-        433.4877940663054
+        454.62313443699367,
+        551.1306970771619
       ]
     },
-    "frontendVersion": "1.25.11",
+    "frontendVersion": "1.36.14",
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "36287cdcab8d5b6972bb6a2d208539c6e4bd81e2",
-      "comfy-core": "0.3.57"
-    }
+      "CogVideoX-Fun": "ac114cc14285c8e0073a3e08e27525263d1264a7",
+      "comfy-core": "0.9.2"
+    },
+    "workflowRendererVersion": "LG"
   },
   "version": 0.4
 }

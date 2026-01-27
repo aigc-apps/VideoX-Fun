@@ -1,0 +1,613 @@
+{
+  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "revision": 0,
+  "last_node_id": 114,
+  "last_link_id": 131,
+  "nodes": [
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -92,
+        -294
+      ],
+      "size": [
+        351.1499938964844,
+        130.12660217285156
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 20B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用20B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        24.634203125000003,
+        -2.051003906249974
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 99,
+      "type": "LoadFlux2VAEModel",
+      "pos": [
+        1157.6607036173684,
+        -291.70678153123094
+      ],
+      "size": [
+        378.0969752517299,
+        82
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            89
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2VAEModel"
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 98,
+      "type": "CombineFlux2Pipeline",
+      "pos": [
+        765.0797227159495,
+        -326.5219699153354
+      ],
+      "size": [
+        370.22844140624966,
+        142
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 114
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 89
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 107
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 108
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 93
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            127
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineFlux2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload"
+      ]
+    },
+    {
+      "id": 110,
+      "type": "LoadImage",
+      "pos": [
+        401.58427058709873,
+        257.2700309330294
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            129
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "pose.jpg",
+        "image"
+      ]
+    },
+    {
+      "id": 114,
+      "type": "LoadImage",
+      "pos": [
+        65.13447511647426,
+        249.3438179015018
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            131
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "8.png",
+        "image"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        260.6739960937499,
+        -1.205332031249991
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            128
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "This is a panoramic portrait photo of a young woman. She has flowing long hair and a soft lavender like color. She is wearing a white sleeveless dress with a blue ribbon bow tied around the collar. She has a confident posture, with her left hand naturally hanging down and her right hand in her pocket, and her legs slightly apart. Look straight at the camera. The sea breeze gently brushed her long hair, and they stood on the sunny seaside path, surrounded by blooming purple seaside flowers and smooth pebbles, with the sparkling sea and blue sky behind them. The screen presents a bright summer atmosphere, with soft and natural lighting, realistic details, and 8K ultra high definition image quality, clearly presenting fine textures such as clothing and hair. "
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1070.207763671875,
+        -73.63389587402344
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 130
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 108,
+      "type": "LoadFlux2ControlNetInModel",
+      "pos": [
+        778.396083325503,
+        -461.64928225980117
+      ],
+      "size": [
+        545.4199394818678,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 113
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            114
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2ControlNetInModel"
+      },
+      "widgets_values": [
+        "flux2/flux2_control.yaml",
+        "FLUX.2-dev-Fun-Controlnet-Union.safetensors"
+      ]
+    },
+    {
+      "id": 106,
+      "type": "LoadFlux2TextEncoderModel",
+      "pos": [
+        294.0149063096997,
+        -294.99910663408474
+      ],
+      "size": [
+        436.84259765624995,
+        102
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            107
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            108
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2TextEncoderModel"
+      },
+      "widgets_values": [
+        "mistral_3_small_flux2_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 100,
+      "type": "LoadFlux2TransformerModel",
+      "pos": [
+        313.73034380969943,
+        -465.4970871028352
+      ],
+      "size": [
+        407.57818359374994,
+        102
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            113
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            93
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2TransformerModel"
+      },
+      "widgets_values": [
+        "flux2_dev_fp8mixed.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 113,
+      "type": "Flux2ControlSampler",
+      "pos": [
+        726.6810910994532,
+        -44.26206223716924
+      ],
+      "size": [
+        286.765625,
+        350
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 127
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 128
+        },
+        {
+          "name": "control_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 129
+        },
+        {
+          "name": "inpaint_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "mask_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 131
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            130
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Flux2ControlSampler"
+      },
+      "widgets_values": [
+        992,
+        1728,
+        43,
+        "fixed",
+        25,
+        4,
+        "Flow",
+        3,
+        0.75
+      ]
+    }
+  ],
+  "links": [
+    [
+      89,
+      99,
+      0,
+      98,
+      1,
+      "VAEModel"
+    ],
+    [
+      93,
+      100,
+      1,
+      98,
+      4,
+      "STRING"
+    ],
+    [
+      107,
+      106,
+      0,
+      98,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      108,
+      106,
+      1,
+      98,
+      3,
+      "Tokenizer"
+    ],
+    [
+      113,
+      100,
+      0,
+      108,
+      0,
+      "TransformerModel"
+    ],
+    [
+      114,
+      108,
+      0,
+      98,
+      0,
+      "TransformerModel"
+    ],
+    [
+      127,
+      98,
+      0,
+      113,
+      0,
+      "FunModels"
+    ],
+    [
+      128,
+      75,
+      0,
+      113,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      129,
+      110,
+      0,
+      113,
+      2,
+      "IMAGE"
+    ],
+    [
+      130,
+      113,
+      0,
+      88,
+      0,
+      "IMAGE"
+    ],
+    [
+      131,
+      114,
+      0,
+      113,
+      5,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Load Model",
+      "bounding": [
+        227.96267700195312,
+        -546.4359741210938,
+        1324.985509221171,
+        399.185002734652
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        228.67399609375008,
+        -78.20533203124995,
+        449.1265312500001,
+        257.2759179687498
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7159450505734999,
+      "offset": [
+        362.4772087682636,
+        717.3189141746142
+      ]
+    },
+    "frontendVersion": "1.37.11",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "VideoX-Fun": "7671af8b16701319cf043358941277b9a5a1cb75",
+      "comfy-core": "0.10.0"
+    },
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}

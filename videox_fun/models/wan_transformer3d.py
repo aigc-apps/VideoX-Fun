@@ -183,10 +183,10 @@ class WanRMSNorm(nn.Module):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return self._norm(x) * self.weight
+        return self._norm(x.float()).type_as(x) * self.weight
 
     def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps).to(x.dtype)
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
 
 
 class WanLayerNorm(nn.LayerNorm):
@@ -199,7 +199,7 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x)
+        return super().forward(x.float()).type_as(x)
 
 
 class WanSelfAttention(nn.Module):

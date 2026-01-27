@@ -876,8 +876,8 @@ class QwenImageEditPipeline(DiffusionPipeline):
                 timestep = t.expand(latent_model_input.shape[0]).to(latent_model_input.dtype)
 
                 with torch.cuda.amp.autocast(dtype=latents.dtype), torch.cuda.device(device=latents.device):
-                    noise_pred = self.transformer.forward_bs(
-                        x=latent_model_input,
+                    noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
                         encoder_hidden_states_mask=prompt_embeds_mask_input,

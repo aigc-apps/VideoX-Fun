@@ -133,7 +133,7 @@
         -275.1779479980469
       ],
       "size": [
-        217.32675170898438,
+        226.6099609375,
         26
       ],
       "flags": {},
@@ -287,6 +287,7 @@
       },
       "widgets_values": [
         "Qwen-Image-Edit_bf16.safetensors",
+        false,
         "bf16"
       ]
     },
@@ -373,8 +374,8 @@
         "Node name for S&R": "QwenImageEditSampler"
       },
       "widgets_values": [
-        1344,
-        768,
+        1728,
+        992,
         373336117071181,
         "randomize",
         40,
@@ -452,7 +453,7 @@
       },
       "widgets_values": [
         "",
-        "model_cpu_offload_and_qfloat8"
+        "model_group_offload"
       ]
     }
   ],
@@ -579,18 +580,19 @@
     "ds": {
       "scale": 0.6905497838871149,
       "offset": [
-        351.20689397709714,
-        562.4271762478439
+        397.7447678565184,
+        611.2107698221871
       ]
     },
-    "frontendVersion": "1.25.11",
+    "frontendVersion": "1.36.14",
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "a97dd425909c3c3719fbbcb99e78061e2f0a237c",
-      "comfy-core": "0.3.57"
-    }
+      "CogVideoX-Fun": "ac114cc14285c8e0073a3e08e27525263d1264a7",
+      "comfy-core": "0.9.2"
+    },
+    "workflowRendererVersion": "LG"
   },
   "version": 0.4
 }

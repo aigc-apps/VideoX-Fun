@@ -1,0 +1,274 @@
+{
+  "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
+  "revision": 0,
+  "last_node_id": 94,
+  "last_link_id": 77,
+  "nodes": [
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        18,
+        -46
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        -50
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            76
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "fireworks display over night city. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
+      ]
+    },
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -92,
+        -294
+      ],
+      "size": [
+        351.1499938964844,
+        130.12660217285156
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 1.3B model, you can set GPU_memory_mode to model_cpu_offload for faster generation. When using the 20B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用1.3B模型时，可以设置GPU_memory_mode为model_cpu_offload进行更快速度的生成，在使用20B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1068.092196899791,
+        -87.86407614285447
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 77
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 92,
+      "type": "LoadFlux2Model",
+      "pos": [
+        302.5105757682986,
+        -291.5089065020655
+      ],
+      "size": [
+        340.5369411044164,
+        114.70675475775249
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            75
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadFlux2Model"
+      },
+      "widgets_values": [
+        "FLUX.2-dev",
+        "sequential_cpu_offload",
+        "bf16"
+      ]
+    },
+    {
+      "id": 94,
+      "type": "Flux2T2ISampler",
+      "pos": [
+        724.3815336609828,
+        -86.90266446701813
+      ],
+      "size": [
+        296.597265625,
+        342
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 75
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 76
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            77
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Flux2T2ISampler"
+      },
+      "widgets_values": [
+        1728,
+        992,
+        404922577542089,
+        "randomize",
+        25,
+        4,
+        "Flow",
+        3
+      ]
+    }
+  ],
+  "links": [
+    [
+      75,
+      92,
+      0,
+      94,
+      0,
+      "FunModels"
+    ],
+    [
+      76,
+      75,
+      0,
+      94,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      77,
+      94,
+      0,
+      88,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Load Model",
+      "bounding": [
+        220,
+        -380,
+        472,
+        232
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        218,
+        -127,
+        443.62835196237825,
+        248.53632503063102
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7828871306993743,
+      "offset": [
+        615.0117311935076,
+        663.8885747430894
+      ]
+    },
+    "frontendVersion": "1.37.11",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "VideoX-Fun": "7671af8b16701319cf043358941277b9a5a1cb75",
+      "comfy-core": "0.10.0"
+    },
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}

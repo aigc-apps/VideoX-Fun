@@ -733,6 +733,13 @@ class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalMode
             4
         ],
         dropout = 0.0,
+        num_res_blocks = 2,
+        temperal_downsample = [
+            False,
+            True,
+            True
+        ],
+        z_dim = 16,
         latents_mean = [
             -0.7571,
             -0.7089,
@@ -769,13 +776,8 @@ class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalMode
             2.8251,
             1.916
         ],
-        num_res_blocks = 2,
-        temperal_downsample = [
-            False,
-            True,
-            True
-        ],
-        z_dim = 16
+        temporal_compression_ratio=4,
+        spatial_compression_ratio=8
     ):
         super().__init__()
         cfg = dict(
@@ -797,6 +799,8 @@ class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalMode
         self.attn_scales = attn_scales
         self.temperal_downsample = temperal_downsample
         self.temperal_upsample = temperal_downsample[::-1]
+        self.temporal_compression_ratio = temporal_compression_ratio
+        self.spatial_compression_ratio = spatial_compression_ratio
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [

@@ -490,7 +490,8 @@ class QwenImageControlPipeline(DiffusionPipeline):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
-        control_context_scale: float = 1.0
+        control_context_scale: float = 1.0,
+        comfyui_progressbar: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -603,6 +604,9 @@ class QwenImageControlPipeline(DiffusionPipeline):
 
         device = self._execution_device
         weight_dtype = self.text_encoder.dtype
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(num_inference_steps + 2)
 
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
@@ -625,6 +629,9 @@ class QwenImageControlPipeline(DiffusionPipeline):
                 num_images_per_prompt=num_images_per_prompt,
                 max_sequence_length=max_sequence_length,
             )
+        if comfyui_progressbar:
+            pbar.update(1)
+
         # 4. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
         latents = self.prepare_latents(
@@ -648,8 +655,8 @@ class QwenImageControlPipeline(DiffusionPipeline):
                                         torch.zeros_like(mask_condition))
             mask_condition = torch.tile(mask_condition, [1, 3, 1, 1]).to(dtype=weight_dtype, device=device)
         else:
-            mask_condition = torch.zeros([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
-        
+            mask_condition = torch.ones([batch_size, 3, height, width]).to(dtype=weight_dtype, device=device)
+
         if image is not None:
             init_image = self.image_processor.preprocess(image, height=height, width=width)
             init_image = init_image.to(dtype=weight_dtype, device=device) * (mask_condition < 0.5)
@@ -709,6 +716,8 @@ class QwenImageControlPipeline(DiffusionPipeline):
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
+        if comfyui_progressbar:
+            pbar.update(1)
 
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
@@ -745,10 +754,10 @@ class QwenImageControlPipeline(DiffusionPipeline):
                 self._current_timestep = t
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0]).to(latent_model_input.dtype)
-                print(latent_model_input.size(), control_context_input.size())
+
                 with torch.cuda.amp.autocast(dtype=latents.dtype), torch.cuda.device(device=latents.device):
-                    noise_pred = self.transformer.forward_bs(
-                        x=latent_model_input,
+                    noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
                         encoder_hidden_states_mask=prompt_embeds_mask_input,
@@ -793,6 +802,9 @@ class QwenImageControlPipeline(DiffusionPipeline):
 
                 if XLA_AVAILABLE:
                     xm.mark_step()
+
+                if comfyui_progressbar:
+                    pbar.update(1)
 
         self._current_timestep = None
         if output_type == "latent":
