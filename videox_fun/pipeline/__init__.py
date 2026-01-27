@@ -27,6 +27,7 @@ from .pipeline_wan_phantom import WanFunPhantomPipeline
 from .pipeline_wan_vace import WanVacePipeline
 from .pipeline_z_image import ZImagePipeline
 from .pipeline_z_image_control import ZImageControlPipeline
+from .pipeline_z_image_omni import ZImageOmniPipeline
 
 WanFunPipeline = WanPipeline
 WanI2VPipeline = WanFunInpaintPipeline
