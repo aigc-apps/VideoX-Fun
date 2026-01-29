@@ -761,9 +761,7 @@ class Flux2ControlPipeline(DiffusionPipeline):
         width = width or self.default_sample_size * self.vae_scale_factor
         num_channels_latents = self.transformer.config.in_channels // 4
 
-        has_neg_prompt = negative_prompt is not None or (
-            negative_prompt_embeds is not None and negative_pooled_prompt_embeds is not None
-        )
+        has_neg_prompt = negative_prompt is not None
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
         
         # Prepare mask latent variables
