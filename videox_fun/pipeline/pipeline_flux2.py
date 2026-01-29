@@ -621,11 +621,13 @@ class Flux2Pipeline(DiffusionPipeline):
         self,
         image: Optional[Union[List[PIL.Image.Image], PIL.Image.Image]] = None,
         prompt: Union[str, List[str]] = None,
+        negative_prompt: Union[str, List[str]] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
         sigmas: Optional[List[float]] = None,
         guidance_scale: Optional[float] = 4.0,
+        true_cfg_scale: Optional[float] = 1.0,
         num_images_per_prompt: int = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
@@ -747,6 +749,15 @@ class Flux2Pipeline(DiffusionPipeline):
             max_sequence_length=max_sequence_length,
             text_encoder_out_layers=text_encoder_out_layers,
         )
+        if do_true_cfg:
+            negative_prompt_embeds, negative_text_ids = self.encode_prompt(
+                prompt=negative_prompt,
+                prompt_embeds=None,
+                device=device,
+                num_images_per_prompt=num_images_per_prompt,
+                max_sequence_length=max_sequence_length,
+                text_encoder_out_layers=text_encoder_out_layers,
+            )
 
         # 4. process images
         if image is not None and not isinstance(image, list):
@@ -774,6 +785,11 @@ class Flux2Pipeline(DiffusionPipeline):
 
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
+
+        has_neg_prompt = negative_prompt is not None or (
+            negative_prompt_embeds is not None and negative_pooled_prompt_embeds is not None
+        )
+        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
 
         # 5. prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -854,8 +870,21 @@ class Flux2Pipeline(DiffusionPipeline):
                     joint_attention_kwargs=self._attention_kwargs,
                     return_dict=False,
                 )[0]
-
                 noise_pred = noise_pred[:, : latents.size(1) :]
+
+                if do_true_cfg:
+                    neg_noise_pred = self.transformer(
+                        hidden_states=latent_model_input,  # (B, image_seq_len, C)
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        encoder_hidden_states=negative_prompt_embeds,
+                        txt_ids=negative_text_ids,  # B, text_seq_len, 4
+                        img_ids=latent_image_ids,  # B, image_seq_len, 4
+                        joint_attention_kwargs=self._attention_kwargs,
+                        return_dict=False,
+                    )[0]
+                    neg_noise_pred = neg_noise_pred[:, : latents.size(1) :]
+                    noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
