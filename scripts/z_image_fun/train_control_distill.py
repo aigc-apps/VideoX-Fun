@@ -1659,6 +1659,8 @@ def main():
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
+                if args.low_vram:
+                    real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
 
             with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
