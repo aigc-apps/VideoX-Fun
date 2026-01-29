@@ -945,6 +945,8 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 

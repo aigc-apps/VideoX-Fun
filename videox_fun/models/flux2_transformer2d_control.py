@@ -28,6 +28,7 @@ from .flux2_transformer2d import (Flux2SingleTransformerBlock,
                                   Flux2Transformer2DModel,
                                   Flux2TransformerBlock)
 
+VIDEOX_OFFLOAD_VACE_LATENTS = os.environ.get("VIDEOX_OFFLOAD_VACE_LATENTS", False)
 
 class Flux2ControlTransformerBlock(Flux2TransformerBlock):
     def __init__(
@@ -58,8 +59,16 @@ class Flux2ControlTransformerBlock(Flux2TransformerBlock):
             all_c = list(torch.unbind(c))
             c = all_c.pop(-1)
 
+        if VIDEOX_OFFLOAD_VACE_LATENTS:
+            c = c.to(x.device)
+
         encoder_hidden_states, c = super().forward(c, **kwargs)
         c_skip = self.after_proj(c)
+
+        if VIDEOX_OFFLOAD_VACE_LATENTS:
+            c_skip = c_skip.to("cpu")
+            c = c.to("cpu")
+    
         all_c += [c_skip, c]
         c = torch.stack(all_c)
         return encoder_hidden_states, c
@@ -82,7 +91,11 @@ class BaseFlux2TransformerBlock(Flux2TransformerBlock):
     def forward(self, hidden_states, hints=None, context_scale=1.0, **kwargs):
         encoder_hidden_states, hidden_states = super().forward(hidden_states, **kwargs)
         if self.block_id is not None:
-            hidden_states = hidden_states + hints[self.block_id] * context_scale
+            if VIDEOX_OFFLOAD_VACE_LATENTS:
+                hidden_states = hidden_states + hints[self.block_id].to(hidden_states.device) * context_scale
+            else:
+                hidden_states = hidden_states + hints[self.block_id] * context_scale
+
         return encoder_hidden_states, hidden_states
 
 
