@@ -736,6 +736,10 @@ class Flux2Pipeline(DiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
+        has_neg_prompt = negative_prompt is not None or (
+            negative_prompt_embeds is not None and negative_pooled_prompt_embeds is not None
+        )
+        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
         if comfyui_progressbar:
             from comfy.utils import ProgressBar
             pbar = ProgressBar(num_inference_steps + 2)
@@ -785,11 +789,6 @@ class Flux2Pipeline(DiffusionPipeline):
 
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
-
-        has_neg_prompt = negative_prompt is not None or (
-            negative_prompt_embeds is not None and negative_pooled_prompt_embeds is not None
-        )
-        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
 
         # 5. prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
