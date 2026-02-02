@@ -151,7 +151,7 @@
       },
       "widgets_values": [
         "Z-Image",
-        "model_cpu_offload",
+        "model_group_offload",
         "bf16"
       ]
     },

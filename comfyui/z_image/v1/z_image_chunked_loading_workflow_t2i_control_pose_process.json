@@ -223,7 +223,7 @@
       },
       "widgets_values": [
         "",
-        "model_cpu_offload"
+        "model_group_offload"
       ]
     },
     {

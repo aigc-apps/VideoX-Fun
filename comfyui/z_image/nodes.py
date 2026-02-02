@@ -27,6 +27,9 @@ from ...videox_fun.models import (AutoencoderKL, AutoTokenizer,
                                   ZImageTransformer2DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ...videox_fun.pipeline import ZImageControlPipeline, ZImagePipeline
+from ...videox_fun.utils import (register_auto_device_hook,
+                                 safe_enable_group_offload,
+                                 safe_remove_group_offloading)
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
