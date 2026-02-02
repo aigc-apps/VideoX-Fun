@@ -192,6 +192,73 @@
       ]
     },
     {
+      "id": 96,
+      "type": "CombineZImagePipeline",
+      "pos": [
+        790.3572998046875,
+        -328.7134094238281
+      ],
+      "size": [
+        342.5804748535156,
+        162
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 96
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 79
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 80
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 81
+        },
+        {
+          "name": "processor",
+          "shape": 7,
+          "type": "Processor",
+          "link": null
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            87
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineZImagePipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload"
+      ]
+    },
+    {
       "id": 88,
       "type": "PreviewImage",
       "pos": [
@@ -290,8 +357,46 @@
         "Node name for S&R": "LoadZImageTransformerModel"
       },
       "widgets_values": [
-        "z_image_bf16.safetensors",
+        "z_image_turbo_bf16.safetensors",
         "bf16"
+      ]
+    },
+    {
+      "id": 102,
+      "type": "LoadZImageControlNetInModel",
+      "pos": [
+        779.793189390101,
+        -457.3825558553134
+      ],
+      "size": [
+        589.8698159570357,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 95
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            96
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageControlNetInModel"
+      },
+      "widgets_values": [
+        "z_image/z_image_control_2.1.yaml",
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors"
       ]
     },
     {
@@ -360,116 +465,11 @@
         1568,
         43,
         "fixed",
-        25,
-        4.5,
+        8,
+        0,
         "Flow",
         3,
         0.8
-      ]
-    },
-    {
-      "id": 96,
-      "type": "CombineZImagePipeline",
-      "pos": [
-        790.3572998046875,
-        -328.7134094238281
-      ],
-      "size": [
-        342.5804748535156,
-        162
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "link": 96
-        },
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "link": 79
-        },
-        {
-          "name": "text_encoder",
-          "type": "TextEncoderModel",
-          "link": 80
-        },
-        {
-          "name": "tokenizer",
-          "type": "Tokenizer",
-          "link": 81
-        },
-        {
-          "name": "processor",
-          "shape": 7,
-          "type": "Processor",
-          "link": null
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "widget": {
-            "name": "model_name"
-          },
-          "link": 82
-        }
-      ],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            87
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "CombineZImagePipeline"
-      },
-      "widgets_values": [
-        "",
-        "model_cpu_offload"
-      ]
-    },
-    {
-      "id": 102,
-      "type": "LoadZImageControlNetInModel",
-      "pos": [
-        779.793189390101,
-        -457.3825558553134
-      ],
-      "size": [
-        589.8698159570357,
-        82
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "link": 95
-        }
-      ],
-      "outputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "links": [
-            96
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadZImageControlNetInModel"
-      },
-      "widgets_values": [
-        "z_image/z_image_control_2.1_lite.yaml",
-        "Z-Image-Fun-Controlnet-Union-2.1-lite.safetensors"
       ]
     }
   ],
@@ -594,19 +594,19 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7208430239838531,
+      "scale": 0.9594420649225085,
       "offset": [
-        460.4224504078358,
-        644.7360602102879
+        96.69529077203181,
+        609.5309015132086
       ]
     },
-    "frontendVersion": "1.34.9",
+    "frontendVersion": "1.36.11",
     "workflowRendererVersion": "LG",
     "workspace_info": {
       "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
     },
     "node_versions": {
-      "CogVideoX-Fun": "07dd34b942f866d5f95e8b812b6082d359079260",
+      "CogVideoX-Fun": "244f11053106af1a58ac25fd0bbb508fd7b89c0f",
       "comfy-core": "0.6.0"
     }
   },

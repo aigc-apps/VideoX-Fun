@@ -160,7 +160,7 @@
         "Node name for S&R": "LoadZImageModel"
       },
       "widgets_values": [
-        "Z-Image",
+        "Z-Image-Turbo",
         "model_cpu_offload",
         "bf16"
       ]
@@ -225,7 +225,7 @@
       },
       "widgets_values": [
         "z_image/z_image_control_2.1.yaml",
-        "Z-Image-Fun-Controlnet-Union-2.1.safetensors",
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",
         "transformer"
       ]
     },

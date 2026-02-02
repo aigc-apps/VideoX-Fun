@@ -104,8 +104,8 @@
         1568,
         43,
         "fixed",
-        25,
-        4.5,
+        8,
+        0,
         "Flow",
         3
       ]
@@ -145,7 +145,7 @@
         "Node name for S&R": "LoadZImageTransformerModel"
       },
       "widgets_values": [
-        "z_image_bf16.safetensors",
+        "z_image_turbo_bf16.safetensors",
         "bf16"
       ]
     },

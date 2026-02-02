@@ -1,8 +1,8 @@
 {
   "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
   "revision": 0,
-  "last_node_id": 102,
-  "last_link_id": 96,
+  "last_node_id": 107,
+  "last_link_id": 113,
   "nodes": [
     {
       "id": 78,
@@ -160,214 +160,6 @@
       "bgcolor": "#653"
     },
     {
-      "id": 93,
-      "type": "LoadZImageVAEModel",
-      "pos": [
-        1168.1599508804559,
-        -314.8650476692169
-      ],
-      "size": [
-        377.8583984375,
-        84.69844055175781
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "vae",
-          "type": "VAEModel",
-          "links": [
-            79
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadZImageVAEModel"
-      },
-      "widgets_values": [
-        "ae.safetensors",
-        "bf16"
-      ]
-    },
-    {
-      "id": 88,
-      "type": "PreviewImage",
-      "pos": [
-        1049.1402001998824,
-        -52.699751832945104
-      ],
-      "size": [
-        366.56134033203125,
-        415.4429626464844
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 90
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 100,
-      "type": "LoadImage",
-      "pos": [
-        396.48551767952716,
-        419.158511044569
-      ],
-      "size": [
-        270,
-        314.00000000000006
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            86
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "a7kXeQ5l9Dhspes7q3x3G (1).png",
-        "image"
-      ]
-    },
-    {
-      "id": 92,
-      "type": "LoadZImageTransformerModel",
-      "pos": [
-        275.9798278808594,
-        -465.2391052246094
-      ],
-      "size": [
-        416.3677673339844,
-        106.13789367675781
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "transformer",
-          "type": "TransformerModel",
-          "links": [
-            95
-          ]
-        },
-        {
-          "name": "model_name",
-          "type": "STRING",
-          "links": [
-            82
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadZImageTransformerModel"
-      },
-      "widgets_values": [
-        "z_image_bf16.safetensors",
-        "bf16"
-      ]
-    },
-    {
-      "id": 99,
-      "type": "ZImageControlSampler",
-      "pos": [
-        727.2482831521481,
-        -52.41010988674983
-      ],
-      "size": [
-        270,
-        350
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 87
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 88
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 89
-        },
-        {
-          "name": "control_image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": 86
-        },
-        {
-          "name": "inpaint_image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "mask_image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            90
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ZImageControlSampler"
-      },
-      "widgets_values": [
-        1184,
-        1568,
-        43,
-        "fixed",
-        25,
-        4.5,
-        "Flow",
-        3,
-        0.8
-      ]
-    },
-    {
       "id": 96,
       "type": "CombineZImagePipeline",
       "pos": [
@@ -379,7 +171,7 @@
         162
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -435,6 +227,280 @@
       ]
     },
     {
+      "id": 92,
+      "type": "LoadZImageTransformerModel",
+      "pos": [
+        275.9798278808594,
+        -465.2391052246094
+      ],
+      "size": [
+        416.3677673339844,
+        106.13789367675781
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            95
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            82
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageTransformerModel"
+      },
+      "widgets_values": [
+        "z_image_turbo_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 99,
+      "type": "ZImageControlSampler",
+      "pos": [
+        727.2482831521481,
+        -52.41010988674983
+      ],
+      "size": [
+        270,
+        350
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 87
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 88
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 89
+        },
+        {
+          "name": "control_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "inpaint_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 110
+        },
+        {
+          "name": "mask_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 112
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            90
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageControlSampler"
+      },
+      "widgets_values": [
+        1184,
+        1568,
+        43,
+        "fixed",
+        8,
+        0,
+        "Flow",
+        3,
+        0.8
+      ]
+    },
+    {
+      "id": 93,
+      "type": "LoadZImageVAEModel",
+      "pos": [
+        1168.1599508804559,
+        -314.8650476692169
+      ],
+      "size": [
+        377.8583984375,
+        84.69844055175781
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            79
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageVAEModel"
+      },
+      "widgets_values": [
+        "ae.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1049.1402001998824,
+        -52.699751832945104
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 90
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 104,
+      "type": "PreviewImage",
+      "pos": [
+        911.4377073728218,
+        418.9988584275326
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 113
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 107,
+      "type": "MaskToImage",
+      "pos": [
+        658.3044275669289,
+        511.8717365608471
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 111
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            112,
+            113
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MaskToImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 100,
+      "type": "LoadImage",
+      "pos": [
+        323.5443519405259,
+        489.8702544908114
+      ],
+      "size": [
+        270,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            110
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            111
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "image": "clipspace/clipspace-painted-masked-1766731857414.png [input]"
+      },
+      "widgets_values": [
+        "clipspace/clipspace-painted-masked-1766731857414.png [input]",
+        "image"
+      ]
+    },
+    {
       "id": 102,
       "type": "LoadZImageControlNetInModel",
       "pos": [
@@ -469,7 +535,7 @@
       },
       "widgets_values": [
         "z_image/z_image_control_2.1_lite.yaml",
-        "Z-Image-Fun-Controlnet-Union-2.1-lite.safetensors"
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors"
       ]
     }
   ],
@@ -505,14 +571,6 @@
       96,
       5,
       "STRING"
-    ],
-    [
-      86,
-      100,
-      0,
-      99,
-      3,
-      "IMAGE"
     ],
     [
       87,
@@ -561,6 +619,38 @@
       96,
       0,
       "TransformerModel"
+    ],
+    [
+      110,
+      100,
+      0,
+      99,
+      4,
+      "IMAGE"
+    ],
+    [
+      111,
+      100,
+      1,
+      107,
+      0,
+      "MASK"
+    ],
+    [
+      112,
+      107,
+      0,
+      99,
+      5,
+      "IMAGE"
+    ],
+    [
+      113,
+      107,
+      0,
+      104,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [
@@ -594,10 +684,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7208430239838531,
+      "scale": 0.7772383863288174,
       "offset": [
-        460.4224504078358,
-        644.7360602102879
+        248.90036994067935,
+        733.942567031054
       ]
     },
     "frontendVersion": "1.34.9",

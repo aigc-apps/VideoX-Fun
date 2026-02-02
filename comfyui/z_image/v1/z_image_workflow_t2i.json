@@ -150,7 +150,7 @@
         "Node name for S&R": "LoadZImageModel"
       },
       "widgets_values": [
-        "Z-Image-Turbo",
+        "Z-Image",
         "model_cpu_offload",
         "bf16"
       ]

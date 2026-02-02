@@ -536,7 +536,8 @@ class LoadZImageModel:
             "required": {
                 "model": (
                     [
-                        "Z-Image-Turbo"
+                        "Z-Image-Turbo",
+                        "Z-Image"
                     ],
                     {
                         "default": 'Z-Image-Turbo',

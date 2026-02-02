@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -31,5 +31,5 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --enable_bucket \
   --uniform_sampling \
   --add_inpaint_info \
-  --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
+  --transformer_path="models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1.safetensors" \
   --trainable_modules "control"

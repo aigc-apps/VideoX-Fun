@@ -875,7 +875,7 @@ class LoadFlux2ControlNetInPipeline:
                 ),
                 "model_name": (
                     folder_paths.get_filename_list("model_patches"),
-                    {"default": "FLUX.2-dev-Fun-Controlnet-Union.safetensors", },
+                    {"default": "FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors", },
                 ),
                 "funmodels": ("FunModels",),
             },
@@ -1017,7 +1017,7 @@ class LoadFlux2ControlNetInModel:
                 ),
                 "model_name": (
                     folder_paths.get_filename_list("model_patches"),
-                    {"default": "FLUX.2-dev-Fun-Controlnet-Union.safetensors", },
+                    {"default": "FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors", },
                 ),
                 "transformer": ("TransformerModel",),
             },

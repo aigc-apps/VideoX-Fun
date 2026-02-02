@@ -290,7 +290,7 @@
         "Node name for S&R": "LoadZImageTransformerModel"
       },
       "widgets_values": [
-        "z_image_bf16.safetensors",
+        "z_image_turbo_bf16.safetensors",
         "bf16"
       ]
     },
@@ -360,8 +360,8 @@
         1568,
         43,
         "fixed",
-        25,
-        4.5,
+        8,
+        0,
         "Flow",
         3,
         0.8
@@ -469,7 +469,7 @@
       },
       "widgets_values": [
         "z_image/z_image_control_2.1_lite.yaml",
-        "Z-Image-Fun-Controlnet-Union-2.1-lite.safetensors"
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors"
       ]
     }
   ],

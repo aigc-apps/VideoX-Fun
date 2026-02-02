@@ -56,13 +56,13 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/z_image/z_image_control_2.1_lite.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
+model_name          = "models/Diffusion_Transformer/Z-Image"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
