@@ -60,7 +60,7 @@ riflex_k            = 6
 # Config and model path
 config_path         = "config/wan2.2/wan_civitai_i2v.yaml"
 # model path
-model_name          = "../CogVideoX-Fun-Github/models/Diffusion_Transformer/Wan2.2-I2V-A14B"
+model_name          = "models/Diffusion_Transformer/Wan2.2-I2V-A14B"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
