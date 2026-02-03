@@ -338,9 +338,6 @@ the image\n<|vision_start|><|image_pad|><|vision_end|><|im_end|>\n<|im_start|>as
         if prompt_embeds is None:
             prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, device)
 
-        prompt_embeds = prompt_embeds[:, :max_sequence_length]
-        prompt_embeds_mask = prompt_embeds_mask[:, :max_sequence_length]
-
         _, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
@@ -902,7 +899,7 @@ the image\n<|vision_start|><|image_pad|><|vision_end|><|im_end|>\n<|im_start|>as
 
             latents = latents[:, :, 1:]  # remove the first frame as it is the orgin input
 
-            latents = latents.permute(0, 2, 1, 3, 4).view(-1, c, 1, h, w)
+            latents = latents.permute(0, 2, 1, 3, 4).reshape(-1, c, 1, h, w)
 
             image = self.vae.decode(latents, return_dict=False)[0]  # (b f) c 1 h w
 
