@@ -35,6 +35,7 @@ from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel
 from .qwenimage_vae import AutoencoderKLQwenImage
+from .turbowan_transformer3d import TurboWanTransformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
 from .wan_text_encoder import WanT5EncoderModel
