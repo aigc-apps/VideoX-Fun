@@ -69,7 +69,7 @@ model_name          = "models/Diffusion_Transformer/FLUX.2-dev"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union.safetensors" 
+transformer_path    = "models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors" 
 vae_path            = None
 lora_path           = None
 

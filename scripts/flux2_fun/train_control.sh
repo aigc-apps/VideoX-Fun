@@ -31,6 +31,6 @@ accelerate launch --mixed_precision="bf16" scripts/flux2_fun/train_control.py \
   --enable_bucket \
   --low_vram \
   --uniform_sampling \
-  --transformer_path="models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union.safetensors" \
+  --transformer_path="models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors" \
   --trainable_modules "control" \
   --resume_from_checkpoint="latest"

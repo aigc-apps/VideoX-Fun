@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -6,8 +6,8 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py \
-  --config_path="config/z_image/z_image_control_2.1.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/flux2_fun/train_control_distill.py \
+  --config_path="config/flux2/flux2_control.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -17,11 +17,11 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=2e-05 \
+  --learning_rate=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_z_image_control" \
+  --output_dir="output_dir_flux2_control_CFG_Distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -29,7 +29,9 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
+  --low_vram \
   --uniform_sampling \
-  --add_inpaint_info \
-  --transformer_path="models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1.safetensors" \
-  --trainable_modules "control"
+  --transformer_path="models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors" \
+  --trainable_modules "control" \
+  --random_hw_adapt \
+  --resume_from_checkpoint="latest"

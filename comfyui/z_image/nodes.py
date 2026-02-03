@@ -27,6 +27,9 @@ from ...videox_fun.models import (AutoencoderKL, AutoTokenizer,
                                   ZImageTransformer2DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients
 from ...videox_fun.pipeline import ZImageControlPipeline, ZImagePipeline
+from ...videox_fun.utils import (register_auto_device_hook,
+                                 safe_enable_group_offload,
+                                 safe_remove_group_offloading)
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
@@ -453,7 +456,9 @@ class CombineZImagePipeline:
                 "tokenizer": ("Tokenizer",),
                 "model_name": ("STRING",),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    [
+                        "model_full_load", "model_full_load_and_qfloat8", "model_cpu_offload", 
+                        "model_cpu_offload_and_qfloat8", "model_group_offload", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -505,14 +510,17 @@ class CombineZImagePipeline:
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
+        elif GPU_memory_mode == "model_group_offload":
+            register_auto_device_hook(pipeline.transformer)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.to(device=device)
         else:
@@ -536,14 +544,17 @@ class LoadZImageModel:
             "required": {
                 "model": (
                     [
-                        "Z-Image-Turbo"
+                        "Z-Image-Turbo",
+                        "Z-Image"
                     ],
                     {
                         "default": 'Z-Image-Turbo',
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    [
+                        "model_full_load", "model_full_load_and_qfloat8", "model_cpu_offload", 
+                        "model_cpu_offload_and_qfloat8", "model_group_offload", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -637,14 +648,17 @@ class LoadZImageModel:
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
+        elif GPU_memory_mode == "model_group_offload":
+            register_auto_device_hook(pipeline.transformer)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.to(device=device)
         else:
@@ -800,14 +814,17 @@ class LoadZImageControlNetInPipeline:
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
+        elif GPU_memory_mode == "model_group_offload":
+            register_auto_device_hook(pipeline.transformer)
+            safe_enable_group_offload(pipeline, onload_device=device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_cpu_offload":
             pipeline.enable_model_cpu_offload(device=device)
         elif GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(control_transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+            convert_model_weight_to_float8(control_transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
             convert_weight_dtype_wrapper(control_transformer, weight_dtype)
             pipeline.to(device=device)
         else:

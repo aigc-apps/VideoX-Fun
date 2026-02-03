@@ -37,7 +37,7 @@ For chunked loading, it is recommended to directly download the FLUX.2-dev weigh
 │ ├── 📂 Fun_Models/
 │ │ └── flux2_tokenizer/
 │ └── 📂 model_patches/
-│   └── FLUX.2-dev-Fun-Controlnet-Union.safetensors
+│   └── FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors
 ```
 
 ### 2. Preprocessing Weights (Optional)

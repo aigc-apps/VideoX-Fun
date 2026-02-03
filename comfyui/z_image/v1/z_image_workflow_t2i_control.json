@@ -34,7 +34,7 @@
         "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
-        ""
+        "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
       ]
     },
     {
@@ -160,8 +160,8 @@
         "Node name for S&R": "LoadZImageModel"
       },
       "widgets_values": [
-        "Z-Image-Turbo",
-        "model_cpu_offload",
+        "Z-Image",
+        "model_group_offload",
         "bf16"
       ]
     },
@@ -225,7 +225,7 @@
       },
       "widgets_values": [
         "z_image/z_image_control_2.1.yaml",
-        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",
+        "Z-Image-Fun-Controlnet-Union-2.1.safetensors",
         "transformer"
       ]
     },

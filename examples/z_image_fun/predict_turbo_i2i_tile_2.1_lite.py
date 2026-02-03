@@ -54,7 +54,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # Config and model path
-config_path         = "config/z_image/z_image_control_2.1.yaml"
+config_path         = "config/z_image/z_image_control_2.1_lite.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
@@ -62,7 +62,7 @@ model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Tile-2.1-8steps.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Tile-2.1-lite-2601-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
@@ -176,13 +176,13 @@ if compile_dit:
 if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:

@@ -1086,9 +1086,6 @@ def main():
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
 
-        accelerator.register_save_state_pre_hook(save_model_hook)
-        accelerator.register_load_state_pre_hook(load_model_hook)
-
     if args.gradient_checkpointing:
         transformer3d.enable_gradient_checkpointing()
 
