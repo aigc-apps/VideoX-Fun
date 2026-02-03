@@ -48,7 +48,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # model path
-model_name          = "models/Diffusion_Transformer/Z-Image"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -66,10 +66,10 @@ sample_size         = [1728, 992]
 weight_dtype        = torch.bfloat16
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
 prompt              = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
-negative_prompt     = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
-guidance_scale      = 4.0
+negative_prompt     = " "
+guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 25
+num_inference_steps = 9
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i"
 
