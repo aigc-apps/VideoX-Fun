@@ -62,7 +62,7 @@ model_name          = "models/Diffusion_Transformer/Z-Image"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1-lite-2601.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1-lite.safetensors" 
 vae_path            = None
 lora_path           = None
 
