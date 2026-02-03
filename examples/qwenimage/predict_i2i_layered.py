@@ -91,7 +91,7 @@ weight_dtype        = torch.bfloat16
 image               = "asset/yarn-art-pikachu.png"
 
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
-prompt              = ""
+prompt              = "This is a pikachu."
 negative_prompt     = ""
 guidance_scale      = 4.0
 seed                = 43
