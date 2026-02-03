@@ -2,6 +2,7 @@ import os
 import warnings
 
 import torch
+import torch.nn as nn
 
 try:
     import flash_attn_interface
