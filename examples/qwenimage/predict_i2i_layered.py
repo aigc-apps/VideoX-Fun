@@ -17,6 +17,8 @@ from videox_fun.models import (AutoencoderKLQwenImage,
                                QwenImageTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import QwenImageLayeredPipeline
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
