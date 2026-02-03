@@ -1,11 +1,8 @@
 import os
 import sys
 
-import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
-from omegaconf import OmegaConf
-from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,18 +10,15 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKL, AutoTokenizer,
-                               Qwen3ForCausalLM, ZImageControlTransformer2DModel)
+from videox_fun.models import (AutoencoderKL, AutoTokenizer, Qwen3ForCausalLM,
+                               ZImageTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import ZImageControlPipeline
+from videox_fun.pipeline import ZImagePipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, get_image,
-                                    get_video_to_video_latent,
-                                    save_videos_grid)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -53,8 +47,6 @@ fsdp_text_encoder   = False
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
 
-# Config and model path
-config_path         = "config/z_image/z_image_control_2.1.yaml"
 # model path
 model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
@@ -62,7 +54,7 @@ model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors" 
+transformer_path    = None
 vae_path            = None
 lora_path           = None
 
@@ -72,29 +64,22 @@ sample_size         = [1728, 992]
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-control_image       = "asset/pose.jpg"
-inpaint_image       = None
-mask_image          = None
-control_context_scale = 0.90
-
-# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境，宛如二次元世界与现实海景的完美融合。"
+# Please use as detailed a prompt as possible to describe the object that needs to be generated.
+prompt              = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 8
+num_inference_steps = 9
 lora_weight         = 0.55
-save_path           = "samples/z-image-t2i-control"
+save_path           = "samples/z-image-t2i"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
-config = OmegaConf.load(config_path)
 
-transformer = ZImageControlTransformer2DModel.from_pretrained(
+transformer = ZImageTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
 ).to(weight_dtype)
 
 if transformer_path is not None:
@@ -147,7 +132,7 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = ZImageControlPipeline(
+pipeline = ZImagePipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
@@ -193,31 +178,13 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
-    if inpaint_image is not None:
-        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
-    else:
-        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
-
-    if mask_image is not None:
-        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
-    else:
-        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
-
-    if control_image is not None:
-        control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
-
     sample = pipeline(
         prompt      = prompt, 
-        negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
         generator   = generator,
         guidance_scale = guidance_scale,
-        image               = inpaint_image,
-        mask_image          = mask_image,
-        control_image       = control_image,
         num_inference_steps = num_inference_steps,
-        control_context_scale = control_context_scale,
     ).images
 
 if lora_path is not None:

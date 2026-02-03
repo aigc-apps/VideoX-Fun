@@ -13,6 +13,7 @@ from .pipeline_qwenimage_control import QwenImageControlPipeline
 from .pipeline_qwenimage_instantx import QwenImageControlNetPipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
+from .pipeline_qwenimage_layered import QwenImageLayeredPipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_animate import Wan2_2AnimatePipeline
