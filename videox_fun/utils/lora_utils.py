@@ -402,12 +402,25 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     if lora_path is None:
         return pipeline
 
+    print(f"[LoRA Merge] Starting to merge LoRA from: {lora_path if lora_path else 'state_dict'}")
+    print(f"[LoRA Merge] Multiplier: {multiplier}, Device: {device}, Dtype: {dtype}")
+
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
+
     if state_dict is None:
-        state_dict = load_file(lora_path)
+        if lora_path.endswith("safetensors"):
+            print(f"[LoRA Merge] Loading safetensors file...")
+            state_dict = load_file(lora_path)
+        else:
+            print(f"[LoRA Merge] Loading pytorch file...")
+            state_dict = torch.load(lora_path, map_location="cpu")
     else:
+        print(f"[LoRA Merge] Using provided state_dict")
         state_dict = state_dict
+
+    print(f"[LoRA Merge] Found {len(state_dict)} keys in state_dict")
+
     updates = defaultdict(dict)
     for key, value in state_dict.items():
         if "diffusion_model." in key:
@@ -436,16 +449,24 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
+    print(f"[LoRA Merge] Organized into {len(updates)} layers")
+
     sequential_cpu_offload_flag = False
     if pipeline.transformer.device == torch.device(type="meta"):
+        print(f"[LoRA Merge] Removing hooks for meta device...")
         pipeline.remove_all_hooks()
         sequential_cpu_offload_flag = True
         offload_device = pipeline._offload_device
+
+    merged_count = 0
+    skipped_count = 0
+    error_count = 0
 
     for layer, elems in updates.items():
 
         if "lora_te" in layer:
             if transformer_only:
+                skipped_count += 1
                 continue
             else:
                 layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
@@ -472,7 +493,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
+                                print(f'[LoRA Merge] Warning: Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
@@ -480,6 +501,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             except Exception:
                 if "lora_te" in layer:
                     if transformer_only:
+                        skipped_count += 1
                         continue
                     else:
                         layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
@@ -496,7 +518,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                 while start_index < len_layer_infos:
                     try:
                         if start_index >= end_indx:
-                            print(f'Error loading layer in back search: {layer}')
+                            print(f'[LoRA Merge] Error: Failed to load layer in back search: {layer}')
                             error_flag = True
                             break
                         curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
@@ -505,6 +527,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                     except Exception:
                         end_indx -= 1
                 if error_flag:
+                    error_count += 1
                     continue
 
         origin_dtype = curr_layer.weight.data.dtype
@@ -526,9 +549,15 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         else:
             curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+        merged_count += 1
+
+    print(f"[LoRA Merge] Completed: {merged_count} layers merged, {skipped_count} layers skipped, {error_count} errors")
 
     if sequential_cpu_offload_flag:
+        print(f"[LoRA Merge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=offload_device)
+    
+    print(f"[LoRA Merge] ✓ LoRA merge finished successfully")
     return pipeline
 
 # TODO: Refactor with merge_lora.
@@ -536,10 +565,21 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     if lora_path is None:
         return pipeline
 
+    print(f"[LoRA Unmerge] Starting to unmerge LoRA from: {lora_path}")
+    print(f"[LoRA Unmerge] Multiplier: {multiplier}, Device: {device}, Dtype: {dtype}")
+
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
-    state_dict = load_file(lora_path)
+
+    if lora_path.endswith("safetensors"):
+        print(f"[LoRA Unmerge] Loading safetensors file...")
+        state_dict = load_file(lora_path)
+    else:
+        print(f"[LoRA Unmerge] Loading pytorch file...")
+        state_dict = torch.load(lora_path, map_location="cpu")
+
+    print(f"[LoRA Unmerge] Found {len(state_dict)} keys in state_dict")
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
@@ -569,10 +609,16 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
+    print(f"[LoRA Unmerge] Organized into {len(updates)} layers")
+
     sequential_cpu_offload_flag = False
     if pipeline.transformer.device == torch.device(type="meta"):
+        print(f"[LoRA Unmerge] Removing hooks for meta device...")
         pipeline.remove_all_hooks()
         sequential_cpu_offload_flag = True
+
+    unmerged_count = 0
+    error_count = 0
 
     for layer, elems in updates.items():
 
@@ -601,7 +647,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
+                                print(f'[LoRA Unmerge] Warning: Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
@@ -622,7 +668,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                 while start_index < len_layer_infos:
                     try:
                         if start_index >= end_indx:
-                            print(f'Error loading layer in back search: {layer}')
+                            print(f'[LoRA Unmerge] Error: Failed to load layer in back search: {layer}')
                             error_flag = True
                             break
                         curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
@@ -631,6 +677,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                     except Exception:
                         end_indx -= 1
                 if error_flag:
+                    error_count += 1
                     continue
 
         origin_dtype = curr_layer.weight.data.dtype
@@ -652,7 +699,13 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         else:
             curr_layer.weight.data -= multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+        unmerged_count += 1
+
+    print(f"[LoRA Unmerge] Completed: {unmerged_count} layers unmerged, {error_count} errors")
 
     if sequential_cpu_offload_flag:
+        print(f"[LoRA Unmerge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=device)
+    
+    print(f"[LoRA Unmerge] ✓ LoRA unmerge finished successfully")
     return pipeline
