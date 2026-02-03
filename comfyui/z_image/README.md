@@ -1,4 +1,4 @@
-# Z-Image-Turbo Model Setup Guide
+# Z-Image Model Setup Guide
 
 ## a. Model Links and Storage Locations
 
@@ -13,7 +13,7 @@ For chunked loading, it is recommended to directly download the Z-Image weights 
 | Component | File Name | 
 |-----------|-----------| 
 | Text Encoder | [`qwen_3_4b.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors) |
-| Diffusion Model | [`z_image_turbo_bf16.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors) | 
+| Diffusion Model | [`z_image_turbo_bf16.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors) and [`z_image_bf16.safetensors`](https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/diffusion_models/z_image_bf16.safetensors) | 
 | VAE | [`ae.safetensors`](https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors) | 
 | tokenizer(Qwen3-4B) | [`tokenizer`](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/tree/main/tokenizer) | 
 
@@ -23,6 +23,7 @@ For chunked loading, it is recommended to directly download the Z-Image weights 
 |------|--------------|-------------|-------------|
 | Z-Image-Turbo-Fun-Controlnet-Union | [🤗Link](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union) | [😄Link](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union) | ControlNet weights for Z-Image-Turbo, supporting multiple control conditions including Canny, Depth, Pose, MLSD, etc. |
 | Z-Image-Turbo-Fun-Controlnet-Union-2.1 | [🤗Link](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | [😄Link](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | Upgraded ControlNet weights for Z-Image-Turbo with additions at more layers and longer training time, supporting multiple control conditions including Canny, Depth, Pose, MLSD, etc. |
+| Z-Image-Fun-Controlnet-Union-2.1 | [🤗Link](https://huggingface.co/alibaba-pai/Z-Image-Fun-Controlnet-Union-2.1) | [😄Link](https://modelscope.cn/models/PAI/Z-Image-Fun-Controlnet-Union-2.1) | Upgraded ControlNet weights for Z-Image with additions at more layers and longer training time, supporting multiple control conditions including Canny, Depth, Pose, MLSD, Scribble, Hed and Gray. |
 
 **Storage Location:**
 
@@ -74,8 +75,9 @@ If you prefer full model loading, you can directly download the diffusers weight
 | Name | Hugging Face | Model Scope | Description |
 |------|--------------|-------------|-------------|
 | Z-Image-Turbo | [🤗Link](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) | [😄Link](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image-Turbo) | Official full weights for Z-Image-Turbo |
+| Z-Image | [🤗Link](https://huggingface.co/Tongyi-MAI/Z-Image) | [😄Link](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image) | Official full weights for Z-Image |
 
-For full model loading, use the diffusers version of Z-Image Turbo and place the model in `ComfyUI/models/Fun_Models/`.
+For full model loading, use the diffusers version of Z-Image and place the model in `ComfyUI/models/Fun_Models/`.
 
 **Storage Location:**
 
@@ -83,6 +85,7 @@ For full model loading, use the diffusers version of Z-Image Turbo and place the
 📂 ComfyUI/
 ├── 📂 models/
 │ └── 📂 Fun_Models/
+│   ├── 📂 Z-Image
 │   └── 📂 Z-Image-Turbo
 ```
 
@@ -90,20 +93,36 @@ For full model loading, use the diffusers version of Z-Image Turbo and place the
 
 ### 1. Chunked Loading (Recommended)
 
-[Z Image Turbo Text to Image](v1/z_image_chunked_loading_workflow_t2i.json)
+[Z Image Text to Image](v1/z_image_chunked_loading_workflow_t2i.json)
 
-[Z Image Turbo Text to Image and Control](v1/z_image_chunked_loading_workflow_t2i_control.json)
+[Z Image Text to Image and Control](v1/z_image_chunked_loading_workflow_t2i_control.json)
 
-[Z Image Turbo Text to Image and Control with Pose Detect](v1/z_image_chunked_loading_workflow_t2i_control_pose_process.json)
+[Z Image Text to Image and Control with Pose Detect](v1/z_image_chunked_loading_workflow_t2i_control_pose_process.json)
 
-[Z Image Turbo Text to Image and Control with Depth Detect](v1/z_image_chunked_loading_workflow_t2i_control_depth_process.json)
+[Z Image Text to Image and Control with Depth Detect](v1/z_image_chunked_loading_workflow_t2i_control_depth_process.json)
 
-[Z Image Turbo Text to Image and Control with Canny Detect](v1/z_image_chunked_loading_workflow_t2i_control_canny_process.json)
+[Z Image Text to Image and Control with Canny Detect](v1/z_image_chunked_loading_workflow_t2i_control_canny_process.json)
 
-[Z Image Turbo Image to Image with Inpaint](v1/z_image_chunked_loading_workflow_i2i_inpaint.json)
+[Z Image Image to Image with Inpaint](v1/z_image_chunked_loading_workflow_i2i_inpaint.json)
+
+[Z Image Turbo Text to Image](v1/z_image_turbo_chunked_loading_workflow_t2i.json)
+
+[Z Image Turbo Text to Image and Control](v1/z_image_turbo_chunked_loading_workflow_t2i_control.json)
+
+[Z Image Turbo Text to Image and Control with Pose Detect](v1/z_image_turbo_chunked_loading_workflow_t2i_control_pose_process.json)
+
+[Z Image Turbo Text to Image and Control with Depth Detect](v1/z_image_turbo_chunked_loading_workflow_t2i_control_depth_process.json)
+
+[Z Image Turbo Text to Image and Control with Canny Detect](v1/z_image_turbo_chunked_loading_workflow_t2i_control_canny_process.json)
+
+[Z Image Turbo Image to Image with Inpaint](v1/z_image_turbo_chunked_loading_workflow_i2i_inpaint.json)
 
 ### 2. Full Model Loading (Optional)
 
-[Z Image Turbo Text to Image](v1/z_image_workflow_t2i.json)
+[Z Image Text to Image](v1/z_image_workflow_t2i.json)
 
-[Z Image Turbo Text to Image and Control](v1/z_image_workflow_t2i_control.json)
+[Z Image Text to Image and Control](v1/z_image_workflow_t2i_control.json)
+
+[Z Image Turbo Text to Image](v1/z_image_turbo_workflow_t2i.json)
+
+[Z Image Turbo Text to Image and Control](v1/z_image_turbo_workflow_t2i_control.json)

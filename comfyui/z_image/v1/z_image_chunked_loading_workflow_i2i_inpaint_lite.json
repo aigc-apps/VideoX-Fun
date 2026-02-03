@@ -131,7 +131,7 @@
         "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
-        ""
+        "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
       ]
     },
     {
@@ -223,7 +223,7 @@
       },
       "widgets_values": [
         "",
-        "model_cpu_offload"
+        "model_group_offload"
       ]
     },
     {
@@ -261,7 +261,7 @@
         "Node name for S&R": "LoadZImageTransformerModel"
       },
       "widgets_values": [
-        "z_image_turbo_bf16.safetensors",
+        "z_image_bf16.safetensors",
         "bf16"
       ]
     },
@@ -331,8 +331,8 @@
         1568,
         43,
         "fixed",
-        8,
-        0,
+        25,
+        4.5,
         "Flow",
         3,
         0.8
@@ -535,7 +535,7 @@
       },
       "widgets_values": [
         "z_image/z_image_control_2.1_lite.yaml",
-        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors"
+        "Z-Image-Fun-Controlnet-Union-2.1-lite.safetensors"
       ]
     }
   ],

@@ -1007,6 +1007,8 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
@@ -1118,9 +1120,6 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-
-        accelerator.register_save_state_pre_hook(save_model_hook)
-        accelerator.register_load_state_pre_hook(load_model_hook)
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)

@@ -1,8 +1,8 @@
 {
   "id": "dcf2fcac-6293-4a86-b30b-f63e420177f2",
   "revision": 0,
-  "last_node_id": 91,
-  "last_link_id": 70,
+  "last_node_id": 101,
+  "last_link_id": 92,
   "nodes": [
     {
       "id": 73,
@@ -25,7 +25,7 @@
           "type": "STRING_PROMPT",
           "slot_index": 0,
           "links": [
-            69
+            90
           ]
         }
       ],
@@ -34,179 +34,7 @@
         "Node name for S&R": "FunTextBox"
       },
       "widgets_values": [
-        "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
-      ]
-    },
-    {
-      "id": 75,
-      "type": "FunTextBox",
-      "pos": [
-        250,
-        -50
-      ],
-      "size": [
-        383.54010009765625,
-        156.71620178222656
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "slot_index": 0,
-          "links": [
-            68
-          ]
-        }
-      ],
-      "title": "Positive Prompt（正向提示词）",
-      "properties": {
-        "Node name for S&R": "FunTextBox"
-      },
-      "widgets_values": [
-        "A photo of Sakura, a 17-year-old high school student from Japan, captured in a candid, high-fidelity cinematic moment on a rainy evening. She is squatting low on the rain-slicked asphalt of an urban sidewalk, holding a transparent vinyl umbrella with a white handle resting over her shoulder in one hand, her other hand resting on her knee. The clear plastic canopy is streaked with rivulets of water and beaded with droplets that catch the ambient city light. A profound, silent interaction defines the scene: Sakura is looking directly downward, her expression gentle and focused, locking eyes with a small black cat sitting on the wet ground in front of her.\n\nSakura has long, lustrous black hair styled in a precise hime cut with blunt bangs across her forehead and sidelocks framing her cheeks, damp strands clinging subtly to her jacket, with a single red ribbon tied on the left side. Her visible pores on her nose, and a soft sheen of moisture on her cheeks. She wears a dark navy sailor-style school uniform (seifuku) featuring a white collar with red linear detailing and a bright red necktie loosely knotted at the chest; a simple black choker encircles her neck. The uniform jacket has oversized sleeves. Her lower body features a short, dark pleated miniskirt that fans slightly over clean white ankle socks that provide a stark contrast to the wet asphalt, ending in dark leather loafers that gleam with moisture.\n\nThe black cat sits upright in a shallow puddle, its short fur slicked by the rain, tilting its head back to stare intently up into Sakura's face, establishing a clear line of sight. The background is anchored by a large, illuminated red vending machine standing against the darkness, its cool bluish-white interior light spilling onto Sakura's profile and the umbrella. The ground reflects the red chassis and the neon streetlights in distorted patches on the wet pavement. Additional cool rain streaks fall through the frame, some caught in sharp focus and others blurred into vertical lines against the background lights. The scene is rendered with a wide-aperture lens creating a shallow depth of field, keeping the girl and cat in sharp focus while softening the background into gentle bokeh, with the texture of fine-grain 35mm film stock.\n"
-      ]
-    },
-    {
-      "id": 88,
-      "type": "PreviewImage",
-      "pos": [
-        1070.207763671875,
-        -73.63389587402344
-      ],
-      "size": [
-        366.56134033203125,
-        415.4429626464844
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 70
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 80,
-      "type": "Note",
-      "pos": [
-        -424.31362772254084,
-        -372.4056987182365
-      ],
-      "size": [
-        598.1623727144193,
-        233.48501180428053
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "text": ""
-      },
-      "widgets_values": [
-        "GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].\nmodel_full_load means that the entire model will be moved to the GPU.\n\nmodel_full_load_and_qfloat8 means that the entire model will be moved to the GPU,\nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nmodel_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.\n\nmodel_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, \nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nsequential_cpu_offload means that each layer of the model will be moved to the CPU after use, \nresulting in slower speeds but saving a large amount of GPU memory."
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 86,
-      "type": "LoadZImageModel",
-      "pos": [
-        241.10867359909312,
-        -295.7069265122969
-      ],
-      "size": [
-        428.9360739181402,
-        120.18527437036698
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "links": [
-            67
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadZImageModel"
-      },
-      "widgets_values": [
-        "Z-Image",
-        "model_group_offload",
-        "bf16"
-      ]
-    },
-    {
-      "id": 91,
-      "type": "ZImageT2ISampler",
-      "pos": [
-        719.3201904296875,
-        -72.24609375
-      ],
-      "size": [
-        280.724609375,
-        386
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "funmodels",
-          "type": "FunModels",
-          "link": 67
-        },
-        {
-          "name": "prompt",
-          "type": "STRING_PROMPT",
-          "link": 68
-        },
-        {
-          "name": "negative_prompt",
-          "type": "STRING_PROMPT",
-          "link": 69
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            70
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ZImageT2ISampler"
-      },
-      "widgets_values": [
-        1184,
-        1568,
-        43,
-        "fixed",
-        8,
-        0,
-        "Flow",
-        3
+        ""
       ]
     },
     {
@@ -221,7 +49,7 @@
         88
       ],
       "flags": {},
-      "order": 4,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -233,36 +61,319 @@
       ],
       "color": "#432",
       "bgcolor": "#653"
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        -50
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            89
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "A photo of Sakura, a 17-year-old high school student from Japan, captured in a candid, high-fidelity cinematic moment on a rainy evening. She is squatting low on the rain-slicked asphalt of an urban sidewalk, holding a transparent vinyl umbrella with a white handle resting over her shoulder in one hand, her other hand resting on her knee. The clear plastic canopy is streaked with rivulets of water and beaded with droplets that catch the ambient city light. A profound, silent interaction defines the scene: Sakura is looking directly downward, her expression gentle and focused, locking eyes with a small black cat sitting on the wet ground in front of her.\n\nSakura has long, lustrous black hair styled in a precise hime cut with blunt bangs across her forehead and sidelocks framing her cheeks, damp strands clinging subtly to her jacket, with a single red ribbon tied on the left side. Her visible pores on her nose, and a soft sheen of moisture on her cheeks. She wears a dark navy sailor-style school uniform (seifuku) featuring a white collar with red linear detailing and a bright red necktie loosely knotted at the chest; a simple black choker encircles her neck. The uniform jacket has oversized sleeves. Her lower body features a short, dark pleated miniskirt that fans slightly over clean white ankle socks that provide a stark contrast to the wet asphalt, ending in dark leather loafers that gleam with moisture.\n\nThe black cat sits upright in a shallow puddle, its short fur slicked by the rain, tilting its head back to stare intently up into Sakura's face, establishing a clear line of sight. The background is anchored by a large, illuminated red vending machine standing against the darkness, its cool bluish-white interior light spilling onto Sakura's profile and the umbrella. The ground reflects the red chassis and the neon streetlights in distorted patches on the wet pavement. Additional cool rain streaks fall through the frame, some caught in sharp focus and others blurred into vertical lines against the background lights. The scene is rendered with a wide-aperture lens creating a shallow depth of field, keeping the girl and cat in sharp focus while softening the background into gentle bokeh, with the texture of fine-grain 35mm film stock.\n"
+      ]
+    },
+    {
+      "id": 96,
+      "type": "LoadImage",
+      "pos": [
+        429.45065831038295,
+        448.4639992924031
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            91
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "a7kXeQ5l9Dhspes7q3x3G (1).png",
+        "image"
+      ]
+    },
+    {
+      "id": 86,
+      "type": "LoadZImageModel",
+      "pos": [
+        158.6376150119142,
+        -352.0410222978062
+      ],
+      "size": [
+        428.9360739181402,
+        120.18527437036698
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            81
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageModel"
+      },
+      "widgets_values": [
+        "Z-Image-Turbo",
+        "model_cpu_offload",
+        "bf16"
+      ]
+    },
+    {
+      "id": 80,
+      "type": "Note",
+      "pos": [
+        -486.1347709940621,
+        -416.6940105696127
+      ],
+      "size": [
+        598.1623727144193,
+        233.48501180428053
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].\nmodel_full_load means that the entire model will be moved to the GPU.\n\nmodel_full_load_and_qfloat8 means that the entire model will be moved to the GPU,\nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nmodel_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.\n\nmodel_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, \nand the transformer model has been quantized to float8, which can save more GPU memory. \n\nsequential_cpu_offload means that each layer of the model will be moved to the CPU after use, \nresulting in slower speeds but saving a large amount of GPU memory."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 99,
+      "type": "LoadZImageControlNetInPipeline",
+      "pos": [
+        662.479156335491,
+        -343.8489854292294
+      ],
+      "size": [
+        556.7720385739738,
+        107.30044919237525
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 81
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            88
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadZImageControlNetInPipeline"
+      },
+      "widgets_values": [
+        "z_image/z_image_control_2.1.yaml",
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",
+        "transformer"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "PreviewImage",
+      "pos": [
+        1070.207763671875,
+        -73.63389587402344
+      ],
+      "size": [
+        366.56134033203125,
+        415.4429626464844
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 92
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 101,
+      "type": "ZImageControlSampler",
+      "pos": [
+        752.6720492832281,
+        -61.24351896170549
+      ],
+      "size": [
+        270,
+        350
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 88
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 89
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 90
+        },
+        {
+          "name": "control_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 91
+        },
+        {
+          "name": "inpaint_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "mask_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            92
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageControlSampler"
+      },
+      "widgets_values": [
+        1184,
+        1568,
+        43,
+        "fixed",
+        8,
+        0,
+        "Flow",
+        3,
+        0.8
+      ]
     }
   ],
   "links": [
     [
-      67,
+      81,
       86,
       0,
-      91,
+      99,
       0,
       "FunModels"
     ],
     [
-      68,
+      88,
+      99,
+      0,
+      101,
+      0,
+      "FunModels"
+    ],
+    [
+      89,
       75,
       0,
-      91,
+      101,
       1,
       "STRING_PROMPT"
     ],
     [
-      69,
+      90,
       73,
       0,
-      91,
+      101,
       2,
       "STRING_PROMPT"
     ],
     [
-      70,
       91,
+      96,
+      0,
+      101,
+      3,
+      "IMAGE"
+    ],
+    [
+      92,
+      101,
       0,
       88,
       0,
@@ -274,8 +385,8 @@
       "id": 1,
       "title": "Load Model",
       "bounding": [
-        220,
-        -380,
+        137.52894141282107,
+        -436.3340957855093,
         472,
         232
       ],
@@ -300,10 +411,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6378658119731967,
+      "scale": 0.7396517503305734,
       "offset": [
-        856.870045195949,
-        740.927030543633
+        584.364342724736,
+        515.7058946883703
       ]
     },
     "frontendVersion": "1.36.11",

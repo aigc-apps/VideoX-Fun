@@ -54,15 +54,15 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # Config and model path
-config_path         = "config/z_image/z_image_control.yaml"
+config_path         = "config/z_image/z_image_control_2.1.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Z-Image-Turbo/"
+model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors" 
 vae_path            = None
 lora_path           = None
 
@@ -73,6 +73,8 @@ sample_size         = [1728, 992]
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_image       = "asset/pose.jpg"
+inpaint_image       = "asset/8.png"
+mask_image          = "asset/mask.png"
 control_context_scale  = 0.75
 
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
@@ -80,7 +82,7 @@ prompt              = "画面中央是一位年轻女孩，她拥有一头令人
 negative_prompt     = " "
 guidance_scale      = 0.00
 seed                = 43
-num_inference_steps = 9
+num_inference_steps = 8
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i-control"
 
@@ -173,13 +175,13 @@ if compile_dit:
 if GPU_memory_mode == "sequential_cpu_offload":
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["x_pad_token", "cap_pad_token"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
@@ -191,6 +193,16 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
+    if inpaint_image is not None:
+        inpaint_image = get_image_latent(inpaint_image, sample_size=sample_size)[:, :, 0]
+    else:
+        inpaint_image = torch.zeros([1, 3, sample_size[0], sample_size[1]])
+
+    if mask_image is not None:
+        mask_image = get_image_latent(mask_image, sample_size=sample_size)[:, :1, 0]
+    else:
+        mask_image = torch.ones([1, 1, sample_size[0], sample_size[1]]) * 255
+
     if control_image is not None:
         control_image = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
 
@@ -201,6 +213,8 @@ with torch.no_grad():
         width       = sample_size[1],
         generator   = generator,
         guidance_scale = guidance_scale,
+        image               = inpaint_image,
+        mask_image          = mask_image,
         control_image       = control_image,
         num_inference_steps = num_inference_steps,
         control_context_scale = control_context_scale,
