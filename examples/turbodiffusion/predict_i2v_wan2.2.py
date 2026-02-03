@@ -127,11 +127,12 @@ if transformer_path is not None:
         state_dict = torch.load(transformer_path, map_location="cpu")
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-    out_channels = state_dict["patch_embedding.weight"].shape[0]
-    in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer.config.patch_size[1] // transformer.config.patch_size[-2]
-    state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
-        out_channels, in_channels, 1, transformer.config.patch_size[1], transformer.config.patch_size[2]
-    )
+    if len(state_dict["patch_embedding.weight"].size()) == 2:
+        out_channels = state_dict["patch_embedding.weight"].shape[0]
+        in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer.config.patch_size[1] // transformer.config.patch_size[-2]
+        state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
+            out_channels, in_channels, 1, transformer.config.patch_size[1], transformer.config.patch_size[2]
+        )
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
@@ -144,11 +145,12 @@ if transformer_high_path is not None:
         state_dict = torch.load(transformer_high_path, map_location="cpu")
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-    out_channels = state_dict["patch_embedding.weight"].shape[0]
-    in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer_2.config.patch_size[1] // transformer_2.config.patch_size[-2]
-    state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
-        out_channels, in_channels, 1, transformer_2.config.patch_size[1], transformer_2.config.patch_size[2]
-    )
+    if len(state_dict["patch_embedding.weight"].size()) == 2:
+        out_channels = state_dict["patch_embedding.weight"].shape[0]
+        in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer.config.patch_size[1] // transformer.config.patch_size[-2]
+        state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
+            out_channels, in_channels, 1, transformer.config.patch_size[1], transformer.config.patch_size[2]
+        )
     m, u = transformer_2.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
