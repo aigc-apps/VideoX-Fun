@@ -419,8 +419,6 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         print(f"[LoRA Merge] Using provided state_dict")
         state_dict = state_dict
 
-    print(f"[LoRA Merge] Found {len(state_dict)} keys in state_dict")
-
     updates = defaultdict(dict)
     for key, value in state_dict.items():
         if "diffusion_model." in key:
@@ -578,8 +576,6 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     else:
         print(f"[LoRA Unmerge] Loading pytorch file...")
         state_dict = torch.load(lora_path, map_location="cpu")
-
-    print(f"[LoRA Unmerge] Found {len(state_dict)} keys in state_dict")
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
