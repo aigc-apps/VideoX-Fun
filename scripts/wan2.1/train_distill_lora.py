@@ -1028,7 +1028,7 @@ def main():
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        if fsdp_stage != 0:
+        if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
@@ -1057,15 +1057,7 @@ def main():
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
 
-            def load_model_hook(models, input_dir):
-                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-                if os.path.exists(pkl_path):
-                    with open(pkl_path, 'rb') as file:
-                        loaded_number, _ = pickle.load(file)
-                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-
-        elif zero_stage == 3:
+        else:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
@@ -1078,33 +1070,11 @@ def main():
                         safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
                         save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
                     else:
-                        network_state_dict = accelerate_state_dict
+                        network_state_dict = {}
+                        for key in accelerate_state_dict:
+                            if "network" in key:
+                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
                     save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
-
-                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
-
-            def load_model_hook(models, input_dir):
-                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-                if os.path.exists(pkl_path):
-                    with open(pkl_path, 'rb') as file:
-                        loaded_number, _ = pickle.load(file)
-                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-        else:
-            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-            def save_model_hook(models, weights, output_dir):
-                if accelerator.is_main_process:
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    if args.use_peft_lora:
-                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]))
-                        save_model(safetensor_save_path, network_state_dict)
-
-                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
-                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                    else:
-                        save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
 
                     if not args.use_deepspeed:
                         for _ in range(len(weights)):
@@ -1562,7 +1532,7 @@ def main():
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler = accelerator_fake_score_transformer3d.prepare(
             fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
         )
-    elif fsdp_stage != 0:
+    else:
         generator_transformer3d.network = network
         generator_transformer3d = generator_transformer3d.to(dtype=weight_dtype)
         generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -1573,21 +1543,6 @@ def main():
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler = accelerator_fake_score_transformer3d.prepare(
             fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
         )
-    else:
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            network, optimizer, train_dataloader, lr_scheduler
-        )
-        fake_score_network, critic_optimizer, fake_score_lr_scheduler= accelerator_fake_score_transformer3d.prepare(
-            fake_score_network, critic_optimizer, fake_score_lr_scheduler
-        )
-
-    if zero_stage != 0 and not args.use_peft_lora:
-        from functools import partial
-
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-        generator_transformer3d = shard_fn(generator_transformer3d)
-        fake_score_transformer3d = shard_fn(fake_score_transformer3d)
 
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
