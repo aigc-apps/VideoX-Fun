@@ -42,6 +42,7 @@ from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
+from .wan_transformer3d_lingbot import LingBotWanTransformer3DModel
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
 from .wan_transformer3d_vace import VaceWanTransformer3DModel
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_

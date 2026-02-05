@@ -1,0 +1,56 @@
+format: civitai
+pipeline: LingBotWorld
+transformer_additional_kwargs:
+  transformer_low_noise_model_subpath: ./low_noise_model
+  transformer_high_noise_model_subpath: ./high_noise_model
+  transformer_combination_type: "moe"
+  # LingBot-World uses higher boundary than Wan2.2 (0.947 vs 0.900)
+  boundary: 0.947
+  model_type: i2v
+  cross_attn_type: cross_attn
+  dict_mapping:
+    in_dim: in_channels
+    dim: hidden_size
+
+vae_kwargs:
+  vae_type: "AutoencoderKLWan"
+  vae_subpath: Wan2.1_VAE.pth
+  temporal_compression_ratio: 4
+  spatial_compression_ratio: 8
+
+text_encoder_kwargs:
+  text_encoder_subpath: models_t5_umt5-xxl-enc-bf16.pth
+  tokenizer_subpath: google/umt5-xxl
+  text_length: 512
+  vocab: 256384
+  dim: 4096
+  dim_attn: 4096
+  dim_ffn: 10240
+  num_heads: 64
+  num_layers: 24
+  num_buckets: 32
+  shared_pos: False
+  dropout: 0.0
+
+scheduler_kwargs:
+  scheduler_subpath: null
+  num_train_timesteps: 1000
+  # LingBot-World uses higher shift than Wan2.2 (10.0 vs 5.0)
+  shift: 10.0
+  use_dynamic_shifting: false
+  base_shift: 0.5
+  max_shift: 1.15
+  base_image_seq_len: 256
+  max_image_seq_len: 4096
+
+image_encoder_kwargs:
+  image_encoder_subpath: models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+
+# LingBot-World specific inference settings
+inference_kwargs:
+  # Number of inference steps (LingBot-World uses 70, Wan2.2 uses 40)
+  num_inference_steps: 70
+  # Guidance scale for both low and high noise models
+  guidance_scale: 5.0
+  # Default negative prompt
+  negative_prompt: "画面突变，色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，镜头晃动，画面闪烁，模糊，噪点，水印，签名，文字，变形，扭曲，液化，不合逻辑的结构，卡顿，PPT幻灯片感，过暗，欠曝，低对比度，霓虹灯光感，过度锐化，3D渲染感，人物，行人，游客，身体，皮肤，肢体，面部特征，汽车，电线"
