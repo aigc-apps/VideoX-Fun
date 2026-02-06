@@ -151,7 +151,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, cn_transformer, 
                 vae=vae, 
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                transformer=transformer3d,
+                transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 controlnet=cn_transformer,
                 scheduler=scheduler,
             )
