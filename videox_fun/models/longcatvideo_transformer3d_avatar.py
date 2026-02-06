@@ -1,3 +1,4 @@
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/modules/avatar/longcat_video_dit_avatar.py
 from typing import List, Optional, Tuple
 
 import numpy as np

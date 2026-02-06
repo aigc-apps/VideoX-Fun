@@ -1,3 +1,4 @@
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/modules/longcat_video_dit.py
 import glob
 import json
 import math

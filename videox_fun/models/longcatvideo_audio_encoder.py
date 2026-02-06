@@ -1,3 +1,4 @@
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/audio_process/wav2vec2.py
 import copy
 import logging
 import os

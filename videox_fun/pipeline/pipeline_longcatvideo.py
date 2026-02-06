@@ -1,3 +1,4 @@
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/pipeline_longcat_video.py
 import html
 import inspect
 import math
