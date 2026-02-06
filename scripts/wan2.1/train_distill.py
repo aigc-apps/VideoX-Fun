@@ -1515,13 +1515,13 @@ def main():
     fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler= accelerator_fake_score_transformer3d.prepare(
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
     )
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         real_score_transformer3d = shard_fn(real_score_transformer3d)
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model

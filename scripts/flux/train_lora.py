@@ -1274,8 +1274,6 @@ def main():
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.text_model.encoder.layers)
         text_encoder = shard_fn(text_encoder)
-        # shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder_2.encoder.block)
-        # text_encoder_2 = shard_fn(text_encoder_2)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)

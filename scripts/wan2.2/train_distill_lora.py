@@ -1595,6 +1595,11 @@ def main():
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         real_score_transformer3d = shard_fn(real_score_transformer3d)
+    if fsdp_stage != 0 or zero_stage != 0:
+        from functools import partial
+
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype

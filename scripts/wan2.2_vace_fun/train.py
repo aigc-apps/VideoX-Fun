@@ -1428,15 +1428,12 @@ def main():
         transformer3d, optimizer, train_dataloader, lr_scheduler
     )
 
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
-
-        # shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-        # transformer3d = shard_fn(transformer3d)
 
     if args.use_ema:
         ema_transformer3d.to(accelerator.device)
