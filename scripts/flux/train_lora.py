@@ -265,7 +265,7 @@ def log_validation(vae, text_encoder, text_encoder_2, tokenizer, tokenizer_2, tr
                 text_encoder_2=text_encoder_2,
                 tokenizer=tokenizer,
                 tokenizer_2=tokenizer_2,
-                transformer=transformer3d,
+                transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 scheduler=scheduler,
             )
             pipeline = pipeline.to(accelerator.device)

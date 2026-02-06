@@ -162,7 +162,7 @@ def log_validation(vae, text_encoder, tokenizer, processor, transformer3d, netwo
                     vae=vae, 
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
-                    transformer=transformer3d,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                     processor=processor,
                     scheduler=scheduler,
                 )
@@ -171,7 +171,7 @@ def log_validation(vae, text_encoder, tokenizer, processor, transformer3d, netwo
                     vae=vae, 
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
-                    transformer=transformer3d,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                     processor=processor,
                     scheduler=scheduler,
                 )
