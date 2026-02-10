@@ -148,8 +148,8 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                 cap.release()
 
                 width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
-
                 video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
+                
                 input_video, input_video_mask, ref_image, clip_image = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[height, width])
                 sample = pipeline(
                     args.validation_prompts[i], 

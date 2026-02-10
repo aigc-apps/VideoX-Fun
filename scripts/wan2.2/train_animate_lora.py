@@ -77,8 +77,7 @@ from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                CLIPModel, Wan2_2Transformer3DModel,
                                Wan2_2Transformer3DModel_Animate,
                                WanT5EncoderModel)
-from videox_fun.pipeline import (Wan2_2FunControlPipeline, Wan2_2I2VPipeline,
-                                 Wan2_2Pipeline)
+from videox_fun.pipeline import Wan2_2AnimatePipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
                                          create_network, merge_lora,
