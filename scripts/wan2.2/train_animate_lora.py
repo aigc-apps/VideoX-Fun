@@ -264,8 +264,13 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                     replace_flag    = replace_flag,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
-
+                save_videos_grid(
+                    sample, 
+                    os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                    )
+                )
 
             del pipeline
             gc.collect()
@@ -628,12 +633,6 @@ def parse_args():
         type=int,
         default=512,
         help="Sample size of the video.",
-    )
-    parser.add_argument(
-        "--image_sample_size",
-        type=int,
-        default=512,
-        help="Sample size of the image.",
     )
     parser.add_argument(
         "--fix_sample_size", 
@@ -1107,7 +1106,6 @@ def main():
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
-        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
         args.training_with_video_token_length = False
         args.random_hw_adapt = False
 

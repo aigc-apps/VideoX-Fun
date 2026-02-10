@@ -258,8 +258,13 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                     replace_flag    = replace_flag,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
-
+                save_videos_grid(
+                    sample, 
+                    os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                    )
+                )
 
             del pipeline
             gc.collect()
@@ -476,9 +481,6 @@ def parse_args():
             "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
             " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
         ),
-    )
-    parser.add_argument(
-        "--report_model_info", action="store_true", help="Whether or not to report more info about model (such as norm, grad)."
     )
     parser.add_argument(
         "--mixed_precision",
