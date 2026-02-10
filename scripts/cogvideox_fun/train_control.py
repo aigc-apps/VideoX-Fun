@@ -165,13 +165,12 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
             logger.info("Running validation... ")
             scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
-            pipeline = WanFunControlPipeline(
+            pipeline = CogVideoXFunControlPipeline(
                 vae=vae, 
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
                 transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 scheduler=scheduler,
-                clip_image_encoder=clip_image_encoder,
             )
             pipeline = pipeline.to(accelerator.device)
 
