@@ -74,7 +74,8 @@ from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import (get_image_to_video_latent,
+from videox_fun.utils.utils import (calculate_dimensions,
+                                    get_image_to_video_latent,
                                     get_video_to_video_latent,
                                     save_videos_grid)
 
@@ -195,12 +196,14 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                 sample = pipeline(
                     args.validation_prompts[i], 
                     num_frames = video_length,
-                    negative_prompt = "bad detailed",
+                    negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                     height      = height,
                     width       = width,
                     generator   = generator,
 
-                    control_video = input_video,
+                    control_video       = input_video,
+                    num_inference_steps = 25,
+                    guidance_scale      = 6.0,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 save_videos_grid(
