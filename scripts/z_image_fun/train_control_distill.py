@@ -1642,6 +1642,18 @@ def main():
                 if args.low_vram:
                     real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
 
+            image_seq_len = int(target_shape[-1] // 2 * target_shape[-2] // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                noise_scheduler.config.get("base_image_seq_len", 256),
+                noise_scheduler.config.get("max_image_seq_len", 4096),
+                noise_scheduler.config.get("base_shift", 0.5),
+                noise_scheduler.config.get("max_shift", 1.15),
+            )
+            noise_scheduler.sigma_min = 0.0
+            noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu) 
+            denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
             with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)

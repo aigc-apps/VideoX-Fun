@@ -18,7 +18,7 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_edit_lora.py 
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_lora" \
+  --output_dir="output_dir_qwenimage_edit_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

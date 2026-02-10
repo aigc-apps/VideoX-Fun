@@ -80,7 +80,9 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    get_image_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -168,120 +170,109 @@ logger = get_logger(__name__, log_level="INFO")
 
 def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
-        logger.info("Running validation... ")
-            
-        transformer3d_val = WanTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-        ).to(weight_dtype)
-        transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-        scheduler = FlowMatchEulerDiscreteScheduler(
-            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
-        )
-
-        if args.train_mode != "normal":
-            pipeline = WanI2VPipeline(
-                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                tokenizer=tokenizer,
-                transformer=transformer3d_val,
-                scheduler=scheduler,
-                clip_image_encoder=clip_image_encoder,
+        is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
+        if is_deepspeed:
+            origin_config = transformer3d.config
+            transformer3d.config = accelerator.unwrap_model(transformer3d).config
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            logger.info("Running validation... ")
+            scheduler = FlowMatchEulerDiscreteScheduler(
+                **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
             )
-        else:
-            pipeline = WanPipeline(
-                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                tokenizer=tokenizer,
-                transformer=transformer3d_val,
-                scheduler=scheduler,
-            )
-        pipeline = pipeline.to(accelerator.device)
+        
+            if args.train_mode != "normal":
+                pipeline = WanI2VPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
+                    scheduler=scheduler,
+                    clip_image_encoder=clip_image_encoder,
+                )
+            else:
+                pipeline = WanPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
+                    scheduler=scheduler,
+                )
+            pipeline = pipeline.to(accelerator.device)
 
-        if args.seed is None:
-            generator = None
-        else:
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+            if args.seed is None:
+                generator = None
+            else:
+                rank_seed = args.seed + accelerator.process_index
+                generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
+                logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-        images = []
-        for i in range(len(args.validation_prompts)):
-            with torch.no_grad():
+            for i in range(len(args.validation_prompts)):
                 if args.train_mode != "normal":
-                    with torch.autocast("cuda", dtype=weight_dtype):
-                        video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
-                        input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                        sample = pipeline(
-                            args.validation_prompts[i],
-                            num_frames = video_length,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator,
+                    start_image = Image.open(args.validation_paths[i])
+                    width, height = start_image.width, start_image.height
+                    width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
 
-                            video        = input_video,
-                            mask_video   = input_video_mask,
-                            num_inference_steps = len(args.denoising_step_list),
-                            guidance_scale      = 1.0,
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                    video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
+                    input_video, input_video_mask, _ = get_image_to_video_latent(args.validation_paths[i], None, video_length=video_length, sample_size=[height, width])
+                    sample = pipeline(
+                        args.validation_prompts[i],
+                        num_frames = video_length,
+                        negative_prompt = "bad detailed",
+                        height      = height,
+                        width       = width,
+                        generator   = generator,
 
-                        video_length = 1
-                        input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                        sample = pipeline(
-                            args.validation_prompts[i],
-                            num_frames = video_length,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator, 
+                        video        = input_video,
+                        mask_video   = input_video_mask,
+                        num_inference_steps = len(args.denoising_step_indices_list),
+                        guidance_scale      = 1.0,
+                    ).videos
 
-                            video        = input_video,
-                            mask_video   = input_video_mask,
-                            num_inference_steps = len(args.denoising_step_list),
-                            guidance_scale      = 1.0,
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
+                    os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                    save_videos_grid(
+                        sample, 
+                        os.path.join(
+                            args.output_dir, 
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        )
+                    )
                 else:
-                    with torch.autocast("cuda", dtype=weight_dtype):
-                        sample = pipeline(
-                            args.validation_prompts[i],
-                            num_frames = args.video_sample_n_frames,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator,
-                            num_inference_steps = len(args.denoising_step_list),
-                            guidance_scale      = 1.0,
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                    sample = pipeline(
+                        args.validation_prompts[i],
+                        num_frames = args.video_sample_n_frames,
+                        negative_prompt = "bad detailed",
+                        height      = args.video_sample_size,
+                        width       = args.video_sample_size,
+                        generator   = generator,
+                        num_inference_steps = len(args.denoising_step_indices_list),
+                        guidance_scale      = 1.0,
+                    ).videos
+                    os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                    save_videos_grid(
+                        sample, 
+                        os.path.join(
+                            args.output_dir, 
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        )
+                    )
 
-                        sample = pipeline(
-                            args.validation_prompts[i], 
-                            num_frames = args.video_sample_n_frames,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
-
-        del pipeline
-        del transformer3d_val
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-
-        return images
+            del pipeline
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+            if not args.enable_text_encoder_in_dataloader:
+                text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if is_deepspeed:
+            transformer3d.config = origin_config
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error with info {e}")
-        return None
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
@@ -352,6 +343,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--negative_prompt",
@@ -911,6 +909,8 @@ def main():
                 os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
             )
             clip_image_encoder = clip_image_encoder.eval()
+        else:
+            clip_image_encoder = None
             
     # Get Transformer
     generator_transformer3d = WanTransformer3DModel.from_pretrained(
@@ -2247,20 +2247,19 @@ def main():
                         accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                if accelerator.is_main_process:
-                    if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            clip_image_encoder,
-                            generator_transformer3d,
-                            args,
-                            config,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
+                if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        clip_image_encoder,
+                        generator_transformer3d,
+                        args,
+                        config,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
 
             logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2268,20 +2267,19 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    clip_image_encoder,
-                    generator_transformer3d,
-                    args,
-                    config,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
+        if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                clip_image_encoder,
+                generator_transformer3d,
+                args,
+                config,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

@@ -24,7 +24,7 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_fantasytalking" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

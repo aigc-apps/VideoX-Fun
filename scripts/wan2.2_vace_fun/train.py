@@ -74,11 +74,13 @@ from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                  padding_image,
                                                  process_pose_file,
                                                  process_pose_params)
-from videox_fun.models import (AutoencoderKLWan, CLIPModel, AutoencoderKLWan3_8,
-                               VaceWanTransformer3DModel, WanT5EncoderModel)
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+                               CLIPModel, VaceWanTransformer3DModel,
+                               WanT5EncoderModel)
 from videox_fun.pipeline import Wan2_2VaceFunPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import (get_image_to_video_latent,
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    get_image_to_video_latent,
                                     get_video_to_video_latent,
                                     save_videos_grid)
 
@@ -111,107 +113,108 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, args, config, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
-        logger.info("Running validation... ")
-
-        if args.boundary_type == "full":
-            sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
-
-            transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
-                os.path.join(args.pretrained_model_name_or_path, sub_path),
-                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-            ).to(weight_dtype)
-            transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-            
-            transformer3d_2_val = None
-        else:
-            if args.boundary_type == "low":
-                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
-
-                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
-                    os.path.join(args.pretrained_model_name_or_path, sub_path),
-                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                ).to(weight_dtype)
-                transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-
-                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
-                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
-                    os.path.join(args.pretrained_model_name_or_path, sub_path),
-                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                ).to(weight_dtype)
+        is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
+        if is_deepspeed:
+            origin_config = transformer3d.config
+            transformer3d.config = accelerator.unwrap_model(transformer3d).config
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            logger.info("Running validation... ")
+            scheduler = FlowMatchEulerDiscreteScheduler(
+                **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+            )
+            if args.boundary_type == "full":
+                transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
+                transformer3d_2 = None
             else:
-                sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+                if args.boundary_type == "low":
+                    transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
+                    
+                    sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                    transformer3d_2 = VaceWanTransformer3DModel.from_pretrained(
+                        os.path.join(args.pretrained_model_name_or_path, sub_path),
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                    ).to(weight_dtype)
+                    
+                else:
+                    sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
+                    transformer3d_1 = VaceWanTransformer3DModel.from_pretrained(
+                        os.path.join(args.pretrained_model_name_or_path, sub_path),
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                    ).to(weight_dtype)
 
-                transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
-                    os.path.join(args.pretrained_model_name_or_path, sub_path),
-                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                ).to(weight_dtype)
+                    transformer3d_2 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
+            
+            pipeline = Wan2_2VaceFunPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=transformer3d_1,
+                    transformer_2=transformer3d_2,
+                    scheduler=scheduler,
+            )
+            pipeline = pipeline.to(accelerator.device)
 
-                sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
-                transformer3d_2_val = Wan2_2Transformer3DModel.from_pretrained(
-                    os.path.join(args.pretrained_model_name_or_path, sub_path),
-                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                ).to(weight_dtype)
-                transformer3d_2_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-        
-        scheduler = FlowMatchEulerDiscreteScheduler(
-            **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
-        )
+            if args.seed is None:
+                generator = None
+            else:
+                rank_seed = args.seed + accelerator.process_index
+                generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
+                logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-        pipeline = Wan2_2VaceFunPipeline(
-            vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-            text_encoder=accelerator.unwrap_model(text_encoder),
-            tokenizer=tokenizer,
-            transformer=transformer3d_val,
-            transformer_2=transformer3d_2_val,
-            scheduler=scheduler,
-            clip_image_encoder=clip_image_encoder,
-        )
-        pipeline = pipeline.to(accelerator.device)
+            for i in range(len(args.validation_prompts)):
+                import cv2
+                cap = cv2.VideoCapture(args.validation_paths[i])
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
 
-        if args.seed is None:
-            generator = None
-        else:
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+                width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
+                
+                video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
+                inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[height, width])
+                control_video, _, _, _ = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[height, width])
+                sample = pipeline(
+                    args.validation_prompts[i], 
+                    num_frames = video_length,
+                    negative_prompt = "bad detailed",
+                    height      = height,
+                    width       = width,
+                    generator   = generator,
 
-        images = []
-        for i in range(len(args.validation_prompts)):
-            with torch.no_grad():
-                with torch.autocast("cuda", dtype=weight_dtype):
-                    video_length = int(args.video_sample_n_frames // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
-                    inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                    control_video, _, _, _ = get_video_to_video_latent(args.validation_paths[i], video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                    sample = pipeline(
-                        args.validation_prompts[i], 
-                        num_frames = video_length,
-                        negative_prompt = "bad detailed",
-                        height      = args.video_sample_size,
-                        width       = args.video_sample_size,
-                        generator   = generator, 
+                    video               = inpaint_video,
+                    mask_video          = inpaint_video_mask,
+                    control_video       = control_video,
+                    subject_ref_images  = None,
+                    vace_context_scale  = 1,
+                ).videos
+                os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                save_videos_grid(
+                    sample, 
+                    os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                    )
+                )
 
-                        video               = inpaint_video,
-                        mask_video          = inpaint_video_mask,
-                        control_video       = control_video,
-                        subject_ref_images  = None,
-                        vace_context_scale  = 1,
-                    ).videos
-                    os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                    save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
-
-        del pipeline
-        del transformer3d_val
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-
-        return images
+            del pipeline
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+            if not args.enable_text_encoder_in_dataloader:
+                text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if is_deepspeed:
+            transformer3d.config = origin_config
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error with info {e}")
-        return None
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -2047,27 +2050,25 @@ def main():
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                if accelerator.is_main_process:
-                    if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        if args.use_ema:
-                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                            ema_transformer3d.store(transformer3d.parameters())
-                            ema_transformer3d.copy_to(transformer3d.parameters())
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            clip_image_encoder,
-                            transformer3d,
-                            args,
-                            config,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
-                        if args.use_ema:
-                            # Switch back to the original transformer3d parameters.
-                            ema_transformer3d.restore(transformer3d.parameters())
+                if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    if args.use_ema:
+                        # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                        ema_transformer3d.store(transformer3d.parameters())
+                        ema_transformer3d.copy_to(transformer3d.parameters())
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        transformer3d,
+                        args,
+                        config,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
+                    if args.use_ema:
+                        # Switch back to the original transformer3d parameters.
+                        ema_transformer3d.restore(transformer3d.parameters())
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2075,27 +2076,25 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                if args.use_ema:
-                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_transformer3d.store(transformer3d.parameters())
-                    ema_transformer3d.copy_to(transformer3d.parameters())
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    clip_image_encoder,
-                    transformer3d,
-                    args,
-                    config,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
-                if args.use_ema:
-                    # Switch back to the original transformer3d parameters.
-                    ema_transformer3d.restore(transformer3d.parameters())
+        if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            if args.use_ema:
+                # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                ema_transformer3d.store(transformer3d.parameters())
+                ema_transformer3d.copy_to(transformer3d.parameters())
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                transformer3d,
+                args,
+                config,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
+            if args.use_ema:
+                # Switch back to the original transformer3d parameters.
+                ema_transformer3d.restore(transformer3d.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
