@@ -25,7 +25,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.p
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=50 \
   --seed=43 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_cog_control" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -64,7 +64,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.p
 #   --lr_scheduler="constant_with_warmup" \
 #   --lr_warmup_steps=50 \
 #   --seed=43 \
-#   --output_dir="output_dir" \
+#   --output_dir="output_dir_cog_control" \
 #   --gradient_checkpointing \
 #   --mixed_precision="bf16" \
 #   --adam_weight_decay=3e-2 \
