@@ -24,7 +24,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_s2v.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_wan2.2_s2v" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -35,5 +35,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_s2v.py \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --boundary_type="full" \
+  --control_ref_image="random" \
   --low_vram \
   --trainable_modules "."

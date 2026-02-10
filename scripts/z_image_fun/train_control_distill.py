@@ -213,7 +213,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                 vae=vae, 
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                transformer=transformer3d,
+                transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 scheduler=scheduler,
             )
             pipeline = pipeline.to(accelerator.device)
@@ -987,7 +987,7 @@ def main():
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        if fsdp_stage != 0:
+        if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
@@ -995,26 +995,6 @@ def main():
 
                     safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
                     accelerate_state_dict = {k: v.to(dtype=weight_dtype) for k, v in accelerate_state_dict.items()}
-                    save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
-
-                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
-
-            def load_model_hook(models, input_dir):
-                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-                if os.path.exists(pkl_path):
-                    with open(pkl_path, 'rb') as file:
-                        loaded_number, _ = pickle.load(file)
-                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-
-        elif zero_stage == 3:
-            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-            def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
-                if accelerator.is_main_process:
-                    from safetensors.torch import save_file
-                    safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
                     save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
@@ -1420,14 +1400,14 @@ def main():
         fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
     )
 
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(real_score_transformer3d.layers))
         real_score_transformer3d = shard_fn(real_score_transformer3d)
 
-    if fsdp_stage != 0:
+    if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
@@ -1661,6 +1641,18 @@ def main():
                     torch.cuda.empty_cache()
                 if args.low_vram:
                     real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
+
+            image_seq_len = int(target_shape[-1] // 2 * target_shape[-2] // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                noise_scheduler.config.get("base_image_seq_len", 256),
+                noise_scheduler.config.get("max_image_seq_len", 4096),
+                noise_scheduler.config.get("base_shift", 0.5),
+                noise_scheduler.config.get("max_shift", 1.15),
+            )
+            noise_scheduler.sigma_min = 0.0
+            noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu) 
+            denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
 
             with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):

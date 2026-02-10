@@ -25,7 +25,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_distill_lora.py 
   --learning_rate=1e-05 \
   --learning_rate_critic=1e-06 \
   --seed=42 \
-  --output_dir="output_dir_distill" \
+  --output_dir="output_dir_wan2.2_distill_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

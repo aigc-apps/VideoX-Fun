@@ -23,7 +23,7 @@ accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_lora.py \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_longcat_lora" \
+  --output_dir="output_dir_longcatvideo_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

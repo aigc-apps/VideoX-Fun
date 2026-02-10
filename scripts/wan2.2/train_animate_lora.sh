@@ -23,7 +23,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_animate_lora.py 
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_animate_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

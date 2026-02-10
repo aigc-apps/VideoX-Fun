@@ -25,7 +25,7 @@ accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_longcat_full_finetune" \
+  --output_dir="output_dir_longcat" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
