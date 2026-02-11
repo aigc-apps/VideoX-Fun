@@ -5,12 +5,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import ftfy
-import loguru
+import librosa
 import numpy as np
-import pyloudnorm as pyln
-import regex as re
-import scipy.signal as ss
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
@@ -38,7 +34,6 @@ EXAMPLE_DOC_STRING = """
         pass
         ```
 """
-
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
 def retrieve_timesteps(
@@ -80,7 +75,6 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
 
-
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
 def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
@@ -94,23 +88,21 @@ def retrieve_latents(
     else:
         raise AttributeError("Could not access latents of provided encoder_output")
 
-
 def basic_clean(text):
+    import ftfy
     text = ftfy.fix_text(text)
     text = html.unescape(html.unescape(text))
     return text.strip()
 
-
 def whitespace_clean(text):
+    import regex as re
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
     return text
 
-
 def prompt_clean(text):
     text = whitespace_clean(basic_clean(text))
     return text
-
 
 @dataclass
 class LongCatVideoAvatarPipelineOutput(BaseOutput):
@@ -123,7 +115,6 @@ class LongCatVideoAvatarPipelineOutput(BaseOutput):
     """
 
     videos: torch.Tensor
-
 
 class LongCatVideoAvatarPipeline(DiffusionPipeline):
     r"""
@@ -431,6 +422,7 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
         return extra_step_kwargs
 
     def _loudness_norm(self, audio_array, sr=16000, lufs=-23, threshold=100):
+        import pyloudnorm as pyln
         meter = pyln.Meter(sr)
         loudness = meter.integrated_loudness(audio_array)
         if abs(loudness) > threshold:
@@ -444,12 +436,12 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
         return audio + noise
 
     def _smooth_transients(self, audio, sr=16000):
+        import scipy.signal as ss
         b, a = ss.butter(3, 3000 / (sr/2))
         return ss.lfilter(b, a, audio)
 
     @torch.no_grad()
     def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
-            
         audio_duration = len(speech_array) / sample_rate
         video_length = audio_duration * fps
 
@@ -470,6 +462,36 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
 
         audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
         audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
+        return audio_emb
+
+    def encode_audio_embeddings(self, audio_path, num_frames, fps, weight_dtype, device, audio_stride = 2):
+        # Load and pad audio to target length
+        speech_array, sample_rate = librosa.load(audio_path, sr=16000)
+
+        generate_duration = num_frames / fps
+        source_duration = len(speech_array) / sample_rate
+        added_sample_nums = math.ceil((generate_duration - source_duration) * sample_rate)
+        if added_sample_nums > 0:
+            speech_array = np.append(speech_array, [0.] * added_sample_nums)
+        
+        # Get audio embedding
+        with torch.no_grad():
+            audio_emb = self.get_audio_embedding(
+                speech_array, 
+                fps=fps * audio_stride, 
+                device=device, 
+                sample_rate=sample_rate
+            )
+
+            # Prepare audio embedding with sliding window
+            indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
+            audio_start_idx = 0
+            audio_end_idx = audio_start_idx + audio_stride * num_frames
+            
+            center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + \
+                indices.unsqueeze(0)
+            center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
+            audio_emb = audio_emb[center_indices][None, ...].to(device, weight_dtype)
         return audio_emb
 
     @property
@@ -518,7 +540,8 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
         # avatar related params
-        audio_emb: torch.Tensor = None,
+        audio_path: str = None,
+        fps: int = 16, 
     ) -> Union[LongCatVideoAvatarPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -583,6 +606,9 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
 
         # 4. Prepare audio embeddings
+        audio_emb = self.encode_audio_embeddings(
+            audio_path, num_frames=num_frames, fps=fps, weight_dtype=weight_dtype, device=device
+        )
         if audio_emb is not None:
             audio_cond_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
             audio_cond_embs = torch.cat([audio_cond_embs, audio_cond_embs], dim=0)

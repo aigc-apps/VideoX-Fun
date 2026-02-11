@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use fsdp in FantasyTalking, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in LongCatVideo-Avatar-Avatar, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in VideoX-Fun, you need to add a audio_path.
 
@@ -44,10 +44,11 @@ export RANK=0 # The rank of this machine
 accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/xxx/xxx.py
 ```
 
-FantasyTalking without deepspeed:
+LongCatVideo-Avatar without deepspeed:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -55,16 +56,17 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --token_sample_size=512 \
-  --video_sample_stride=1 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
+  --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -73,7 +75,7 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_longcat_avatar" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -85,14 +87,14 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
-  --trainable_modules "processor." "proj_model."
+  --trainable_modules "."
 ```
 
-FantasyTalking with Deepspeed Zero-2:
+LongCatVideo-Avatar with Deepspeed Zero-2:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -100,16 +102,17 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/fantasytalking/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/longcatvideo/train_avatar.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --token_sample_size=512 \
-  --video_sample_stride=1 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
+  --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -118,7 +121,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_longcat_avatar" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -130,21 +133,14 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
-  --trainable_modules "processor." "proj_model."
+  --trainable_modules "."
 ```
 
-DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
-
-FantasyTalking with DeepSpeed Zero-3:
+LongCatVideo-Avatar with FSDP:
 
 ```sh
-python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
-```
-
-Training shell command is as follows:
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -152,16 +148,20 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/fantasytalking/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=LongCatAvatarSingleStreamBlock --fsdp_sharding_strategy "FULL_SHARD" \
+    --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
+    --fsdp_cpu_ram_efficient_loading False scripts/longcatvideo/train_avatar.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --token_sample_size=512 \
-  --video_sample_stride=1 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
+  --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
@@ -170,7 +170,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_longcat_avatar" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -182,52 +182,5 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
-  --trainable_modules "processor." "proj_model."
-```
-
-FantasyTalking with FSDP:
-
-Wan with FSDP is suitable for 14B Wan at high resolutions. Training shell command is as follows:
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=AudioAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False  scripts/fantasytalking/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --token_sample_size=512 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=81 \
-  --train_batch_size=1 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-05 \
-  --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
-  --seed=42 \
-  --output_dir="output_dir" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --random_hw_adapt \
-  --training_with_video_token_length \
-  --enable_bucket \
-  --uniform_sampling \
-  --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
-  --trainable_modules "processor." "proj_model."
+  --trainable_modules "."
 ```

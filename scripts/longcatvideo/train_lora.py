@@ -199,6 +199,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                     height      = args.video_sample_size,
                     width       = args.video_sample_size,
                     generator   = generator,
+                    guidance_scale = 4.5,
                     num_inference_steps = 25,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)

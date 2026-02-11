@@ -5,9 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import ftfy
 import numpy as np
-import regex as re
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
@@ -99,11 +97,13 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 def basic_clean(text):
+    import ftfy
     text = ftfy.fix_text(text)
     text = html.unescape(html.unescape(text))
     return text.strip()
 
 def whitespace_clean(text):
+    import regex as re
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
     return text

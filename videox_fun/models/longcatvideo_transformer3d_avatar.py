@@ -1,50 +1,26 @@
 # Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/modules/avatar/longcat_video_dit_avatar.py
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import torch.amp as amp
+import torch.cuda.amp as amp
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers import ConfigMixin, ModelMixin
 from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.utils import is_torch_version
 from einops import rearrange, repeat
 
-from .longcatvideo_transformer3d import (CaptionEmbedder, FeedForwardSwiGLU, RMSNorm_FP32,
-                                         FinalLayer_FP32, LayerNorm_FP32, RotaryPositionalEmbedding,
+from .attention_utils import attention
+from .longcatvideo_transformer3d import (CaptionEmbedder, FeedForwardSwiGLU,
+                                         FinalLayer_FP32, LayerNorm_FP32,
                                          MultiHeadCrossAttention, PatchEmbed3D,
-                                         TimestepEmbedder, modulate_fp32)
-
-def broadcat(tensors, dim=-1):
-    """
-    Broadcast and concatenate tensors along specified dimension
-    """
-    num_tensors = len(tensors)
-    shape_lens = set(list(map(lambda t: len(t.shape), tensors)))
-    assert len(shape_lens) == 1, "tensors must all have the same number of dimensions"
-    shape_len = list(shape_lens)[0]
-    dim = (dim + shape_len) if dim < 0 else dim
-    dims = list(zip(*map(lambda t: list(t.shape), tensors)))
-    expandable_dims = [(i, val) for i, val in enumerate(dims) if i != dim]
-    assert all(
-        [*map(lambda t: len(set(t[1])) <= 2, expandable_dims)]
-    ), "invalid dimensions for broadcastable concatentation"
-    max_dims = list(map(lambda t: (t[0], max(t[1])), expandable_dims))
-    expanded_dims = list(map(lambda t: (t[0], (t[1],) * num_tensors), max_dims))
-    expanded_dims.insert(dim, (dim, dims[dim]))
-    expandable_shapes = list(zip(*map(lambda t: t[1], expanded_dims)))
-    tensors = list(map(lambda t: t[0].expand(*t[1]), zip(tensors, expandable_shapes)))
-    return torch.cat(tensors, dim=dim)
-
-
-def rotate_half(x):
-    """
-    Rotate half of the hidden dims of the input
-    """
-    x = rearrange(x, "... (d r) -> ... d r", r=2)
-    x1, x2 = x.unbind(dim=-1)
-    x = torch.stack((-x2, x1), dim=-1)
-    return rearrange(x, "... d r -> ... (d r)")
+                                         RMSNorm_FP32,
+                                         RotaryPositionalEmbedding,
+                                         TimestepEmbedder, broadcat,
+                                         modulate_fp32, rotate_half)
 
 
 def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
@@ -53,6 +29,51 @@ def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
     normalized = (column - source_min) / (source_max - source_min + epsilon)
     scaled = normalized * (new_max - new_min) + new_min
     return scaled
+
+
+class RotaryPositionalEmbedding1D(nn.Module):
+
+    def __init__(self,
+                 head_dim
+                 ):
+        """Rotary positional embedding for 1D
+        Args:
+            dim: Dimension of embedding
+            base: Base value for exponential
+        """
+        super().__init__()
+        self.head_dim = head_dim
+        self.base = 10000
+
+    def precompute_freqs_cis_1d(self, pos_indices):
+
+        freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2)[: (self.head_dim // 2)].float() / self.head_dim))
+
+        freqs = freqs.to(pos_indices.device)
+        freqs = torch.einsum("..., f -> ... f", pos_indices.float(), freqs)
+        freqs = repeat(freqs, "... n -> ... (n r)", r=2)
+
+        return freqs
+
+    def forward(self, x, pos_indices):
+        """1D RoPE.
+
+        Args:
+            query (torch.tensor): [B, head, seq, head_dim]
+            pos_indices (torch.tensor): [seq,]
+        Returns:
+            query with the same shape as input.
+        """
+        freqs_cis = self.precompute_freqs_cis_1d(pos_indices)
+
+        x_ = x.float()
+
+        freqs_cis = freqs_cis.float().to(x.device)
+        cos, sin = freqs_cis.cos(), freqs_cis.sin()
+        cos, sin = rearrange(cos, 'n d -> 1 1 n d'), rearrange(sin, 'n d -> 1 1 n d')
+        x_ = (x_ * cos) + (rotate_half(x_) * sin)
+
+        return x_.type_as(x)
 
 
 # https://github.com/facebookresearch/fairseq/blob/main/fairseq/modules/rotary_positional_embedding.py
@@ -124,13 +145,6 @@ class RotaryPositionalEmbedding(nn.Module):
         freqs = broadcat((freqs_t[:, None, None, :], freqs_h[None, :, None, :], freqs_w[None, None, :, :]), dim=-1)
         # (T H W D)
         freqs = rearrange(freqs, "T H W D -> (T H W) D")
-        
-        # NOTE: Context parallel split on H*W is disabled
-        # if self.cp_split_hw[0] * self.cp_split_hw[1] > 1:
-        #     with torch.no_grad():
-        #         freqs = rearrange(freqs, "(T H W) D -> T H W D", T=num_frames, H=height, W=width)
-        #         freqs = context_parallel_util.split_cp_2d(freqs, seq_dim_hw=(1, 2), split_hw=self.cp_split_hw)
-        #         freqs = rearrange(freqs, "T H W D -> (T H W) D")
 
         return freqs
 
@@ -161,51 +175,6 @@ class RotaryPositionalEmbedding(nn.Module):
         k_ = (k_ * cos) + (rotate_half(k_) * sin)
 
         return q_.type_as(q), k_.type_as(k)
-
-
-class RotaryPositionalEmbedding1D(nn.Module):
-
-    def __init__(self,
-                 head_dim
-                 ):
-        """Rotary positional embedding for 1D
-        Args:
-            dim: Dimension of embedding
-            base: Base value for exponential
-        """
-        super().__init__()
-        self.head_dim = head_dim
-        self.base = 10000
-
-    def precompute_freqs_cis_1d(self, pos_indices):
-
-        freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2)[: (self.head_dim // 2)].float() / self.head_dim))
-
-        freqs = freqs.to(pos_indices.device)
-        freqs = torch.einsum("..., f -> ... f", pos_indices.float(), freqs)
-        freqs = repeat(freqs, "... n -> ... (n r)", r=2)
-
-        return freqs
-
-    def forward(self, x, pos_indices):
-        """1D RoPE.
-
-        Args:
-            query (torch.tensor): [B, head, seq, head_dim]
-            pos_indices (torch.tensor): [seq,]
-        Returns:
-            query with the same shape as input.
-        """
-        freqs_cis = self.precompute_freqs_cis_1d(pos_indices)
-
-        x_ = x.float()
-
-        freqs_cis = freqs_cis.float().to(x.device)
-        cos, sin = freqs_cis.cos(), freqs_cis.sin()
-        cos, sin = rearrange(cos, 'n d -> 1 1 n d'), rearrange(sin, 'n d -> 1 1 n d')
-        x_ = (x_ * cos) + (rotate_half(x_) * sin)
-
-        return x_.type_as(x)
 
 
 class Attention(nn.Module):
@@ -243,62 +212,12 @@ class Attention(nn.Module):
             cp_split_hw=cp_split_hw
         )
 
-
     def _process_attn(self, q, k, v, shape):
-        """
-            function wrapper to do attention with q, k, v
-        """
-
-        B, H, SQ, D = q.shape
-        _, _, SKV, _ = k.shape
-
-        if self.enable_bsa and shape[0] > 1: # bsa will not be used in image training / sampling
-            assert self.bsa_params is not None
-            _, H, W = shape
-            assert H % self.cp_split_hw[0] == 0, W % self.cp_split_hw[1] == 0
-            H, W = H // self.cp_split_hw[0], W // self.cp_split_hw[1]
-            Tq = SQ // (H * W)
-            Tk = SKV // (H * W)
-            latent_shape_q = (Tq, H, W)
-            latent_shape_k = (Tk, H, W)
-            x = flash_attn_bsa_3d(q, k, v, latent_shape_q, latent_shape_k, **self.bsa_params)
-        elif self.enable_flashattn3:
-            from flash_attn_interface import flash_attn_func
-            q = rearrange(q, "B H S D -> B S H D").contiguous()
-            k = rearrange(k, "B H S D -> B S H D").contiguous()
-            v = rearrange(v, "B H S D -> B S H D").contiguous()
-            x, *_ = flash_attn_func(
-                q,
-                k,
-                v,
-                softmax_scale=self.scale,
-            )
-            x = rearrange(x, "B S H D -> B H S D")
-        elif self.enable_flashattn2:
-            from flash_attn import flash_attn_func
-            q = rearrange(q, "B H S D -> B S H D")
-            k = rearrange(k, "B H S D -> B S H D")
-            v = rearrange(v, "B H S D -> B S H D")
-            x = flash_attn_func(
-                q,
-                k,
-                v,
-                dropout_p=0.0,
-                softmax_scale=self.scale,
-            )
-            x = rearrange(x, "B S H D -> B H S D")
-        elif self.enable_xformers:
-            import xformers.ops
-            # Input tensors must be in format ``[B, M, H, K]``, where B is the batch size, M \
-            # the sequence length, H the number of heads, and K the embeding size per head
-            q = rearrange(q, "B H M K -> B M H K")
-            k = rearrange(k, "B H M K -> B M H K")
-            v = rearrange(v, "B H M K -> B M H K")
-            x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=None,)
-            x = rearrange(x, "B M H K -> B H M K")
-        else:
-            raise RuntimeError("Unsupported attention operations.")
-
+        q = rearrange(q, "B H S D -> B S H D")
+        k = rearrange(k, "B H S D -> B S H D")
+        v = rearrange(v, "B H S D -> B S H D")
+        x = attention(q, k, v)
+        x = rearrange(x, "B S H D -> B H S D")
         return x
 
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False, num_ref_latents=None, ref_img_index=None, mask_frame_range=None, ref_target_masks=None) -> torch.Tensor:
@@ -555,7 +474,6 @@ class SingleStreamAttention(nn.Module):
         encoder_k, encoder_v = encoder_kv.unbind(0)
         encoder_k = self.k_norm(encoder_k)
 
-
         # multitalk with rope1d pe
         if x_ref_attn_map is not None:
             per_frame = torch.zeros(N_a, dtype=encoder_k.dtype).to(encoder_k.device)
@@ -568,40 +486,11 @@ class SingleStreamAttention(nn.Module):
 
         # Input tensors must be in format ``[B, M, H, K]``, where B is the batch size, M \
         # the sequence length, H the number of heads, and K the embeding size per head
-        
-
-        if self.enable_flashattn3:
-            from flash_attn_interface import flash_attn_func
-            q = rearrange(q, "B H S D -> B S H D").contiguous()
-            encoder_k = rearrange(encoder_k, "B H S D -> B S H D").contiguous()
-            encoder_v = rearrange(encoder_v, "B H S D -> B S H D").contiguous()
-            x, *_ = flash_attn_func(
-                q,
-                encoder_k,
-                encoder_v,
-                softmax_scale=self.scale,
-            )
-            x = rearrange(x, "B S H D -> B H S D")
-        elif self.enable_flashattn2:
-            from flash_attn import flash_attn_func
-            q = rearrange(q, "B H S D -> B S H D")
-            encoder_k = rearrange(encoder_k, "B H S D -> B S H D")
-            encoder_v = rearrange(encoder_v, "B H S D -> B S H D")
-            x = flash_attn_func(
-                q,
-                encoder_k,
-                encoder_v,
-                dropout_p=0.0,
-                softmax_scale=self.scale,
-            )
-            x = rearrange(x, "B S H D -> B H S D")
-        elif self.enable_xformers:
-            import xformers.ops
-            q = rearrange(q, "B H M K -> B M H K")
-            encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
-            encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
-            x = rearrange(x, "B M H K -> B H M K") 
+        q = rearrange(q, "B H S D -> B S H D")
+        encoder_k = rearrange(encoder_k, "B H S D -> B S H D")
+        encoder_v = rearrange(encoder_v, "B H S D -> B S H D")
+        x = attention(q, encoder_k, encoder_v)
+        x = rearrange(x, "B S H D -> B H S D")
 
         # linear transform
         x_output_shape = (B, N, C)
@@ -832,7 +721,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         T, _, _ = latent_shape # S != T*H*W in case of CP split on H*W.
 
         # compute modulation params in fp32
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
+        with amp.autocast(dtype=torch.float32):
             shift_msa, scale_msa, gate_msa, \
             shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1) # [B, T, 1, C]
@@ -853,7 +742,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         else:
             x_s, x_ref_attn_map = attn_outputs
 
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
+        with amp.autocast(dtype=torch.float32):
             x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -868,14 +757,14 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
             if kv_cache is not None:
                 num_cond_latents = 0
 
-            with amp.autocast(device_type='cuda', dtype=torch.float32):  
+            with amp.autocast(dtype=torch.float32):  
                 audio_shift_mca, audio_scale_mca, audio_gate_mca = \
                         self.audio_adaLN_modulation(t[:, num_cond_latents:]).unsqueeze(2).chunk(3, dim=-1) # [B, T, 1, C]
 
             audio_output_cond, audio_output_noise = self.audio_cross_attn(self.pre_video_crs_attn_norm(x), self.pre_audio_crs_attn_norm(audio_hidden_states), \
                                                                             shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num)
 
-            with amp.autocast(device_type='cuda', dtype=torch.float32):  
+            with amp.autocast(dtype=torch.float32):  
                 audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_noise.view(B, T-num_cond_latents, -1, C), audio_shift_mca, audio_scale_mca).view(B, -1, C)
                 audio_add_x = (audio_gate_mca * audio_output_noise.view(B, T-num_cond_latents, -1, C)).view(B, -1, C) # [B, N, C]
                 if audio_output_cond is not None:
@@ -886,7 +775,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         # ffn with modulation
         x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
         x_s = self.ffn(x_m)
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
+        with amp.autocast(dtype=torch.float32):
             x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -896,9 +785,8 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
             return x
 
 
-class LongCatVideoAvatarTransformer3DModel(
-    ModelMixin, ConfigMixin
-):
+class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    # _no_split_modules = ['LongCatAvatarSingleStreamBlock']
     _supports_gradient_checkpointing = True
 
     @register_to_config
@@ -989,15 +877,26 @@ class LongCatVideoAvatarTransformer3DModel(
         self.gradient_checkpointing = False
         self.text_tokens_zero_pad = text_tokens_zero_pad
 
-    def _get_module_by_name(self, module_name):
-        try:
-            module = self
-            for part in module_name.split('.'):
-                module = getattr(module, part)
-            return module
-        except AttributeError as e:
-            raise ValueError(f"Cannot find module: {module_name}, error: {e}")
-    
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+            if hasattr(self, "motioner") and hasattr(self.motioner, "gradient_checkpointing"):
+                self.motioner.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+            if hasattr(self, "motioner") and hasattr(self.motioner, "gradient_checkpointing"):
+                self.motioner.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+
+        def _gradient_checkpointing_func(module, *args):
+            ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            return torch.utils.checkpoint.checkpoint(
+                module.__call__,
+                *args,
+                **ckpt_kwargs,
+            )
+        self._gradient_checkpointing_func = _gradient_checkpointing_func
 
     def enable_bsa(self,):
         for block in self.blocks:
@@ -1032,25 +931,41 @@ class LongCatVideoAvatarTransformer3DModel(
         N_h = H // self.patch_size[1]
         N_w = W // self.patch_size[2]
 
-        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
-
-        # expand the shape of timestep from [B] to [B, T]
-        if len(timestep.shape) == 1:
-            timestep = timestep.unsqueeze(1).expand(-1, N_t) # [B, T]
-
-        dtype = self.x_embedder.proj.weight.dtype
+        dtype = hidden_states.dtype
         hidden_states = hidden_states.to(dtype)
         timestep = timestep.to(dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype)
 
+        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
+
+        # Expand the shape of timestep from [B] to [B, T]
+        if len(timestep.shape) == 1:
+            timestep = timestep.unsqueeze(1).expand(-1, N_t) # [B, T]
+        timestep[:, :num_cond_latents] = 0
+
+        # Hidden_States Process
         hidden_states = self.x_embedder(hidden_states)  # [B, N, C]
 
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
+        # Timestep Process
+        with amp.autocast(dtype=torch.float32):
             t = self.t_embedder(timestep.float().flatten(), dtype=torch.float32).reshape(B, N_t, -1)  # [B, T, C_t]
 
+        # Encoder_Hidden_States Process
         encoder_hidden_states = self.y_embedder(encoder_hidden_states)  # [B, 1, N_token, C]
 
-        # get audio token
+        if self.text_tokens_zero_pad and encoder_attention_mask is not None:
+            encoder_hidden_states = encoder_hidden_states * encoder_attention_mask[:, None, :, None]
+            encoder_attention_mask = (encoder_attention_mask * 0 + 1).to(encoder_attention_mask.dtype)
+
+        if encoder_attention_mask is not None:
+            encoder_attention_mask = encoder_attention_mask.squeeze(1).squeeze(1)
+            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1]) # [1, N_valid_tokens, C]
+            y_seqlens = encoder_attention_mask.sum(dim=1).tolist() # [B]
+        else:
+            y_seqlens = [encoder_hidden_states.shape[2]] * encoder_hidden_states.shape[0]
+            encoder_hidden_states = encoder_hidden_states.squeeze(1).view(1, -1, hidden_states.shape[-1])
+
+        # Audio token Process
         audio_cond = audio_embs.to(device=hidden_states.device, dtype=hidden_states.dtype)
         first_frame_audio_emb_s = audio_cond[:, :1, ...] # [B, 1, W, S, C_a]
 
@@ -1082,8 +997,7 @@ class LongCatVideoAvatarTransformer3DModel(
         else:
             audio_hidden_states = rearrange(audio_hidden_states, "b t n c -> (b t) n c")
         
-        # convert ref_target_masks to token_ref_target_masks
-        # 计算target mask 时会把ref image token 进行 gather，因此这里不需要CP
+        # Convert ref_target_masks to token_ref_target_masks
         token_ref_target_masks = None
         if ref_target_masks is not None:
             ref_target_masks = ref_target_masks.unsqueeze(0).to(torch.float32) # [1, B, H, W]; cast for interpolation
@@ -1092,25 +1006,8 @@ class LongCatVideoAvatarTransformer3DModel(
             token_ref_target_masks = (token_ref_target_masks > 0)
             token_ref_target_masks = token_ref_target_masks.view(token_ref_target_masks.shape[0], -1) # [B, N_h, N_w] --> [B, N_h * N_w]
             token_ref_target_masks = token_ref_target_masks.to(dtype)
-        
-        if self.text_tokens_zero_pad and encoder_attention_mask is not None:
-            encoder_hidden_states = encoder_hidden_states * encoder_attention_mask[:, None, :, None]
-            encoder_attention_mask = (encoder_attention_mask * 0 + 1).to(encoder_attention_mask.dtype)
 
-        if encoder_attention_mask is not None:
-            encoder_attention_mask = encoder_attention_mask.squeeze(1).squeeze(1)
-            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1]) # [1, N_valid_tokens, C]
-            y_seqlens = encoder_attention_mask.sum(dim=1).tolist() # [B]
-        else:
-            y_seqlens = [encoder_hidden_states.shape[2]] * encoder_hidden_states.shape[0]
-            encoder_hidden_states = encoder_hidden_states.squeeze(1).view(1, -1, hidden_states.shape[-1])
-
-        if self.cp_split_hw[0] * self.cp_split_hw[1] > 1:
-            hidden_states = rearrange(hidden_states, "B (T H W) C -> B T H W C", T=N_t, H=N_h, W=N_w)
-            hidden_states = context_parallel_util.split_cp_2d(hidden_states, seq_dim_hw=(2, 3), split_hw=self.cp_split_hw)
-            hidden_states = rearrange(hidden_states, "B T H W C -> B (T H W) C")
-
-        # blocks
+        # Blocks
         kv_cache_dict_ret = {}
         for i, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -1135,12 +1032,9 @@ class LongCatVideoAvatarTransformer3DModel(
 
         hidden_states = self.final_layer(hidden_states, t, (N_t, N_h, N_w))  # [B, N, C=T_p*H_p*W_p*C_out]
 
-        if self.cp_split_hw[0] * self.cp_split_hw[1] > 1:
-            hidden_states = context_parallel_util.gather_cp_2d(hidden_states, shape=(N_t, N_h, N_w), split_hw=self.cp_split_hw)
-
         hidden_states = self.unpatchify(hidden_states, N_t, N_h, N_w)  # [B, C_out, H, W]
 
-        # cast to float32 for better accuracy
+        # Cast to float32 for better accuracy
         hidden_states = hidden_states.to(torch.float32)
 
         if return_kv:
