@@ -71,16 +71,16 @@ fps                 = 16
 validation_image_start  = "asset/8.png"
 
 # Audio params
-audio_stride        = 2 
-audio_path          = "asset/talk.wav"
+audio_path = "asset/talk.wav"
+use_audio_vocal_separator = False
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 # Prompt
-prompt              = "A western man stands on stage under dramatic lighting, holding a microphone close to their mouth. Wearing a vibrant red jacket with gold embroidery, the singer is speaking while smoke swirls around them, creating a dynamic and atmospheric scene."
+prompt              = "A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 negative_prompt     = "Close-up, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
-guidance_scale      = 4.0
+guidance_scale      = 4.5
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
@@ -146,18 +146,6 @@ wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
     local_files_only=True
 )
 
-# Get Vocal separator
-vocal_separator_path = os.path.join(model_name_avatar, 'vocal_separator/Kim_Vocal_2.onnx')
-audio_output_dir_temp = Path("./audio_temp_file")
-audio_output_dir_temp.mkdir(parents=True, exist_ok=True)
-
-vocal_separator = Separator(
-    output_dir=audio_output_dir_temp / "vocals",
-    output_single_stem="vocals",
-    model_file_dir=os.path.dirname(vocal_separator_path),
-)
-vocal_separator.load_model(os.path.basename(vocal_separator_path))
-
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
@@ -207,44 +195,28 @@ generator = torch.Generator(device=device).manual_seed(seed)
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
-# Process audio if provided
-audio_emb = None
-if audio_path is not None:
-    # Extract vocal from audio
-    outputs = vocal_separator.separate(audio_path)
-    if len(outputs) > 0:
-        temp_vocal_path = audio_output_dir_temp / "vocals" / outputs[0]
-        temp_vocal_path = temp_vocal_path.resolve().as_posix()
-        
-        # Load and pad audio to target length
-        generate_duration = video_length / fps
-        speech_array, sr = librosa.load(temp_vocal_path, sr=16000)
-        source_duration = len(speech_array) / sr
-        added_sample_nums = math.ceil((generate_duration - source_duration) * sr)
-        if added_sample_nums > 0:
-            speech_array = np.append(speech_array, [0.] * added_sample_nums)
-        
-        # Get audio embedding
-        with torch.no_grad():
-            full_audio_emb = pipeline.get_audio_embedding(
-                speech_array, 
-                fps=fps * audio_stride, 
-                device=device, 
-                sample_rate=sr
-            )
-            
-            # Prepare audio embedding with sliding window
-            indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
-            audio_start_idx = 0
-            audio_end_idx = audio_start_idx + audio_stride * video_length
-            
-            center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + indices.unsqueeze(0)
-            center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
-            audio_emb = full_audio_emb[center_indices][None, ...].to(device)
-        
-        # Clean up temp file
-        if os.path.exists(temp_vocal_path):
-            os.remove(temp_vocal_path)
+# Get Vocal separator
+if use_audio_vocal_separator:
+    vocal_separator_path = os.path.join(model_name_avatar, 'vocal_separator/Kim_Vocal_2.onnx')
+    audio_output_dir_temp = Path("./audio_temp_file")
+    audio_output_dir_temp.mkdir(parents=True, exist_ok=True)
+
+    vocal_separator = Separator(
+        output_dir=audio_output_dir_temp / "vocals",
+        output_single_stem="vocals",
+        model_file_dir=os.path.dirname(vocal_separator_path),
+    )
+    vocal_separator.load_model(os.path.basename(vocal_separator_path))
+
+    # Process audio if provided
+    audio_emb = None
+    if audio_path is not None:
+        # Extract vocal from audio
+        outputs = vocal_separator.separate(audio_path)
+        if len(outputs) > 0:
+            temp_vocal_path = audio_output_dir_temp / "vocals" / outputs[0]
+            temp_vocal_path = temp_vocal_path.resolve().as_posix()
+            audio_path = temp_vocal_path
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.scale_factor_temporal * vae.scale_factor_temporal) + 1 if video_length != 1 else 1
@@ -264,9 +236,11 @@ with torch.no_grad():
         generator = generator,
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        audio_emb = audio_emb,
+        
+        audio_path  = audio_path,
         video       = input_video,
         mask_video  = input_video_mask,
+        fps         = fps,
     ).videos
 
 if lora_path is not None:
