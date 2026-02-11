@@ -216,8 +216,8 @@ class VideoSpeechDataset(Dataset):
         ann_path, data_root=None,
         video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
         enable_bucket=False, enable_inpaint=False,
-        audio_sr=16000,  # 新增：目标音频采样率
-        text_drop_ratio=0.1  # 新增：文本丢弃概率
+        audio_sr=16000,  # New: target audio sample rate
+        text_drop_ratio=0.1  # New: text drop probability
     ):
         print(f"loading annotations from {ann_path} ...")
         self.dataset = json.load(open(ann_path, 'r'))
@@ -261,20 +261,20 @@ class VideoSpeechDataset(Dataset):
 
         with VideoReader_contextmanager(video_path, num_threads=2) as video_reader:
             total_frames = len(video_reader)
-            fps = video_reader.get_avg_fps()  # 获取原始视频帧率
+            fps = video_reader.get_avg_fps()  # Get the original video frame rate
 
-            # 计算实际采样的视频帧数（考虑边界）
+            # Calculate the actual number of sampled video frames (considering boundaries)
             max_possible_frames = (total_frames - 1) // self.video_sample_stride + 1
             actual_n_frames = min(self.video_sample_n_frames, max_possible_frames)
             if actual_n_frames <= 0:
                 raise ValueError(f"Video too short: {video_path}")
 
-            # 随机选择起始帧
+            # Randomly select the starting frame
             max_start = total_frames - (actual_n_frames - 1) * self.video_sample_stride - 1
             start_frame = random.randint(0, max_start) if max_start > 0 else 0
             frame_indices = [start_frame + i * self.video_sample_stride for i in range(actual_n_frames)]
 
-            # 读取视频帧
+            # Read video frames
             try:
                 sample_args = (video_reader, frame_indices)
                 pixel_values = func_timeout(
@@ -285,37 +285,37 @@ class VideoSpeechDataset(Dataset):
             except Exception as e:
                 raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
-            # 视频后处理
+            # Video post-processing
             if not self.enable_bucket:
                 pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
                 pixel_values = self.pixel_transforms(pixel_values)
 
-            # === 新增：加载并截取对应音频 ===
-            # 视频片段的起止时间（秒）
+            # === New: Load and extract the corresponding audio segment ===
+            # Start and end times (in seconds) of the video clip
             start_time = start_frame / fps
             end_time = (start_frame + (actual_n_frames - 1) * self.video_sample_stride) / fps
             duration = end_time - start_time
 
-            # 使用 librosa 加载整个音频（或仅加载所需部分，但 librosa.load 不支持精确 seek，所以先加载再切）
-            audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)  # 重采样到目标 sr
+            # Use librosa to load the entire audio (librosa.load does not support precise seeking, so load first then slice)
+            audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)  # Resample to target sr
 
-            # 转换为样本索引
+            # Convert to sample indices
             start_sample = int(start_time * self.audio_sr)
             end_sample = int(end_time * self.audio_sr)
 
-            # 安全截取
+            # Safe slicing
             if start_sample >= len(audio_input):
-                # 音频太短，用零填充或截断
+                # Audio is too short, pad with zeros or truncate
                 audio_segment = np.zeros(int(duration * self.audio_sr), dtype=np.float32)
             else:
                 audio_segment = audio_input[start_sample:end_sample]
-                # 如果太短，补零
+                # If too short, pad with zeros
                 target_len = int(duration * self.audio_sr)
                 if len(audio_segment) < target_len:
                     audio_segment = np.pad(audio_segment, (0, target_len - len(audio_segment)), mode='constant')
 
-            # === 文本随机丢弃 ===
+            # === Random text dropping ===
             if random.random() < self.text_drop_ratio:
                 text = ''
 
@@ -331,7 +331,7 @@ class VideoSpeechDataset(Dataset):
                 pixel_values, text, audio, sample_rate = self.get_batch(idx)
                 sample["pixel_values"] = pixel_values
                 sample["text"] = text
-                sample["audio"] = torch.from_numpy(audio).float()  # 转为 tensor
+                sample["audio"] = torch.from_numpy(audio).float()  # Convert to tensor
                 sample["sample_rate"] = sample_rate
                 sample["idx"] = idx
                 break
