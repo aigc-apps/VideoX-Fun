@@ -173,7 +173,7 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
 def log_validation(vae, text_encoder, tokenizer, audio_encoder, wav2vec_feature_extractor, transformer3d, args, accelerator, weight_dtype, global_step):
-    # try:
+    try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
             origin_config = transformer3d.config
@@ -244,14 +244,14 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, wav2vec_feature_
                 text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
         if is_deepspeed:
             transformer3d.config = origin_config
-    # except Exception as e:
-    #     gc.collect()
-    #     torch.cuda.empty_cache()
-    #     torch.cuda.ipc_collect()
-    #     print(f"Eval error on rank {accelerator.process_index} with info {e}")
-    #     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    #     if not args.enable_text_encoder_in_dataloader:
-    #         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    except Exception as e:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
@@ -1713,7 +1713,6 @@ def main():
             
                         audio_cond_embs.append(audio_emb)
                     audio_cond_embs = torch.cat(audio_cond_embs, dim=0)
-                    print(audio_cond_embs.size())
                     
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:

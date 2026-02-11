@@ -1752,7 +1752,6 @@ def main():
             
                         audio_cond_embs.append(audio_emb)
                     audio_cond_embs = torch.cat(audio_cond_embs, dim=0)
-                    print(audio_cond_embs.size())
                     
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
