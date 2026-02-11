@@ -489,7 +489,7 @@ class SingleStreamAttention(nn.Module):
         q = rearrange(q, "B H S D -> B S H D")
         encoder_k = rearrange(encoder_k, "B H S D -> B S H D")
         encoder_v = rearrange(encoder_v, "B H S D -> B S H D")
-        x = attention(q, encoder_k, encoder_v)
+        x = attention(q, encoder_k, encoder_v, attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B S H D -> B H S D")
 
         # linear transform
