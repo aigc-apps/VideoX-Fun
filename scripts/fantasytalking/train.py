@@ -194,6 +194,8 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, audio_encod
                     height      = height,
                     width       = width,
                     generator   = generator,
+                    guidance_scale = 4.5,
+                    num_inference_steps = 25,
 
                     video       = input_video,
                     mask_video  = input_video_mask,
