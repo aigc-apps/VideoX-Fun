@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import torch.cuda.amp as amp
+import torch.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import ConfigMixin, ModelMixin
@@ -721,7 +721,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         T, _, _ = latent_shape # S != T*H*W in case of CP split on H*W.
 
         # compute modulation params in fp32
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             shift_msa, scale_msa, gate_msa, \
             shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1) # [B, T, 1, C]
@@ -742,7 +742,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         else:
             x_s, x_ref_attn_map = attn_outputs
 
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -757,14 +757,14 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
             if kv_cache is not None:
                 num_cond_latents = 0
 
-            with amp.autocast(dtype=torch.float32):  
+            with amp.autocast(device_type="cuda", dtype=torch.float32):  
                 audio_shift_mca, audio_scale_mca, audio_gate_mca = \
                         self.audio_adaLN_modulation(t[:, num_cond_latents:]).unsqueeze(2).chunk(3, dim=-1) # [B, T, 1, C]
 
             audio_output_cond, audio_output_noise = self.audio_cross_attn(self.pre_video_crs_attn_norm(x), self.pre_audio_crs_attn_norm(audio_hidden_states), \
                                                                             shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num)
 
-            with amp.autocast(dtype=torch.float32):  
+            with amp.autocast(device_type="cuda", dtype=torch.float32):  
                 audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_noise.view(B, T-num_cond_latents, -1, C), audio_shift_mca, audio_scale_mca).view(B, -1, C)
                 audio_add_x = (audio_gate_mca * audio_output_noise.view(B, T-num_cond_latents, -1, C)).view(B, -1, C) # [B, N, C]
                 if audio_output_cond is not None:
@@ -775,7 +775,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         # ffn with modulation
         x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
         x_s = self.ffn(x_m)
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -947,7 +947,7 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         hidden_states = self.x_embedder(hidden_states)  # [B, N, C]
 
         # Timestep Process
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             t = self.t_embedder(timestep.float().flatten(), dtype=torch.float32).reshape(B, N_t, -1)  # [B, T, C_t]
 
         # Encoder_Hidden_States Process
