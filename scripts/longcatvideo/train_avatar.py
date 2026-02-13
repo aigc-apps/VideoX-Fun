@@ -1506,11 +1506,17 @@ def main():
             if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                audio = batch["audio"].cpu()
+
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    import importlib
+                    if importlib.util.find_spec("soundfile") is not None:
+                        import soundfile as sf
+                        sf.write(f"{args.output_dir}/sanity_check/{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.wav", audio[idx], 16000)
                 clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
                 mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
                 for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
@@ -1680,7 +1686,8 @@ def main():
                     def _smooth_transients(audio, sr=16000):
                         b, a = ss.butter(3, 3000 / (sr/2))
                         return ss.lfilter(b, a, audio)
-                    
+
+                    audio_stride = 2
                     audio_cond_embs = []
                     for index, speech_array in enumerate(audio):
                         # speech preprocess
@@ -1696,7 +1703,7 @@ def main():
                         audio_feature = audio_feature.unsqueeze(0)
 
                         # audio embedding
-                        embeddings = audio_encoder(audio_feature, seq_len=int(pixel_values.size()[1]), output_hidden_states=True)
+                        embeddings = audio_encoder(audio_feature, seq_len=int(audio_stride * pixel_values.size()[1]), output_hidden_states=True)
 
                         audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
                         audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
@@ -1704,7 +1711,6 @@ def main():
                         # Prepare audio embedding with sliding window
                         indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
                         audio_start_idx = 0
-                        audio_stride = 2
                         audio_end_idx = audio_start_idx + audio_stride * pixel_values.size()[1]
                         
                         center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + indices.unsqueeze(0)
