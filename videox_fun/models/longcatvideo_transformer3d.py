@@ -1,3 +1,4 @@
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/modules/longcat_video_dit.py
 import glob
 import json
 import math
@@ -9,7 +10,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.amp as amp
-import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -17,7 +17,6 @@ from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version, logging
 from einops import rearrange, repeat
-from torch import nn
 
 from .attention_utils import attention, flash_attention_naive
 
@@ -563,7 +562,7 @@ class LongCatSingleStreamBlock(nn.Module):
         T, _, _ = latent_shape # S != T*H*W in case of CP split on H*W.
 
         # compute modulation params in fp32
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda",  dtype=torch.float32):
             shift_msa, scale_msa, gate_msa, \
             shift_mlp, scale_mlp, gate_mlp = \
                 self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1) # [B, T, 1, C]
@@ -582,7 +581,7 @@ class LongCatSingleStreamBlock(nn.Module):
         else:
             x_s = attn_outputs
 
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -595,7 +594,7 @@ class LongCatSingleStreamBlock(nn.Module):
         # ffn with modulation
         x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
         x_s = self.ffn(x_m)
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
         x = x.to(x_dtype)
 
@@ -627,7 +626,7 @@ class FinalLayer_FP32(nn.Module):
         B, N, C = x.shape
         T, _, _ = latent_shape
 
-        with amp.autocast(dtype=torch.float32):
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             shift, scale = self.adaLN_modulation(t).unsqueeze(2).chunk(2, dim=-1) # [B, T, 1, C]
             x = modulate_fp32(self.norm_final, x.view(B, T, -1, C), shift, scale).view(B, N, C)
             x = self.linear(x)
@@ -635,10 +634,6 @@ class FinalLayer_FP32(nn.Module):
 
 
 class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
-    r"""
-    Wan diffusion backbone supporting both text-to-video and image-to-video.
-    """
-
     # _no_split_modules = ['LongCatSingleStreamBlock']
     _supports_gradient_checkpointing = True
 
@@ -707,8 +702,6 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
         self.gradient_checkpointing = False
         self.text_tokens_zero_pad = text_tokens_zero_pad
 
-        self.lora_dict = {}
-        self.active_loras = []
 
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
@@ -760,23 +753,26 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
         N_h = H // self.patch_size[1]
         N_w = W // self.patch_size[2]
 
-        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
-
-        # expand the shape of timestep from [B] to [B, T]
-        if len(timestep.shape) == 1:
-            timestep = timestep.unsqueeze(1).expand(-1, N_t).clone() # [B, T]
-        timestep[:, :num_cond_latents] = 0
-
         dtype = hidden_states.dtype
         hidden_states = hidden_states.to(dtype)
         timestep = timestep.to(dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype)
 
+        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
+
+        # Expand the shape of timestep from [B] to [B, T]
+        if len(timestep.shape) == 1:
+            timestep = timestep.unsqueeze(1).expand(-1, N_t).clone() # [B, T]
+        timestep[:, :num_cond_latents] = 0
+
+        # Hidden_States Process
         hidden_states = self.x_embedder(hidden_states)  # [B, N, C]
 
-        with amp.autocast(dtype=torch.float32):
+        # Timestep Process
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             t = self.t_embedder(timestep.float().flatten(), dtype=torch.float32).reshape(B, N_t, -1)  # [B, T, C_t]
 
+        # Encoder_Hidden_States Process
         encoder_hidden_states = self.y_embedder(encoder_hidden_states)  # [B, 1, N_token, C]
 
         if self.text_tokens_zero_pad and encoder_attention_mask is not None:
@@ -791,7 +787,7 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
             y_seqlens = [encoder_hidden_states.shape[2]] * encoder_hidden_states.shape[0]
             encoder_hidden_states = encoder_hidden_states.squeeze(1).view(1, -1, hidden_states.shape[-1])
 
-        # blocks
+        # Blocks
         kv_cache_dict_ret = {}
         for i, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -818,7 +814,7 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
 
         hidden_states = self.unpatchify(hidden_states, N_t, N_h, N_w)  # [B, C_out, H, W]
 
-        # cast to float32 for better accuracy
+        # Cast to float32 for better accuracy
         hidden_states = hidden_states.to(torch.float32)
 
         if return_kv:
@@ -848,7 +844,3 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
             C_out=self.out_channels,
         )
         return x
-
-    @staticmethod
-    def state_dict_converter():
-        return LongCatVideoTransformer3DModelDictConverter()

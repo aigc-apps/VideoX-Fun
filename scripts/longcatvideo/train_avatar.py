@@ -21,12 +21,18 @@ import logging
 import math
 import os
 import pickle
+import random
 import shutil
 import sys
 
 import accelerate
 import diffusers
+import ftfy
+import loguru
 import numpy as np
+import pyloudnorm as pyln
+import regex as re
+import scipy.signal as ss
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -71,13 +77,16 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
-from videox_fun.models import (AutoencoderKLLongCatVideo, AutoencoderKLWan,
-                               CLIPModel, LongCatVideoTransformer3DModel,
-                               UMT5EncoderModel, WanT5EncoderModel)
-from videox_fun.pipeline import (LongCatVideoPipeline, WanI2VPipeline,
-                                 WanPipeline)
+from videox_fun.data.dataset_video import VideoSpeechDataset
+from videox_fun.models import (AutoencoderKLLongCatVideo, AutoTokenizer,
+                               CLIPModel, LongCatVideoAvatarTransformer3DModel,
+                               UMT5EncoderModel, Wav2Vec2FeatureExtractor,
+                               Wav2Vec2ModelWrapper)
+from videox_fun.pipeline import LongCatVideoAvatarPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils.utils import (calculate_dimensions,
+                                    get_image_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -163,7 +172,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, audio_encoder, wav2vec_feature_extractor, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -176,12 +185,14 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                 subfolder="scheduler"
             )
         
-            pipeline = LongCatVideoPipeline(
+            pipeline = LongCatVideoAvatarPipeline(
                 vae=vae,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
                 transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 scheduler=scheduler,
+                audio_encoder=audio_encoder,
+                wav2vec_feature_extractor=wav2vec_feature_extractor,
             )
             pipeline = pipeline.to(accelerator.device)
 
@@ -193,15 +204,27 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                 logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
             for i in range(len(args.validation_prompts)):
+                start_image = Image.open(args.validation_image_paths[i])
+                width, height = start_image.width, start_image.height
+                width, height = calculate_dimensions(args.video_sample_size * args.video_sample_size,  width / height)
+
+                input_video, input_video_mask, clip_image = get_image_to_video_latent(args.validation_image_paths[i], None, video_length=args.video_sample_n_frames, sample_size=[height, width])
+                audio_path = args.validation_audio_paths[i]
+
                 sample = pipeline(
                     prompt          = args.validation_prompts[i],
                     num_frames      = args.video_sample_n_frames,
-                    negative_prompt = "bad detailed",
-                    height      = args.video_sample_size,
-                    width       = args.video_sample_size,
+                    negative_prompt = "Close-up, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
+                    height      = height,
+                    width       = width,
                     generator   = generator,
                     guidance_scale = 4.5,
                     num_inference_steps = 25,
+                                
+                    audio_path  = audio_path,
+                    video       = input_video,
+                    mask_video  = input_video_mask,
+                    fps         = 16
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 save_videos_grid(
@@ -256,6 +279,13 @@ def parse_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
+        "--pretrained_avatar_model_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to pretrained model or model identifier for avatar.",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -299,6 +329,20 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_image_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of images evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_audio_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of audios evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -568,12 +612,6 @@ def parse_args():
         help="Sample size of the video.",
     )
     parser.add_argument(
-        "--image_sample_size",
-        type=int,
-        default=512,
-        help="Sample size of the image.",
-    )
-    parser.add_argument(
         "--fix_sample_size", 
         nargs=2, type=int, default=None,
         help="Fix Sample size [height, width] when using bucket and collate_fn."
@@ -642,15 +680,6 @@ def parse_args():
     )
     parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
-    )
-    parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="normal",
-        help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
-        ),
     )
     parser.add_argument(
         "--abnormal_norm_clip_start",
@@ -850,10 +879,21 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, 'vae'),
         )
         vae.eval()
-            
+
+        # Get Audio encoder (for avatar mode)
+        audio_encoder = Wav2Vec2ModelWrapper(
+            os.path.join(args.pretrained_avatar_model_name_or_path, 'chinese-wav2vec2-base')
+        )
+        audio_encoder.feature_extractor._freeze_parameters()
+
+        wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+            os.path.join(args.pretrained_avatar_model_name_or_path, 'chinese-wav2vec2-base'), 
+            local_files_only=True
+        )
+
     # Get Transformer
-    transformer3d = LongCatVideoTransformer3DModel.from_pretrained(
-        os.path.join(args.pretrained_model_name_or_path, 'dit'),
+    transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+        os.path.join(args.pretrained_avatar_model_name_or_path, 'avatar_single'),
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
@@ -906,11 +946,11 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("FSDP does not support EMA.")
 
-        ema_transformer3d = LongCatVideoTransformer3DModel.from_pretrained(
+        ema_transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, 'dit'),
         ).to(weight_dtype)
 
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LongCatVideoTransformer3DModel, model_config=ema_transformer3d.config)
+        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LongCatVideoAvatarTransformer3DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -952,11 +992,11 @@ def main():
             def load_model_hook(models, input_dir):
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = LongCatVideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = LongCatVideoTransformer3DModel.from_pretrained(
+                    _, ema_kwargs = LongCatVideoAvatarTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = LongCatVideoAvatarTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                     )
-                    load_model = EMAModel(load_model.parameters(), model_cls=LongCatVideoTransformer3DModel, model_config=load_model.config)
+                    load_model = EMAModel(load_model.parameters(), model_cls=LongCatVideoAvatarTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
 
                     ema_transformer3d.load_state_dict(load_model.state_dict())
@@ -968,7 +1008,7 @@ def main():
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = LongCatVideoTransformer3DModel.from_pretrained(
+                    load_model = LongCatVideoAvatarTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer"
                     )
                     model.register_to_config(**load_model.config)
@@ -1076,18 +1116,23 @@ def main():
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
-        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
         args.training_with_video_token_length = False
         args.random_hw_adapt = False
 
     # Get the dataset
-    train_dataset = ImageVideoDataset(
+    train_dataset = VideoSpeechDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
-        video_repeat=args.video_repeat, 
-        image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+        enable_bucket=args.enable_bucket, enable_inpaint=True,
     )
+
+    def worker_init_fn(_seed):
+        _seed = _seed * 256
+        def _worker_init_fn(worker_id):
+            print(f"worker_init_fn with {_seed + worker_id}")
+            np.random.seed(_seed + worker_id)
+            random.seed(_seed + worker_id)
+        return _worker_init_fn
     
     if args.enable_bucket:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
@@ -1098,22 +1143,54 @@ def main():
             aspect_ratios=aspect_ratio_sample_size,
         )
 
-        def get_length_to_frame_num(token_length):
-            if args.image_sample_size > args.video_sample_size:
-                sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                if sample_sizes[-1] != args.image_sample_size:
-                    sample_sizes.append(args.image_sample_size)
-            else:
-                sample_sizes = [args.image_sample_size]
-            
-            length_to_frame_num = {
-                sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-            }
-
-            return length_to_frame_num
-
         def collate_fn(examples):
+            def get_length_to_frame_num(token_length):
+                if args.video_sample_size > 256:
+                    sample_sizes = list(range(256, args.video_sample_size + 1, 128))
+
+                    if sample_sizes[-1] != args.video_sample_size:
+                        sample_sizes.append(args.video_sample_size)
+                else:
+                    sample_sizes = [args.video_sample_size]
+                
+                length_to_frame_num = {
+                    sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+                }
+
+                return length_to_frame_num
+
+            def get_random_downsample_ratio(sample_size, image_ratio=[],
+                                            all_choices=False, rng=None):
+                def _create_special_list(length):
+                    if length == 1:
+                        return [1.0]
+                    if length >= 2:
+                        first_element = 0.90
+                        remaining_sum = 1.0 - first_element
+                        other_elements_value = remaining_sum / (length - 1)
+                        special_list = [first_element] + [other_elements_value] * (length - 1)
+                        return special_list
+                        
+                if sample_size >= 1536:
+                    number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
+                elif sample_size >= 1024:
+                    number_list = [1, 1.25, 1.5, 2] + image_ratio
+                elif sample_size >= 768:
+                    number_list = [1, 1.25, 1.5] + image_ratio
+                elif sample_size >= 512:
+                    number_list = [1] + image_ratio
+                else:
+                    number_list = [1]
+
+                if all_choices:
+                    return number_list
+
+                number_list_prob = np.array(_create_special_list(len(number_list)))
+                if rng is None:
+                    return np.random.choice(number_list, p = number_list_prob)
+                else:
+                    return rng.choice(number_list, p = number_list_prob)
+
             # Get token length
             target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
             length_to_frame_num = get_length_to_frame_num(target_token_length)
@@ -1123,47 +1200,37 @@ def main():
             new_examples["target_token_length"] = target_token_length
             new_examples["pixel_values"] = []
             new_examples["text"]         = []
+            new_examples["audio"]        = []
+            new_examples["sample_rate"] = []
+            
             # Used in Inpaint mode 
-            if args.train_mode != "normal":
-                new_examples["mask_pixel_values"] = []
-                new_examples["mask"] = []
-                new_examples["clip_pixel_values"] = []
+            new_examples["mask_pixel_values"] = []
+            new_examples["mask"] = []
+            new_examples["clip_pixel_values"] = []
 
             # Get downsample ratio in image and videos
             pixel_value     = examples[0]["pixel_values"]
-            data_type       = examples[0]["data_type"]
             f, h, w, c      = np.shape(pixel_value)
-            if data_type == 'image':
-                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size], rng=rng)
 
-                aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
-                
-                batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-            else:
-                if args.random_hw_adapt:
-                    if args.training_with_video_token_length:
-                        local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
-                        # The video will be resized to a lower resolution than its own.
-                        choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
-                        if len(choice_list) == 0:
-                            choice_list = list(length_to_frame_num.keys())
-                        if rng is None:
-                            local_video_sample_size = np.random.choice(choice_list)
-                        else:
-                            local_video_sample_size = rng.choice(choice_list)
-                        batch_video_length = length_to_frame_num[local_video_sample_size]
-                        random_downsample_ratio = args.video_sample_size / local_video_sample_size
-                    else:
-                        random_downsample_ratio = get_random_downsample_ratio(
-                                args.video_sample_size, rng=rng)
-                        batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
+            if args.random_hw_adapt:
+                if args.training_with_video_token_length:
+                    local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
+                    # The video will be resized to a lower resolution than its own.
+                    choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
+                    if len(choice_list) == 0:
+                        choice_list = list(length_to_frame_num.keys())
+                    local_video_sample_size = np.random.choice(choice_list)
+                    batch_video_length = length_to_frame_num[local_video_sample_size]
+                    random_downsample_ratio = args.video_sample_size / local_video_sample_size
                 else:
-                    random_downsample_ratio = 1
+                    random_downsample_ratio = get_random_downsample_ratio(args.video_sample_size)
                     batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
+            else:
+                random_downsample_ratio = 1
+                batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
 
-                aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
+            aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+            aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
                 fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
@@ -1242,46 +1309,48 @@ def main():
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
-                
+
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["text"].append(example["text"])
+                
+                audio_length = np.shape(example["audio"])[0]
+                batch_audio_length = int(audio_length / pixel_values.size()[0] * batch_video_length)
+                new_examples["audio"].append(example["audio"][:batch_audio_length])
+                new_examples["sample_rate"].append(example["sample_rate"])
 
-                if args.train_mode != "normal":
-                    mask = get_random_mask(new_examples["pixel_values"][-1].size(), image_start_only=True)
-                    mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
-                    # Wan 2.1 use 0 for masked pixels
-                    # + torch.ones_like(new_examples["pixel_values"][-1]) * -1 * mask
-                    new_examples["mask_pixel_values"].append(mask_pixel_values)
-                    new_examples["mask"].append(mask)
-                    
-                    clip_pixel_values = new_examples["pixel_values"][-1][0].permute(1, 2, 0).contiguous()
-                    clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
-                    new_examples["clip_pixel_values"].append(clip_pixel_values)
+                mask = get_random_mask(new_examples["pixel_values"][-1].size(), image_start_only=True)
+                mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
+                # Wan 2.1 use 0 for masked pixels
+                # + torch.ones_like(new_examples["pixel_values"][-1]) * -1 * mask
+                new_examples["mask_pixel_values"].append(mask_pixel_values)
+                new_examples["mask"].append(mask)
+                
+                clip_pixel_values = new_examples["pixel_values"][-1][0].permute(1, 2, 0).contiguous()
+                clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
+                new_examples["clip_pixel_values"].append(clip_pixel_values)
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
-            if args.train_mode != "normal":
-                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
-                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
-                new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
-
+            new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
+            new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
+            new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
+            new_examples["audio"] = torch.stack([example for example in new_examples["audio"]])
+            
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
                 prompt_ids = tokenizer(
                     new_examples['text'], 
                     max_length=args.tokenizer_max_length, 
                     padding="max_length", 
-                    truncation=True, 
                     add_special_tokens=True, 
-                    return_attention_mask=True, 
+                    truncation=True, 
                     return_tensors="pt"
                 )
                 encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids, attention_mask=prompt_ids.attention_mask
-                ).last_hidden_state
-                encoder_hidden_states = encoder_hidden_states.unsqueeze(1)
-                new_examples['encoder_hidden_states'] = encoder_hidden_states
+                    prompt_ids.input_ids
+                )[0]
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
+                new_examples['encoder_hidden_states'] = encoder_hidden_states
 
             return new_examples
         
@@ -1292,6 +1361,7 @@ def main():
             collate_fn=collate_fn,
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
     else:
         # DataLoaders creation:
@@ -1302,6 +1372,7 @@ def main():
             batch_sampler=batch_sampler, 
             persistent_workers=True if args.dataloader_num_workers != 0 else False,
             num_workers=args.dataloader_num_workers,
+            worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
 
     # Scheduler and math around the number of training steps.
@@ -1417,7 +1488,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream and args.train_mode != "normal":
+    if args.multi_stream:
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
@@ -1431,25 +1502,33 @@ def main():
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
+            # Data batch sanity check
             if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                audio = batch["audio"].cpu()
+
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                if args.train_mode != "normal":
-                    clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
-                    mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
-                    for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
-                        pixel_value = pixel_value[None, ...]
-                        Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
-                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
+                    import importlib
+                    if importlib.util.find_spec("soundfile") is not None:
+                        import soundfile as sf
+                        sf.write(f"{args.output_dir}/sanity_check/{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.wav", audio[idx], 16000)
+                clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
+                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
+                for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
+                    pixel_value = pixel_value[None, ...]
+                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
+                audio = batch["audio"]
+                sample_rate = batch["sample_rate"]
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
                 if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
@@ -1460,6 +1539,8 @@ def main():
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
                         else:
                             batch['text'] = batch['text'] * 4
+                        audio = audio * 4
+                        sample_rate = sample_rate * 4
                     elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1467,21 +1548,22 @@ def main():
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
                         else:
                             batch['text'] = batch['text'] * 2
-                
-                if args.train_mode != "normal":
-                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
-                    mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
-                    mask = batch["mask"].to(weight_dtype)
-                    # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
-                        if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
-                            mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
-                            mask = torch.tile(mask, (4, 1, 1, 1, 1))
-                        elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
-                            mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
-                            mask = torch.tile(mask, (2, 1, 1, 1, 1))
+                        audio = audio * 2
+                        sample_rate = sample_rate * 2
+
+                clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
+                mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
+                mask = batch["mask"].to(weight_dtype)
+                # Increase the batch size when the length of the latent sequence of the current sample is small
+                if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
+                    if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                        clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
+                        mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
+                        mask = torch.tile(mask, (4, 1, 1, 1, 1))
+                    elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                        clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
+                        mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
+                        mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
                 if args.random_frame_crop:
                     def _create_special_list(length):
@@ -1509,9 +1591,8 @@ def main():
 
                     pixel_values = pixel_values[:, :temp_n_frames, :, :]
 
-                    if args.train_mode != "normal":
-                        mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
-                        mask = mask[:, :temp_n_frames, :, :]
+                    mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
+                    mask = mask[:, :temp_n_frames, :, :]
                     
                 # Keep all node same token length to accelerate the traning when resolution grows.
                 if args.keep_all_node_same_token_length:
@@ -1534,20 +1615,18 @@ def main():
                     actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
 
                     pixel_values = pixel_values[:, :actual_video_length, :, :]
-                    if args.train_mode != "normal":
-                        mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
-                        mask = mask[:, :actual_video_length, :, :]
+                    mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
+                    mask = mask[:, :actual_video_length, :, :]
 
                 # Make the inpaint latents to be zeros.
-                if args.train_mode != "normal":
-                    t2v_flag = [(_mask == 1).all() for _mask in mask]
-                    new_t2v_flag = []
-                    for _mask in t2v_flag:
-                        if _mask and np.random.rand() < 0.90:
-                            new_t2v_flag.append(0)
-                        else:
-                            new_t2v_flag.append(1)
-                    t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
+                t2v_flag = [(_mask == 1).all() for _mask in mask]
+                new_t2v_flag = []
+                for _mask in t2v_flag:
+                    if _mask and np.random.rand() < 0.90:
+                        new_t2v_flag.append(0)
+                    else:
+                        new_t2v_flag.append(1)
+                t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
@@ -1584,13 +1663,63 @@ def main():
                     )
                     latents = (latents - latents_mean) * latents_std
 
-                    if args.train_mode != "normal":
-                        # Encode inpaint latents.
-                        inpaint_latents = _batch_encode_vae(mask_pixel_values[:, :1])
-                        if vae_stream_2 is not None:
-                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
-                        inpaint_latents = (inpaint_latents - latents_mean) * latents_std
+                    # Encode inpaint latents.
+                    inpaint_latents = _batch_encode_vae(mask_pixel_values[:, :1])
+                    if vae_stream_2 is not None:
+                        torch.cuda.current_stream().wait_stream(vae_stream_2) 
+                    inpaint_latents = (inpaint_latents - latents_mean) * latents_std
 
+                with torch.no_grad():
+                    def _loudness_norm(audio_array, sr=16000, lufs=-23, threshold=100):
+                        meter = pyln.Meter(sr)
+                        loudness = meter.integrated_loudness(audio_array)
+                        if abs(loudness) > threshold:
+                            return audio_array
+                        normalized_audio = pyln.normalize.loudness(audio_array, loudness, lufs)
+                        return normalized_audio
+
+                    def _add_noise_floor(audio, noise_db=-45):
+                        noise_amp = 10 ** (noise_db / 20)
+                        noise = np.random.randn(len(audio)) * noise_amp
+                        return audio + noise
+
+                    def _smooth_transients(audio, sr=16000):
+                        b, a = ss.butter(3, 3000 / (sr/2))
+                        return ss.lfilter(b, a, audio)
+
+                    audio_stride = 2
+                    audio_cond_embs = []
+                    for index, speech_array in enumerate(audio):
+                        # speech preprocess
+                        speech_array = _loudness_norm(speech_array.cpu().numpy(), sample_rate[index])
+                        speech_array = _add_noise_floor(speech_array)
+                        speech_array = _smooth_transients(speech_array)
+
+                        # wav2vec_feature_extractor
+                        audio_feature = np.squeeze(
+                            wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate[index]).input_values
+                        )
+                        audio_feature = torch.from_numpy(audio_feature).float().to(device=accelerator.device)
+                        audio_feature = audio_feature.unsqueeze(0)
+
+                        # audio embedding
+                        embeddings = audio_encoder(audio_feature, seq_len=int(audio_stride * pixel_values.size()[1]), output_hidden_states=True)
+
+                        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
+                        audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
+
+                        # Prepare audio embedding with sliding window
+                        indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
+                        audio_start_idx = 0
+                        audio_end_idx = audio_start_idx + audio_stride * pixel_values.size()[1]
+                        
+                        center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + indices.unsqueeze(0)
+                        center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
+                        audio_emb = audio_emb[center_indices][None, ...].to(accelerator.device)
+            
+                        audio_cond_embs.append(audio_emb)
+                    audio_cond_embs = torch.cat(audio_cond_embs, dim=0)
+                    
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
@@ -1665,10 +1794,9 @@ def main():
                 target = noise - latents
 
                 # Adapt i2v
-                if args.train_mode != "normal":
-                    noisy_latents[:, :, :1] = inpaint_latents
-                    timesteps = timesteps.unsqueeze(-1).repeat(1, noisy_latents.shape[2])
-                    timesteps[:, :1] = 0
+                noisy_latents[:, :, :1] = inpaint_latents
+                timesteps = timesteps.unsqueeze(-1).repeat(1, noisy_latents.shape[2])
+                timesteps[:, :1] = 0
 
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
@@ -1677,7 +1805,8 @@ def main():
                         timestep=timesteps,
                         encoder_hidden_states=prompt_embeds,
                         encoder_attention_mask=prompt_attention_mask,
-                        num_cond_latents=1 if args.train_mode != "normal" else 0,
+                        audio_embs=audio_cond_embs,
+                        num_cond_latents=1,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1782,6 +1911,8 @@ def main():
                         vae,
                         text_encoder,
                         tokenizer,
+                        audio_encoder, 
+                        wav2vec_feature_extractor,
                         transformer3d,
                         args,
                         accelerator,
@@ -1807,6 +1938,8 @@ def main():
                 vae,
                 text_encoder,
                 tokenizer,
+                audio_encoder, 
+                wav2vec_feature_extractor,
                 transformer3d,
                 args,
                 accelerator,

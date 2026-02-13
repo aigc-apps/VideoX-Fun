@@ -1,10 +1,11 @@
-# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/pipeline_longcat_video.py
+# Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/pipeline_longcat_video_avatar.py
 import html
 import inspect
 import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import librosa
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -21,13 +22,11 @@ from einops import rearrange
 from PIL import Image
 
 from ..models import (AutoencoderKLWan, AutoTokenizer,
-                      LongCatVideoTransformer3DModel, UMT5EncoderModel)
-from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
-                                get_sampling_sigmas)
-from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+                      LongCatVideoAvatarTransformer3DModel,
+                      LongCatVideoTransformer3DModel, UMT5EncoderModel,
+                      Wav2Vec2FeatureExtractor, Wav2Vec2ModelWrapper)
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
+logger = logging.get_logger(__name__)
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -35,7 +34,6 @@ EXAMPLE_DOC_STRING = """
         pass
         ```
 """
-
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
 def retrieve_timesteps(
@@ -49,25 +47,6 @@ def retrieve_timesteps(
     """
     Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
     custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
-
-    Args:
-        scheduler (`SchedulerMixin`):
-            The scheduler to get timesteps from.
-        num_inference_steps (`int`):
-            The number of diffusion steps used when generating samples with a pre-trained model. If used, `timesteps`
-            must be `None`.
-        device (`str` or `torch.device`, *optional*):
-            The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
-        timesteps (`List[int]`, *optional*):
-            Custom timesteps used to override the timestep spacing strategy of the scheduler. If `timesteps` is passed,
-            `num_inference_steps` and `sigmas` must be `None`.
-        sigmas (`List[float]`, *optional*):
-            Custom sigmas used to override the timestep spacing strategy of the scheduler. If `sigmas` is passed,
-            `num_inference_steps` and `timesteps` must be `None`.
-
-    Returns:
-        `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
-        second element is the number of inference steps.
     """
     if timesteps is not None and sigmas is not None:
         raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
@@ -96,6 +75,19 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
 
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
+def retrieve_latents(
+    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    elif hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    else:
+        raise AttributeError("Could not access latents of provided encoder_output")
+
 def basic_clean(text):
     import ftfy
     text = ftfy.fix_text(text)
@@ -113,26 +105,24 @@ def prompt_clean(text):
     return text
 
 @dataclass
-class LongCatVideoPipelineOutput(BaseOutput):
+class LongCatVideoAvatarPipelineOutput(BaseOutput):
     r"""
-    Output class for CogVideo pipelines.
+    Output class for LongCatVideo Avatar pipelines.
 
     Args:
-        video (`torch.Tensor`, `np.ndarray`, or List[List[PIL.Image.Image]]):
-            List of video outputs - It can be a nested list of length `batch_size,` with each sub-list containing
-            denoised PIL image sequences of length `num_frames.` It can also be a NumPy array or Torch tensor of shape
-            `(batch_size, num_frames, channels, height, width)`.
+        videos (`torch.Tensor`, `np.ndarray`, or List[List[PIL.Image.Image]]):
+            Generated video outputs.
     """
 
     videos: torch.Tensor
 
-
-class LongCatVideoPipeline(DiffusionPipeline):
+class LongCatVideoAvatarPipeline(DiffusionPipeline):
     r"""
-    Pipeline for text-to-video generation using Wan.
+    Pipeline for audio-driven avatar video generation using LongCatVideo Avatar.
 
-    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
-    library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
+    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods
+    implemented for all pipelines (downloading, saving, running on a particular device, etc.).
+
     """
 
     _optional_components = []
@@ -149,14 +139,25 @@ class LongCatVideoPipeline(DiffusionPipeline):
         tokenizer: AutoTokenizer,
         text_encoder: UMT5EncoderModel,
         vae: AutoencoderKLWan,
-        transformer: LongCatVideoTransformer3DModel,
+        transformer: LongCatVideoAvatarTransformer3DModel,
         scheduler: FlowMatchEulerDiscreteScheduler,
+        audio_encoder: Wav2Vec2ModelWrapper,
+        wav2vec_feature_extractor: Wav2Vec2FeatureExtractor
     ):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, scheduler=scheduler
+            tokenizer=tokenizer, 
+            text_encoder=text_encoder, 
+            vae=vae, 
+            transformer=transformer, 
+            scheduler=scheduler,
+            audio_encoder=audio_encoder,
+            wav2vec_feature_extractor=wav2vec_feature_extractor
         )
+        
+        self.vae_scale_factor_temporal = self.vae.config.scale_factor_temporal if getattr(self, "vae", None) else 4
+        self.vae_scale_factor_spatial = self.vae.config.scale_factor_spatial if getattr(self, "vae", None) else 8 
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae.scale_factor_spatial)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.scale_factor_spatial)
         self.mask_processor = VaeImageProcessor(
@@ -211,23 +212,6 @@ class LongCatVideoPipeline(DiffusionPipeline):
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
-
-        Args:
-            prompt (`str` or `List[str]`, *optional*):
-                prompt to be encoded
-            num_videos_per_prompt (`int`, *optional*, defaults to 1):
-                Number of videos that should be generated per prompt. torch device to place the resulting embeddings on
-            prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
-                provided, text embeddings will be generated from `prompt` input argument.
-            negative_prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
-                argument.
-            device: (`torch.device`, *optional*):
-                torch device
-            dtype: (`torch.dtype`, *optional*):
-                torch dtype
         """
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
@@ -276,9 +260,9 @@ class LongCatVideoPipeline(DiffusionPipeline):
         shape = (
             batch_size,
             num_channels_latents,
-            (num_frames - 1) // self.vae.scale_factor_temporal + 1,
-            height // self.vae.scale_factor_spatial,
-            width // self.vae.scale_factor_spatial,
+            (num_frames - 1) // self.vae_scale_factor_temporal + 1,
+            height // self.vae_scale_factor_spatial,
+            width // self.vae_scale_factor_spatial,
         )
 
         if latents is None:
@@ -327,6 +311,57 @@ class LongCatVideoPipeline(DiffusionPipeline):
             masked_image_latents = None
 
         return mask, masked_image_latents
+
+    def check_inputs(
+        self,
+        prompt,
+        height,
+        width,
+        negative_prompt,
+        callback_on_step_end_tensor_inputs,
+        prompt_embeds=None,
+        negative_prompt_embeds=None,
+    ):
+        if height % 8 != 0 or width % 8 != 0:
+            raise ValueError(f"`height` and `width` have to be divisible by 8 but are {height} and {width}.")
+
+        if callback_on_step_end_tensor_inputs is not None and not all(
+            k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
+        ):
+            raise ValueError(
+                f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
+            )
+        if prompt is not None and prompt_embeds is not None:
+            raise ValueError(
+                f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
+                " only forward one of the two."
+            )
+        elif prompt is None and prompt_embeds is None:
+            raise ValueError(
+                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
+            )
+        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
+            raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
+
+        if prompt is not None and negative_prompt_embeds is not None:
+            raise ValueError(
+                f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
+                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
+            )
+
+        if negative_prompt is not None and negative_prompt_embeds is not None:
+            raise ValueError(
+                f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
+                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
+            )
+
+        if prompt_embeds is not None and negative_prompt_embeds is not None:
+            if prompt_embeds.shape != negative_prompt_embeds.shape:
+                raise ValueError(
+                    "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
+                    f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
+                    f" {negative_prompt_embeds.shape}."
+                )
 
     def optimized_scale(self, positive_flat, negative_flat):
         """ from CFG-zero paper
@@ -386,57 +421,78 @@ class LongCatVideoPipeline(DiffusionPipeline):
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
 
-    # Copied from diffusers.pipelines.latte.pipeline_latte.LattePipeline.check_inputs
-    def check_inputs(
-        self,
-        prompt,
-        height,
-        width,
-        negative_prompt,
-        callback_on_step_end_tensor_inputs,
-        prompt_embeds=None,
-        negative_prompt_embeds=None,
-    ):
-        if height % 8 != 0 or width % 8 != 0:
-            raise ValueError(f"`height` and `width` have to be divisible by 8 but are {height} and {width}.")
+    def _loudness_norm(self, audio_array, sr=16000, lufs=-23, threshold=100):
+        import pyloudnorm as pyln
+        meter = pyln.Meter(sr)
+        loudness = meter.integrated_loudness(audio_array)
+        if abs(loudness) > threshold:
+            return audio_array
+        normalized_audio = pyln.normalize.loudness(audio_array, loudness, lufs)
+        return normalized_audio
 
-        if callback_on_step_end_tensor_inputs is not None and not all(
-            k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
-        ):
-            raise ValueError(
-                f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
-            )
-        if prompt is not None and prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-                " only forward one of the two."
-            )
-        elif prompt is None and prompt_embeds is None:
-            raise ValueError(
-                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
-            )
-        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
-            raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
+    def _add_noise_floor(self, audio, noise_db=-45):
+        noise_amp = 10 ** (noise_db / 20)
+        noise = np.random.randn(len(audio)) * noise_amp
+        return audio + noise
 
-        if prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
+    def _smooth_transients(self, audio, sr=16000):
+        import scipy.signal as ss
+        b, a = ss.butter(3, 3000 / (sr/2))
+        return ss.lfilter(b, a, audio)
+
+    @torch.no_grad()
+    def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
+        audio_duration = len(speech_array) / sample_rate
+        video_length = audio_duration * fps
+
+        # speech preprocess
+        speech_array = self._loudness_norm(speech_array, sample_rate)
+        speech_array = self._add_noise_floor(speech_array)
+        speech_array = self._smooth_transients(speech_array)
+
+        # wav2vec_feature_extractor
+        audio_feature = np.squeeze(
+            self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
+        )
+        audio_feature = torch.from_numpy(audio_feature).float().to(device=device)
+        audio_feature = audio_feature.unsqueeze(0)
+
+        # audio embedding
+        embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+
+        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
+        audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
+        return audio_emb
+
+    def encode_audio_embeddings(self, audio_path, num_frames, fps, weight_dtype, device, audio_stride = 2):
+        # Load and pad audio to target length
+        speech_array, sample_rate = librosa.load(audio_path, sr=16000)
+
+        generate_duration = num_frames / fps
+        source_duration = len(speech_array) / sample_rate
+        added_sample_nums = math.ceil((generate_duration - source_duration) * sample_rate)
+        if added_sample_nums > 0:
+            speech_array = np.append(speech_array, [0.] * added_sample_nums)
+        
+        # Get audio embedding
+        with torch.no_grad():
+            audio_emb = self.get_audio_embedding(
+                speech_array, 
+                fps=fps * audio_stride, 
+                device=device, 
+                sample_rate=sample_rate
             )
 
-        if negative_prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
-
-        if prompt_embeds is not None and negative_prompt_embeds is not None:
-            if prompt_embeds.shape != negative_prompt_embeds.shape:
-                raise ValueError(
-                    "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
-                    f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-                    f" {negative_prompt_embeds.shape}."
-                )
+            # Prepare audio embedding with sliding window
+            indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
+            audio_start_idx = 0
+            audio_end_idx = audio_start_idx + audio_stride * num_frames
+            
+            center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + \
+                indices.unsqueeze(0)
+            center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
+            audio_emb = audio_emb[center_indices][None, ...].to(device, weight_dtype)
+        return audio_emb
 
     @property
     def guidance_scale(self):
@@ -483,8 +539,10 @@ class LongCatVideoPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
-        shift: int = 5,
-    ) -> Union[LongCatVideoPipelineOutput, Tuple]:
+        # avatar related params
+        audio_path: str = None,
+        fps: int = 16, 
+    ) -> Union[LongCatVideoAvatarPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
         Args:
@@ -547,20 +605,18 @@ class LongCatVideoPipeline(DiffusionPipeline):
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
 
-        # 4. Prepare timesteps
-        if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
-            timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps, mu=1)
-        elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
-            self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
-            timesteps = self.scheduler.timesteps
-        elif isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
-            sampling_sigmas = get_sampling_sigmas(num_inference_steps, shift)
-            timesteps, _ = retrieve_timesteps(
-                self.scheduler,
-                device=device,
-                sigmas=sampling_sigmas)
+        # 4. Prepare audio embeddings
+        audio_emb = self.encode_audio_embeddings(
+            audio_path, num_frames=num_frames, fps=fps, weight_dtype=weight_dtype, device=device
+        )
+        if audio_emb is not None:
+            audio_cond_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+            audio_cond_embs = torch.cat([audio_cond_embs, audio_cond_embs], dim=0)
         else:
-            timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
+            audio_cond_embs = None
+
+        # 5. Prepare timesteps
+        timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps, mu=1)
         self._num_timesteps = len(timesteps)
         if comfyui_progressbar:
             from comfy.utils import ProgressBar
@@ -574,7 +630,7 @@ class LongCatVideoPipeline(DiffusionPipeline):
         else:
             init_video = None
 
-        # 5. Prepare latents
+        # 6. Prepare latents
         latent_channels = self.transformer.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_videos_per_prompt,
@@ -625,16 +681,13 @@ class LongCatVideoPipeline(DiffusionPipeline):
         else:
             init_video = None
 
-        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+        # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # 7. Denoising loop
+        # 8. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
-        self.transformer.num_inference_steps = num_inference_steps
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                self.transformer.current_steps = i
-
                 if self.interrupt:
                     continue
 
@@ -655,23 +708,24 @@ class LongCatVideoPipeline(DiffusionPipeline):
                         timestep=timestep,
                         encoder_hidden_states=prompt_embeds,
                         encoder_attention_mask=prompt_attention_mask,
+                        audio_embs=audio_cond_embs,
+                        num_cond_latents=1 if init_video is not None else 0
+                    )
+                    noise_pred_uncond = self.transformer(
+                        hidden_states=latent_model_input[:1],
+                        timestep=timestep[:1],
+                        encoder_hidden_states=prompt_embeds[:1],
+                        encoder_attention_mask=prompt_attention_mask[:1],
+                        audio_embs=torch.zeros_like(audio_cond_embs[:1]),
                         num_cond_latents=1 if init_video is not None else 0
                     )
 
                 # perform guidance
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-
-                    B = noise_pred_cond.shape[0]
-                    positive = noise_pred_cond.reshape(B, -1)
-                    negative = noise_pred_uncond.reshape(B, -1)
-                    # Calculate the optimized scale
-                    st_star = self.optimized_scale(positive, negative)
-                    # Reshape for broadcasting
-                    st_star = st_star.view(B, 1, 1, 1)
-                    # print(f'step i: {i} --> scale: {st_star}')
-
-                    noise_pred = noise_pred_uncond * st_star + guidance_scale * (noise_pred_cond - noise_pred_uncond * st_star) 
+                    noise_pred_uncond_text, noise_pred_cond = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + \
+                        guidance_scale * (noise_pred_cond - noise_pred_uncond_text) + \
+                        guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
 
                 # negate for scheduler compatibility
                 noise_pred = -noise_pred
@@ -713,4 +767,4 @@ class LongCatVideoPipeline(DiffusionPipeline):
         if not return_dict:
             video = torch.from_numpy(video)
 
-        return LongCatVideoPipelineOutput(videos=video)
+        return LongCatVideoAvatarPipelineOutput(videos=video)

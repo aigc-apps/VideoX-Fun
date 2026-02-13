@@ -7,7 +7,8 @@ from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
                           LlamaTokenizerFast, LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,
                           Qwen3Config, Qwen3ForCausalLM, T5EncoderModel,
-                          T5Tokenizer, T5TokenizerFast, UMT5EncoderModel)
+                          T5Tokenizer, T5TokenizerFast, UMT5EncoderModel,
+                          Wav2Vec2FeatureExtractor)
 
 try:
     from transformers import (Qwen2_5_VLConfig,
@@ -29,7 +30,10 @@ from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
+from .longcatvideo_audio_encoder import Wav2Vec2ModelWrapper
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
+from .longcatvideo_transformer3d_avatar import \
+    LongCatVideoAvatarTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel

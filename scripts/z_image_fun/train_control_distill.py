@@ -238,7 +238,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                     width       = width,
                     generator   = generator,
                     guidance_scale = 0,
-                    num_inference_steps = 8,
+                    num_inference_steps = len(args.denoising_step_indices_list),
                     control_image = control_image,
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
