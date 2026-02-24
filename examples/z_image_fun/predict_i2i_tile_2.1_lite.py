@@ -57,7 +57,7 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/z_image/z_image_control_2.1_lite.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Z-Image-Turbo"
+model_name          = "models/Diffusion_Transformer/Z-Image"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
