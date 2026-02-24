@@ -255,7 +255,7 @@
       },
       "widgets_values": [
         "",
-        "model_cpu_offload"
+        "sequential_cpu_offload"
       ]
     },
     {
