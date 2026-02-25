@@ -13,8 +13,8 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKL, AutoTokenizer,
-                               Qwen3ForCausalLM, ZImageControlTransformer2DModel)
+from videox_fun.models import (AutoencoderKL, AutoTokenizer, Qwen3ForCausalLM,
+                               ZImageControlTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import ZImageControlPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
@@ -22,7 +22,8 @@ from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, get_image,
+from videox_fun.utils.utils import (filter_kwargs, get_image, get_image_latent,
+                                    get_image_to_video_latent,
                                     get_video_to_video_latent,
                                     save_videos_grid)
 

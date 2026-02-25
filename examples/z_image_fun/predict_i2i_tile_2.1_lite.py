@@ -55,35 +55,36 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # Config and model path
-config_path         = "config/z_image/z_image_control_2.0.yaml"
+config_path         = "config/z_image/z_image_control_2.1_lite.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Z-Image-Turbo/"
+model_name          = "models/Diffusion_Transformer/Z-Image"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
 # Load pretrained model if need
-transformer_path    = "models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.0.safetensors" 
+transformer_path    = "models/Personalized_Model/Z-Image-Fun-Controlnet-Tile-2.1-lite.safetensors" 
 vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [1728, 992]
+sample_size         = [2048, 2048]
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-control_image       = "asset/pose.jpg"
+control_image       = "asset/low_res.png"
+# The inpaint_image and mask_image is useless in tile model, just set them to None.
 inpaint_image       = None
 mask_image          = None
-control_context_scale  = 0.75
+control_context_scale = 0.85
 
 # Please use as detailed a prompt as possible to describe the object that needs to be generated.
-prompt              = "画面中央是一位年轻女孩，她拥有一头令人印象深刻的亮紫色长发，发丝在海风中轻盈飘扬，营造出动感而唯美的效果。她的长发两侧各扎着黑色蝴蝶结发饰，增添了几分可爱与俏皮感。女孩身穿一袭纯白色无袖连衣裙，裙摆轻盈飘逸，与她清新的气质完美契合。她的妆容精致自然，淡粉色的唇妆和温柔的眼神流露出恬静优雅的气质。她单手叉腰，姿态自信从容，目光直视镜头，展现出既甜美又不失个性的魅力。背景是一片开阔的海景，湛蓝的海水在阳光照射下波光粼粼，闪烁着钻石般的光芒。天空呈现出清澈的蔚蓝色，点缀着几朵洁白的云朵，营造出晴朗明媚的夏日氛围。画面前景右下角可见粉紫色的小花丛和绿色植物，为整体构图增添了自然生机和色彩层次。整张照片色调明亮清新，紫色头发与白色裙装、蓝色海天形成鲜明而和谐的色彩对比，呈现出一种童话般的浪漫意境，宛如二次元世界与现实海景的完美融合。"
-negative_prompt     = " "
-guidance_scale      = 0.00
+prompt              = "这是一张充满都市气息的户外人物肖像照片。画面中是一位年轻男性，他展现出时尚而自信的形象。人物拥有精心打理的短发发型，两侧修剪得较短，顶部保留一定长度，呈现出流行的Undercut造型。他佩戴着一副时尚的浅色墨镜或透明镜框眼镜，为整体造型增添了潮流感。脸上洋溢着温和友善的笑容，神情放松自然，给人以阳光开朗的印象。他身穿一件经典的牛仔外套，这件单品永不过时，展现出休闲又有型的穿衣风格。牛仔外套的蓝色调与整体氛围十分协调，领口处隐约可见内搭的衣物。照片的背景是典型的城市街景，可以看到模糊的建筑物、街道和行人，营造出繁华都市的氛围。背景经过了恰当的虚化处理，使人物主体更加突出。光线明亮而柔和，可能是白天的自然光，为照片带来清新通透的视觉效果。整张照片构图专业，景深控制得当，完美捕捉了一个现代都市年轻人充满活力和自信的瞬间，展现出积极向上的生活态度。"
+negative_prompt     = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
+guidance_scale      = 4.0
 seed                = 43
-num_inference_steps = 25
+num_inference_steps = 20
 lora_weight         = 0.55
 save_path           = "samples/z-image-t2i-control"
 
