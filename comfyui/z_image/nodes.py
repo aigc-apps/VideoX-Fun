@@ -435,10 +435,10 @@ class LoadZImageTextEncoderModel:
             [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         try:
             tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="qwen3_tokenizer")
-        except:
+        except Exception:
             try:
                 tokenizer_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Z-Image-Turbo"), "tokenizer")
-            except:
+            except Exception:
                 tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen3-4B")
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)

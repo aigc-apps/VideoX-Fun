@@ -33,11 +33,11 @@ try:
     elif major>9:
         from sageattention_sm120 import sageattn
         SAGE_ATTENTION_AVAILABLE = True
-except:
+except Exception:
     try:
         from sageattention import sageattn
         SAGE_ATTENTION_AVAILABLE = True
-    except:
+    except Exception:
         sageattn = None
         SAGE_ATTENTION_AVAILABLE = False
 
@@ -61,7 +61,7 @@ def convert_qkv_dtype(q, k, v):
             return q, k, v  # No conversion for other cases
         
         return q.to(target_dtype), k.to(target_dtype), v.to(target_dtype)
-    except:
+    except Exception:
         return q, k, v
 
 

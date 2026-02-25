@@ -18,7 +18,7 @@ from .api import download_from_url, encode_file_to_base64
 
 try:
     import ray
-except:
+except Exception:
     print("Ray is not installed. If you want to use multi gpus api. Please install it by running 'pip install ray'.")
     ray =  None
 

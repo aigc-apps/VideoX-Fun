@@ -1062,7 +1062,7 @@ def main():
     elif args.use_came:
         try:
             from came_pytorch import CAME
-        except:
+        except Exception:
             raise ImportError(
                 "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
             )
