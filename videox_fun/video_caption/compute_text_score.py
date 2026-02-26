@@ -71,7 +71,7 @@ def compute_text_score(video_path, ocr_reader, sample_method="mid", num_sampled_
                 quad_area += triangle_area(*triangle1)
                 triangle2 = points[3:] + [points[0]]
                 quad_area += triangle_area(*triangle2)
-        except:
+        except Exception:
             quad_area = 0
         text_area = rect_area + quad_area
 

@@ -14,7 +14,7 @@ try:
     from transformers import (Qwen2_5_VLConfig,
                               Qwen2_5_VLForConditionalGeneration,
                               Qwen2Tokenizer, Qwen2VLProcessor)
-except:
+except Exception:
     Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer = None, None
     Qwen2VLProcessor, Qwen2_5_VLConfig = None, None
     print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
