@@ -31,7 +31,7 @@ class FantasyTalkingAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin
 
         try:
             audio_segment = audio_input[start_sample:end_sample]
-        except:
+        except Exception:
             audio_segment = audio_input
 
         input_values = self.processor(

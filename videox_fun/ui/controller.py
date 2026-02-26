@@ -482,7 +482,7 @@ class Fun_Controller_Client:
 
         try:
             base64_encoding = outputs["base64_encoding"]
-        except:
+        except Exception:
             return gr.Image(visible=False, value=None), gr.Video(None, visible=True), outputs["message"]
             
         decoded_data = base64.b64decode(base64_encoding)

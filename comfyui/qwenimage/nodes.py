@@ -476,10 +476,10 @@ class LoadQwenImageTextEncoderModel:
             [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         try:
             tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="qwen2_tokenizer")
-        except:
+        except Exception:
             try:
                 tokenizer_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen-Image"), "tokenizer")
-            except:
+            except Exception:
                 tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen2.5-VL-7B-Instruct")
 
         tokenizer = Qwen2Tokenizer.from_pretrained(tokenizer_path)
@@ -504,10 +504,10 @@ class LoadQwenImageProcessor:
             [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         try:
             processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="qwen2_processor")
-        except:
+        except Exception:
             try:
                 processor_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen-Image-Edit"), "processor")
-            except:
+            except Exception:
                 processor_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Qwen2.5-VL-7B-Instruct")
 
         # Get processor

@@ -598,10 +598,10 @@ class LoadFlux2TextEncoderModel:
             [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         try:
             tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="flux2_tokenizer")
-        except:
+        except Exception:
             try:
                 tokenizer_path = os.path.join(search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="FLUX.2-dev"), "tokenizer")
-            except:
+            except Exception:
                 tokenizer_path = search_sub_dir_in_possible_folders(possible_folders, sub_dir_name="Mistral-Nemo-Instruct-2407")
 
         tokenizer = PixtralProcessor.from_pretrained(tokenizer_path)
