@@ -25,6 +25,7 @@ import pickle
 import random
 import shutil
 import sys
+from functools import partial
 from typing import (Any, Callable, Dict, List, NamedTuple, Optional, Tuple,
                     Union)
 
@@ -79,7 +80,7 @@ from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
 from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
                                                  ImageVideoDataset,
                                                  ImageVideoSampler,
-                                                 get_random_mask,
+                                                 TextDataset, get_random_mask,
                                                  process_pose_file,
                                                  process_pose_params)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
@@ -87,8 +88,15 @@ from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
                                CLIPVisionModelWithProjection, Qwen2Tokenizer,
                                Qwen3ForCausalLM, QwenImageTransformer2DModel,
-                               ZImageControlTransformer2DModel)
+                               ZImageControlTransformer2DModel,
+                               ZImageTransformer2DModel)
 from videox_fun.pipeline import ZImageControlPipeline
+from videox_fun.utils import (DiscreteSampling, RectifiedFlow_TrigFlowWrapper,
+                              calculate_dimensions,
+                              convert_peft_lora_to_kohya_lora, create_network,
+                              get_image_latent, get_image_to_video_latent,
+                              merge_lora, sample_trigflow_timesteps,
+                              save_videos_grid, unmerge_lora)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
@@ -116,23 +124,6 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
-
-def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
-    a1, b1 = 8.73809524e-05, 1.89833333
-    a2, b2 = 0.00016927, 0.45666666
-
-    if image_seq_len > 4300:
-        mu = a2 * image_seq_len + b2
-        return float(mu)
-
-    m_200 = a2 * image_seq_len + b2
-    m_10 = a1 * image_seq_len + b1
-
-    a = (m_200 - m_10) / 190.0
-    b = m_200 - 200.0 * a
-    mu = a * num_steps + b
-
-    return float(mu)
 
 def calculate_shift(
     image_seq_len,
@@ -703,11 +694,22 @@ def parse_args():
         default=1.29,
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
+
     parser.add_argument(
-        "--guidance_scale",
+        "--use_trigflow",
+        action="store_true",
+        help="whether to use trigflow in training.",
+    )
+    parser.add_argument(
+        "--sigma_max",
         type=float,
-        default=3.5,
-        help="the FLUX.1 dev variant is a guidance distilled model",
+        default=80.0,
+        help="The max value of sigma in trigflow.",
+    )
+    parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
     )
     parser.add_argument(
         "--gen_update_interval",
@@ -730,7 +732,7 @@ def parse_args():
     parser.add_argument(
         '--denoising_step_indices_list', 
         nargs='+', 
-        default=[1000, 875, 750, 625, 500, 375, 250, 125],
+        default=[1000, 858, 716, 574, 432, 290, 148, 1],
         help="The denoising step list.",
     )
 
@@ -862,6 +864,7 @@ def main():
     # Load Config
     config = OmegaConf.load(args.config_path)
 
+    args.denoising_step_indices_list = [int(i) for i in args.denoising_step_indices_list]
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         args.pretrained_model_name_or_path, 
@@ -1348,6 +1351,14 @@ def main():
                 )
 
                 new_examples['prompt_embeds'] = prompt_embeds
+        
+                neg_prompt_embeds = encode_prompt(
+                    [""], device="cpu",
+                    text_encoder=text_encoder, 
+                    tokenizer=tokenizer,
+                )
+
+                new_examples['neg_prompt_embeds'] = neg_prompt_embeds
 
             return new_examples
         
@@ -1401,15 +1412,11 @@ def main():
     )
 
     if fsdp_stage != 0 or zero_stage != 0:
-        from functools import partial
-
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(real_score_transformer3d.layers))
         real_score_transformer3d = shard_fn(real_score_transformer3d)
 
     if fsdp_stage != 0 or zero_stage != 0:
-        from functools import partial
-
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(text_encoder.model.layers))
         text_encoder = shard_fn(text_encoder)
@@ -1509,14 +1516,210 @@ def main():
         vae_stream_1 = None
         vae_stream_2 = None
 
-    # Calculate the index we need】
+    # RectifiedFlow Mode
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+    # TrigFlow Mode
+    scaling = RectifiedFlow_TrigFlowWrapper(1, args.train_sampling_steps)
+    sample_trigflow_timesteps_D = partial(
+        sample_trigflow_timesteps,
+        P_mean=0.0,
+        P_std=1.6
+    )
+
+    # ==================== Unified Helper Functions ====================
+    def denoise(model, xt, timestep, prompt_embeds, control_context,
+                noise_scheduler=None, trigflow_scaling=None, multiply_c_in=True):
+        use_trigflow = getattr(args, 'use_trigflow', False)
+        original_dtype = xt.dtype
+        device = xt.device
+        
+        if use_trigflow:
+            # TrigFlow path
+            if trigflow_scaling is None:
+                raise ValueError("trigflow_scaling is required when using trigflow")
+            
+            ndim = xt.ndim
+            trigflow_t = timestep
+            
+            if trigflow_t.ndim == 1:
+                trigflow_t = trigflow_t.view(-1, 1)
+            
+            if ndim == 4:
+                trigflow_t_expanded = trigflow_t.view(-1, 1, 1, 1)
+            elif ndim == 5:
+                trigflow_t_expanded = trigflow_t.view(-1, 1, 1, 1, 1)
+            else:
+                raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
+            
+            # Get TrigFlow preconditioning coefficients
+            c_skip, c_out, c_in, c_noise = trigflow_scaling(trigflow_t_expanded)
+            
+            # Precondition input
+            if multiply_c_in:
+                model_input = (xt * c_in).to(xt.dtype)
+            else:
+                model_input = xt.to(xt.dtype)
+
+            timestep_normalized = c_noise.squeeze(1).squeeze(1).squeeze(1).squeeze(1)
+            
+            # Model inference
+            model_output = model(
+                x=model_input,
+                cap_feats=prompt_embeds,
+                t=(1000 - timestep_normalized) / 1000,
+                control_context=control_context,
+            )[0]
+            
+            flow_pred = -model_output.double()
+            
+            # EDM-style x0 reconstruction
+            x0_pred = c_skip * xt + c_out * flow_pred
+            
+        else:
+            # Rectified Flow path
+            if noise_scheduler is None:
+                raise ValueError("scheduler is required for Rectified Flow")
+            
+            xt_double = xt.double()
+            timestep = timestep.to(device).double()
+            
+            timesteps = noise_scheduler.timesteps.to(device).double()
+            sigmas = noise_scheduler.sigmas.to(device).double()
+            timestep_id = torch.argmin((timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+            sigma_t = sigmas[timestep_id]
+            
+            ndim = xt.ndim
+            if ndim == 4:
+                sigma_t_expanded = sigma_t.view(-1, 1, 1, 1)
+            elif ndim == 5:
+                sigma_t_expanded = sigma_t.view(-1, 1, 1, 1, 1)
+            else:
+                raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
+            
+            model_output = model(
+                x=xt,
+                cap_feats=prompt_embeds,
+                t=(1000 - timestep) / 1000,
+                control_context=control_context,
+            )[0]
+            
+            flow_pred = -model_output.double()
+            
+            x0_pred = xt_double - sigma_t_expanded * flow_pred
+        
+        return x0_pred.to(original_dtype), flow_pred
+
+    def add_noise(x0, noise, timesteps, noise_scheduler=None):
+        """
+        Unified add noise function supporting both TrigFlow and Rectified Flow
+        
+        Args:
+            x0: Clean data
+            noise: Gaussian noise
+            timesteps: Timesteps
+        
+        Returns:
+            xt: Noised data
+        """
+        use_trigflow = getattr(args, 'use_trigflow', False)
+        
+        if use_trigflow:
+            # TrigFlow path: xt = cos(t) * x0 + sin(t) * noise
+            trigflow_t = timesteps
+            ndim = x0.ndim
+            
+            if trigflow_t.ndim == 1:
+                trigflow_t = trigflow_t.view(-1, 1)
+            
+            if ndim == 4:
+                trigflow_t_expanded = trigflow_t.view(-1, 1, 1, 1)
+            elif ndim == 5:
+                trigflow_t_expanded = trigflow_t.view(-1, 1, 1, 1, 1)
+            else:
+                raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
+            
+            cos_t = torch.cos(trigflow_t_expanded)
+            sin_t = torch.sin(trigflow_t_expanded)
+            
+            return cos_t * x0 + sin_t * noise
+        
+        else:
+            # Rectified Flow path: xt = (1 - sigma) * x0 + sigma * noise
+            if noise_scheduler is None:
+                raise ValueError("noise_scheduler are required for Rectified Flow")
+            
+            def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
+                sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
+                schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+                timesteps = timesteps.to(accelerator.device)
+
+                step_indices = [
+                    torch.argmin(torch.abs(schedule_timesteps - t)).item()
+                    for t in timesteps
+                ]
+                step_indices = torch.tensor(step_indices, device=accelerator.device)
+                sigma = sigmas[step_indices].flatten()
+
+                while len(sigma.shape) < n_dim:
+                    sigma = sigma.unsqueeze(-1)
+                return sigma
+            
+            sigmas = get_sigmas(timesteps, n_dim=x0.ndim, dtype=x0.dtype)
+            return (1.0 - sigmas) * x0 + sigmas * noise
+
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+        
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+            
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+            
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+                
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+                
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+                
+                result[i] = indices[i] + jitter
+            
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+            
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+        
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
         train_denoising_loss = 0.0
-        train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
             # Data batch sanity check
@@ -1623,6 +1826,7 @@ def main():
 
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_embeds = encode_prompt(
@@ -1642,163 +1846,130 @@ def main():
                 if args.low_vram:
                     real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
 
-            image_seq_len = int(target_shape[-1] // 2 * target_shape[-2] // 2)
-            mu = calculate_shift(
-                image_seq_len,
-                noise_scheduler.config.get("base_image_seq_len", 256),
-                noise_scheduler.config.get("max_image_seq_len", 4096),
-                noise_scheduler.config.get("base_shift", 0.5),
-                noise_scheduler.config.get("max_shift", 1.15),
-            )
-            noise_scheduler.sigma_min = 0.0
-            noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu) 
-            denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
-
+            if getattr(args, 'use_trigflow', False):
+                t_max = torch.arctan(torch.tensor(args.sigma_max))
+                denoising_step_list = torch.linspace(t_max.item(), 0.0, args.train_sampling_steps)
+                
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+                
+                denoising_step_list = denoising_step_list[args.train_sampling_steps - random_indices]
+            else:
+                image_seq_len = int(target_shape[-1] // 2 * target_shape[-2] // 2)
+                mu = calculate_shift(
+                    image_seq_len,
+                    noise_scheduler.config.get("base_image_seq_len", 256),
+                    noise_scheduler.config.get("max_image_seq_len", 4096),
+                    noise_scheduler.config.get("base_shift", 0.5),
+                    noise_scheduler.config.get("max_shift", 1.15),
+                )
+                noise_scheduler.sigma_min = 0.0
+                noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu)
+                
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+                
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+            print(denoising_step_list)
             with accelerator.accumulate(generator_transformer3d):
-                def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
-                    sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
-                    schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
-                    timesteps = timesteps.to(accelerator.device)
-
-                    step_indices = [
-                        torch.argmin(torch.abs(schedule_timesteps - t)).item()
-                        for t in timesteps
-                    ]
-                    step_indices = torch.tensor(step_indices, device=accelerator.device)
-                    sigma = sigmas[step_indices].flatten()
-
-                    while len(sigma.shape) < n_dim:
-                        sigma = sigma.unsqueeze(-1)
-                    return sigma
-
-                def add_noise(latents, noise, timesteps):
-                    sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-                    return (1.0 - sigmas) * latents + sigmas * noise
-
                 def generate_and_sync_list(num_denoising_steps, device):
                     indices = torch.randint(low=0, high=num_denoising_steps, size=(1,), generator=torch_rng, device=device)
                     if dist.is_initialized():
                         dist.broadcast(indices, src=0)
                     return indices.tolist()
 
-                def convert_flow_pred_to_x0(
-                    scheduler,
-                    flow_pred: torch.Tensor,
-                    xt: torch.Tensor,
-                    timestep: torch.Tensor
-                ) -> torch.Tensor:
-                    """
-                    Convert flow matching's prediction to x0 prediction.
-                    Supports both 4D [B, C, H, W] and 5D [B, C, F, H, W] inputs.
-                    """
-                    original_dtype = flow_pred.dtype
-                    device = flow_pred.device
-
-                    flow_pred = flow_pred.double()
-                    xt = xt.double()
-                    timesteps = scheduler.timesteps.to(device).double()
-                    sigmas = scheduler.sigmas.to(device).double()
-                    timestep = timestep.to(device).double()
-
-                    timestep_id = torch.argmin((timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-                    sigma_t = sigmas[timestep_id]
-
-                    ndim = flow_pred.ndim
-                    if ndim == 4:
-                        sigma_t = sigma_t.view(-1, 1, 1, 1)
-                    elif ndim == 5:
-                        sigma_t = sigma_t.view(-1, 1, 1, 1, 1)
-                    else:
-                        raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
-
-                    x0_pred = xt - sigma_t * flow_pred
-                    return x0_pred.to(original_dtype)
-
-                # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
+                
                 if step % args.gen_update_interval == 0:
                     generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                     num_denoising_steps = len(denoising_step_list)
                     final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
-
-                    # Precompute seq_len once (same for all steps)
-
-                    for index, current_timestep in enumerate(denoising_step_list):
+                    
+                    # Multi-step denoising (backward simulation)
+                    for index in range(num_denoising_steps):
                         is_final_step = (index == final_step_index)
-                        timestep = torch.full(
-                            generator_noise.shape[:1],
-                            current_timestep,
-                            device=generator_noise.device,
-                            dtype=torch.int64
-                        )
+                        current_t = denoising_step_list[index].expand(bsz).to(accelerator.device)
                         
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                             context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
-                            
+                                
                             with context_manager:
-                                generator_pred = generator_transformer3d(
-                                    x=generator_noise,
-                                    cap_feats=prompt_embeds,
-                                    t=(1000 - timestep) / 1000,
-                                    control_context=control_context
-                                )[0]
-                                generator_pred = -generator_pred
-                                generator_pred = convert_flow_pred_to_x0(
-                                    scheduler=noise_scheduler,
-                                    flow_pred=generator_pred,
+                                generator_pred, _ = denoise(
+                                    model=generator_transformer3d,
                                     xt=generator_noise,
-                                    timestep=timestep
+                                    timestep=current_t,
+                                    prompt_embeds=prompt_embeds,
+                                    control_context=control_context,
+                                    noise_scheduler=noise_scheduler,
+                                    trigflow_scaling=scaling,
+                                    multiply_c_in=False if index == 0 else True,
                                 )
                             
                             if is_final_step:
                                 break
                             
-                            next_timestep = denoising_step_list[index + 1] * torch.ones(
-                                generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
-                            )
-                            generator_noise = add_noise(
-                                generator_pred,
-                                torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                                next_timestep
-                            )
+                            # Add noise for next step
+                            if index < num_denoising_steps - 1:
+                                next_t = denoising_step_list[index + 1].expand(bsz).to(accelerator.device)
+                                generator_noise = add_noise(
+                                    generator_pred,
+                                    torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                    next_t,
+                                    noise_scheduler=noise_scheduler
+                                )
+                        
+                    if getattr(args, 'use_trigflow', False):
+                        # Sample timesteps for discriminator (D distribution)
+                        generator_timestep = sample_trigflow_timesteps_D(bsz, device=accelerator.device)
+                    else:
+                        indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                        generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
 
-                    indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
-                    generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                    # Add noise to generated samples
                     generator_denoised_input = add_noise(
                         generator_pred,
                         torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                        generator_timestep
+                        generator_timestep,
+                        noise_scheduler=noise_scheduler
                     ).detach().to(accelerator.device, dtype=weight_dtype)
 
                     # Compute fake score
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
-                        fake_score_main_cond = fake_score_transformer3d(
-                            x=generator_denoised_input,
-                            cap_feats=prompt_embeds,
-                            t=(1000 - generator_timestep) / 1000,
-                            control_context=control_context
-                        )[0]
-                        fake_score_main_cond = -fake_score_main_cond
-                        fake_score_main_cond = convert_flow_pred_to_x0(
-                            scheduler=noise_scheduler,
-                            flow_pred=fake_score_main_cond,
+                        fake_score_main_cond, _ = denoise(
+                            model=fake_score_transformer3d,
                             xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            timestep=generator_timestep,
+                            prompt_embeds=prompt_embeds,
+                            control_context=control_context,
+                            noise_scheduler=noise_scheduler,
+                            trigflow_scaling=scaling
                         )
 
                         if args.fake_guidance_scale != 0.0:
-                            fake_score_main_uncond = fake_score_transformer3d(
-                                x=generator_denoised_input,
-                                cap_feats=neg_prompt_embeds,
-                                t=(1000 - generator_timestep) / 1000,
-                                control_context=control_context,
-                            )[0]
-                            fake_score_main_uncond = -fake_score_main_uncond
-                            fake_score_main_uncond = convert_flow_pred_to_x0(
-                                scheduler=noise_scheduler,
-                                flow_pred=fake_score_main_uncond,
+                            fake_score_main_uncond, _ = denoise(
+                                model=fake_score_transformer3d,
                                 xt=generator_denoised_input,
-                                timestep=generator_timestep
+                                timestep=generator_timestep,
+                                prompt_embeds=neg_prompt_embeds,
+                                control_context=control_context,
+                                noise_scheduler=noise_scheduler,
+                                trigflow_scaling=scaling
                             )
                             fake_score_main = fake_score_main_uncond + (
                                 fake_score_main_cond - fake_score_main_uncond
@@ -1806,34 +1977,26 @@ def main():
                         else:
                             fake_score_main = fake_score_main_cond
 
-                        # Compute real score
-                        real_score_main_cond = real_score_transformer3d(
-                            x=generator_denoised_input,
-                            cap_feats=prompt_embeds,
-                            t=(1000 - generator_timestep) / 1000,
-                            control_context=control_context,
-                        )[0]
-                        real_score_main_cond = -real_score_main_cond
-                        real_score_main_cond = convert_flow_pred_to_x0(
-                            scheduler=noise_scheduler,
-                            flow_pred=real_score_main_cond,
+                        # Compute real score (teacher)
+                        real_score_main_cond, _ = denoise(
+                            model=real_score_transformer3d,
                             xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            timestep=generator_timestep,
+                            prompt_embeds=prompt_embeds,
+                            control_context=control_context,
+                            noise_scheduler=noise_scheduler,
+                            trigflow_scaling=scaling
                         )
 
                         if args.real_guidance_scale != 0.0:
-                            real_score_main_uncond = real_score_transformer3d(
-                                x=generator_denoised_input,
-                                cap_feats=neg_prompt_embeds,
-                                t=(1000 - generator_timestep) / 1000,
-                                control_context=control_context,
-                            )[0]
-                            real_score_main_uncond = -real_score_main_uncond
-                            real_score_main_uncond = convert_flow_pred_to_x0(
-                                scheduler=noise_scheduler,
-                                flow_pred=real_score_main_uncond,
+                            real_score_main_uncond, _ = denoise(
+                                model=real_score_transformer3d,
                                 xt=generator_denoised_input,
-                                timestep=generator_timestep
+                                timestep=generator_timestep,
+                                prompt_embeds=neg_prompt_embeds,
+                                control_context=control_context,
+                                noise_scheduler=noise_scheduler,
+                                trigflow_scaling=scaling
                             )
 
                             real_score_main = real_score_main_uncond + (
@@ -1845,7 +2008,7 @@ def main():
                     # DMD loss
                     fake_to_real_grad = fake_score_main - real_score_main
                     generator_to_real_norm = generator_pred - real_score_main
-                    normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
+                    normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True).clip(min=1e-5)
                     fake_to_real_grad = fake_to_real_grad / normalizer
                     fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
 
@@ -1880,63 +2043,60 @@ def main():
                     num_denoising_steps = len(denoising_step_list)
                     final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
 
-                    for index, current_timestep in enumerate(denoising_step_list):
+                    for index in range(num_denoising_steps):
                         is_final_step = (index == final_step_index)
-                        timestep = torch.full(
-                            fake_score_critic_noise.shape[:1], 
-                            current_timestep,
-                            device=fake_score_critic_noise.device,
-                            dtype=torch.int64
-                        )
-                        
+                        current_t = denoising_step_list[index].expand(bsz).to(accelerator.device)
+                    
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                            fake_score_denoised_pred = generator_transformer3d(
-                                x=fake_score_critic_noise,
-                                cap_feats=prompt_embeds,
-                                t=(1000 - timestep) / 1000,
-                                control_context=control_context,
-                            )[0]
-                            fake_score_denoised_pred = -fake_score_denoised_pred
-                            fake_score_denoised_pred = convert_flow_pred_to_x0(
-                                scheduler=noise_scheduler,
-                                flow_pred=fake_score_denoised_pred,
+                            fake_score_denoised_pred, _ = denoise(
+                                model=generator_transformer3d,
                                 xt=fake_score_critic_noise,
-                                timestep=timestep
+                                timestep=current_t,
+                                prompt_embeds=prompt_embeds,
+                                control_context=control_context,
+                                noise_scheduler=noise_scheduler,
+                                trigflow_scaling=scaling,
+                                multiply_c_in=False if index == 0 else True,
                             )
                             
                             if is_final_step:
                                 break
-                            
-                            next_timestep = denoising_step_list[index + 1] * torch.ones(
-                                fake_score_critic_noise.shape[:1], 
-                                dtype=torch.long,
-                                device=fake_score_critic_noise.device
-                            )
-                            
-                            fake_score_critic_noise = add_noise(
-                                fake_score_denoised_pred,
-                                torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng),
-                                next_timestep
-                            )
 
-                indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
-                critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                            if index < num_denoising_steps - 1:
+                                next_t = denoising_step_list[index + 1].expand(bsz).to(accelerator.device)
+                                fake_score_critic_noise = add_noise(
+                                    fake_score_denoised_pred,
+                                    torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng),
+                                    next_t,
+                                    noise_scheduler=noise_scheduler
+                                )
+
+                # Sample timesteps for critic
+                if getattr(args, 'use_trigflow', False):
+                    # Sample timesteps for discriminator (D distribution)
+                    critic_timestep = sample_trigflow_timesteps_D(bsz, device=accelerator.device)
+                else:
+                    indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                    critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
                 critic_noise = torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng)
 
                 fake_score_denoised_input = add_noise(
                     fake_score_denoised_pred,
                     critic_noise,
-                    critic_timestep
+                    critic_timestep,
+                    noise_scheduler=noise_scheduler
                 )
 
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    fake_score_denoised_output = fake_score_transformer3d(
-                        x=fake_score_denoised_input,
-                        cap_feats=prompt_embeds,
-                        t=(1000 - critic_timestep) / 1000,
+                    fake_score_pred, _ = denoise(
+                        model=fake_score_transformer3d,
+                        xt=fake_score_denoised_input,
+                        timestep=critic_timestep,
+                        prompt_embeds=prompt_embeds,
                         control_context=control_context,
-                    )[0]
-                    fake_score_denoised_output = -fake_score_denoised_output
+                        noise_scheduler=noise_scheduler,
+                        trigflow_scaling=scaling
+                    )
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
@@ -1950,10 +2110,37 @@ def main():
                     final_loss = masked_loss.mean()
                     return final_loss
 
-                denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
-                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
-                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+                # Compute weighting based on sin(t) (following rCM)
+                if getattr(args, 'use_trigflow', False):
+                    ndim = fake_score_denoised_input.ndim
+                    if critic_timestep.ndim == 1:
+                        critic_timestep_view = critic_timestep.view(-1, 1)
+                    else:
+                        critic_timestep_view = critic_timestep
+                    
+                    if ndim == 4:
+                        critic_t_expanded = critic_timestep_view.view(-1, 1, 1, 1)
+                    elif ndim == 5:
+                        critic_t_expanded = critic_timestep_view.view(-1, 1, 1, 1, 1)
+                    
+                    sin_t = torch.sin(critic_t_expanded)
+                    weighting = 1.0 / (sin_t ** 2 + 1e-8)
+                else:
+                    weighting = None
                 
+                denoising_loss = custom_mse_loss(
+                    fake_score_pred, 
+                    fake_score_denoised_pred,
+                    weighting=weighting
+                )
+        
+                avg_denoising_loss = accelerator_fake_score_transformer3d.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+            
+                if args.low_vram:
+                    generator_transformer3d = generator_transformer3d.to("cpu")
+                    torch.cuda.empty_cache()
+
                 accelerator_fake_score_transformer3d.backward(denoising_loss)
                 if accelerator_fake_score_transformer3d.sync_gradients:
                     accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)

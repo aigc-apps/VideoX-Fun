@@ -31,5 +31,6 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --enable_bucket \
   --uniform_sampling \
   --add_inpaint_info \
+  --randomize_step_indices \
   --transformer_path="models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1.safetensors" \
   --trainable_modules "control"
