@@ -1886,7 +1886,7 @@ def main():
                     random_indices = torch.tensor(args.denoising_step_indices_list)
                 
                 denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
-            print(denoising_step_list)
+
             with accelerator.accumulate(generator_transformer3d):
                 def generate_and_sync_list(num_denoising_steps, device):
                     indices = torch.randint(low=0, high=num_denoising_steps, size=(1,), generator=torch_rng, device=device)
