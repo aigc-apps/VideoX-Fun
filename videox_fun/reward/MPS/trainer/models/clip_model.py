@@ -45,7 +45,7 @@ class XCLIPModel(HFCLIPModel):
             position_ids=position_ids,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            # return_dict=return_dict,
         )
 
         # pooled_output = text_outputs[1]
@@ -81,7 +81,7 @@ class XCLIPModel(HFCLIPModel):
             pixel_values=pixel_values,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            # return_dict=return_dict,
         )
 
         # pooled_output = vision_outputs[1]  # pooled_output

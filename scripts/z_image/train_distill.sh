@@ -31,4 +31,5 @@ accelerate launch --mixed_precision="bf16" scripts/z_image/train_distill.py \
   --enable_bucket \
   --trainable_modules "." \
   --random_hw_adapt \
+  --randomize_step_indices \
   --uniform_sampling

@@ -544,6 +544,13 @@ class ZImageControlPipeline(DiffusionPipeline, FromSingleFileMixin):
             self.scheduler.config.get("max_shift", 1.15),
         )
         self.scheduler.sigma_min = 0.0
+        if num_inference_steps == 2 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 2/3
+        elif num_inference_steps <= 4 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 1/2
+
         scheduler_kwargs = {"mu": mu}
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler,

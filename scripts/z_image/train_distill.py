@@ -647,6 +647,11 @@ def parse_args():
         help="The max value of sigma in trigflow.",
     )
     parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
+    )
+    parser.add_argument(
         "--gen_update_interval",
         type=int,
         default=5,
@@ -1301,7 +1306,6 @@ def main():
         vae_stream_2 = None
 
     # RectifiedFlow Mode
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 
     # TrigFlow Mode
@@ -1465,6 +1469,55 @@ def main():
             sigmas = get_sigmas(timesteps, n_dim=x0.ndim, dtype=x0.dtype)
             return (1.0 - sigmas) * x0 + sigmas * noise
 
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+        
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+            
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+            
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+                
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+                
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+                
+                result[i] = indices[i] + jitter
+            
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+            
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+        
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
+
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
         train_denoising_loss = 0.0
@@ -1538,11 +1591,23 @@ def main():
                 if args.low_vram:
                     real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
 
+            # Create discrete denoising steps
             if getattr(args, 'use_trigflow', False):
-                # Create discrete denoising steps
                 t_max = torch.arctan(torch.tensor(args.sigma_max))
                 denoising_step_list = torch.linspace(t_max.item(), 0.0, args.train_sampling_steps)
-                denoising_step_list = denoising_step_list[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+                
+                denoising_step_list = denoising_step_list[args.train_sampling_steps - random_indices]
             else:
                 image_seq_len = int(target_shape[-1] // 2 * target_shape[-2] // 2)
                 mu = calculate_shift(
@@ -1553,8 +1618,20 @@ def main():
                     noise_scheduler.config.get("max_shift", 1.15),
                 )
                 noise_scheduler.sigma_min = 0.0
-                noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu) 
-                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+                noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu)
+
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+                
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
 
             # ==================== Generator Update (DMD) ====================
             with accelerator.accumulate(generator_transformer3d):

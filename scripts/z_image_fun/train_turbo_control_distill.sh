@@ -35,4 +35,5 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control_dis
   --trainable_modules "control" \
   --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
   --random_hw_adapt \
+  --randomize_step_indices \
   --resume_from_checkpoint="latest"

@@ -31,5 +31,6 @@ accelerate launch --mixed_precision="bf16" scripts/z_image/train_distill_lora.py
   --network_alpha=128 \
   --target_name="to_q,to_k,to_v,feed_forward.w1,feed_forward.w2,feed_forward.w3" \
   --random_hw_adapt \
+  --randomize_step_indices \
   --use_peft_lora \
   --uniform_sampling
