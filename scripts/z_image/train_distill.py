@@ -1140,7 +1140,7 @@ def main():
                 new_examples['prompt_embeds'] = prompt_embeds
         
                 neg_prompt_embeds = encode_prompt(
-                    [""], device="cpu",
+                    ["亮度过高，过曝，严重的色彩失真，低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"], device="cpu",
                     text_encoder=text_encoder, 
                     tokenizer=tokenizer,
                 )
@@ -1570,6 +1570,7 @@ def main():
 
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_embeds = encode_prompt(
@@ -1595,14 +1596,14 @@ def main():
             if getattr(args, 'use_trigflow', False):
                 t_max = torch.arctan(torch.tensor(args.sigma_max))
                 denoising_step_list = torch.linspace(t_max.item(), 0.0, args.train_sampling_steps)
-
+                
                 if getattr(args, 'randomize_step_indices', False):
                     random_indices = randomize_denoising_step_indices(
                         args.denoising_step_indices_list,
                         args.train_sampling_steps,
                         torch_rng,
                         accelerator,
-                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
                     )
                 else:
                     random_indices = torch.tensor(args.denoising_step_indices_list)
@@ -1619,14 +1620,14 @@ def main():
                 )
                 noise_scheduler.sigma_min = 0.0
                 noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device, mu=mu)
-
+                
                 if getattr(args, 'randomize_step_indices', False):
                     random_indices = randomize_denoising_step_indices(
                         args.denoising_step_indices_list,
                         args.train_sampling_steps,
                         torch_rng,
                         accelerator,
-                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
                     )
                 else:
                     random_indices = torch.tensor(args.denoising_step_indices_list)

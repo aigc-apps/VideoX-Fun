@@ -14,6 +14,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
+
 import argparse
 import contextlib
 import gc
@@ -1579,6 +1580,7 @@ def main():
 
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_embeds = encode_prompt(
@@ -1611,7 +1613,7 @@ def main():
                         args.train_sampling_steps,
                         torch_rng,
                         accelerator,
-                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
                     )
                 else:
                     random_indices = torch.tensor(args.denoising_step_indices_list)
@@ -1635,7 +1637,7 @@ def main():
                         args.train_sampling_steps,
                         torch_rng,
                         accelerator,
-                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.3),
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
                     )
                 else:
                     random_indices = torch.tensor(args.denoising_step_indices_list)
