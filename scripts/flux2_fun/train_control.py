@@ -87,7 +87,6 @@ from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
 
-
 if is_wandb_available():
     import wandb
 
@@ -1365,34 +1364,14 @@ def main():
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                template = args.prompt_template_encode
-                drop_idx = args.prompt_template_encode_start_idx
-
-                txt = [template.format(e) for e in batch['text']]
-                txt_tokens = tokenizer(
-                    txt, max_length=args.tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
-                ).to(accelerator.device)
-                encoder_hidden_states = text_encoder(
-                    input_ids=txt_tokens.input_ids,
-                    attention_mask=txt_tokens.attention_mask,
-                    output_hidden_states=True,
-                )
-                hidden_states = encoder_hidden_states.hidden_states[-1]
-                split_hidden_states = _extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
-                split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-                attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
-                max_seq_len = max([e.size(0) for e in split_hidden_states])
-                prompt_embeds = torch.stack(
-                    [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
-                )
-                encoder_attention_mask = torch.stack(
-                    [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
+                prompt_embeds, text_ids = encode_prompt(
+                    batch['text'], device="cpu",
+                    text_encoder=text_encoder, 
+                    tokenizer=tokenizer,
                 )
 
-                prompt_embeds = prompt_embeds.to(dtype=latents.dtype, device=accelerator.device)
-
-                new_examples['encoder_attention_mask'] = encoder_attention_mask
-                new_examples['encoder_hidden_states'] = prompt_embeds
+                new_examples['prompt_embeds'] = prompt_embeds
+                new_examples['text_ids'] = text_ids
 
             return new_examples
         

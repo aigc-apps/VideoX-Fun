@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -11,7 +11,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image/train.py \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1024 \
+  --image_sample_size=1328 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \

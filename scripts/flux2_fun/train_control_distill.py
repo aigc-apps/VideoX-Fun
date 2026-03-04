@@ -1355,34 +1355,21 @@ def main():
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                template = args.prompt_template_encode
-                drop_idx = args.prompt_template_encode_start_idx
-
-                txt = [template.format(e) for e in batch['text']]
-                txt_tokens = tokenizer(
-                    txt, max_length=args.tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
-                ).to(accelerator.device)
-                encoder_hidden_states = text_encoder(
-                    input_ids=txt_tokens.input_ids,
-                    attention_mask=txt_tokens.attention_mask,
-                    output_hidden_states=True,
+                prompt_embeds, text_ids = encode_prompt(
+                    batch['text'], device="cpu",
+                    text_encoder=text_encoder, 
+                    tokenizer=tokenizer,
                 )
-                hidden_states = encoder_hidden_states.hidden_states[-1]
-                split_hidden_states = _extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
-                split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-                attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
-                max_seq_len = max([e.size(0) for e in split_hidden_states])
-                prompt_embeds = torch.stack(
-                    [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
-                )
-                encoder_attention_mask = torch.stack(
-                    [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
+                neg_prompt_embeds, neg_text_ids = encode_prompt(
+                    ["低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"], device="cpu",
+                    text_encoder=text_encoder, 
+                    tokenizer=tokenizer,
                 )
 
-                prompt_embeds = prompt_embeds.to(dtype=latents.dtype, device=accelerator.device)
-
-                new_examples['encoder_attention_mask'] = encoder_attention_mask
-                new_examples['encoder_hidden_states'] = prompt_embeds
+                new_examples['prompt_embeds'] = prompt_embeds
+                new_examples['text_ids'] = text_ids
+                new_examples['neg_prompt_embeds'] = neg_prompt_embeds
+                new_examples['neg_text_ids'] = neg_text_ids
 
             return new_examples
         
@@ -1648,6 +1635,8 @@ def main():
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
                     text_ids = batch['text_ids']
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    neg_text_ids = batch['neg_text_ids']
                 else:
                     with torch.no_grad():
                         prompt_embeds, text_ids = encode_prompt(

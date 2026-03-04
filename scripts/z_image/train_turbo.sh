@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -6,8 +6,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py \
-  --config_path="config/z_image/z_image_control_2.1.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -21,7 +20,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_z_image_control" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -30,7 +29,4 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
-  --add_inpaint_info \
-  --randomize_step_indices \
-  --transformer_path="models/Personalized_Model/Z-Image-Fun-Controlnet-Union-2.1.safetensors" \
-  --trainable_modules "control"
+  --trainable_modules "."

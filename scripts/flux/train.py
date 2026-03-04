@@ -125,14 +125,6 @@ def _pack_latents(latents, batch_size, num_channels_latents, height, width):
     latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
     return latents
 
-def _extract_masked_hidden(hidden_states: torch.Tensor, mask: torch.Tensor):
-    bool_mask = mask.bool()
-    valid_lengths = bool_mask.sum(dim=1)
-    selected = hidden_states[bool_mask]
-    split_result = torch.split(selected, valid_lengths.tolist(), dim=0)
-
-    return split_result
-
 def _prepare_latent_image_ids(batch_size, height, width, device, dtype):
     latent_image_ids = torch.zeros(height, width, 3)
     latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height)[:, None]

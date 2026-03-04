@@ -27,6 +27,7 @@ class BaseReward(ABC):
         """
         pass
 
+
 class AestheticReward(BaseReward):
     """Aesthetic Predictor [V2](https://github.com/christophschuhmann/improved-aesthetic-predictor) 
     and [V2.5](https://github.com/discus0434/aesthetic-predictor-v2-5) reward model.
