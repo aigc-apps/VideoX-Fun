@@ -21,7 +21,7 @@ English | [简体中文](./README_zh-CN.md) | [日本語](./README_ja-JP.md)
 - [License](#license)
 
 # Introduction
-VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and Lora models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and Lora models to perform specific style transformations.
+VideoX-Fun is a video generation pipeline that can be used to generate AI images and videos, as well as to train baseline and LoRA models for Diffusion Transformer. We support direct prediction from pre-trained baseline models to generate videos with different resolutions, durations, and FPS. Additionally, we also support users in training their own baseline and LoRA models to perform specific style transformations.
 
 We will support quick pull-ups from different platforms, refer to [Quick Start](#quick-start).
 
