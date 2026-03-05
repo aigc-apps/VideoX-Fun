@@ -1219,8 +1219,14 @@ def remove_group_offloading(
 
 
 def safe_remove_group_offloading(obj, *args, **kwargs):
-    """Safely call remove_group_offloading"""
-    return remove_group_offloading(obj, *args, **kwargs)
+    """Safely call remove_group_offloading, and restore _execution_device if it was patched."""
+    result = remove_group_offloading(obj, *args, **kwargs)
+    # Restore the original _execution_device from the MRO if we had patched it.
+    if hasattr(obj, 'components') and hasattr(obj.__class__, '_execution_device_original'):
+        obj.__class__._execution_device = obj.__class__._execution_device_original
+        del obj.__class__._execution_device_original
+        logger.debug("Restored original _execution_device after removing group offload.")
+    return result
 
 
 def enable_group_offload(
@@ -1347,12 +1353,41 @@ def enable_group_offload(
 
 
 def safe_enable_group_offload(obj, *args, **kwargs):
-    """Safely call enable_group_offload, register default implementation if not exists"""
-    
+    """Safely call enable_group_offload, register default implementation if not exists.
+    Also patches obj._execution_device so that pipelines using group offload (which does
+    not use Accelerate _hf_hook) can still return the correct onload device instead of
+    falling back to self.device (which may be CPU after offloading).
+    """
+
     if not hasattr(obj, 'enable_group_offload'):
         obj.enable_group_offload = types.MethodType(enable_group_offload, obj)
-    
-    return obj.enable_group_offload(*args, **kwargs)
+
+    result = obj.enable_group_offload(*args, **kwargs)
+
+    # Patch _execution_device on the pipeline so it correctly returns the
+    # onload (GPU) device instead of self.device (CPU) when group offload is active.
+    onload_device = kwargs.get('onload_device') or (args[0] if args else None)
+    if onload_device is not None and hasattr(obj, 'components'):
+        onload_device = torch.device(onload_device) if isinstance(onload_device, str) else onload_device
+
+        # Save the original _execution_device before patching so safe_remove can restore it.
+        if not hasattr(obj.__class__, '_execution_device_original'):
+            obj.__class__._execution_device_original = obj.__class__._execution_device
+
+        @property
+        def _execution_device(self):
+            # Dynamically check: if any component still has group offload active,
+            # return the onload device; otherwise fall through to the original impl.
+            for _, component in self.components.items():
+                if isinstance(component, torch.nn.Module) and _is_group_offload_enabled(component):
+                    return onload_device
+            # Group offload has been removed, delegate to the saved original.
+            return self.__class__._execution_device_original.fget(self)
+
+        obj.__class__._execution_device = _execution_device
+        logger.debug(f"Patched _execution_device to return {onload_device} for group offload.")
+
+    return result
 
 
 def register_auto_device_hook(model):

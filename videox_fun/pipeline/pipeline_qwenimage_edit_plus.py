@@ -14,11 +14,11 @@
 # limitations under the License.
 
 import inspect
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
-import math
 import PIL.Image
 import torch
 from diffusers.image_processor import VaeImageProcessor
@@ -29,8 +29,8 @@ from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
 from diffusers.utils.torch_utils import randn_tensor
 
 from ..models import (AutoencoderKLQwenImage,
-                    Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor,
-                    Qwen2Tokenizer, QwenImageTransformer2DModel)
+                      Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer,
+                      Qwen2VLProcessor, QwenImageTransformer2DModel)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -786,6 +786,12 @@ class QwenImageEditPlusPipeline(DiffusionPipeline):
             self.scheduler.config.get("base_shift", 0.5),
             self.scheduler.config.get("max_shift", 1.15),
         )
+        if num_inference_steps == 2 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 2/3
+        elif num_inference_steps <= 4 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 1/2
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler,
             num_inference_steps,
