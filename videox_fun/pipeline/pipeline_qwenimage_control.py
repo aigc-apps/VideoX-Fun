@@ -699,6 +699,12 @@ class QwenImageControlPipeline(DiffusionPipeline):
             self.scheduler.config.get("base_shift", 0.5),
             self.scheduler.config.get("max_shift", 1.15),
         )
+        if num_inference_steps == 2 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 2/3
+        elif num_inference_steps <= 4 and hasattr(self.scheduler, "config") and \
+                hasattr(self.scheduler.config, "shift_terminal"):
+            self.scheduler.config.shift_terminal = 1/2
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler,
             num_inference_steps,
