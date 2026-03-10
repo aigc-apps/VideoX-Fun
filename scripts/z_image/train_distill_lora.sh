@@ -19,7 +19,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image/train_distill_lora.py
   --learning_rate=1e-04 \
   --learning_rate_critic=1e-05 \
   --seed=42 \
-  --output_dir="output_dir_z_image_distill" \
+  --output_dir="output_dir_z_image_distill_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

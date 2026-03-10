@@ -504,8 +504,8 @@ class CombineZImagePipeline:
             )
 
         pipeline.remove_all_hooks()
+        safe_remove_group_offloading(pipeline)
         undo_convert_weight_dtype_wrapper(transformer)
-        pipeline.to(device=offload_device)
         transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
@@ -747,6 +747,7 @@ class LoadZImageControlNetInPipeline:
 
         # Remove hooks
         funmodels["pipeline"].remove_all_hooks()
+        safe_remove_group_offloading(funmodels["pipeline"])
 
         # Load config
         config_path = f"{script_directory}/config/{config}"

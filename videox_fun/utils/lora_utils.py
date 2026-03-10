@@ -18,6 +18,12 @@ from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from safetensors.torch import load_file
 from transformers import T5EncoderModel
 
+from videox_fun.utils.group_offload import (_get_top_level_group_offload_hook,
+                                            _is_group_offload_enabled,
+                                            register_auto_device_hook,
+                                            safe_enable_group_offload,
+                                            safe_remove_group_offloading)
+
 
 class LoRAModule(torch.nn.Module):
     """
@@ -461,7 +467,6 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     error_count = 0
 
     for layer, elems in updates.items():
-
         if "lora_te" in layer:
             if transformer_only:
                 skipped_count += 1
@@ -554,7 +559,25 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     if sequential_cpu_offload_flag:
         print(f"[LoRA Merge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=offload_device)
-    
+    else:
+        # When group offload is active, remove and re-apply it on the whole pipeline
+        # so that all ModuleGroup.cpu_param_dict references are rebuilt from the
+        # freshly-merged weights. A simple _maybe_remove_and_reapply is not enough
+        # because .to() during merge creates new tensor objects that break cached refs.
+        try:
+            local_transformer = getattr(pipeline, sub_transformer_name)
+            if _is_group_offload_enabled(local_transformer):
+                print(f"[LoRA Merge] Removing group offload hooks from pipeline...")
+                safe_remove_group_offloading(pipeline)
+                print(f"[LoRA Merge] Re-applying group offload hooks to pipeline...")
+                register_auto_device_hook(getattr(pipeline, sub_transformer_name))
+                safe_enable_group_offload(
+                    pipeline,
+                    onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True
+                )
+                print(pipeline._execution_device)
+        except Exception as e:
+            print(f"[LoRA Merge] Warning: Failed to refresh group offload: {e}")
     print(f"[LoRA Merge] ✓ LoRA merge finished successfully")
     return pipeline
 
@@ -702,6 +725,22 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     if sequential_cpu_offload_flag:
         print(f"[LoRA Unmerge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=device)
-    
+    else:
+        # Same as merge_lora: remove and re-apply group offload on the whole pipeline
+        # to rebuild cpu_param_dict with the post-unmerge weights.
+        try:
+            local_transformer = getattr(pipeline, sub_transformer_name)
+            if _is_group_offload_enabled(local_transformer):
+                print(f"[LoRA Unmerge] Removing group offload hooks from pipeline...")
+                safe_remove_group_offloading(pipeline)
+                print(f"[LoRA Unmerge] Re-applying group offload hooks to pipeline...")
+                register_auto_device_hook(getattr(pipeline, sub_transformer_name))
+                safe_enable_group_offload(
+                    pipeline,
+                    onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True
+                )
+        except Exception as e:
+            print(f"[LoRA Unmerge] Warning: Failed to refresh group offload: {e}")
+
     print(f"[LoRA Unmerge] ✓ LoRA unmerge finished successfully")
     return pipeline
