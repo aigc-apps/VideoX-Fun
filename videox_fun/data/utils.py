@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from random import shuffle
 from threading import Thread
 
-import albumentations
 import cv2
 import numpy as np
 import torch

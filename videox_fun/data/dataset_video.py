@@ -8,7 +8,6 @@ import random
 from contextlib import contextmanager
 from threading import Thread
 
-import albumentations
 import cv2
 import librosa
 import numpy as np
