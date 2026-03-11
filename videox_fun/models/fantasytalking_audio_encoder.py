@@ -20,7 +20,13 @@ class FantasyTalkingAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin
         self.model = Wav2Vec2Model.from_pretrained(pretrained_model_path)
         self.model = self.model.to(device)
 
-    def extract_audio_feat(self, audio_path, num_frames = 81, fps = 16, sr = 16000):
+    def extract_audio_feat(
+        self, 
+        audio_path, 
+        num_frames = 81, 
+        fps = 16, 
+        sr = 16000
+    ):
         audio_input, sample_rate = librosa.load(audio_path, sr=sr)
 
         start_time = 0
@@ -34,6 +40,7 @@ class FantasyTalkingAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin
         except Exception:
             audio_segment = audio_input
 
+        # INFERENCE
         input_values = self.processor(
             audio_segment, sampling_rate=sample_rate, return_tensors="pt"
         ).input_values.to(self.model.device, self.model.dtype)
@@ -47,6 +54,7 @@ class FantasyTalkingAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin
             audio_segment, sampling_rate=sample_rate, return_tensors="pt"
         ).input_values.to(self.model.device, self.model.dtype)
 
+        # INFERENCE
         with torch.no_grad():
             fea = self.model(input_values).last_hidden_state
         return fea

@@ -22,7 +22,7 @@ from torchvision import transforms
 from transformers import T5Tokenizer
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                      Wan2_2Transformer3DModel_S2V, WanAudioEncoder,
+                      FantasyTalkingTransformer3DModel, FantasyTalkingAudioEncoder,
                       WanT5EncoderModel)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
@@ -159,8 +159,8 @@ class FantasyTalkingPipeline(DiffusionPipeline):
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
     """
 
-    _optional_components = ["transformer_2", "audio_encoder"]
-    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
+    _optional_components = ["audio_encoder"]
+    model_cpu_offload_seq = "text_encoder->clip_image_encoder->transformer->vae"
 
     _callback_tensor_inputs = [
         "latents",
@@ -172,18 +172,17 @@ class FantasyTalkingPipeline(DiffusionPipeline):
         self,
         tokenizer: AutoTokenizer,
         text_encoder: WanT5EncoderModel,
-        audio_encoder: WanAudioEncoder,
+        audio_encoder: FantasyTalkingAudioEncoder,
         vae: AutoencoderKLWan,
-        transformer: Wan2_2Transformer3DModel_S2V,
+        transformer: FantasyTalkingTransformer3DModel,
         clip_image_encoder: CLIPModel,
-        transformer_2: Wan2_2Transformer3DModel_S2V = None,
         scheduler: FlowMatchEulerDiscreteScheduler = None,
     ):
         super().__init__()
 
         self.register_modules(
             tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, 
-            transformer_2=transformer_2, scheduler=scheduler, clip_image_encoder=clip_image_encoder, audio_encoder=audio_encoder
+            clip_image_encoder=clip_image_encoder, audio_encoder=audio_encoder, scheduler=scheduler, 
         )
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
@@ -315,6 +314,11 @@ class FantasyTalkingPipeline(DiffusionPipeline):
             )
 
         return prompt_embeds, negative_prompt_embeds
+
+    def encode_audio_embeddings(self, audio_path, num_frames, fps, weight_dtype, device):
+        audio_wav2vec_fea = self.audio_encoder.extract_audio_feat(audio_path, num_frames=num_frames, fps=fps)
+        audio_wav2vec_fea = audio_wav2vec_fea.to(device, weight_dtype)
+        return audio_wav2vec_fea
 
     def prepare_latents(
         self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, latents=None, num_length_latents=None
@@ -655,7 +659,9 @@ class FantasyTalkingPipeline(DiffusionPipeline):
             clip_context = torch.zeros_like(clip_context)
 
         # Extract audio emb
-        audio_wav2vec_fea = self.audio_encoder.extract_audio_feat(audio_path, num_frames=num_frames, fps=fps)
+        audio_wav2vec_fea = self.encode_audio_embeddings(
+            audio_path, num_frames=num_frames, fps=fps, weight_dtype=weight_dtype, device=device
+        )
 
         if comfyui_progressbar:
             pbar.update(1)

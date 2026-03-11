@@ -104,7 +104,8 @@ lora_high_path          = None
 
 # Other params
 sample_size         = [832, 480]
-video_length        = 80
+# How many frames to generate per clips.
+infer_frames        = 80
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
@@ -311,8 +312,8 @@ if lora_path is not None:
         pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
-    video_length = video_length // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if video_length != 1 else 1
-    latent_frames = video_length // vae.config.temporal_compression_ratio
+    infer_frames = infer_frames // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if infer_frames != 1 else 1
+    latent_frames = infer_frames // vae.config.temporal_compression_ratio
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
@@ -322,11 +323,11 @@ with torch.no_grad():
     if ref_image is not None:
         ref_image = get_image_latent(ref_image, sample_size=sample_size)
 
-    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=None, sample_size=sample_size, fps=fps, ref_image=None)
 
     sample = pipeline(
         prompt, 
-        num_frames = video_length,
+        num_frames = infer_frames,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],

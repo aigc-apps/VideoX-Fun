@@ -1690,6 +1690,8 @@ def main():
                             new_pixel_values.append(pixel_values_bs)
                         return torch.cat(new_pixel_values, dim = 0)
 
+                    # Control pixel values Process Start
+                    # Used in padding
                     if rng is None:
                         zero_tail_frames = np.random.choice([0, 1], p = [0.90, 0.10])
                     else:
@@ -1718,6 +1720,7 @@ def main():
                     ref_latents                 = _batch_encode_vae(ref_pixel_values)
 
                     # Encode Motion latents
+                    # Determine whether to set motion_pixel_values to all zeros; all zeros means no reference value.
                     if rng is None:
                         zero_motion_pixel_values = np.random.choice([0, 1], p = [0.90, 0.10])
                     else:
@@ -1726,7 +1729,13 @@ def main():
                         height, width = control_pixel_values.size()[-2], control_pixel_values.size()[-1]
                         motion_pixel_values = torch.zeros([1, args.motion_frames, 3, height, width], dtype=control_latents.dtype, device=control_latents.device)
 
+                    # has_motion_pixel_values indicates whether there is a reference value; True means yes, False means no
+                    # If there is reference content, it corresponds to the nth generation (not the first round), so the reference value is not processed.
+                    # If there is no reference content, a reference value (first frame) can be assigned at this time or no operation is performed.
                     has_motion_pixel_values = torch.sum(motion_pixel_values) == 0
+                    # Check clip_idx to see if ref_latents is the first frame
+                    # If clip_idx is 0, it means ref_latents is the first frame, and a reference value can be assigned at this time
+                    # If clip_idx is not 0, it means ref_latents is not the first frame, and a reference value cannot be assigned at this time
                     if torch.sum(clip_idx) != 0:
                         init_first_frame = False
                     else:
@@ -1735,16 +1744,20 @@ def main():
                         else:
                             init_first_frame = rng.choice([0, 1], p = [0.50, 0.50])
                     if init_first_frame or has_motion_pixel_values:
+                        # If has_motion_pixel_values=False but enters the if statement, 
+                        # it means clip_idx is 0 and the first frame is used as reference.
                         if not has_motion_pixel_values:
                             motion_pixel_values[:, -6:, :] = ref_pixel_values
-                            
+                        
                         motion_frames_latents_length = int((args.motion_frames - 1) / sample_n_frames_bucket_interval + 1)
                         local_pixel_values = torch.cat([motion_pixel_values, pixel_values], dim = 1)
                         local_latents = _batch_encode_vae(local_pixel_values)
+                        # Separate motion_latents and the inferred latents
                         latents = local_latents[:, :, motion_frames_latents_length:]
                         motion_latents = local_latents[:, :, :motion_frames_latents_length]
                         drop_motion_frames = False
                     else:
+                        # No motion_latents reference value, but has ref_latents; typically the first round of generation.
                         local_pixel_values = torch.cat([ref_pixel_values, pixel_values], dim = 1)
                         latents = _batch_encode_vae(local_pixel_values)
                         latents = latents[:, :, 1:]
@@ -1801,13 +1814,14 @@ def main():
 
                     for bs_index in range(audio_wav2vec_fea.size()[0]):
                         if rng is None:
-                            zero_init_control_latents_conv_in = np.random.choice([0, 1], p = [0.90, 0.10])
+                            zero_init_audio_wav2vec_fea = np.random.choice([0, 1], p = [0.90, 0.10])
                         else:
-                            zero_init_control_latents_conv_in = rng.choice([0, 1], p = [0.90, 0.10])
+                            zero_init_audio_wav2vec_fea = rng.choice([0, 1], p = [0.90, 0.10])
 
-                        if zero_init_control_latents_conv_in:
+                        if zero_init_audio_wav2vec_fea:
                             audio_wav2vec_fea[bs_index] = torch.ones_like(audio_wav2vec_fea[bs_index]) * 0
 
+                    # Used in padding
                     if zero_tail_frames:
                         audio_wav2vec_fea[..., zero_frames_num:] = torch.zeros_like(audio_wav2vec_fea[..., zero_frames_num:])
                     # audio_wav2vec_fea = audio_wav2vec_fea[..., :control_pixel_values.size()[1]]

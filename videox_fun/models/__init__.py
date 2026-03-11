@@ -30,7 +30,8 @@ from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
-from .longcatvideo_audio_encoder import Wav2Vec2ModelWrapper
+from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
+                                          Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
 from .longcatvideo_transformer3d_avatar import \
     LongCatVideoAvatarTransformer3DModel

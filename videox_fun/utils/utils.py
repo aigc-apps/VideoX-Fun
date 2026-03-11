@@ -274,7 +274,10 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
         else:
             input_video = input_video_path
 
-        input_video = torch.from_numpy(np.array(input_video))[:video_length]
+        if video_length is not None:
+            input_video = torch.from_numpy(np.array(input_video))[:video_length]
+        else:
+            input_video = torch.from_numpy(np.array(input_video))
         input_video = input_video.permute([3, 0, 1, 2]).unsqueeze(0) / 255
 
         if validation_video_mask is not None:

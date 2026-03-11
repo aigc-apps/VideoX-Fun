@@ -322,8 +322,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             audio_path, return_all_layers=True)
         audio_embed_bucket, num_repeat = self.audio_encoder.get_audio_embed_bucket_fps(
             z, fps=fps, batch_frames=num_frames, m=self.audio_sample_m)
-        audio_embed_bucket = audio_embed_bucket.to(device,
-                                                   weight_dtype)
+        audio_embed_bucket = audio_embed_bucket.to(device, weight_dtype)
         audio_embed_bucket = audio_embed_bucket.unsqueeze(0)
         if len(audio_embed_bucket.shape) == 3:
             audio_embed_bucket = audio_embed_bucket.permute(0, 2, 1)
@@ -587,7 +586,9 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
+        # lat_motion_frames = 76 / 4 = 19
         lat_motion_frames = (self.motion_frames + 3) // 4
+        # lat_motion_frames ~= num_frames // 4 
         lat_target_frames = (num_frames + 3 + self.motion_frames) // 4 - lat_motion_frames
 
         # 3. Encode input prompt
@@ -610,7 +611,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             from comfy.utils import ProgressBar
             pbar = ProgressBar(num_inference_steps + 2)
 
-        # 5. Prepare latents.
+        # 4. Prepare latents.
         latent_channels = self.vae.config.latent_channels
         if comfyui_progressbar:
             pbar.update(1)
@@ -670,14 +671,14 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         if comfyui_progressbar:
             pbar.update(1)
 
-        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+        # 5. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         videos = []
         copy_timesteps = copy.deepcopy(timesteps)
         copy_latents = copy.deepcopy(latents)
         for r in range(num_repeat):
-            # Prepare timesteps
+            # 6. Prepare timesteps
             if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
                 timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, copy_timesteps, mu=1)
             elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
@@ -693,6 +694,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                 timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, copy_timesteps)
             self._num_timesteps = len(timesteps)
 
+            # 7. Prepare latents again.
             target_shape = (self.vae.latent_channels, lat_target_frames, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
             seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
             
@@ -708,7 +710,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                 copy_latents,
                 num_length_latents=target_shape[1]
             )
-            # 7. Denoising loop
+            # 8. Denoising loop
             num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
             self.transformer.num_inference_steps = num_inference_steps
             with self.progress_bar(total=num_inference_steps) as progress_bar:

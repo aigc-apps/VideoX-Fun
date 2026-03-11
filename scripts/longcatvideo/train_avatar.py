@@ -79,9 +79,9 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  get_random_mask)
 from videox_fun.data.dataset_video import VideoSpeechDataset
 from videox_fun.models import (AutoencoderKLLongCatVideo, AutoTokenizer,
-                               CLIPModel, LongCatVideoAvatarTransformer3DModel,
-                               UMT5EncoderModel, Wav2Vec2FeatureExtractor,
-                               Wav2Vec2ModelWrapper)
+                               CLIPModel, LongCatVideoAudioEncoder,
+                               LongCatVideoAvatarTransformer3DModel,
+                               UMT5EncoderModel)
 from videox_fun.pipeline import LongCatVideoAvatarPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import (calculate_dimensions,
@@ -172,7 +172,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, audio_encoder, wav2vec_feature_extractor, transformer3d, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -192,7 +192,6 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, wav2vec_feature_
                 transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 scheduler=scheduler,
                 audio_encoder=audio_encoder,
-                wav2vec_feature_extractor=wav2vec_feature_extractor,
             )
             pipeline = pipeline.to(accelerator.device)
 
@@ -881,15 +880,10 @@ def main():
         vae.eval()
 
         # Get Audio encoder (for avatar mode)
-        audio_encoder = Wav2Vec2ModelWrapper(
+        audio_encoder = LongCatVideoAudioEncoder(
             os.path.join(args.pretrained_avatar_model_name_or_path, 'chinese-wav2vec2-base')
         )
-        audio_encoder.feature_extractor._freeze_parameters()
-
-        wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-            os.path.join(args.pretrained_avatar_model_name_or_path, 'chinese-wav2vec2-base'), 
-            local_files_only=True
-        )
+        audio_encoder.audio_encoder.feature_extractor._freeze_parameters()
 
     # Get Transformer
     transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
@@ -1670,53 +1664,16 @@ def main():
                     inpaint_latents = (inpaint_latents - latents_mean) * latents_std
 
                 with torch.no_grad():
-                    def _loudness_norm(audio_array, sr=16000, lufs=-23, threshold=100):
-                        meter = pyln.Meter(sr)
-                        loudness = meter.integrated_loudness(audio_array)
-                        if abs(loudness) > threshold:
-                            return audio_array
-                        normalized_audio = pyln.normalize.loudness(audio_array, loudness, lufs)
-                        return normalized_audio
-
-                    def _add_noise_floor(audio, noise_db=-45):
-                        noise_amp = 10 ** (noise_db / 20)
-                        noise = np.random.randn(len(audio)) * noise_amp
-                        return audio + noise
-
-                    def _smooth_transients(audio, sr=16000):
-                        b, a = ss.butter(3, 3000 / (sr/2))
-                        return ss.lfilter(b, a, audio)
-
                     audio_stride = 2
+                    num_frames = pixel_values.size()[1]
                     audio_cond_embs = []
                     for index, speech_array in enumerate(audio):
-                        # speech preprocess
-                        speech_array = _loudness_norm(speech_array.cpu().numpy(), sample_rate[index])
-                        speech_array = _add_noise_floor(speech_array)
-                        speech_array = _smooth_transients(speech_array)
-
-                        # wav2vec_feature_extractor
-                        audio_feature = np.squeeze(
-                            wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate[index]).input_values
-                        )
-                        audio_feature = torch.from_numpy(audio_feature).float().to(device=accelerator.device)
-                        audio_feature = audio_feature.unsqueeze(0)
-
-                        # audio embedding
-                        embeddings = audio_encoder(audio_feature, seq_len=int(audio_stride * pixel_values.size()[1]), output_hidden_states=True)
-
-                        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
-                        audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
-
-                        # Prepare audio embedding with sliding window
-                        indices = torch.arange(2 * 2 + 1) - 2  # [-2, -1, 0, 1, 2]
-                        audio_start_idx = 0
-                        audio_end_idx = audio_start_idx + audio_stride * pixel_values.size()[1]
-                        
-                        center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + indices.unsqueeze(0)
-                        center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
-                        audio_emb = audio_emb[center_indices][None, ...].to(accelerator.device)
-            
+                        audio_emb = audio_encoder.extract_audio_feat_without_file_load(
+                            audio_segment=speech_array.cpu().numpy(),
+                            sample_rate=sample_rate[index],
+                            num_frames=num_frames,
+                            audio_stride=audio_stride
+                        ).to(accelerator.device)
                         audio_cond_embs.append(audio_emb)
                     audio_cond_embs = torch.cat(audio_cond_embs, dim=0)
                     
@@ -1911,8 +1868,7 @@ def main():
                         vae,
                         text_encoder,
                         tokenizer,
-                        audio_encoder, 
-                        wav2vec_feature_extractor,
+                        audio_encoder,
                         transformer3d,
                         args,
                         accelerator,
