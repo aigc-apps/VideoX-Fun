@@ -1584,6 +1584,7 @@ def main():
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
                     clip_image_encoder.to(accelerator.device)
+                    audio_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
 
@@ -1638,6 +1639,14 @@ def main():
                         clip_context.append(_clip_context if not zero_init_clip_in else torch.zeros_like(_clip_context))
                         
                     clip_context = torch.cat(clip_context)
+
+                with torch.no_grad():
+                    # Extract audio emb
+                    audio_wav2vec_fea = []
+                    for index in range(len(audio)):
+                        _audio_wav2vec_fea = audio_encoder.extract_audio_feat_without_file_load(audio[index], sample_rate[index])
+                        audio_wav2vec_fea.append(_audio_wav2vec_fea)
+                    audio_wav2vec_fea = torch.cat(audio_wav2vec_fea).to(weight_dtype)
                                                 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1646,6 +1655,7 @@ def main():
                 if args.low_vram:
                     vae.to('cpu')
                     clip_image_encoder.to('cpu')
+                    audio_encoder.to("cpu")
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
@@ -1668,14 +1678,6 @@ def main():
                         seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
                         prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
                         prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
-
-                with torch.no_grad():
-                    # Extract audio emb
-                    audio_wav2vec_fea = []
-                    for index in range(len(audio)):
-                        _audio_wav2vec_fea = audio_encoder.extract_audio_feat_without_file_load(audio[index], sample_rate[index])
-                        audio_wav2vec_fea.append(_audio_wav2vec_fea)
-                    audio_wav2vec_fea = torch.cat(audio_wav2vec_fea).to(weight_dtype)
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')

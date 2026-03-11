@@ -1673,9 +1673,9 @@ def main():
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
+                    audio_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
-                    audio_encoder.to("cpu")
 
                 with torch.no_grad():
                     # This way is quicker when batch grows up
@@ -1764,32 +1764,6 @@ def main():
                         motion_latents = _batch_encode_vae(motion_pixel_values)
                         drop_motion_frames = True
 
-                if args.low_vram:
-                    vae.to('cpu')
-                    torch.cuda.empty_cache()
-                    if not args.enable_text_encoder_in_dataloader:
-                        text_encoder.to(accelerator.device)
-                    audio_encoder.to(accelerator.device)
-
-                if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
-                else:
-                    with torch.no_grad():
-                        prompt_ids = tokenizer(
-                            batch['text'], 
-                            padding="max_length", 
-                            max_length=args.tokenizer_max_length, 
-                            truncation=True, 
-                            add_special_tokens=True, 
-                            return_tensors="pt"
-                        )
-                        text_input_ids = prompt_ids.input_ids
-                        prompt_attention_mask = prompt_ids.attention_mask
-
-                        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
-                        prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
-                        prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
-
                 with torch.no_grad():
                     # Extract audio emb
                     new_audio_wav2vec_fea = []
@@ -1826,9 +1800,34 @@ def main():
                         audio_wav2vec_fea[..., zero_frames_num:] = torch.zeros_like(audio_wav2vec_fea[..., zero_frames_num:])
                     # audio_wav2vec_fea = audio_wav2vec_fea[..., :control_pixel_values.size()[1]]
 
+                if args.low_vram:
+                    vae.to('cpu')
+                    audio_encoder.to("cpu")
+                    torch.cuda.empty_cache()
+                    if not args.enable_text_encoder_in_dataloader:
+                        text_encoder.to(accelerator.device)
+
+                if args.enable_text_encoder_in_dataloader:
+                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                else:
+                    with torch.no_grad():
+                        prompt_ids = tokenizer(
+                            batch['text'], 
+                            padding="max_length", 
+                            max_length=args.tokenizer_max_length, 
+                            truncation=True, 
+                            add_special_tokens=True, 
+                            return_tensors="pt"
+                        )
+                        text_input_ids = prompt_ids.input_ids
+                        prompt_attention_mask = prompt_ids.attention_mask
+
+                        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                        prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
+                        prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
-                    audio_encoder.to("cpu")
                     torch.cuda.empty_cache()
 
                 bsz, channel, num_frames, height, width = latents.size()
