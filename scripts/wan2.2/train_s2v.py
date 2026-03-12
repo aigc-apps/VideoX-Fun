@@ -190,9 +190,8 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, a
                 start_image = Image.open(args.validation_image_paths[i])
                 width, height = start_image.width, start_image.height
                 width, height = calculate_dimensions(args.video_sample_size * args.video_sample_size,  width / height)
-                video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
                 
-                pose_video, _, _, _ = get_video_to_video_latent(None, video_length=video_length, sample_size=(height, width), ref_image=None)
+                pose_video, _, _, _ = get_video_to_video_latent(None, video_length=None, sample_size=(height, width), ref_image=None)
                 ref_image = get_image_latent(args.validation_image_paths[i], sample_size=(height, width))
 
                 sample = pipeline(

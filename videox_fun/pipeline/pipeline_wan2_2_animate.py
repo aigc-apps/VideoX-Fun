@@ -703,7 +703,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
         # 5. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        target_shape = (self.vae.latent_channels, (segment_frame_length - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
+        target_shape = (self.vae.latent_channels, (segment_frame_length + 4 - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
         seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
         
         # 6. Denoising loop
@@ -737,7 +737,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
             latents = self.prepare_latents(
                 batch_size * num_videos_per_prompt,
                 latent_channels,
-                segment_frame_length,
+                segment_frame_length + 4,
                 height,
                 width,
                 weight_dtype,
