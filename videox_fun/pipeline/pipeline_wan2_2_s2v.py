@@ -158,6 +158,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
     """
 
+    _exclude_from_cpu_offload = ["audio_encoder"]
     _optional_components = ["transformer_2", "audio_encoder"]
     model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
 
@@ -317,11 +318,11 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
         return prompt_embeds, negative_prompt_embeds
 
-    def encode_audio_embeddings(self, audio_path, num_frames, fps, weight_dtype, device):
+    def encode_audio_embeddings(self, audio_path, segment_frame_length, fps, weight_dtype, device):
         z = self.audio_encoder.extract_audio_feat(
             audio_path, return_all_layers=True)
         audio_embed_bucket, num_repeat = self.audio_encoder.get_audio_embed_bucket_fps(
-            z, fps=fps, batch_frames=num_frames, m=self.audio_sample_m)
+            z, fps=fps, batch_frames=segment_frame_length, m=self.audio_sample_m)
         audio_embed_bucket = audio_embed_bucket.to(device, weight_dtype)
         audio_embed_bucket = audio_embed_bucket.unsqueeze(0)
         if len(audio_embed_bucket.shape) == 3:
@@ -330,10 +331,10 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             audio_embed_bucket = audio_embed_bucket.permute(0, 2, 3, 1)
         return audio_embed_bucket, num_repeat
 
-    def encode_pose_latents(self, pose_video, num_repeat, num_frames, size, fps, weight_dtype, device):
+    def encode_pose_latents(self, pose_video, num_repeat, segment_frame_length, size, fps, weight_dtype, device):
         height, width = size
         if not pose_video is None:
-            padding_frame_num = num_repeat * num_frames - pose_video.shape[2]
+            padding_frame_num = num_repeat * segment_frame_length - pose_video.shape[2]
             pose_video = torch.cat(
                 [
                     pose_video,
@@ -344,7 +345,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
             cond_tensors = torch.chunk(pose_video, num_repeat, dim=2)
         else:
-            cond_tensors = [-torch.ones([1, 3, num_frames, height, width])]
+            cond_tensors = [-torch.ones([1, 3, segment_frame_length, height, width])]
 
         pose_latents = []
         for r in range(len(cond_tensors)):
@@ -519,7 +520,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         ref_image: Union[torch.FloatTensor] = None,
         audio_path = None,
         pose_video = None,
-        num_frames: int = 49,
+        segment_frame_length: int = 49,
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
         guidance_scale: float = 6,
@@ -529,8 +530,8 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "numpy",
-        return_dict: bool = False,
+        output_type: str = "pil",
+        return_dict: bool = True,
         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
@@ -588,8 +589,8 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
         # lat_motion_frames = 76 / 4 = 19
         lat_motion_frames = (self.motion_frames + 3) // 4
-        # lat_motion_frames ~= num_frames // 4 
-        lat_target_frames = (num_frames + 3 + self.motion_frames) // 4 - lat_motion_frames
+        # lat_motion_frames ~= segment_frame_length // 4 
+        lat_target_frames = (segment_frame_length + 3 + self.motion_frames) // 4 - lat_motion_frames
 
         # 3. Encode input prompt
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
@@ -636,7 +637,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
 
         # Extract audio emb
         audio_emb, num_repeat = self.encode_audio_embeddings(
-            audio_path, num_frames=num_frames, fps=fps, weight_dtype=weight_dtype, device=device
+            audio_path, segment_frame_length=segment_frame_length, fps=fps, weight_dtype=weight_dtype, device=device
         )
 
         # Encode the motion latents
@@ -661,7 +662,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         pose_latents = self.encode_pose_latents(
             pose_video=pose_video,
             num_repeat=num_repeat,
-            num_frames=num_frames,
+            segment_frame_length=segment_frame_length,
             size=(height, width), 
             fps=fps,
             weight_dtype=weight_dtype, 
@@ -701,7 +702,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             latents = self.prepare_latents(
                 batch_size * num_videos_per_prompt,
                 latent_channels,
-                num_frames,
+                segment_frame_length,
                 height,
                 width,
                 weight_dtype,
@@ -725,8 +726,8 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                         
                     with torch.no_grad():
-                        left_idx = r * num_frames
-                        right_idx = r * num_frames + num_frames
+                        left_idx = r * segment_frame_length
+                        right_idx = r * segment_frame_length + segment_frame_length
                         cond_latents = pose_latents[r] if pose_video is not None else pose_latents[0] * 0
                         cond_latents = cond_latents.to(dtype=weight_dtype, device=device)
                         audio_input = audio_emb[..., left_idx:right_idx]
@@ -793,7 +794,7 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
                 decode_latents = torch.cat([ref_image_latentes, latents], dim=2)
 
             image = self.vae.decode(decode_latents).sample
-            image = image[:, :, -(num_frames):]
+            image = image[:, :, -(segment_frame_length):]
             if (drop_first_motion and r == 0):
                 image = image[:, :, 3:]
 
@@ -809,9 +810,12 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
             videos.append(image)
 
         videos = torch.cat(videos, dim=2)
-        videos = (videos / 2 + 0.5).clamp(0, 1)
+        videos = (videos / 2 + 0.5).clamp(0, 1).float().cpu()
         
         # Offload all models
         self.maybe_free_model_hooks()
 
-        return WanPipelineOutput(videos=videos.float().cpu())
+        if not return_dict:
+            return video
+
+        return WanPipelineOutput(videos=videos)

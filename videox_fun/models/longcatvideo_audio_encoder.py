@@ -350,7 +350,7 @@ class LongCatVideoAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         audio_feature = np.squeeze(
             self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
         )
-        audio_feature = torch.from_numpy(audio_feature).float().to(device=self.device)
+        audio_feature = torch.from_numpy(audio_feature).float().to(device=self.device, dtype=self.dtype)
         audio_feature = audio_feature.unsqueeze(0)
 
         # audio embedding using Wav2Vec2ModelWrapper

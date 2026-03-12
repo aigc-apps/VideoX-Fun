@@ -124,7 +124,8 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
 
     """
 
-    _optional_components = []
+    _exclude_from_cpu_offload = ["audio_encoder"]
+    _optional_components = ["audio_encoder"]
     model_cpu_offload_seq = "text_encoder->transformer->vae"
 
     _callback_tensor_inputs = [
@@ -464,8 +465,8 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "numpy",
-        return_dict: bool = False,
+        output_type: str = "pil",
+        return_dict: bool = True,
         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
@@ -685,13 +686,10 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
                 if comfyui_progressbar:
                     pbar.update(1)
 
-        if output_type == "numpy":
+        if output_type == "pil":
             latents = self.denormalize_latents(latents)
             video = self.decode_latents(latents)
-        elif not output_type == "latent":
-            latents = self.denormalize_latents(latents)
-            video = self.decode_latents(latents)
-            video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+            video = torch.from_numpy(video)
         else:
             video = latents
 
@@ -699,6 +697,6 @@ class LongCatVideoAvatarPipeline(DiffusionPipeline):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            video = torch.from_numpy(video)
+            return video
 
         return LongCatVideoAvatarPipelineOutput(videos=video)

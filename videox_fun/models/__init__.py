@@ -36,6 +36,11 @@ from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
 from .longcatvideo_transformer3d_avatar import \
     LongCatVideoAvatarTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
+from .ltx2_transformer3d import LTX2VideoTransformer3DModel
+from .ltx2_vae import AutoencoderKLLTX2Video
+from .ltx2_vae_audio import AutoencoderKLLTX2Audio
+from .ltx2_connecter import LTX2TextConnectors
+from .ltx2_vocoder import LTX2Vocoder
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel

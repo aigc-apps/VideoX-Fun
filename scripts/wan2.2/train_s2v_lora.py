@@ -207,7 +207,7 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, n
 
                 sample = pipeline(
                     args.validation_prompts[i],
-                    num_frames = args.video_sample_n_frames,
+                    segment_frame_length = args.video_sample_n_frames,
                     negative_prompt = "bad detailed",
                     height      = height,
                     width       = width,

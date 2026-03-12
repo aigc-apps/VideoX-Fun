@@ -483,8 +483,8 @@ class WanFunPhantomPipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "numpy",
-        return_dict: bool = False,
+        output_type: str = "pil",
+        return_dict: bool = True,
         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
@@ -678,11 +678,9 @@ class WanFunPhantomPipeline(DiffusionPipeline):
                 if comfyui_progressbar:
                     pbar.update(1)
 
-        if output_type == "numpy":
+        if output_type == "pil":
             video = self.decode_latents(latents)
-        elif not output_type == "latent":
-            video = self.decode_latents(latents)
-            video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+            video = torch.from_numpy(video)
         else:
             video = latents
 
@@ -690,6 +688,6 @@ class WanFunPhantomPipeline(DiffusionPipeline):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            video = torch.from_numpy(video)
+            return video
 
         return WanPipelineOutput(videos=video)

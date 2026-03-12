@@ -103,10 +103,10 @@ lora_path               = None
 lora_high_path          = None
 
 # Other params
-sample_size         = [832, 480]
+sample_size             = [832, 480]
 # How many frames to generate per clips.
-infer_frames        = 80
-fps                 = 16
+segment_frame_length    = 80
+fps                     = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -312,8 +312,8 @@ if lora_path is not None:
         pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
-    infer_frames = infer_frames // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if infer_frames != 1 else 1
-    latent_frames = infer_frames // vae.config.temporal_compression_ratio
+    segment_frame_length = segment_frame_length // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if segment_frame_length != 1 else 1
+    latent_frames = segment_frame_length // vae.config.temporal_compression_ratio
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
@@ -327,7 +327,7 @@ with torch.no_grad():
 
     sample = pipeline(
         prompt, 
-        num_frames = infer_frames,
+        segment_frame_length = segment_frame_length,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
