@@ -16,7 +16,6 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_s2v_lora.py \
   --video_sample_stride=2 \
   --video_sample_n_frames=80 \
   --train_batch_size=1 \
-  --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
