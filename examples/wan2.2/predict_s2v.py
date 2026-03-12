@@ -355,7 +355,7 @@ def save_results():
 
     index = len([path for path in os.listdir(save_path)]) + 1
     prefix = str(index).zfill(8)
-    if video_length == 1:
+    if sample.size()[2] == 1:
         video_path = os.path.join(save_path, prefix + ".png")
 
         image = sample[0, :, 0]
