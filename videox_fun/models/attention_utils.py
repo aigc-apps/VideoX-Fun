@@ -65,6 +65,56 @@ def convert_qkv_dtype(q, k, v):
         return q, k, v
 
 
+def _convert_attn_mask_to_lens(attn_mask):
+    """
+    Convert attention mask to sequence lengths for Flash Attention.
+    
+    Args:
+        attn_mask: Attention mask, can be:
+            - [B, L] with 1=valid, 0=padding
+            - [B, 1, L] or [B, 1, 1, L] attention bias with 0=valid, -inf/-10000=padding
+            - [B, H, Lq, Lk] full attention mask
+    
+    Returns:
+        k_lens: [B] tensor of valid sequence lengths, or None if not a simple padding mask
+    """
+    if attn_mask is None:
+        return None
+    
+    # Squeeze to simplest form
+    while attn_mask.ndim > 2 and attn_mask.shape[1] == 1:
+        attn_mask = attn_mask.squeeze(1)
+    
+    # Only handle [B, L] case (simple padding mask)
+    if attn_mask.ndim != 2:
+        return None
+    
+    # Check if it's attention bias format (0 and -inf/-10000) or binary mask (0/1)
+    unique_vals = torch.unique(attn_mask)
+    if len(unique_vals) > 2:
+        return None  # Complex mask, can't convert
+    
+    # Determine which value means "valid"
+    max_val = unique_vals.max().item()
+    
+    if max_val <= 0:  # Attention bias format: 0=valid, negative=padding
+        valid_mask = (attn_mask >= -1.0)  # 0 is valid
+    else:  # Binary format: 1=valid, 0=padding
+        valid_mask = (attn_mask > 0.5)
+    
+    # Check if it's a simple left-padded or right-padded mask
+    # For right-padding: [1,1,1,0,0] -> valid tokens are contiguous from start
+    k_lens = valid_mask.sum(dim=-1).to(torch.int32)
+    
+    # Verify it's actually a contiguous padding mask by reconstruction
+    B, L = valid_mask.shape
+    reconstructed = torch.arange(L, device=valid_mask.device).unsqueeze(0) < k_lens.unsqueeze(1)
+    if not torch.all(reconstructed == valid_mask):
+        return None  # Not a simple contiguous padding mask
+    
+    return k_lens
+
+
 def flash_attention_naive(
     q,
     k,
@@ -232,10 +282,21 @@ def attention(
     if torch.is_grad_enabled() and attention_type == "SAGE_ATTENTION":
         attention_type = "FLASH_ATTENTION"
 
+    # Convert attn_mask to k_lens for Flash Attention if possible
+    # Note: flash_attention doesn't support variable-length query, only set k_lens
+    if attn_mask is not None and k_lens is None and attention_type == "FLASH_ATTENTION":
+        converted_lens = _convert_attn_mask_to_lens(attn_mask)
+        if converted_lens is not None:
+            k_lens = converted_lens
+            attn_mask = None  # Successfully converted, clear the mask
+        else:
+            # Conversion failed, fallback to SDPA which supports attn_mask
+            attention_type = "SDPA"
+
     if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
         if q_lens is not None or k_lens is not None:
             warnings.warn(
-                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+                'Padding mask is disabled when using SAGE_ATTENTION. It can have a significant impact on performance.'
             )
 
         q, k, v = convert_qkv_dtype(q, k, v)

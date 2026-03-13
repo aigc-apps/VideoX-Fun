@@ -384,8 +384,8 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
         else:
             raise ValueError(f"Unsupported input dimension: {ndim}. Expected 4D or 5D.")
 
-    def get_valid_len(self, real_len, clip_len=81, overlap=1):
-        real_clip_len = clip_len - overlap
+    def get_valid_len(self, real_len, segment_frame_length=81, overlap=1):
+        real_clip_len = segment_frame_length - overlap
         last_clip_num = (real_len - overlap) % real_clip_len
         if last_clip_num == 0:
             extra = 0
@@ -568,8 +568,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
         width: int = 720,
-        clip_len=77,
-        num_frames: int = 49,
+        segment_frame_length = 77,
         num_inference_steps: int = 50,
         pose_video = None,
         face_video = None,
@@ -585,8 +584,8 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "numpy",
-        return_dict: bool = False,
+        output_type: str = "pil",
+        return_dict: bool = True,
         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
@@ -680,7 +679,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
             face_video = None
 
         real_frame_len = pose_video.size()[2]
-        target_len = self.get_valid_len(real_frame_len, clip_len, overlap=refert_num)
+        target_len = self.get_valid_len(real_frame_len, segment_frame_length, overlap=refert_num)
         print('real frames: {} target frames: {}'.format(real_frame_len, target_len))
         pose_video = self.inputs_padding(pose_video, target_len).to(device, weight_dtype) 
         face_video = self.inputs_padding(face_video, target_len).to(device, weight_dtype) 
@@ -704,12 +703,12 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
         # 5. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        target_shape = (self.vae.latent_channels, (num_frames - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
+        target_shape = (self.vae.latent_channels, (segment_frame_length + 4 - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
         seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
         
         # 6. Denoising loop
         start           = 0
-        end             = clip_len
+        end             = segment_frame_length
         all_out_frames  = []
         copy_timesteps  = copy.deepcopy(timesteps)
         copy_latents    = copy.deepcopy(latents)
@@ -738,7 +737,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
             latents = self.prepare_latents(
                 batch_size * num_videos_per_prompt,
                 latent_channels,
-                num_frames,
+                segment_frame_length + 4,
                 height,
                 width,
                 weight_dtype,
@@ -794,7 +793,7 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
                     mask_pixel_values = F.interpolate(mask_pixel_values, size=(target_shape[-1], target_shape[-2]), mode='nearest')
                     mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b c t h w", b = bs)[:, 0]
                     msk_reft = self.get_i2v_mask(
-                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
+                        int((segment_frame_length - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
                     )
                 else:
                     refer_t_pixel_values = rearrange(refer_t_pixel_values[:, :, :mask_reft_len], "b c t h w -> (b t) c h w")
@@ -805,12 +804,12 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
                         torch.concat(
                             [
                                 refer_t_pixel_values,
-                                torch.zeros(bs, 3, clip_len - mask_reft_len, height, width).to(device=device, dtype=weight_dtype),
+                                torch.zeros(bs, 3, segment_frame_length - mask_reft_len, height, width).to(device=device, dtype=weight_dtype),
                             ], dim=2,
                         ).to(device=device, dtype=weight_dtype)
                     )[0].mode()
                     msk_reft = self.get_i2v_mask(
-                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
+                        int((segment_frame_length - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
                     )
             else:
                 if replace_flag:
@@ -824,14 +823,14 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
                     mask_pixel_values = F.interpolate(mask_pixel_values, size=(target_shape[-1], target_shape[-2]), mode='nearest')
                     mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b c t h w", b = bs)[:, 0]
                     msk_reft = self.get_i2v_mask(
-                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
+                        int((segment_frame_length - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, mask_pixel_values=mask_pixel_values, device=device
                     )
                 else:
                     y_reft = self.vae.encode(
-                        torch.zeros(1, 3, clip_len - mask_reft_len, height, width).to(device=device, dtype=weight_dtype)
+                        torch.zeros(1, 3, segment_frame_length - mask_reft_len, height, width).to(device=device, dtype=weight_dtype)
                     )[0].mode()
                     msk_reft = self.get_i2v_mask(
-                        int((clip_len - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
+                        int((segment_frame_length - 1) // self.vae.temporal_compression_ratio + 1), target_shape[-1], target_shape[-2], mask_reft_len, device=device
                     )
 
             y_reft = torch.concat([msk_reft, y_reft], dim=1).to(device=device, dtype=weight_dtype)
@@ -918,12 +917,15 @@ class Wan2_2AnimatePipeline(DiffusionPipeline):
             if start != 0:
                 out_frames = out_frames[:, :, refert_num:]
             all_out_frames.append(out_frames.cpu())
-            start += clip_len - refert_num
-            end += clip_len - refert_num
+            start += segment_frame_length - refert_num
+            end += segment_frame_length - refert_num
 
-        videos = torch.cat(all_out_frames, dim=2)[:, :, :real_frame_len]
+        videos = torch.cat(all_out_frames, dim=2)[:, :, :real_frame_len].float().cpu()
 
         # Offload all models
         self.maybe_free_model_hooks()
 
-        return WanPipelineOutput(videos=videos.float().cpu())
+        if not return_dict:
+            return video
+
+        return WanPipelineOutput(videos=videos)

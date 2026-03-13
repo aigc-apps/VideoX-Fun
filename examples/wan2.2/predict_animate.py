@@ -106,9 +106,12 @@ src_bg_path             = os.path.join(src_root_path, "src_bg.mp4")
 src_mask_path           = os.path.join(src_root_path, "src_mask.mp4")
 
 # Other params
-sample_size         = [480, 832]
-video_length        = 81
-fps                 = 16
+sample_size             = [480, 832]
+# Total num frames
+video_length            = 81
+# How many frames to generate per clips.
+segment_frame_length    = 77
+fps                     = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -331,7 +334,7 @@ with torch.no_grad():
 
     sample = pipeline(
         prompt, 
-        num_frames = video_length,
+        segment_frame_length = segment_frame_length,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
