@@ -92,7 +92,7 @@ from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     get_video_to_video_latent,
-                                    save_videos_grid)
+                                    merge_video_audio, save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -226,8 +226,15 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, n
                     sample, 
                     os.path.join(
                         args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     )
+                )
+                merge_video_audio(
+                    video_path=os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
+                    ), 
+                    audio_path=args.validation_audio_paths[i]
                 )
 
             del pipeline
