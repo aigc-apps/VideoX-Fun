@@ -35,7 +35,7 @@ What's New:
 - Update CogVideoX-Fun-V1.1: Retrain i2v model, add Noise to increase the motion amplitude of the video. Upload control model training code and Control model. [2024.09.29]
 - Update CogVideoX-Fun-V1.0: Initial code release! Now supports Windows and Linux. Supports video generation at arbitrary resolutions from 256x256x49 to 1024x1024x49 for 2B and 5B models. [2024.09.18]
 
-Function：
+Functions:
 - [Data Preprocessing](#data-preprocess)
 - [Train DiT](#dit-train)
 - [Video Generation](#video-gen)
