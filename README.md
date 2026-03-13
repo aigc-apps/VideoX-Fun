@@ -78,7 +78,7 @@ cd VideoX-Fun
 mkdir models/Diffusion_Transformer
 mkdir models/Personalized_Model
 
-# Please use the hugginface link or modelscope link to download the model.
+# Please use the Hugging Face link or ModelScope link to download the model.
 # CogVideoX-Fun
 # https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP
 # https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
