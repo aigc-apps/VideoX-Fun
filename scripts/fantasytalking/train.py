@@ -210,7 +210,8 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, audio_encod
                     os.path.join(
                         args.output_dir, 
                         f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
-                    )
+                    ),
+                    fps=23
                 )
                 merge_video_audio(
                     video_path=os.path.join(
