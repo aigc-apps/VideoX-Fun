@@ -1971,7 +1971,6 @@ def main():
                 audio_loss = audio_loss.mean()
                 
                 # Combined loss (equal weighting for video and audio)
-                print(video_loss, audio_loss)
                 loss = 0.5 * video_loss + 0.5 * audio_loss
 
                 # Gather the losses across all processes for logging (if we use distributed training).
