@@ -66,7 +66,7 @@ guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/ltx2-videos-t2v"
+save_path           = "samples/ltx2-videos-i2v"
 
 # Audio sample rate will be read from vocoder config
 audio_sample_rate   = 24000
