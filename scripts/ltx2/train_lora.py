@@ -1244,10 +1244,17 @@ def main():
     mel_transform = torchaudio.transforms.MelSpectrogram(
         sample_rate=audio_sampling_rate,
         n_fft=1024,
+        win_length=1024,
         hop_length=audio_hop_length,
+        f_min=0.0,
+        f_max=audio_sampling_rate / 2.0,
         n_mels=audio_mel_bins,
-        norm='slaney',
+        window_fn=torch.hann_window,
+        center=True,
+        pad_mode="reflect",
+        power=1.0,
         mel_scale='slaney',
+        norm='slaney',
     )
 
     def worker_init_fn(_seed):
@@ -1837,14 +1844,16 @@ def main():
                 # Encode audio to latents
                 with torch.no_grad():
                     audio_batch = audio.to(device=accelerator.device, dtype=torch.float32)
-
-                    # Convert audio waveform to log-mel spectrogram using pre-created transform
+                    # audio_batch shape: [batch, channels, samples] or [batch, samples]
                     if audio_batch.ndim == 2:
                         audio_batch = audio_batch.unsqueeze(1)  # [batch, 1, samples]
-                    mel_spec = mel_transform.to(accelerator.device)(audio_batch[:, 0, :])  # [batch, n_mels, time]
-                    mel_spectrogram = mel_spec.unsqueeze(1)  # [batch, 1, n_mels, time]
-                    mel_spectrogram = mel_spectrogram.permute(0, 1, 3, 2)  # [batch, 1, time, n_mels]
-                    mel_spectrogram = torch.log(mel_spectrogram.clamp(min=1e-5))
+                        audio_batch = audio_batch.repeat(1, 2, 1) if audio_batch.dim() == 3 else audio_batch.repeat(2, 1)
+                    
+                    # Convert audio waveform to log-mel spectrogram (following official LTX-2 AudioProcessor)
+                    # mel_transform input: [batch, channels, samples] -> output: [batch, channels, n_mels, time]
+                    mel_spec = mel_transform.to(accelerator.device)(audio_batch)
+                    mel_spec = torch.log(mel_spec.clamp(min=1e-5))
+                    mel_spectrogram = mel_spec.permute(0, 1, 3, 2).contiguous()  # [batch, channels, time, n_mels]
                     
                     # Ensure mel spectrogram has the correct number of channels
                     if mel_spectrogram.shape[1] < audio_in_channels:
