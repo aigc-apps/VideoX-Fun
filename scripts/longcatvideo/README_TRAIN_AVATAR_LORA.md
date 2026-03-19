@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use DeepSpeed and FSDP in LongCatVideo-Avatar-Avatar, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in LongCatVideo-Avatar, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in VideoX-Fun, you need to add a audio_path.
 

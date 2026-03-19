@@ -1284,7 +1284,7 @@ class LTX2I2VPipeline(DiffusionPipeline, FromSingleFileMixin):
 
             latents = latents.to(self.vae.dtype)
             video = self.vae.decode(latents, timestep, return_dict=False)[0]
-            video = self.video_processor.postprocess_video(video, output_type=output_type).cpu().float().permute(0, 2, 1, 3, 4)
+            video = self.video_processor.postprocess_video(video, output_type="pt").cpu().float().permute(0, 2, 1, 3, 4)
 
             audio_latents = audio_latents.to(self.audio_vae.dtype)
             generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]

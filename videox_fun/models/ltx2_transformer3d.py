@@ -1122,6 +1122,14 @@ class LTX2VideoTransformer3DModel(
 
         self.gradient_checkpointing = False
 
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1293,8 +1301,13 @@ class LTX2VideoTransformer3DModel(
         # 5. Run transformer blocks
         for block in self.transformer_blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states, audio_hidden_states = self._gradient_checkpointing_func(
-                    block,
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+
+                hidden_states, audio_hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
                     hidden_states,
                     audio_hidden_states,
                     encoder_hidden_states,
@@ -1311,6 +1324,7 @@ class LTX2VideoTransformer3DModel(
                     audio_cross_attn_rotary_emb,
                     encoder_attention_mask,
                     audio_encoder_attention_mask,
+                    use_reentrant=False,
                 )
             else:
                 hidden_states, audio_hidden_states = block(

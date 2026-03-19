@@ -1,7 +1,6 @@
 import os
 import sys
 
-import av
 import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
@@ -19,7 +18,7 @@ from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
 from videox_fun.pipeline import LTX2I2VPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from videox_fun.utils.utils import merge_video_audio, save_videos_grid
+from videox_fun.utils.utils import save_videos_with_audio_grid
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -220,112 +219,23 @@ if lora_path is not None:
 sample = output.videos
 audio = output.audio
 
-def _prepare_audio_stream(container, audio_sample_rate):
-    from fractions import Fraction
-    audio_stream = container.add_stream("aac", rate=audio_sample_rate)
-    audio_stream.codec_context.sample_rate = audio_sample_rate
-    audio_stream.codec_context.layout = "stereo"
-    audio_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
-    return audio_stream
-
-
-def _write_audio(container, audio_stream, samples, audio_sample_rate):
-    if samples.ndim == 1:
-        samples = samples[:, None]
-    if samples.shape[1] != 2 and samples.shape[0] == 2:
-        samples = samples.T
-    if samples.shape[1] != 2:
-        # mono -> duplicate to stereo
-        samples = samples.expand(-1, 2)
-
-    if samples.dtype != torch.int16:
-        samples = torch.clip(samples, -1.0, 1.0)
-        samples = (samples * 32767.0).to(torch.int16)
-
-    frame_in = av.AudioFrame.from_ndarray(
-        samples.contiguous().reshape(1, -1).cpu().numpy(),
-        format="s16",
-        layout="stereo",
-    )
-    frame_in.sample_rate = audio_sample_rate
-
-    cc = audio_stream.codec_context
-    target_format = cc.format or "fltp"
-    target_layout = cc.layout or "stereo"
-    target_rate = cc.sample_rate or frame_in.sample_rate
-
-    resampler = av.audio.resampler.AudioResampler(
-        format=target_format,
-        layout=target_layout,
-        rate=target_rate,
-    )
-
-    audio_next_pts = 0
-    for rframe in resampler.resample(frame_in):
-        if rframe.pts is None:
-            rframe.pts = audio_next_pts
-        audio_next_pts += rframe.samples
-        rframe.sample_rate = frame_in.sample_rate
-        container.mux(audio_stream.encode(rframe))
-
-    for packet in audio_stream.encode():
-        container.mux(packet)
-
-
 def save_results():
     if not os.path.exists(save_path):
         os.makedirs(save_path, exist_ok=True)
 
     index = len([path for path in os.listdir(save_path)]) + 1
     prefix = str(index).zfill(8)
-
     if video_length == 1:
-        out_path = os.path.join(save_path, prefix + ".png")
+        video_path = os.path.join(save_path, prefix + ".png")
+
         image = sample[0, :, 0]
         image = image.transpose(0, 1).transpose(1, 2)
         image = (image * 255).numpy().astype(np.uint8)
-        Image.fromarray(image).save(out_path)
-        print(f"Saved image to: {out_path}")
-        return
-
-    import torchvision
-    from einops import rearrange
-
-    frames_t = rearrange(sample, "b c t h w -> t b c h w")
-    frame_list = []
-    for x in frames_t:
-        x = torchvision.utils.make_grid(x, nrow=6)
-        x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
-        x = (x * 255).numpy().astype(np.uint8)
-        frame_list.append(x)
-
-    height, width = frame_list[0].shape[:2]
-    audio_tensor = audio[0].float().cpu()
-    if audio_tensor.ndim == 1:
-        audio_tensor = audio_tensor.unsqueeze(-1)
-    if audio_tensor.shape[1] != 2 and audio_tensor.shape[0] == 2:
-        audio_tensor = audio_tensor.T
-    sr = getattr(pipeline.vocoder.config, "output_sampling_rate", audio_sample_rate)
-
-    out_path = os.path.join(save_path, prefix + "_with_audio.mp4")
-    container = av.open(out_path, mode="w")
-    v_stream = container.add_stream("libx264", rate=int(fps))
-    v_stream.width = width
-    v_stream.height = height
-    v_stream.pix_fmt = "yuv420p"
-
-    a_stream = _prepare_audio_stream(container, sr)
-
-    for frame_np in frame_list:
-        frame = av.VideoFrame.from_ndarray(frame_np, format="rgb24")
-        for pkt in v_stream.encode(frame):
-            container.mux(pkt)
-    for pkt in v_stream.encode():
-        container.mux(pkt)
-
-    _write_audio(container, a_stream, audio_tensor, sr)
-
-    container.close()
-    print(f"Saved merged video+audio to: {out_path}")
+        image = Image.fromarray(image)
+        image.save(video_path)
+    else:
+        video_path = os.path.join(save_path, prefix + ".mp4")
+        sr = getattr(pipeline.vocoder.config, "output_sampling_rate", audio_sample_rate)
+        save_videos_with_audio_grid(sample, audio, video_path, fps=fps, audio_sample_rate=sr)
 
 save_results()
