@@ -146,7 +146,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-    --fsdp_transformer_layer_cls_to_wrap=LongCatAvatarSingleStreamBlock --fsdp_sharding_strategy "FULL_SHARD" \
+    --fsdp_transformer_layer_cls_to_wrap=LTX2VideoTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/ltx2/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
