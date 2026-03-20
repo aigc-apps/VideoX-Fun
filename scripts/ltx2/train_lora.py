@@ -49,7 +49,6 @@ from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import GemmaTokenizerFast
 from transformers.utils import ContextManagers
 
 import datasets
@@ -69,8 +68,8 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
 from videox_fun.data.dataset_video import VideoSpeechDataset
 from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
                                Gemma3ForConditionalGeneration,
-                               LTX2TextConnectors, LTX2VideoTransformer3DModel,
-                               LTX2Vocoder)
+                               GemmaTokenizerFast, LTX2TextConnectors,
+                               LTX2VideoTransformer3DModel, LTX2Vocoder)
 from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,

@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
-from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,8 +12,9 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
-                               LTX2TextConnectors, LTX2VideoTransformer3DModel,
-                               LTX2Vocoder)
+                               Gemma3ForConditionalGeneration,
+                               GemmaTokenizerFast, LTX2TextConnectors,
+                               LTX2VideoTransformer3DModel, LTX2Vocoder)
 from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler

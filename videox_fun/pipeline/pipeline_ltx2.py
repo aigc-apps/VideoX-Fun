@@ -29,12 +29,11 @@ from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
                              replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
-from transformers import (Gemma3ForConditionalGeneration, GemmaTokenizer,
-                          GemmaTokenizerFast)
 
 from ..models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
-                      LTX2TextConnectors, LTX2VideoTransformer3DModel,
-                      LTX2Vocoder)
+                      Gemma3ForConditionalGeneration, GemmaTokenizer,
+                      GemmaTokenizerFast, LTX2TextConnectors,
+                      LTX2VideoTransformer3DModel, LTX2Vocoder)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
