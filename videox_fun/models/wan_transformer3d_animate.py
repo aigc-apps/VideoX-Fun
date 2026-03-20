@@ -2,7 +2,7 @@
 import math
 import types
 from copy import deepcopy
-from typing import List
+from typing import Any, Dict, List
 
 import numpy as np
 import torch
@@ -86,12 +86,38 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
         encode_bs = 8
         face_pixel_values_tmp = []
         for i in range(math.ceil(face_pixel_values.shape[0]/encode_bs)):
-            face_pixel_values_tmp.append(self.motion_encoder.get_motion(face_pixel_values[i*encode_bs:(i+1)*encode_bs]))
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                face_pixel_values_tmp.append(
+                    torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(self.motion_encoder.get_motion),
+                        face_pixel_values[i*encode_bs:(i+1)*encode_bs],
+                        **ckpt_kwargs
+                    )
+                )
+            else:
+                face_pixel_values_tmp.append(self.motion_encoder.get_motion(face_pixel_values[i*encode_bs:(i+1)*encode_bs]))
 
         motion_vec = torch.cat(face_pixel_values_tmp)
         
         motion_vec = rearrange(motion_vec, "(b t) c -> b t c", t=T)
-        motion_vec = self.face_encoder(motion_vec)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            motion_vec = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.face_encoder),
+                motion_vec,
+                **ckpt_kwargs
+            )
+        else:
+            motion_vec = self.face_encoder(motion_vec)
 
         B, L, H, C = motion_vec.shape
         pad_face = torch.zeros(B, 1, H, C).type_as(motion_vec)
@@ -207,14 +233,17 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                 for idx, block in enumerate(self.blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
 
-                        def create_custom_forward(module):
+                        def create_custom_forward_with_adapter(module, block_idx, motion_vec_ref):
                             def custom_forward(*inputs):
-                                return module(*inputs)
+                                x = module(*inputs)
+                                x = x.to(inputs[0].dtype)
+                                x = self.after_transformer_block(block_idx, x, motion_vec_ref.to(inputs[0].dtype))
+                                return x
 
                             return custom_forward
                         ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                         x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
+                            create_custom_forward_with_adapter(block, idx, motion_vec),
                             x,
                             e0,
                             seq_lens,
@@ -226,8 +255,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                             t,
                             **ckpt_kwargs,
                         )
-                        x, motion_vec = x.to(dtype), motion_vec.to(dtype)
-                        x = self.after_transformer_block(idx, x, motion_vec)
                     else:
                         # arguments
                         kwargs = dict(
@@ -252,14 +279,17 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
             for idx, block in enumerate(self.blocks):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
 
-                    def create_custom_forward(module):
+                    def create_custom_forward_with_adapter(module, block_idx, motion_vec_ref):
                         def custom_forward(*inputs):
-                            return module(*inputs)
+                            x = module(*inputs)
+                            x = x.to(inputs[0].dtype)
+                            x = self.after_transformer_block(block_idx, x, motion_vec_ref.to(inputs[0].dtype))
+                            return x
 
                         return custom_forward
                     ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                     x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
+                        create_custom_forward_with_adapter(block, idx, motion_vec),
                         x,
                         e0,
                         seq_lens,
@@ -271,8 +301,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                         t,
                         **ckpt_kwargs,
                     )
-                    x, motion_vec = x.to(dtype), motion_vec.to(dtype)
-                    x = self.after_transformer_block(idx, x, motion_vec)
                 else:
                     # arguments
                     kwargs = dict(
@@ -290,7 +318,20 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                     x = self.after_transformer_block(idx, x, motion_vec)
 
         # head
-        x = self.head(x, e)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            x = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.head),
+                x,
+                e,
+                **ckpt_kwargs
+            )
+        else:
+            x = self.head(x, e)
 
         # Context Parallel
         if self.sp_world_size > 1:

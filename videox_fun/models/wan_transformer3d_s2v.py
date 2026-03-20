@@ -434,7 +434,19 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                                    dtype=motion_latents[0].dtype)
             gride_sizes = []
 
-        zip_motion = self.motioner(motion_latents)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            zip_motion = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.motioner), 
+                motion_latents, 
+                **ckpt_kwargs
+            )
+        else:
+            zip_motion = self.motioner(motion_latents)
         zip_motion = self.zip_motion_out(zip_motion)
         if drop_motion_frames:
             zip_motion = zip_motion * 0.0
@@ -629,7 +641,21 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         self.merged_audio_emb = audio_emb[:, motion_frames_1:, :]
 
         # Cond states
-        cond = [self.cond_encoder(c.unsqueeze(0)) for c in cond_states]
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+            cond = [
+                torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(self.cond_encoder), 
+                    c.unsqueeze(0), 
+                    **ckpt_kwargs
+                ) for c in cond_states
+            ]
+        else:
+            cond = [self.cond_encoder(c.unsqueeze(0)) for c in cond_states]
         x = [x_ + pose for x_, pose in zip(x, cond)]
 
         grid_sizes = torch.stack(
@@ -790,14 +816,16 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                 for idx, block in enumerate(self.blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
 
-                        def create_custom_forward(module):
+                        def create_custom_forward_with_audio(module, block_idx):
                             def custom_forward(*inputs):
-                                return module(*inputs)
+                                x = module(*inputs)
+                                x = self.after_transformer_block(block_idx, x)
+                                return x
 
                             return custom_forward
                         ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                         x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
+                            create_custom_forward_with_audio(block, idx),
                             x,
                             e0,
                             seq_lens,
@@ -809,7 +837,6 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                             t,
                             **ckpt_kwargs,
                         )
-                        x = self.after_transformer_block(idx, x)
                     else:
                         # arguments
                         kwargs = dict(
@@ -833,14 +860,16 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             for idx, block in enumerate(self.blocks):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
 
-                    def create_custom_forward(module):
+                    def create_custom_forward_with_audio(module, block_idx):
                         def custom_forward(*inputs):
-                            return module(*inputs)
+                            x = module(*inputs)
+                            x = self.after_transformer_block(block_idx, x)
+                            return x
 
                         return custom_forward
                     ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                     x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
+                        create_custom_forward_with_audio(block, idx),
                         x,
                         e0,
                         seq_lens,
@@ -852,7 +881,6 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                         t,
                         **ckpt_kwargs,
                     )
-                    x = self.after_transformer_block(idx, x)
                 else:
                     # arguments
                     kwargs = dict(

@@ -282,7 +282,7 @@ class MotionEncoder_tc(nn.Module):
         x = self.norm3(x)
         x = self.act(x)
         x = rearrange(x, '(b n) t c -> b t n c', b=b)
-        padding = self.padding_tokens.repeat(b, x.shape[1], 1, 1)
+        padding = self.padding_tokens.to(x.dtype).repeat(b, x.shape[1], 1, 1)
         x = torch.cat([x, padding], dim=-2)
         x_local = x.clone()
 
@@ -332,7 +332,7 @@ class CausalAudioEncoder(nn.Module):
     def forward(self, features):
         with amp.autocast(dtype=torch.float32):
             # features B * num_layers * dim * video_length
-            weights = self.act(self.weights)
+            weights = self.act(self.weights.to(features.dtype))
             weights_sum = weights.sum(dim=1, keepdims=True)
             weighted_feat = ((features * weights) / weights_sum).sum(
                 dim=1)  # b dim f

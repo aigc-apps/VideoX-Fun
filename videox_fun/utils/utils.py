@@ -83,6 +83,121 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
             path = path.replace('.mp4', '.gif')
         outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
 
+def save_videos_with_audio_grid(
+    videos: torch.Tensor, 
+    audio: torch.Tensor, 
+    path: str, 
+    fps: int = 24, 
+    audio_sample_rate: int = 24000, 
+    n_rows: int = 6, 
+    rescale: bool = False
+):
+    """
+    Save video frames with audio to a single mp4 file.
+    
+    Args:
+        videos: Video tensor of shape (b, c, t, h, w)
+        audio: Audio tensor
+        path: Output file path
+        fps: Frames per second
+        audio_sample_rate: Audio sample rate
+        n_rows: Number of rows for grid layout
+        rescale: Whether to rescale from [-1, 1] to [0, 1]
+    """
+    import av
+    from fractions import Fraction
+    
+    # Convert video frames to numpy arrays
+    videos = rearrange(videos, "b c t h w -> t b c h w")
+    frame_list = []
+    for x in videos:
+        x = torchvision.utils.make_grid(x, nrow=n_rows)
+        x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
+        if rescale:
+            x = (x + 1.0) / 2.0  # -1,1 -> 0,1
+        x = (x * 255).numpy().astype(np.uint8)
+        frame_list.append(x)
+    
+    # Handle single frame case (save as image)
+    if len(frame_list) == 1:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        Image.fromarray(frame_list[0]).save(path.replace('.mp4', '.png'))
+        print(f"Saved image to: {path.replace('.mp4', '.png')}")
+        return
+    
+    # Prepare audio tensor
+    audio_tensor = audio[0].float().cpu()
+    if audio_tensor.ndim == 1:
+        audio_tensor = audio_tensor.unsqueeze(-1)
+    if audio_tensor.shape[1] != 2 and audio_tensor.shape[0] == 2:
+        audio_tensor = audio_tensor.T
+    if audio_tensor.shape[1] != 2:
+        # mono -> duplicate to stereo
+        audio_tensor = audio_tensor.expand(-1, 2)
+    
+    # Create output directory
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    
+    # Create video container
+    height, width = frame_list[0].shape[:2]
+    container = av.open(path, mode="w")
+    v_stream = container.add_stream("libx264", rate=int(fps))
+    v_stream.width = width
+    v_stream.height = height
+    v_stream.pix_fmt = "yuv420p"
+    
+    # Create audio stream
+    a_stream = container.add_stream("aac", rate=audio_sample_rate)
+    a_stream.codec_context.sample_rate = audio_sample_rate
+    a_stream.codec_context.layout = "stereo"
+    a_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
+    
+    # Write video frames
+    for frame_np in frame_list:
+        frame = av.VideoFrame.from_ndarray(frame_np, format="rgb24")
+        for pkt in v_stream.encode(frame):
+            container.mux(pkt)
+    for pkt in v_stream.encode():
+        container.mux(pkt)
+    
+    # Write audio
+    samples = audio_tensor
+    if samples.dtype != torch.int16:
+        samples = torch.clip(samples, -1.0, 1.0)
+        samples = (samples * 32767.0).to(torch.int16)
+    
+    frame_in = av.AudioFrame.from_ndarray(
+        samples.contiguous().reshape(1, -1).cpu().numpy(),
+        format="s16",
+        layout="stereo",
+    )
+    frame_in.sample_rate = audio_sample_rate
+    
+    cc = a_stream.codec_context
+    target_format = cc.format or "fltp"
+    target_layout = cc.layout or "stereo"
+    target_rate = cc.sample_rate or frame_in.sample_rate
+    
+    resampler = av.audio.resampler.AudioResampler(
+        format=target_format,
+        layout=target_layout,
+        rate=target_rate,
+    )
+    
+    audio_next_pts = 0
+    for rframe in resampler.resample(frame_in):
+        if rframe.pts is None:
+            rframe.pts = audio_next_pts
+        audio_next_pts += rframe.samples
+        rframe.sample_rate = frame_in.sample_rate
+        container.mux(a_stream.encode(rframe))
+    
+    for packet in a_stream.encode():
+        container.mux(packet)
+    
+    container.close()
+    print(f"Saved video with audio to: {path}")
+
 def merge_video_audio(video_path: str, audio_path: str):
     """
     Merge the video and audio into a new video, with the duration set to the shorter of the two,
@@ -274,7 +389,10 @@ def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=N
         else:
             input_video = input_video_path
 
-        input_video = torch.from_numpy(np.array(input_video))[:video_length]
+        if video_length is not None:
+            input_video = torch.from_numpy(np.array(input_video))[:video_length]
+        else:
+            input_video = torch.from_numpy(np.array(input_video))
         input_video = input_video.permute([3, 0, 1, 2]).unsqueeze(0) / 255
 
         if validation_video_mask is not None:

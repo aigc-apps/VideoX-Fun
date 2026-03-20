@@ -57,7 +57,6 @@ def linear_interpolation(features, input_fps, output_fps, output_len=None):
 
 
 class WanAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin):
-
     def __init__(self, pretrained_model_path="facebook/wav2vec2-base-960h", device='cpu'):
         super(WanAudioEncoder, self).__init__()
         # load pretrained model
@@ -68,49 +67,44 @@ class WanAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         self.video_rate = 30
 
-    def extract_audio_feat(self,
-                           audio_path,
-                           return_all_layers=False,
-                           dtype=torch.float32):
-        audio_input, sample_rate = librosa.load(audio_path, sr=16000)
+    def extract_audio_feat(
+        self,
+        audio_path,
+        return_all_layers=False,
+        sr = 16000,
+    ):
+        audio_input, sample_rate = librosa.load(audio_path, sr=sr)
 
         input_values = self.processor(
             audio_input, sampling_rate=sample_rate, return_tensors="pt"
         ).input_values
 
         # INFERENCE
-
-        # retrieve logits & take argmax
-        res = self.model(
-            input_values.to(self.model.device), output_hidden_states=True)
-        if return_all_layers:
-            feat = torch.cat(res.hidden_states)
-        else:
-            feat = res.hidden_states[-1]
-        feat = linear_interpolation(
-            feat, input_fps=50, output_fps=self.video_rate)
-
-        z = feat.to(dtype)  # Encoding for the motion
-        return z
+        with torch.no_grad():
+            res = self.model(
+                input_values.to(self.model.device), output_hidden_states=True)
+            if return_all_layers:
+                feat = torch.cat(res.hidden_states)
+            else:
+                feat = res.hidden_states[-1]
+        feat = linear_interpolation(feat, input_fps=50, output_fps=self.video_rate)
+        return feat
     
-    def extract_audio_feat_without_file_load(self, audio_input, sample_rate, return_all_layers=False, dtype=torch.float32):
+    def extract_audio_feat_without_file_load(self, audio_segment, sample_rate, return_all_layers=False):
         input_values = self.processor(
-            audio_input, sampling_rate=sample_rate, return_tensors="pt"
+            audio_segment, sampling_rate=sample_rate, return_tensors="pt"
         ).input_values
 
         # INFERENCE
-        # retrieve logits & take argmax
-        res = self.model(
-            input_values.to(self.model.device), output_hidden_states=True)
-        if return_all_layers:
-            feat = torch.cat(res.hidden_states)
-        else:
-            feat = res.hidden_states[-1]
-        feat = linear_interpolation(
-            feat, input_fps=50, output_fps=self.video_rate)
-
-        z = feat.to(dtype)  # Encoding for the motion
-        return z
+        with torch.no_grad():
+            res = self.model(
+                input_values.to(self.model.device), output_hidden_states=True)
+            if return_all_layers:
+                feat = torch.cat(res.hidden_states)
+            else:
+                feat = res.hidden_states[-1]
+        feat = linear_interpolation(feat, input_fps=50, output_fps=self.video_rate)
+        return feat
 
     def get_audio_embed_bucket(self,
                                audio_embed,
@@ -207,7 +201,6 @@ class WanAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 torch.zeros([audio_dim * (2 * m + 1)], device=audio_embed.device) if not return_all_layers \
                     else torch.zeros([num_layers, audio_dim * (2 * m + 1)], device=audio_embed.device)
             batch_audio_eb.append(frame_audio_embed)
-        batch_audio_eb = torch.cat([c.unsqueeze(0) for c in batch_audio_eb],
-                                   dim=0)
+        batch_audio_eb = torch.cat([c.unsqueeze(0) for c in batch_audio_eb], dim=0)
 
         return batch_audio_eb, min_batch_num

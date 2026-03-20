@@ -3,8 +3,10 @@ import importlib.util
 from diffusers import AutoencoderKL
 from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
                           CLIPTextModel, CLIPTokenizer,
-                          CLIPVisionModelWithProjection, LlamaModel,
-                          LlamaTokenizerFast, LlavaForConditionalGeneration,
+                          CLIPVisionModelWithProjection,
+                          Gemma3ForConditionalGeneration, GemmaTokenizer,
+                          GemmaTokenizerFast, LlamaModel, LlamaTokenizerFast,
+                          LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,
                           Qwen3Config, Qwen3ForCausalLM, T5EncoderModel,
                           T5Tokenizer, T5TokenizerFast, UMT5EncoderModel,
@@ -19,6 +21,12 @@ except Exception:
     Qwen2VLProcessor, Qwen2_5_VLConfig = None, None
     print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
+try:
+    from transformers import Qwen3VLForConditionalGeneration
+except:
+    Qwen3VLForConditionalGeneration = None
+    print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
+
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
@@ -30,11 +38,17 @@ from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
-from .longcatvideo_audio_encoder import Wav2Vec2ModelWrapper
+from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
+                                         Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
 from .longcatvideo_transformer3d_avatar import \
     LongCatVideoAvatarTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
+from .ltx2_connecter import LTX2TextConnectors
+from .ltx2_transformer3d import LTX2VideoTransformer3DModel
+from .ltx2_vae import AutoencoderKLLTX2Video
+from .ltx2_vae_audio import AutoencoderKLLTX2Audio
+from .ltx2_vocoder import LTX2Vocoder
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel

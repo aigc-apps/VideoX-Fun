@@ -17,7 +17,8 @@ from .trigflow_sampler import (RectifiedFlow_TrigFlowWrapper,
                                sample_trigflow_timesteps)
 from .utils import (calculate_dimensions, filter_kwargs, get_autocast_dtype,
                     get_image_latent, get_image_to_video_latent,
-                    get_video_to_video_latent, save_videos_grid)
+                    get_video_to_video_latent, save_videos_grid,
+                    save_videos_with_audio_grid)
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
 if importlib.util.find_spec("paifuser") is not None:

@@ -4,7 +4,6 @@ import sys
 import numpy as np
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
-from omegaconf import OmegaConf
 from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
@@ -12,18 +11,14 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLLongCatVideo, UMT5EncoderModel, AutoTokenizer,
-                              LongCatVideoTransformer3DModel)
-from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import LongCatVideoPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
+                               Gemma3ForConditionalGeneration,
+                               GemmaTokenizerFast, LTX2TextConnectors,
+                               LTX2VideoTransformer3DModel, LTX2Vocoder)
+from videox_fun.pipeline import LTX2I2VPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from videox_fun.utils.utils import save_videos_with_audio_grid
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -38,14 +33,13 @@ from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "sequential_cpu_offload"
+GPU_memory_mode     = "model_full_load"
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
-# The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
+# The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
 
 # model path
-model_name          = "models/Diffusion_Transformer/LongCat-Video"
-
+model_name          = "models/Diffusion_Transformer/LTX-2"
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
@@ -55,28 +49,36 @@ vae_path            = None
 lora_path           = None
 
 # Other params
-sample_size         = [832, 480]
-video_length        = 81
-fps                 = 16
+sample_size         = [480, 832]
+video_length        = 121
+fps                 = 24
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-# Prompt
-prompt              = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
-negative_prompt     = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
-guidance_scale      = 4.0
+# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
+validation_image_start  = "asset/1.png"
+
+# prompts
+prompt              = "A brown dog barks on a sofa, sitting on a light-colored couch in a cozy room. Behind the dog, there is a framed painting on a shelf, surrounded by pink flowers. "
+negative_prompt     = "worst quality, inconsistent motion, blurry, jittery, distorted, static, low quality, artifacts"
+guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/longcat-videos-t2v"
+save_path           = "samples/ltx2-videos-i2v"
 
-device = set_multi_gpus_devices(1, 1)
+# Audio sample rate will be read from vocoder config
+audio_sample_rate   = 24000
 
-transformer = LongCatVideoTransformer3DModel.from_pretrained(
-    os.path.join(model_name, "dit"),
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+# Transformer
+transformer = LTX2VideoTransformer3DModel.from_pretrained(
+    model_name,
+    subfolder="transformer",
     low_cpu_mem_usage=True,
-    torch_dtype=weight_dtype, cp_split_hw=[1, 1]
+    torch_dtype=weight_dtype,
 )
 
 if transformer_path is not None:
@@ -91,10 +93,12 @@ if transformer_path is not None:
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-# Get Vae
-vae = AutoencoderKLLongCatVideo.from_pretrained(
-    os.path.join(model_name, "vae"),
-).to(weight_dtype)
+# Video VAE
+vae = AutoencoderKLLTX2Video.from_pretrained(
+    model_name,
+    subfolder="vae",
+    torch_dtype=weight_dtype,
+)
 
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
@@ -108,20 +112,44 @@ if vae_path is not None:
     m, u = vae.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
+# Audio VAE
+audio_vae = AutoencoderKLLTX2Audio.from_pretrained(
+    model_name,
+    subfolder="audio_vae",
+    torch_dtype=weight_dtype,
+)
+
 # Get Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(
-    os.path.join(model_name, "tokenizer"),
+tokenizer = GemmaTokenizerFast.from_pretrained(
+    model_name,
+    subfolder="tokenizer",
 )
 
 # Get Text encoder
-text_encoder = UMT5EncoderModel.from_pretrained(
-    os.path.join(model_name, "text_encoder"),
+text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+    model_name,
+    subfolder="text_encoder",
     low_cpu_mem_usage=True,
+    torch_dtype=weight_dtype,
+)
+text_encoder = text_encoder.eval()
+
+# Connectors
+connectors = LTX2TextConnectors.from_pretrained(
+    model_name,
+    subfolder="connectors",
+    torch_dtype=weight_dtype,
+)
+
+# Vocoder
+vocoder = LTX2Vocoder.from_pretrained(
+    model_name,
+    subfolder="vocoder",
     torch_dtype=weight_dtype,
 )
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
@@ -131,31 +159,35 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-# Get Pipeline
-pipeline = LongCatVideoPipeline(
-    transformer=transformer,
-    vae=vae,
-    tokenizer=tokenizer,
-    text_encoder=text_encoder,
+pipeline = LTX2I2VPipeline(
     scheduler=scheduler,
+    vae=vae,
+    audio_vae=audio_vae,
+    text_encoder=text_encoder,
+    tokenizer=tokenizer,
+    connectors=connectors,
+    transformer=transformer,
+    vocoder=vocoder,
 )
 
 if compile_dit:
-    for i in range(len(pipeline.transformer.blocks)):
-        pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
+    for i in range(len(pipeline.transformer.transformer_blocks)):
+        pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(transformer, ["modulation",], device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
@@ -167,22 +199,25 @@ if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
-    video_length = int((video_length - 1) // vae.scale_factor_temporal * vae.scale_factor_temporal) + 1 if video_length != 1 else 1
-    latent_frames = (video_length - 1) // vae.scale_factor_temporal + 1
-
-    sample = pipeline(
-        prompt, 
-        num_frames = video_length,
-        negative_prompt = negative_prompt,
-        height      = sample_size[0],
-        width       = sample_size[1],
-        generator   = generator,
-        guidance_scale = guidance_scale,
-        num_inference_steps = num_inference_steps,
-    ).videos
+    output = pipeline(
+        image=Image.open(validation_image_start),
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=sample_size[0],
+        width=sample_size[1],
+        num_frames=video_length,
+        frame_rate=fps,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        generator=generator,
+        output_type="pt",
+    )
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+
+sample = output.videos
+audio = output.audio
 
 def save_results():
     if not os.path.exists(save_path):
@@ -200,6 +235,7 @@ def save_results():
         image.save(video_path)
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
-        save_videos_grid(sample, video_path, fps=fps)
+        sr = getattr(pipeline.vocoder.config, "output_sampling_rate", audio_sample_rate)
+        save_videos_with_audio_grid(sample, audio, video_path, fps=fps, audio_sample_rate=sr)
 
 save_results()

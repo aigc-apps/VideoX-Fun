@@ -2,7 +2,7 @@
 
 The default training commands for the different versions are as follows:
 
-We can choose whether to use DeepSpeed and FSDP in LongCatVideo-Avatar, which can save a lot of video memory. 
+We can choose whether to use DeepSpeed and FSDP in LTX2, which can save a lot of video memory. 
 
 The metadata_control.json is a little different from normal json in VideoX-Fun, you need to add a audio_path.
 
@@ -48,11 +48,10 @@ export RANK=0 # The rank of this machine
 accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/xxx/xxx.py
 ```
 
-LongCatVideo-Avatar without deepspeed:
+LTX2 without deepspeed:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
-export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -60,14 +59,14 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/ltx2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
-  --video_sample_stride=2 \
+  --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -77,7 +76,7 @@ accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar_lor
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_longcat_avatar_lora" \
+  --output_dir="output_dir_ltx2_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -90,16 +89,15 @@ accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar_lor
   --uniform_sampling \
   --rank=64 \
   --network_alpha=32 \
-  --low_vram \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
   --use_peft_lora \
-  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
+  --low_vram 
 ```
 
-LongCatVideo-Avatar with Deepspeed Zero-2:
+LTX2 with Deepspeed Zero-2:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
-export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -107,14 +105,14 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/longcatvideo/train_avatar_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/ltx2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
-  --video_sample_stride=2 \
+  --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -124,7 +122,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_longcat_avatar_lora" \
+  --output_dir="output_dir_ltx2_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -137,16 +135,15 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --uniform_sampling \
   --rank=64 \
   --network_alpha=32 \
-  --low_vram \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
   --use_peft_lora \
-  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
+  --low_vram 
 ```
 
-LongCatVideo-Avatar with FSDP:
+LTX2 with FSDP:
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
-export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -155,16 +152,16 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-    --fsdp_transformer_layer_cls_to_wrap=LongCatAvatarSingleStreamBlock --fsdp_sharding_strategy "FULL_SHARD" \
+    --fsdp_transformer_layer_cls_to_wrap=LTX2VideoTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
-    --fsdp_cpu_ram_efficient_loading False scripts/longcatvideo/train_avatar_lora.py \
+    --fsdp_cpu_ram_efficient_loading False scripts/ltx2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
-  --video_sample_stride=2 \
+  --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
@@ -174,7 +171,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_longcat_avatar_lora" \
+  --output_dir="output_dir_ltx2_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -187,7 +184,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --rank=64 \
   --network_alpha=32 \
-  --low_vram \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
   --use_peft_lora \
-  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
+  --low_vram 
 ```

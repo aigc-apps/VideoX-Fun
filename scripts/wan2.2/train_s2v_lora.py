@@ -92,7 +92,7 @@ from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     get_video_to_video_latent,
-                                    save_videos_grid)
+                                    merge_video_audio, save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -200,14 +200,13 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, n
                 start_image = Image.open(args.validation_image_paths[i])
                 width, height = start_image.width, start_image.height
                 width, height = calculate_dimensions(args.video_sample_size * args.video_sample_size,  width / height)
-                video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
                 
-                pose_video, _, _, _ = get_video_to_video_latent(None, video_length=video_length, sample_size=(height, width), ref_image=None)
+                pose_video, _, _, _ = get_video_to_video_latent(None, video_length=None, sample_size=(height, width), ref_image=None)
                 ref_image = get_image_latent(args.validation_image_paths[i], sample_size=(height, width))
 
                 sample = pipeline(
                     args.validation_prompts[i],
-                    num_frames = args.video_sample_n_frames,
+                    segment_frame_length = args.video_sample_n_frames,
                     negative_prompt = "bad detailed",
                     height      = height,
                     width       = width,
@@ -227,8 +226,16 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, n
                     sample, 
                     os.path.join(
                         args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
-                    )
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
+                    ),
+                    fps=16
+                )
+                merge_video_audio(
+                    video_path=os.path.join(
+                        args.output_dir, 
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
+                    ), 
+                    audio_path=args.validation_audio_paths[i]
                 )
 
             del pipeline
@@ -1683,9 +1690,9 @@ def main():
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
+                    audio_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
-                    audio_encoder.to("cpu")
 
                 with torch.no_grad():
                     # This way is quicker when batch grows up
@@ -1700,6 +1707,8 @@ def main():
                             new_pixel_values.append(pixel_values_bs)
                         return torch.cat(new_pixel_values, dim = 0)
 
+                    # Control pixel values Process Start
+                    # Used in padding
                     if rng is None:
                         zero_tail_frames = np.random.choice([0, 1], p = [0.90, 0.10])
                     else:
@@ -1728,6 +1737,7 @@ def main():
                     ref_latents                 = _batch_encode_vae(ref_pixel_values)
 
                     # Encode Motion latents
+                    # Determine whether to set motion_pixel_values to all zeros; all zeros means no reference value.
                     if rng is None:
                         zero_motion_pixel_values = np.random.choice([0, 1], p = [0.90, 0.10])
                     else:
@@ -1736,7 +1746,13 @@ def main():
                         height, width = control_pixel_values.size()[-2], control_pixel_values.size()[-1]
                         motion_pixel_values = torch.zeros([1, args.motion_frames, 3, height, width], dtype=control_latents.dtype, device=control_latents.device)
 
+                    # has_motion_pixel_values indicates whether there is a reference value; True means yes, False means no
+                    # If there is reference content, it corresponds to the nth generation (not the first round), so the reference value is not processed.
+                    # If there is no reference content, a reference value (first frame) can be assigned at this time or no operation is performed.
                     has_motion_pixel_values = torch.sum(motion_pixel_values) == 0
+                    # Check clip_idx to see if ref_latents is the first frame
+                    # If clip_idx is 0, it means ref_latents is the first frame, and a reference value can be assigned at this time
+                    # If clip_idx is not 0, it means ref_latents is not the first frame, and a reference value cannot be assigned at this time
                     if torch.sum(clip_idx) != 0:
                         init_first_frame = False
                     else:
@@ -1745,47 +1761,25 @@ def main():
                         else:
                             init_first_frame = rng.choice([0, 1], p = [0.50, 0.50])
                     if init_first_frame or has_motion_pixel_values:
+                        # If has_motion_pixel_values=False but enters the if statement, 
+                        # it means clip_idx is 0 and the first frame is used as reference.
                         if not has_motion_pixel_values:
                             motion_pixel_values[:, -6:, :] = ref_pixel_values
-                            
+                        
                         motion_frames_latents_length = int((args.motion_frames - 1) / sample_n_frames_bucket_interval + 1)
                         local_pixel_values = torch.cat([motion_pixel_values, pixel_values], dim = 1)
                         local_latents = _batch_encode_vae(local_pixel_values)
+                        # Separate motion_latents and the inferred latents
                         latents = local_latents[:, :, motion_frames_latents_length:]
                         motion_latents = local_latents[:, :, :motion_frames_latents_length]
                         drop_motion_frames = False
                     else:
+                        # No motion_latents reference value, but has ref_latents; typically the first round of generation.
                         local_pixel_values = torch.cat([ref_pixel_values, pixel_values], dim = 1)
                         latents = _batch_encode_vae(local_pixel_values)
                         latents = latents[:, :, 1:]
                         motion_latents = _batch_encode_vae(motion_pixel_values)
                         drop_motion_frames = True
-
-                if args.low_vram:
-                    vae.to('cpu')
-                    torch.cuda.empty_cache()
-                    if not args.enable_text_encoder_in_dataloader:
-                        text_encoder.to(accelerator.device)
-                    audio_encoder.to(accelerator.device)
-
-                if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
-                else:
-                    with torch.no_grad():
-                        prompt_ids = tokenizer(
-                            batch['text'], 
-                            padding="max_length", 
-                            max_length=args.tokenizer_max_length, 
-                            truncation=True, 
-                            add_special_tokens=True, 
-                            return_tensors="pt"
-                        )
-                        text_input_ids = prompt_ids.input_ids
-                        prompt_attention_mask = prompt_ids.attention_mask
-
-                        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
-                        prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
-                        prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
 
                 with torch.no_grad():
                     # Extract audio emb
@@ -1811,20 +1805,46 @@ def main():
 
                     for bs_index in range(audio_wav2vec_fea.size()[0]):
                         if rng is None:
-                            zero_init_control_latents_conv_in = np.random.choice([0, 1], p = [0.90, 0.10])
+                            zero_init_audio_wav2vec_fea = np.random.choice([0, 1], p = [0.90, 0.10])
                         else:
-                            zero_init_control_latents_conv_in = rng.choice([0, 1], p = [0.90, 0.10])
+                            zero_init_audio_wav2vec_fea = rng.choice([0, 1], p = [0.90, 0.10])
 
-                        if zero_init_control_latents_conv_in:
+                        if zero_init_audio_wav2vec_fea:
                             audio_wav2vec_fea[bs_index] = torch.ones_like(audio_wav2vec_fea[bs_index]) * 0
 
+                    # Used in padding
                     if zero_tail_frames:
                         audio_wav2vec_fea[..., zero_frames_num:] = torch.zeros_like(audio_wav2vec_fea[..., zero_frames_num:])
                     # audio_wav2vec_fea = audio_wav2vec_fea[..., :control_pixel_values.size()[1]]
 
+                if args.low_vram:
+                    vae.to('cpu')
+                    audio_encoder.to("cpu")
+                    torch.cuda.empty_cache()
+                    if not args.enable_text_encoder_in_dataloader:
+                        text_encoder.to(accelerator.device)
+
+                if args.enable_text_encoder_in_dataloader:
+                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                else:
+                    with torch.no_grad():
+                        prompt_ids = tokenizer(
+                            batch['text'], 
+                            padding="max_length", 
+                            max_length=args.tokenizer_max_length, 
+                            truncation=True, 
+                            add_special_tokens=True, 
+                            return_tensors="pt"
+                        )
+                        text_input_ids = prompt_ids.input_ids
+                        prompt_attention_mask = prompt_ids.attention_mask
+
+                        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                        prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
+                        prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
-                    audio_encoder.to("cpu")
                     torch.cuda.empty_cache()
 
                 bsz, channel, num_frames, height, width = latents.size()

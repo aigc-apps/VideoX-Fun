@@ -103,9 +103,10 @@ lora_path               = None
 lora_high_path          = None
 
 # Other params
-sample_size         = [832, 480]
-video_length        = 80
-fps                 = 16
+sample_size             = [832, 480]
+# How many frames to generate per clips.
+segment_frame_length    = 80
+fps                     = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
@@ -311,8 +312,8 @@ if lora_path is not None:
         pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
-    video_length = video_length // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if video_length != 1 else 1
-    latent_frames = video_length // vae.config.temporal_compression_ratio
+    segment_frame_length = segment_frame_length // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio if segment_frame_length != 1 else 1
+    latent_frames = segment_frame_length // vae.config.temporal_compression_ratio
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
@@ -322,11 +323,11 @@ with torch.no_grad():
     if ref_image is not None:
         ref_image = get_image_latent(ref_image, sample_size=sample_size)
 
-    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+    pose_video, _, _, _ = get_video_to_video_latent(control_video, video_length=None, sample_size=sample_size, fps=fps, ref_image=None)
 
     sample = pipeline(
         prompt, 
-        num_frames = video_length,
+        segment_frame_length = segment_frame_length,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],
@@ -354,7 +355,7 @@ def save_results():
 
     index = len([path for path in os.listdir(save_path)]) + 1
     prefix = str(index).zfill(8)
-    if video_length == 1:
+    if sample.size()[2] == 1:
         video_path = os.path.join(save_path, prefix + ".png")
 
         image = sample[0, :, 0]

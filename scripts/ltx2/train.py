@@ -27,18 +27,12 @@ import sys
 
 import accelerate
 import diffusers
-import ftfy
-import loguru
 import numpy as np
-import pyloudnorm as pyln
-import regex as re
-import scipy.signal as ss
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
-import torchvision.transforms.functional as TF
+import torchaudio
 import transformers
-from accelerate import Accelerator, FullyShardedDataParallelPlugin
+from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
@@ -52,14 +46,10 @@ from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
-    ShardedStateDictConfig)
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
 import datasets
@@ -78,15 +68,16 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
 from videox_fun.data.dataset_video import VideoSpeechDataset
-from videox_fun.models import (AutoencoderKLLongCatVideo, AutoTokenizer,
-                               CLIPModel, LongCatVideoAudioEncoder,
-                               LongCatVideoAvatarTransformer3DModel,
-                               UMT5EncoderModel)
-from videox_fun.pipeline import LongCatVideoAvatarPipeline
+from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
+                               Gemma3ForConditionalGeneration,
+                               GemmaTokenizerFast, LTX2TextConnectors,
+                               LTX2VideoTransformer3DModel, LTX2Vocoder)
+from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import (calculate_dimensions,
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
-                                    merge_video_audio, save_videos_grid)
+                                    save_videos_grid,
+                                    save_videos_with_audio_grid)
 
 if is_wandb_available():
     import wandb
@@ -99,80 +90,128 @@ def filter_kwargs(cls, kwargs):
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
 
-def get_random_downsample_ratio(sample_size, image_ratio=[],
-                                all_choices=False, rng=None):
-    def _create_special_list(length):
-        if length == 1:
-            return [1.0]
-        if length >= 2:
-            first_element = 0.75
-            remaining_sum = 1.0 - first_element
-            other_elements_value = remaining_sum / (length - 1)
-            special_list = [first_element] + [other_elements_value] * (length - 1)
-            return special_list
-            
-    if sample_size >= 1536:
-        number_list = [1, 1.25, 1.5, 2, 2.5, 3] + image_ratio 
-    elif sample_size >= 1024:
-        number_list = [1, 1.25, 1.5, 2] + image_ratio
-    elif sample_size >= 768:
-        number_list = [1, 1.25, 1.5] + image_ratio
-    elif sample_size >= 512:
-        number_list = [1] + image_ratio
+def linear_decay(initial_value, final_value, total_steps, current_step):
+    if current_step >= total_steps:
+        return final_value
+    current_step = max(0, current_step)
+    step_size = (final_value - initial_value) / total_steps
+    current_value = initial_value + step_size * current_step
+    return current_value
+
+def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
+    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
+    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
+    return torch.clip(t.to(torch.int32), low, high - 1)
+
+# LTX2 helper functions for packing text embeddings and latents
+def _pack_text_embeds(
+    text_hidden_states: torch.Tensor,
+    sequence_lengths: torch.Tensor,
+    device,
+    padding_side: str = "left",
+    scale_factor: int = 8,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Packs and normalizes text encoder hidden states, respecting padding."""
+    batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
+    original_dtype = text_hidden_states.dtype
+
+    # Create padding mask
+    token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
+    if padding_side == "right":
+        mask = token_indices < sequence_lengths[:, None]
+    elif padding_side == "left":
+        start_indices = seq_len - sequence_lengths[:, None]
+        mask = token_indices >= start_indices
     else:
-        number_list = [1]
+        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
+    mask = mask[:, :, None, None]
 
-    if all_choices:
-        return number_list
+    # Compute masked mean
+    masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
+    num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
+    masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
 
-    number_list_prob = np.array(_create_special_list(len(number_list)))
-    if rng is None:
-        return np.random.choice(number_list, p = number_list_prob)
-    else:
-        return rng.choice(number_list, p = number_list_prob)
+    # Compute min/max
+    x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
+    x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
 
-def resize_mask(mask, latent, process_first_frame_only=True):
-    latent_size = latent.size()
-    batch_size, channels, num_frames, height, width = mask.shape
+    # Normalization
+    normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
+    normalized_hidden_states = normalized_hidden_states * scale_factor
 
-    if process_first_frame_only:
-        target_size = list(latent_size[2:])
-        target_size[0] = 1
-        first_frame_resized = F.interpolate(
-            mask[:, :, 0:1, :, :],
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
+    # Pack the hidden states to 3D tensor
+    normalized_hidden_states = normalized_hidden_states.flatten(2)
+    mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
+    normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
+    normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
+    return normalized_hidden_states
+
+def _pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
+    """Packs latents [B, C, F, H, W] into token sequence [B, S, D]."""
+    batch_size, num_channels, num_frames, height, width = latents.shape
+    post_patch_num_frames = num_frames // patch_size_t
+    post_patch_height = height // patch_size
+    post_patch_width = width // patch_size
+    latents = latents.reshape(
+        batch_size,
+        -1,
+        post_patch_num_frames,
+        patch_size_t,
+        post_patch_height,
+        patch_size,
+        post_patch_width,
+        patch_size,
+    )
+    latents = latents.permute(0, 2, 4, 6, 1, 3, 5, 7).flatten(4, 7).flatten(1, 3)
+    return latents
+
+def _unpack_latents(
+    latents: torch.Tensor, num_frames: int, height: int, width: int, patch_size: int = 1, patch_size_t: int = 1
+) -> torch.Tensor:
+    """Unpacks token sequence [B, S, D] back to latents [B, C, F, H, W]."""
+    batch_size = latents.size(0)
+    latents = latents.reshape(batch_size, num_frames, height, width, -1, patch_size_t, patch_size, patch_size)
+    latents = latents.permute(0, 4, 1, 5, 2, 6, 3, 7).flatten(6, 7).flatten(4, 5).flatten(2, 3)
+    return latents
+
+def _normalize_latents(
+    latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor, scaling_factor: float = 1.0
+) -> torch.Tensor:
+    """Normalizes latents across the channel dimension [B, C, F, H, W]."""
+    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+    latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+    latents = (latents - latents_mean) * scaling_factor / latents_std
+    return latents
+
+def _pack_audio_latents(
+    latents: torch.Tensor, patch_size: int | None = None, patch_size_t: int | None = None
+) -> torch.Tensor:
+    """Packs audio latents [B, C, L, M] into token sequence."""
+    if patch_size is not None and patch_size_t is not None:
+        batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
+        post_patch_latent_length = latent_length / patch_size_t
+        post_patch_mel_bins = latent_mel_bins / patch_size
+        latents = latents.reshape(
+            batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size
         )
-        
-        target_size = list(latent_size[2:])
-        target_size[0] = target_size[0] - 1
-        if target_size[0] != 0:
-            remaining_frames_resized = F.interpolate(
-                mask[:, :, 1:, :, :],
-                size=target_size,
-                mode='trilinear',
-                align_corners=False
-            )
-            resized_mask = torch.cat([first_frame_resized, remaining_frames_resized], dim=2)
-        else:
-            resized_mask = first_frame_resized
+        latents = latents.permute(0, 2, 4, 1, 3, 5).flatten(3, 5).flatten(1, 2)
     else:
-        target_size = list(latent_size[2:])
-        resized_mask = F.interpolate(
-            mask,
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
-        )
-    return resized_mask
+        latents = latents.transpose(1, 2).flatten(2, 3)
+    return latents
+
+def _normalize_audio_latents(latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor):
+    """Normalizes audio latents."""
+    latents_mean = latents_mean.to(latents.device, latents.dtype)
+    latents_std = latents_std.to(latents.device, latents.dtype)
+    return (latents - latents_mean) / latents_std
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -181,17 +220,19 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, a
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
             logger.info("Running validation... ")
             scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-                args.pretrained_model_name_or_path, 
+                args.pretrained_model_name_or_path,
                 subfolder="scheduler"
             )
         
-            pipeline = LongCatVideoAvatarPipeline(
-                vae=vae,
+            pipeline = LTX2Pipeline(
+                vae=vae, 
+                audio_vae=audio_vae,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
+                connectors=connectors,
                 transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
+                vocoder=vocoder,
                 scheduler=scheduler,
-                audio_encoder=audio_encoder,
             )
             pipeline = pipeline.to(accelerator.device)
 
@@ -203,43 +244,28 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, a
                 logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
             for i in range(len(args.validation_prompts)):
-                start_image = Image.open(args.validation_image_paths[i])
-                width, height = start_image.width, start_image.height
-                width, height = calculate_dimensions(args.video_sample_size * args.video_sample_size,  width / height)
-
-                input_video, input_video_mask, clip_image = get_image_to_video_latent(args.validation_image_paths[i], None, video_length=args.video_sample_n_frames, sample_size=[height, width])
-                audio_path = args.validation_audio_paths[i]
-
-                sample = pipeline(
-                    prompt          = args.validation_prompts[i],
-                    num_frames      = args.video_sample_n_frames,
-                    negative_prompt = "Close-up, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
-                    height      = height,
-                    width       = width,
+                output = pipeline(
+                    args.validation_prompts[i],
+                    num_frames = args.video_sample_n_frames,
+                    negative_prompt = "bad detailed",
+                    height      = args.video_sample_size,
+                    width       = args.video_sample_size,
                     generator   = generator,
-                    guidance_scale = 4.5,
                     num_inference_steps = 25,
-                                
-                    audio_path  = audio_path,
-                    video       = input_video,
-                    mask_video  = input_video_mask,
-                    fps         = 16
-                ).videos
+                    guidance_scale      = 4.5,
+                )
+                sample = output.videos
+                audio = output.audio
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                save_videos_grid(
-                    sample, 
+                save_videos_with_audio_grid(
+                    sample,
+                    audio,
                     os.path.join(
-                        args.output_dir, 
+                        args.output_dir,
                         f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     ),
-                    fps=16
-                )
-                merge_video_audio(
-                    video_path=os.path.join(
-                        args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
-                    ), 
-                    audio_path=args.validation_audio_paths[i]
+                    fps=24,
+                    audio_sample_rate=24000,
                 )
 
             del pipeline
@@ -260,19 +286,6 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, a
         if not args.enable_text_encoder_in_dataloader:
             text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
-def linear_decay(initial_value, final_value, total_steps, current_step):
-    if current_step >= total_steps:
-        return final_value
-    current_step = max(0, current_step)
-    step_size = (final_value - initial_value) / total_steps
-    current_value = initial_value + step_size * current_step
-    return current_value
-
-def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=None):
-    u = torch.normal(mean=0.0, std=1.0, size=shape, device=device, generator=generator)
-    t = 1 / (1 + torch.exp(-u)) * (high - low) + low
-    return torch.clip(t.to(torch.int32), low, high - 1)
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
@@ -284,13 +297,6 @@ def parse_args():
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--pretrained_avatar_model_name_or_path",
-        type=str,
-        default=None,
-        required=True,
-        help="Path to pretrained model or model identifier for avatar.",
     )
     parser.add_argument(
         "--revision",
@@ -338,18 +344,11 @@ def parse_args():
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
-        "--validation_image_paths",
+        "--validation_paths",
         type=str,
         default=None,
         nargs="+",
-        help=("A set of images evaluated every `--validation_epochs` and logged to `--report_to`."),
-    )
-    parser.add_argument(
-        "--validation_audio_paths",
-        type=str,
-        default=None,
-        nargs="+",
-        help=("A set of audios evaluated every `--validation_epochs` and logged to `--report_to`."),
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -402,12 +401,6 @@ def parse_args():
         "--gradient_checkpointing",
         action="store_true",
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
-    )
-    parser.add_argument(
-        "--selective_ac",
-        type=float,
-        default=0,
-        help="Rate for transformer block apply checkpointing.",
     )
     parser.add_argument(
         "--learning_rate",
@@ -619,6 +612,12 @@ def parse_args():
         help="Sample size of the video.",
     )
     parser.add_argument(
+        "--image_sample_size",
+        type=int,
+        default=512,
+        help="Sample size of the image.",
+    )
+    parser.add_argument(
         "--fix_sample_size", 
         nargs=2, type=int, default=None,
         help="Fix Sample size [height, width] when using bucket and collate_fn."
@@ -640,14 +639,6 @@ def parse_args():
         type=int,
         default=0,
         help="Num of repeat video.",
-    )
-    parser.add_argument(
-        "--config_path",
-        type=str,
-        default=None,
-        help=(
-            "The config of the model in training."
-        ),
     )
     parser.add_argument(
         "--transformer_path",
@@ -687,6 +678,25 @@ def parse_args():
     )
     parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
+    )
+    parser.add_argument(
+        "--i2v_ratio",
+        type=float,
+        default=0.5,
+        help=(
+            'Ratio of I2V samples in training. 0.0 = pure T2V, 1.0 = pure I2V, '
+            '0.5 = 50%% T2V + 50%% I2V (default).'
+        ),
+    )
+    parser.add_argument(
+        "--i2v_noise_scale",
+        type=float,
+        default=0.0,
+        help=(
+            'Noise scale for I2V first frame conditioning. '
+            '0.0 means first frame is kept clean (default). '
+            'Higher values add slight noise to the condition frame.'
+        ),
     )
     parser.add_argument(
         "--abnormal_norm_clip_start",
@@ -845,13 +855,14 @@ def main():
 
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        args.pretrained_model_name_or_path, 
+        args.pretrained_model_name_or_path,
         subfolder="scheduler"
     )
 
     # Get Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        os.path.join(args.pretrained_model_name_or_path, "tokenizer"),
+    tokenizer = GemmaTokenizerFast.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="tokenizer",
     )
 
     def deepspeed_zero_init_disabled_context_manager():
@@ -875,31 +886,47 @@ def main():
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # Get Text encoder
-        text_encoder = UMT5EncoderModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, 'text_encoder'),
+        text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="text_encoder",
             low_cpu_mem_usage=True,
-            torch_dtype=weight_dtype,
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        vae = AutoencoderKLLongCatVideo.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, 'vae'),
+        vae = AutoencoderKLLTX2Video.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="vae",
         )
         vae.eval()
-
-        # Get Audio encoder (for avatar mode)
-        audio_encoder = LongCatVideoAudioEncoder(
-            os.path.join(args.pretrained_avatar_model_name_or_path, 'chinese-wav2vec2-base')
+        audio_vae = AutoencoderKLLTX2Audio.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="audio_vae",
         )
-        audio_encoder.audio_encoder.feature_extractor._freeze_parameters()
+        audio_vae.eval()
 
+        # Connectors
+        connectors = LTX2TextConnectors.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="connectors",
+        )
+        # Vocoder
+        vocoder = LTX2Vocoder.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="vocoder",
+        )
+        
     # Get Transformer
-    transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-        os.path.join(args.pretrained_avatar_model_name_or_path, 'avatar_single'),
+    transformer3d = LTX2VideoTransformer3DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
+    audio_vae.requires_grad_(False)
+    connectors.requires_grad_(False)
+    vocoder.requires_grad_(False)
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
 
@@ -948,11 +975,11 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("FSDP does not support EMA.")
 
-        ema_transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, 'dit'),
+        ema_transformer3d = LTX2VideoTransformer3DModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="transformer"
         ).to(weight_dtype)
 
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LongCatVideoAvatarTransformer3DModel, model_config=ema_transformer3d.config)
+        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=ema_transformer3d.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -994,11 +1021,11 @@ def main():
             def load_model_hook(models, input_dir):
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = LongCatVideoAvatarTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+                    _, ema_kwargs = LTX2VideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = LTX2VideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                     )
-                    load_model = EMAModel(load_model.parameters(), model_cls=LongCatVideoAvatarTransformer3DModel, model_config=load_model.config)
+                    load_model = EMAModel(load_model.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
 
                     ema_transformer3d.load_state_dict(load_model.state_dict())
@@ -1010,7 +1037,7 @@ def main():
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+                    load_model = LTX2VideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer"
                     )
                     model.register_to_config(**load_model.config)
@@ -1030,11 +1057,6 @@ def main():
 
     if args.gradient_checkpointing:
         transformer3d.enable_gradient_checkpointing()
-    elif args.selective_ac > 0:
-        from videox_fun.models.wan_transformer3d import WanAttentionBlock
-        from videox_fun.utils.ac_handle import apply_checkpointing, partial
-        apply_selective_ac = partial(apply_checkpointing, block=WanAttentionBlock)
-        apply_selective_ac(transformer3d, p=args.selective_ac)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -1114,10 +1136,11 @@ def main():
         )
 
     # Get the training dataset
-    sample_n_frames_bucket_interval = vae.config.scale_factor_temporal
+    sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
         args.training_with_video_token_length = False
         args.random_hw_adapt = False
 
@@ -1125,7 +1148,28 @@ def main():
     train_dataset = VideoSpeechDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
-        enable_bucket=args.enable_bucket, enable_inpaint=True,
+        enable_bucket=args.enable_bucket, enable_inpaint=True, audio_sr=getattr(audio_vae.config, 'sample_rate', 16000),
+    )
+
+    # Pre-create mel spectrogram transform (avoid recreating per iteration)
+    audio_sampling_rate = getattr(audio_vae.config, 'sample_rate', 16000)
+    audio_hop_length = getattr(audio_vae.config, 'mel_hop_length', 160)
+    audio_mel_bins = getattr(audio_vae.config, 'mel_bins', 64)
+    audio_in_channels = getattr(audio_vae.config, 'in_channels', 2)
+    mel_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=audio_sampling_rate,
+        n_fft=1024,
+        win_length=1024,
+        hop_length=audio_hop_length,
+        f_min=0.0,
+        f_max=audio_sampling_rate / 2.0,
+        n_mels=audio_mel_bins,
+        window_fn=torch.hann_window,
+        center=True,
+        pad_mode="reflect",
+        power=1.0,
+        mel_scale='slaney',
+        norm='slaney',
     )
 
     def worker_init_fn(_seed):
@@ -1203,7 +1247,7 @@ def main():
             new_examples["pixel_values"] = []
             new_examples["text"]         = []
             new_examples["audio"]        = []
-            new_examples["sample_rate"] = []
+            new_examples["fps"]          = []
             
             # Used in Inpaint mode 
             new_examples["mask_pixel_values"] = []
@@ -1245,10 +1289,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+                random_sample_size = [int(x / 64) * 64 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
+                closest_size = [int(x / 64) * 64 for x in closest_size]
 
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
@@ -1318,7 +1362,7 @@ def main():
                 audio_length = np.shape(example["audio"])[0]
                 batch_audio_length = int(audio_length / pixel_values.size()[0] * batch_video_length)
                 new_examples["audio"].append(example["audio"][:batch_audio_length])
-                new_examples["sample_rate"].append(example["sample_rate"])
+                new_examples["fps"].append(example.get("fps", 24))
 
                 mask = get_random_mask(new_examples["pixel_values"][-1].size(), image_start_only=True)
                 mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
@@ -1336,10 +1380,18 @@ def main():
             new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
             new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
             new_examples["clip_pixel_values"] = torch.stack([example for example in new_examples["clip_pixel_values"]])
+
+            # Pad audio to same length and stack
             new_examples["audio"] = torch.stack([example for example in new_examples["audio"]])
+            new_examples["fps"] = new_examples["fps"]
             
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
+                # Gemma expects left padding for chat-style prompts
+                tokenizer.padding_side = "left"
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                    
                 prompt_ids = tokenizer(
                     new_examples['text'], 
                     max_length=args.tokenizer_max_length, 
@@ -1348,11 +1400,25 @@ def main():
                     truncation=True, 
                     return_tensors="pt"
                 )
-                encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
-                )[0]
+                text_encoder_outputs = text_encoder(
+                    input_ids=prompt_ids.input_ids,
+                    attention_mask=prompt_ids.attention_mask,
+                    output_hidden_states=True
+                )
+                text_encoder_hidden_states = text_encoder_outputs.hidden_states
+                text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
+                
+                # Pack text embeddings (normalized and flattened)
+                sequence_lengths = prompt_ids.attention_mask.sum(dim=-1)
+                prompt_embeds = _pack_text_embeds(
+                    text_encoder_hidden_states,
+                    sequence_lengths,
+                    device=text_encoder_hidden_states.device,
+                    padding_side=tokenizer.padding_side,
+                    scale_factor=8,
+                )
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
-                new_examples['encoder_hidden_states'] = encoder_hidden_states
+                new_examples['encoder_hidden_states'] = prompt_embeds
 
             return new_examples
         
@@ -1399,8 +1465,14 @@ def main():
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
+        from packaging.version import parse as parse_version
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.encoder.block)
+
+        if parse_version(transformers.__version__) <= parse_version("4.51.3"):
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.model.layers)
+        else:
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
     if args.use_ema:
@@ -1408,9 +1480,11 @@ def main():
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    audio_vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    vocoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    connectors.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    audio_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1492,12 +1566,10 @@ def main():
     )
 
     if args.multi_stream:
-        # create extra cuda streams to speedup inpaint vae computation
+        # create extra cuda streams to speedup vae computation
         vae_stream_1 = torch.cuda.Stream()
-        vae_stream_2 = torch.cuda.Stream()
     else:
         vae_stream_1 = None
-        vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 
@@ -1509,30 +1581,18 @@ def main():
             if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                audio = batch["audio"].cpu()
-
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                    import importlib
-                    if importlib.util.find_spec("soundfile") is not None:
-                        import soundfile as sf
-                        sf.write(f"{args.output_dir}/sanity_check/{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.wav", audio[idx], 16000)
-                clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
-                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
-                for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
-                    pixel_value = pixel_value[None, ...]
-                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
                 audio = batch["audio"]
-                sample_rate = batch["sample_rate"]
-
+                fps = batch["fps"][0] if batch["fps"] else 24  # Use fps from dataset
+                
                 # Increase the batch size when the length of the latent sequence of the current sample is small
                 if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
@@ -1542,8 +1602,6 @@ def main():
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
                         else:
                             batch['text'] = batch['text'] * 4
-                        audio = audio * 4
-                        sample_rate = sample_rate * 4
                     elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1551,22 +1609,6 @@ def main():
                             batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
                         else:
                             batch['text'] = batch['text'] * 2
-                        audio = audio * 2
-                        sample_rate = sample_rate * 2
-
-                clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
-                mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
-                mask = batch["mask"].to(weight_dtype)
-                # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
-                    if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                        clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
-                        mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
-                        mask = torch.tile(mask, (4, 1, 1, 1, 1))
-                    elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                        clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
-                        mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
-                        mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
                 if args.random_frame_crop:
                     def _create_special_list(length):
@@ -1593,9 +1635,6 @@ def main():
                     temp_n_frames = (temp_n_frames - 1) // sample_n_frames_bucket_interval + 1
 
                     pixel_values = pixel_values[:, :temp_n_frames, :, :]
-
-                    mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
-                    mask = mask[:, :temp_n_frames, :, :]
                     
                 # Keep all node same token length to accelerate the traning when resolution grows.
                 if args.keep_all_node_same_token_length:
@@ -1618,23 +1657,11 @@ def main():
                     actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
 
                     pixel_values = pixel_values[:, :actual_video_length, :, :]
-                    mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
-                    mask = mask[:, :actual_video_length, :, :]
-
-                # Make the inpaint latents to be zeros.
-                t2v_flag = [(_mask == 1).all() for _mask in mask]
-                new_t2v_flag = []
-                for _mask in t2v_flag:
-                    if _mask and np.random.rand() < 0.90:
-                        new_t2v_flag.append(0)
-                    else:
-                        new_t2v_flag.append(1)
-                t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
 
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
-                    audio_encoder.to(accelerator.device)
+                    audio_vae.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
 
@@ -1656,74 +1683,116 @@ def main():
                             latents = _batch_encode_vae(pixel_values)
                     else:
                         latents = _batch_encode_vae(pixel_values)
-
-                    latents_mean = (
-                        torch.tensor(vae.config.latents_mean)
-                        .view(1, vae.config.z_dim, 1, 1, 1)
-                        .to(latents.device, latents.dtype)
-                    )
-                    latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, vae.config.z_dim, 1, 1, 1).to(
-                        latents.device, latents.dtype
-                    )
-                    latents = (latents - latents_mean) * latents_std
-
-                    # Encode inpaint latents.
-                    inpaint_latents = _batch_encode_vae(mask_pixel_values[:, :1])
-                    if vae_stream_2 is not None:
-                        torch.cuda.current_stream().wait_stream(vae_stream_2) 
-                    inpaint_latents = (inpaint_latents - latents_mean) * latents_std
-
-                with torch.no_grad():
-                    audio_stride = 2
-                    num_frames = pixel_values.size()[1]
-                    audio_cond_embs = []
-                    for index, speech_array in enumerate(audio):
-                        audio_emb = audio_encoder.extract_audio_feat_without_file_load(
-                            audio_segment=speech_array.cpu().numpy(),
-                            sample_rate=sample_rate[index],
-                            num_frames=num_frames,
-                            audio_stride=audio_stride
-                        ).to(accelerator.device)
-                        audio_cond_embs.append(audio_emb)
-                    audio_cond_embs = torch.cat(audio_cond_embs, dim=0)
-                    
+                                                
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
+                # Get latent dimensions from VAE output for later use
+                bsz, channel, num_frames, height, width = latents.size()
+
+                # Encode audio to latents
+                with torch.no_grad():
+                    audio_batch = audio.to(device=accelerator.device, dtype=torch.float32)
+                    # audio_batch shape: [batch, channels, samples] or [batch, samples]
+                    if audio_batch.ndim == 2:
+                        audio_batch = audio_batch.unsqueeze(1)  # [batch, 1, samples]
+                        audio_batch = audio_batch.repeat(1, 2, 1) if audio_batch.dim() == 3 else audio_batch.repeat(2, 1)
+                    
+                    # Convert audio waveform to log-mel spectrogram (following official LTX-2 AudioProcessor)
+                    # mel_transform input: [batch, channels, samples] -> output: [batch, channels, n_mels, time]
+                    mel_spec = mel_transform.to(accelerator.device)(audio_batch)
+                    mel_spec = torch.log(mel_spec.clamp(min=1e-5))
+                    mel_spectrogram = mel_spec.permute(0, 1, 3, 2).contiguous()  # [batch, channels, time, n_mels]
+                    
+                    # Ensure mel spectrogram has the correct number of channels
+                    if mel_spectrogram.shape[1] < audio_in_channels:
+                        mel_spectrogram = mel_spectrogram.repeat(1, audio_in_channels, 1, 1)
+                    elif mel_spectrogram.shape[1] > audio_in_channels:
+                        mel_spectrogram = mel_spectrogram[:, :audio_in_channels, :, :]
+                    
+                    # Encode mel spectrogram to latents using audio_vae
+                    mel_spectrogram = mel_spectrogram.to(dtype=weight_dtype)
+                    audio_encoder_output = audio_vae.encode(mel_spectrogram)
+                    audio_latents_raw = audio_encoder_output.latent_dist.sample()
+                    # audio_latents_raw shape: [batch, latent_channels, latent_time, latent_mel]
+                    
+                    # Get the actual audio_num_frames from encoded latents
+                    audio_num_frames = audio_latents_raw.shape[2]
+                    
+                    # Pack audio latents FIRST, then normalize
+                    # This is the correct order as per pipeline implementation
+                    audio_latents = _pack_audio_latents(audio_latents_raw)
+                    # audio_latents shape: [batch, latent_time, latent_channels * latent_mel]
+                    
+                    # Normalize audio latents (after packing)
+                    audio_latents = _normalize_audio_latents(
+                        audio_latents, audio_vae.latents_mean, audio_vae.latents_std
+                    )
+                
                 if args.low_vram:
                     vae.to('cpu')
-                    audio_encoder.to("cpu")
+                    audio_vae.to('cpu')
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
+                    connectors.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device, dtype=weight_dtype)
                     prompt_attention_mask = batch['encoder_attention_mask'].to(device=latents.device)
                 else:
                     with torch.no_grad():
+                        # Gemma expects left padding for chat-style prompts
+                        tokenizer.padding_side = "left"
+                        if tokenizer.pad_token is None:
+                            tokenizer.pad_token = tokenizer.eos_token
+
                         prompt_ids = tokenizer(
                             batch['text'], 
                             padding="max_length", 
                             max_length=args.tokenizer_max_length, 
                             truncation=True, 
                             add_special_tokens=True, 
-                            return_attention_mask=True, 
                             return_tensors="pt"
                         )
                         text_input_ids = prompt_ids.input_ids.to(latents.device)
                         prompt_attention_mask = prompt_ids.attention_mask.to(latents.device)
 
-                        prompt_embeds = text_encoder(text_input_ids, attention_mask=prompt_attention_mask).last_hidden_state
-                        prompt_embeds = prompt_embeds.unsqueeze(1)
+                        # Get text encoder hidden states
+                        text_encoder_outputs = text_encoder(
+                            input_ids=text_input_ids, 
+                            attention_mask=prompt_attention_mask, 
+                            output_hidden_states=True
+                        )
+                        text_encoder_hidden_states = text_encoder_outputs.hidden_states
+                        text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
+                        
+                        # Pack text embeddings (normalized and flattened)
+                        sequence_lengths = prompt_attention_mask.sum(dim=-1)
+                        prompt_embeds = _pack_text_embeds(
+                            text_encoder_hidden_states,
+                            sequence_lengths,
+                            device=latents.device,
+                            padding_side=tokenizer.padding_side,
+                            scale_factor=8,
+                        )
+                        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+
+                # Use connectors to process prompt embeddings
+                with torch.no_grad():
+                    additive_attention_mask = (1 - prompt_attention_mask.to(prompt_embeds.device, prompt_embeds.dtype)) * -1000000.0
+                    connector_prompt_embeds, connector_audio_prompt_embeds, connector_attention_mask = connectors(
+                        prompt_embeds, additive_attention_mask, additive_mask=True
+                    )
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
+                    connectors.to('cpu')
                     torch.cuda.empty_cache()
 
-                bsz, channel, num_frames, height, width = latents.size()
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
+                audio_noise = torch.randn(audio_latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1753,29 +1822,126 @@ def main():
                         sigma = sigma.unsqueeze(-1)
                     return sigma
 
-                # Add noise according to flow matching.
+                # Prepare latent dimensions
+                latent_num_frames = num_frames
+                latent_height = height
+                latent_width = width
+                
+                # Get transformer config for patch sizes
+                transformer_config = accelerator.unwrap_model(transformer3d).config
+                patch_size = getattr(transformer_config, 'patch_size', 1)
+                patch_size_t = getattr(transformer_config, 'patch_size_t', 1)
+
+                # ------------------ I2V Conditioning Mask ------------------
+                # Create conditioning mask for I2V training
+                # conditioning_mask: 1 for condition frames (first frame), 0 for frames to generate
+                conditioning_mask = None
+                
+                if args.i2v_ratio > 0:
+                    # Randomly select samples for I2V based on i2v_ratio
+                    i2v_prob = torch.rand(bsz, generator=torch_rng, device=latents.device)
+                    is_i2v_sample = i2v_prob < args.i2v_ratio
+                    
+                    if is_i2v_sample.any():
+                        # Create conditioning mask: [B, 1, F, H, W]
+                        # First frame is condition (mask=1), rest are to generate (mask=0)
+                        conditioning_mask = torch.zeros(
+                            (bsz, 1, latent_num_frames, latent_height, latent_width),
+                            device=latents.device, dtype=latents.dtype
+                        )
+                        conditioning_mask[is_i2v_sample, :, 0, :, :] = 1.0
+
+                # ------------------ Video Latents ------------------
+                # Normalize video latents
+                latents = _normalize_latents(latents, vae.latents_mean, vae.latents_std, vae.config.scaling_factor)
+                # Add noise according to flow matching
                 # zt = (1 - texp) * x + texp * z1
                 sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-                noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
-
-                # Add noise
+                
+                if conditioning_mask is not None:
+                    # I2V mode: first frame is condition, apply noise differently
+                    # For condition frames: keep clean (or add slight noise if i2v_noise_scale > 0)
+                    # For frames to generate: apply full noise
+                    if args.i2v_noise_scale > 0:
+                        # Add slight noise to condition frame
+                        noisy_latents = latents * conditioning_mask * (1 - args.i2v_noise_scale) + \
+                                        noise * conditioning_mask * args.i2v_noise_scale + \
+                                        ((1.0 - sigmas) * latents + sigmas * noise) * (1 - conditioning_mask)
+                    else:
+                        # Keep condition frame clean
+                        noisy_latents = latents * conditioning_mask + \
+                                        ((1.0 - sigmas) * latents + sigmas * noise) * (1 - conditioning_mask)
+                else:
+                    # T2V mode: all frames get noise
+                    noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
+                
                 target = noise - latents
+                noisy_latents_packed = _pack_latents(noisy_latents, patch_size, patch_size_t)
+                
+                # Pack conditioning mask if present
+                if conditioning_mask is not None:
+                    conditioning_mask_packed = _pack_latents(conditioning_mask, patch_size, patch_size_t).squeeze(-1)
+                else:
+                    conditioning_mask_packed = None
+                
+                # ------------------ Audio Latents ------------------
+                # Add noise to audio latents for training (flow matching)
+                audio_sigmas = get_sigmas(timesteps, n_dim=audio_latents.ndim, dtype=audio_latents.dtype)
+                noisy_audio_latents = (1.0 - audio_sigmas) * audio_latents + audio_sigmas * audio_noise
+                audio_target = audio_noise - audio_latents
 
-                # Adapt i2v
-                noisy_latents[:, :, :1] = inpaint_latents
-                timesteps = timesteps.unsqueeze(-1).repeat(1, noisy_latents.shape[2])
-                timesteps[:, :1] = 0
+                # -------- Timesteps Process and RoPE Process --------
+                # Prepare timestep
+                # For T2V: use batch-level timestep (same as inference)
+                # For I2V: condition frames have timestep=0, generate frames have normal timestep
+                if conditioning_mask_packed is not None:
+                    # I2V mode: video_timestep has shape [B, S] where S is sequence length
+                    # condition frames (mask=1) get timestep 0, generate frames get normal timestep
+                    video_timestep = timesteps.unsqueeze(-1) * (1 - conditioning_mask_packed)
+                else:
+                    # T2V mode: use batch-level timestep
+                    video_timestep = timesteps
+                audio_timestep = timesteps
+                
+                # Prepare RoPE coordinates
+                video_coords = accelerator.unwrap_model(transformer3d).rope.prepare_video_coords(
+                    bsz, latent_num_frames, latent_height, latent_width, latents.device, fps=fps
+                )
+                audio_coords = accelerator.unwrap_model(transformer3d).audio_rope.prepare_audio_coords(
+                    bsz, audio_num_frames, audio_latents.device
+                )
 
+                # -------- Forward --------
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    noise_pred = transformer3d(
-                        hidden_states=noisy_latents,
-                        timestep=timesteps,
-                        encoder_hidden_states=prompt_embeds,
-                        encoder_attention_mask=prompt_attention_mask,
-                        audio_embs=audio_cond_embs,
-                        num_cond_latents=1,
+                    noise_pred_video, noise_pred_audio = transformer3d(
+                        hidden_states=noisy_latents_packed,
+                        audio_hidden_states=noisy_audio_latents,
+                        encoder_hidden_states=connector_prompt_embeds,
+                        audio_encoder_hidden_states=connector_audio_prompt_embeds,
+                        timestep=video_timestep,
+                        audio_timestep=audio_timestep,
+                        encoder_attention_mask=connector_attention_mask,
+                        audio_encoder_attention_mask=connector_attention_mask,
+                        num_frames=latent_num_frames,
+                        height=latent_height,
+                        width=latent_width,
+                        fps=fps,
+                        audio_num_frames=audio_num_frames,
+                        video_coords=video_coords,
+                        audio_coords=audio_coords,
+                        return_dict=False,
                     )
+                
+                # Unpack predictions for loss computation
+                noise_pred = _unpack_latents(
+                    noise_pred_video,
+                    latent_num_frames,
+                    latent_height,
+                    latent_width,
+                    patch_size,
+                    patch_size_t,
+                )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
@@ -1790,14 +1956,28 @@ def main():
                     return final_loss
                 
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-                loss = custom_mse_loss(-noise_pred.float(), target.float(), weighting.float())
-                loss = loss.mean()
+                
+                # Video loss
+                video_loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
 
                 if args.motion_sub_loss and noise_pred.size()[2] > 2:
                     gt_sub_noise = noise_pred[:, :, 1:].float() - noise_pred[:, :, :-1].float()
                     pre_sub_noise = target[:, :, 1:].float() - target[:, :, :-1].float()
                     sub_loss = F.mse_loss(gt_sub_noise, pre_sub_noise, reduction="mean")
-                    loss = loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
+                    video_loss = video_loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
+                
+                # Audio loss
+                audio_weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=audio_sigmas)
+                audio_loss = F.mse_loss(noise_pred_audio.float(), audio_target.float(), reduction='none')
+                if audio_weighting is not None:
+                    # Expand weighting to match audio shape
+                    while audio_weighting.ndim < audio_loss.ndim:
+                        audio_weighting = audio_weighting.unsqueeze(-1)
+                    audio_loss = audio_loss * audio_weighting
+                audio_loss = audio_loss.mean()
+                
+                # Combined loss (equal weighting for video and audio)
+                loss = 0.5 * video_loss + 0.5 * audio_loss
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
@@ -1877,9 +2057,11 @@ def main():
                         ema_transformer3d.copy_to(transformer3d.parameters())
                     log_validation(
                         vae,
+                        audio_vae,
                         text_encoder,
                         tokenizer,
-                        audio_encoder,
+                        connectors,
+                        vocoder,
                         transformer3d,
                         args,
                         accelerator,
@@ -1903,10 +2085,11 @@ def main():
                 ema_transformer3d.copy_to(transformer3d.parameters())
             log_validation(
                 vae,
+                audio_vae,
                 text_encoder,
                 tokenizer,
-                audio_encoder, 
-                wav2vec_feature_extractor,
+                connectors,
+                vocoder,
                 transformer3d,
                 args,
                 accelerator,
