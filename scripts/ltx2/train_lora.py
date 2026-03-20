@@ -30,9 +30,7 @@ import diffusers
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
 import torchaudio
-import torchvision.transforms.functional as TF
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -45,7 +43,6 @@ from diffusers.training_utils import (compute_density_for_timestep_sampling,
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
-from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
 from torch.utils.data import RandomSampler
@@ -1557,8 +1554,14 @@ def main():
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
+        from packaging.version import parse as parse_version
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.model.layers)
+
+        if parse_version(transformers.__version__) <= parse_version("4.51.3"):
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.model.layers)
+        else:
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype

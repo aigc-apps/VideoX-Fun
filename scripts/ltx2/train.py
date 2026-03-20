@@ -30,11 +30,9 @@ import diffusers
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
 import torchaudio
-import torchvision.transforms.functional as TF
 import transformers
-from accelerate import Accelerator, FullyShardedDataParallelPlugin
+from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
@@ -46,12 +44,8 @@ from diffusers.training_utils import (EMAModel,
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
-from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
-    ShardedStateDictConfig)
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -983,8 +977,7 @@ def main():
             raise NotImplementedError("FSDP does not support EMA.")
 
         ema_transformer3d = LTX2VideoTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+            args.pretrained_model_name_or_path, subfolder="transformer"
         ).to(weight_dtype)
 
         ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=ema_transformer3d.config)
@@ -1032,7 +1025,6 @@ def main():
                     _, ema_kwargs = LTX2VideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = LTX2VideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
-                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs'])
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -1474,8 +1466,14 @@ def main():
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
+        from packaging.version import parse as parse_version
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.model.layers)
+
+        if parse_version(transformers.__version__) <= parse_version("4.51.3"):
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.model.layers)
+        else:
+            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
 
     if args.use_ema:
