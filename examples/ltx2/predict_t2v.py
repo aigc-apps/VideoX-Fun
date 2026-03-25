@@ -16,6 +16,8 @@ from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
                                GemmaTokenizerFast, LTX2TextConnectors,
                                LTX2VideoTransformer3DModel, LTX2Vocoder)
 from videox_fun.pipeline import LTX2Pipeline
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -186,13 +188,13 @@ elif GPU_memory_mode == "model_group_offload":
     register_auto_device_hook(pipeline.transformer)
     safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["scale_shift_table", "audio_scale_shift_table", "video_a2v_cross_attn_scale_shift_table", "audio_a2v_cross_attn_scale_shift_table", ""], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["img_in", "txt_in", "timestep"], device=device)
+    convert_model_weight_to_float8(transformer, exclude_module_name=["scale_shift_table", "audio_scale_shift_table", "video_a2v_cross_attn_scale_shift_table", "audio_a2v_cross_attn_scale_shift_table", ""], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
     pipeline.to(device=device)
 else:
