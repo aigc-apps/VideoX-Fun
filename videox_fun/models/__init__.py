@@ -38,6 +38,8 @@ from .flux2_vae import AutoencoderKLFlux2
 from .flux_transformer2d import FluxTransformer2DModel
 from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
+from .infinitetalk_audio_encoder import InfiniteTalkAudioEncoder
+from .infinitetalk_transformer3d import InfiniteTalkTransformer3DModel
 from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
                                          Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
@@ -49,6 +51,10 @@ from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
 from .ltx2_vocoder import LTX2Vocoder
+from .mova_audio_transformer3d import WanAudioTransformer3DModel
+from .mova_interactionv2 import MOVADualTowerConditionalBridge
+from .mova_model import MOVAModel
+from .mova_vae_audio import AutoencoderKLMOVAAudio
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel

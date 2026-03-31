@@ -1,5 +1,5 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
-export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
+export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -7,16 +7,17 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
+accelerate launch --mixed_precision="bf16" scripts/infinitetalk/train_s2v.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
+  --audio_encoder_path=$AUDIO_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --token_sample_size=512 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=1 \
   --video_sample_n_frames=81 \
+  --motion_frames=9 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
@@ -25,8 +26,8 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
-  --seed=42 \
-  --output_dir="output_dir_fantasytalking" \
+  --seed=43 \
+  --output_dir="output_dir_infinitetalk" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -38,5 +39,4 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
-  --trainable_modules "processor." "proj_model."
+  --trainable_modules "."

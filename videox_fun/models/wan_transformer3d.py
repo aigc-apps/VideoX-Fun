@@ -199,7 +199,14 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x.float()).type_as(x)
+        if self.weight is not None:
+            original_dtype = x.dtype
+            x = x.to(self.weight.dtype)
+            x = super().forward(x)
+            x = x.to(original_dtype)
+            return x
+        else:
+            return super().forward(x).type_as(x)
 
 
 class WanSelfAttention(nn.Module):
@@ -454,7 +461,7 @@ class WanAttentionBlock(nn.Module):
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             # cross-attention
-            x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype, t=t)
+            x = x + self.cross_attn(self.norm3(x).to(x.dtype), context, context_lens, dtype, t=t)
 
             # ffn function
             temp_x = self.norm2(x) * (1 + e[4]) + e[3]
@@ -497,7 +504,9 @@ class Head(nn.Module):
         else:
             e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
         
-        x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
+        x = self.head(
+            (self.norm(x) * (1 + e[1]) + e[0]).to(x.dtype)
+        )
         return x
 
 
