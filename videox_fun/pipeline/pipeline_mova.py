@@ -142,8 +142,8 @@ class MOVAPipeline(DiffusionPipeline):
         self.audio_vae_type = audio_vae_type
 
         # build video vae
-        self.vae_scale_factor_spatial = self.vae.config.scale_factor_spatial
-        self.vae_scale_factor_temporal = self.vae.config.scale_factor_temporal
+        self.vae_scale_factor_spatial = self.vae.spatial_compression_ratio
+        self.vae_scale_factor_temporal = self.vae.temporal_compression_ratio
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
         
         # build audio vae
@@ -244,7 +244,7 @@ class MOVAPipeline(DiffusionPipeline):
             latent_condition = latent_condition.repeat(batch_size, 1, 1, 1, 1)
 
         latent_condition = latent_condition.to(dtype)
-        latent_condition = self.normalize_video_latents(latent_condition)
+        # latent_condition = self.normalize_video_latents(latent_condition)
 
         mask_lat_size = torch.ones(batch_size, 1, num_frames, latent_height, latent_width)
 
@@ -378,7 +378,7 @@ class MOVAPipeline(DiffusionPipeline):
             paired_timesteps = torch.stack([self.scheduler.timesteps, self.scheduler.timesteps], dim=1)
 
         # 5. Prepare latent variables
-        num_channels_latents = self.vae.config.z_dim
+        num_channels_latents = self.vae.config.latent_channels
         image = self.video_processor.preprocess(image, height=height, width=width).to(device, dtype=torch.float32)
         latents, condition = self.prepare_latents(
             image,
@@ -479,9 +479,9 @@ class MOVAPipeline(DiffusionPipeline):
             audio = audio_latents
         else:
             # decode video
-            video_latents = self.denormalize_video_latents(latents)
+            # video_latents = self.denormalize_video_latents(latents)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                video = self.vae.decode(video_latents).sample
+                video = self.vae.decode(latents).sample
             video = self.video_processor.postprocess_video(video, output_type="pt").float().cpu().permute(0, 2, 1, 3, 4)
 
             # decode audio

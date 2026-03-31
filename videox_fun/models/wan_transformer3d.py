@@ -1111,6 +1111,46 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # init output layer
         nn.init.zeros_(self.head.head.weight)
 
+    @staticmethod
+    def _convert_from_wan_model_config(config: dict) -> dict:
+        """
+        Convert WanModel config to WanTransformer3DModel config.
+        This enables loading WanModel checkpoints with WanTransformer3DModel.
+        """
+        new_config = config.copy()
+        
+        # Convert has_image_input -> model_type
+        if 'has_image_input' in new_config:
+            new_config['model_type'] = 'i2v' if new_config.pop('has_image_input') else 't2v'
+        
+        # Convert has_ref_conv -> add_ref_conv
+        if 'has_ref_conv' in new_config:
+            new_config['add_ref_conv'] = new_config.pop('has_ref_conv')
+        
+        # Set WanTransformer3DModel specific defaults
+        new_config.setdefault('cross_attn_type', 'cross_attn')
+        new_config.setdefault('qk_norm', True)
+        new_config.setdefault('cross_attn_norm', True)
+        new_config.setdefault('text_len', 512)
+        new_config.setdefault('window_size', (-1, -1))
+        
+        # Compatibility fields
+        if 'in_dim' in new_config:
+            new_config['in_channels'] = new_config['in_dim']
+        if 'dim' in new_config:
+            new_config['hidden_size'] = new_config['dim']
+        
+        # Remove WanModel-specific keys that WanTransformer3DModel doesn't use
+        keys_to_remove = [
+            'has_image_pos_emb', 'require_clip_embedding', 'require_vae_embedding',
+            'seperated_timestep', 'fuse_vae_embedding_in_latents', '_class_name',
+            '_diffusers_version', '_name_or_path'
+        ]
+        for key in keys_to_remove:
+            new_config.pop(key, None)
+        
+        return new_config
+
     @classmethod
     def from_pretrained(
         cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
@@ -1125,6 +1165,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             raise RuntimeError(f"{config_file} does not exist")
         with open(config_file, "r") as f:
             config = json.load(f)
+
+        # Auto-convert WanModel config to WanTransformer3DModel config
+        if config.get('_class_name') == 'WanModel':
+            print("Detected WanModel config, converting to WanTransformer3DModel config...")
+            config = cls._convert_from_wan_model_config(config)
 
         from diffusers.utils import WEIGHTS_NAME
         model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
