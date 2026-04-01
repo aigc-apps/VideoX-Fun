@@ -370,6 +370,11 @@ class WanAttentionBlock(nn.Module):
         self.cross_attn_norm = cross_attn_norm
         self.eps = eps
 
+        # Multi-GPU sequence parallel attributes
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
+        self.all_gather = None
+
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm, eps)
@@ -434,8 +439,17 @@ class WanAttentionBlock(nn.Module):
         x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype=dtype)
 
         # cross attn of audio
-        x_a = self.audio_cross_attn(self.norm_x(x), encoder_hidden_states=audio_embedding,
-                                        shape=grid_sizes[0], x_ref_attn_map=x_ref_attn_map, human_num=human_num)
+        # For multi-GPU: audio_cross_attn expects full sequence, so all_gather x first
+        if self.sp_world_size > 1 and self.all_gather is not None:
+            # All gather x to get full sequence for audio cross attention
+            x_full = self.all_gather(x, dim=1)
+            x_a_full = self.audio_cross_attn(self.norm_x(x_full), encoder_hidden_states=audio_embedding,
+                                             shape=grid_sizes[0], x_ref_attn_map=x_ref_attn_map, human_num=human_num)
+            # Chunk result back to local rank
+            x_a = torch.chunk(x_a_full, self.sp_world_size, dim=1)[self.sp_world_rank]
+        else:
+            x_a = self.audio_cross_attn(self.norm_x(x), encoder_hidden_states=audio_embedding,
+                                            shape=grid_sizes[0], x_ref_attn_map=x_ref_attn_map, human_num=human_num)
         x = x + x_a
 
         y = self.ffn((self.norm2(x).float() * (1 + e[4]) + e[3]).to(dtype))
@@ -614,9 +628,14 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         self.all_gather = get_sp_group().all_gather
 
         # Replace self_attn forward with xfuser version for all blocks
+        # and pass sp parameters to each block for audio_cross_attn
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_infinitetalk_forward, block.self_attn)
+            # Pass sp parameters to block for audio_cross_attn multi-GPU support
+            block.sp_world_size = self.sp_world_size
+            block.sp_world_rank = self.sp_world_rank
+            block.all_gather = self.all_gather
 
     def forward(
         self,
