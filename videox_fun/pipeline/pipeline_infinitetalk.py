@@ -516,7 +516,6 @@ class InfiniteTalkPipeline(DiffusionPipeline):
         comfyui_progressbar: bool = False,
         shift: float = 5.0,
         fps: int = 16,
-        init_first_frame: bool = False,
         max_frames_num: int = 1000,
         color_correction_strength: float = 0.0,
         use_apg: bool = False,

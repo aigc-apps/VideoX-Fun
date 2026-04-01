@@ -185,7 +185,7 @@ class SingleStreamAttention(nn.Module):
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
         # Use attention from attention_utils
-        x = attention(q=q, k=encoder_k, v=encoder_v)
+        x = attention(q=q, k=encoder_k, v=encoder_v, attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B M H K -> B H M K")
         x_output_shape = (B, N, C)
         x = x.transpose(1, 2)
@@ -274,7 +274,7 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
         # Use attention from attention_utils
-        x = attention(q=q, k=encoder_k, v=encoder_v)
+        x = attention(q=q, k=encoder_k, v=encoder_v, attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B M H K -> B H M K")
         x_output_shape = (B, N, C)
         x = x.transpose(1, 2)

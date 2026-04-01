@@ -40,4 +40,5 @@ accelerate launch --mixed_precision="bf16" scripts/infinitetalk/train_s2v_lora.p
   --network_alpha=32 \
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
+  --transformer_path="models/Personalized_Model/infinitetalk.safetensors" \
   --low_vram

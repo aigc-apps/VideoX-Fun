@@ -152,13 +152,12 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, c
             scheduler = FlowMatchEulerDiscreteScheduler(
                 **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
             )
-            transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
-            
+
             pipeline = InfiniteTalkPipeline(
                 vae=vae, 
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                transformer=transformer3d_1,
+                transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 audio_encoder=audio_encoder,
                 scheduler=scheduler,
                 clip_image_encoder=clip_image_encoder,
@@ -182,7 +181,7 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, c
                 sample = pipeline(
                     args.validation_prompts[i],
                     segment_frame_length = args.video_sample_n_frames,
-                    negative_prompt = "bad detailed",
+                    negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                     height      = height,
                     width       = width,
                     generator   = generator,
@@ -190,11 +189,12 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, c
                     audio_path          = args.validation_audio_paths[i],
                     ref_image           = ref_image,
                     clip_image          = start_image,
-                    init_first_frame    = False,
+
                     num_inference_steps = 25,
                     guidance_scale      = 5.0,
                     audio_guide_scale   = 4.0,
-                    fps                 = 16,
+                    fps                 = 25,
+                    shift               = 5,
                     max_frames_num      = args.video_sample_n_frames,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -204,7 +204,7 @@ def log_validation(vae, text_encoder, tokenizer, audio_encoder, transformer3d, c
                         args.output_dir, 
                         f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     ),
-                    fps=16
+                    fps=25
                 )
                 merge_video_audio(
                     video_path=os.path.join(

@@ -39,4 +39,5 @@ accelerate launch --mixed_precision="bf16" scripts/infinitetalk/train_s2v.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --trainable_modules "."
+  --transformer_path="models/Personalized_Model/infinitetalk.safetensors" \
+  --trainable_modules "audio"
