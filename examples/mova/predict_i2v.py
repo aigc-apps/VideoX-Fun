@@ -13,12 +13,14 @@ for project_root in project_roots:
 
 from videox_fun.models import (AutoencoderKLMOVAAudio, AutoencoderKLWan,
                                AutoTokenizer, MOVADualTowerConditionalBridge,
-                               MOVAModel, UMT5EncoderModel,
+                               UMT5EncoderModel,
                                WanAudioTransformer3DModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import MOVAPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper,
                                                replace_parameters_by_name)
@@ -36,9 +38,12 @@ from videox_fun.utils.utils import save_videos_with_audio_grid
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
 # and the transformer model has been quantized to float8, which can save more GPU memory. 
 # 
+# model_group_offload transfers internal layer groups between CPU/CUDA, 
+# balancing memory efficiency and speed between full-module and leaf-level offloading methods.
+# 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "sequential_cpu_offload"
+GPU_memory_mode     = "model_group_offload"
 # Compile will give a speedup in fixed resolution and need a little GPU memory.
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
@@ -86,7 +91,7 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 print("Loading Video DiT (High Noise) with WanTransformer3DModel...")
 transformer = WanTransformer3DModel.from_pretrained(
     model_name,
-    subfolder="video_dit",
+    subfolder="video_dit_2",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
@@ -106,7 +111,7 @@ if transformer_path is not None:
 print("Loading Video DiT 2 (Low Noise) with WanTransformer3DModel...")
 transformer_2 = WanTransformer3DModel.from_pretrained(
     model_name,
-    subfolder="video_dit_2",
+    subfolder="video_dit",
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
@@ -124,7 +129,7 @@ if transformer_high_path is not None:
 
 # Audio DiT - Using WanAudioTransformer3DModel
 print("Loading Audio DiT with WanAudioTransformer3DModel...")
-audio_dit = WanAudioTransformer3DModel.from_pretrained(
+transformer_audio = WanAudioTransformer3DModel.from_pretrained(
     model_name,
     subfolder="audio_dit",
     low_cpu_mem_usage=True,
@@ -139,7 +144,7 @@ if audio_dit_path is not None:
     else:
         state_dict = torch.load(audio_dit_path, map_location="cpu")
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
-    m, u = audio_dit.load_state_dict(state_dict, strict=False)
+    m, u = transformer_audio.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Dual Tower Bridge
@@ -225,15 +230,6 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-# Build MOVAModel
-print("Building MOVAModel...")
-mova_model = MOVAModel(
-    transformer=transformer,
-    transformer_2=transformer_2,
-    audio_dit=audio_dit,
-    dual_tower_bridge=dual_tower_bridge,
-)
-
 # Build Pipeline
 print("Building MOVAPipeline Pipeline...")
 pipeline = MOVAPipeline(
@@ -242,42 +238,48 @@ pipeline = MOVAPipeline(
     text_encoder=text_encoder,
     tokenizer=tokenizer,
     scheduler=scheduler,
-    mova_model=mova_model,
+    transformer=transformer,
+    transformer_2=transformer_2,
+    transformer_audio=transformer_audio,
+    dual_tower_bridge=dual_tower_bridge,
     audio_vae_type="dac",
 )
 
 if compile_dit:
     # Compile MOVAModel blocks
-    for i in range(len(pipeline.mova_model.transformer.blocks)):
-        pipeline.mova_model.transformer.blocks[i] = torch.compile(pipeline.mova_model.transformer.blocks[i])
-    for i in range(len(pipeline.mova_model.transformer_2.blocks)):
-        pipeline.mova_model.transformer_2.blocks[i] = torch.compile(pipeline.mova_model.transformer_2.blocks[i])
-    for i in range(len(pipeline.mova_model.audio_dit.blocks)):
-        pipeline.mova_model.audio_dit.blocks[i] = torch.compile(pipeline.mova_model.audio_dit.blocks[i])
+    for i in range(len(pipeline.transformer.blocks)):
+        pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
+    for i in range(len(pipeline.transformer_2.blocks)):
+        pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
+    for i in range(len(pipeline.transformer_audio.blocks)):
+        pipeline.transformer_audio.blocks[i] = torch.compile(pipeline.transformer_audio.blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(pipeline.mova_model.transformer, ["modulation",], device=device)
-    replace_parameters_by_name(pipeline.mova_model.transformer_2, ["modulation",], device=device)
-    pipeline.mova_model.transformer.freqs = pipeline.mova_model.transformer.freqs.to(device=device)
-    pipeline.mova_model.transformer_2.freqs = pipeline.mova_model.transformer_2.freqs.to(device=device)
+    replace_parameters_by_name(pipeline.transformer, ["modulation",], device=device)
+    replace_parameters_by_name(pipeline.transformer_2, ["modulation",], device=device)
+    pipeline.transformer.freqs = pipeline.transformer.freqs.to(device=device)
+    pipeline.transformer_2.freqs = pipeline.transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(pipeline.mova_model.transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(pipeline.mova_model.transformer_2, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(pipeline.mova_model.transformer, weight_dtype)
-    convert_weight_dtype_wrapper(pipeline.mova_model.transformer_2, weight_dtype)
+    convert_model_weight_to_float8(pipeline.transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(pipeline.transformer_2, exclude_module_name=["modulation",], device=device)
+    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
+    convert_weight_dtype_wrapper(pipeline.transformer_2, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.mova_model.transformer)
+    register_auto_device_hook(pipeline.transformer)
     safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(pipeline.mova_model.transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(pipeline.mova_model.transformer_2, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(pipeline.mova_model.transformer, weight_dtype)
-    convert_weight_dtype_wrapper(pipeline.mova_model.transformer_2, weight_dtype)
+    convert_model_weight_to_float8(pipeline.transformer, exclude_module_name=["modulation",], device=device)
+    convert_model_weight_to_float8(pipeline.transformer_2, exclude_module_name=["modulation",], device=device)
+    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
+    convert_weight_dtype_wrapper(pipeline.transformer_2, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)

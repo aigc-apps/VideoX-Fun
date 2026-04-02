@@ -98,12 +98,18 @@ class MOVAPipeline(DiffusionPipeline):
             Tokenizer for text encoding.
         scheduler ([`FlowMatchEulerDiscreteScheduler`]):
             A scheduler to be used in combination with `mova_model` to denoise the encoded latents.
-        mova_model ([`MOVAModel`]):
-            MOVA model that encapsulates video_dit, video_dit_2, audio_dit, and dual_tower_bridge for joint video-audio generation.
+        transformer:
+            Video DiT (low-noise) model.
+        transformer_2:
+            Video DiT 2 (high-noise) model.
+        transformer_audio:
+            Audio DiT model.
+        dual_tower_bridge:
+            Dual tower bridge for cross-modal interaction.
     """
 
-    model_cpu_offload_seq = "text_encoder->mova_model->vae->audio_vae"
-    _optional_components = ["mova_model"]
+    model_cpu_offload_seq = "text_encoder->transformer->transformer_2->transformer_audio->dual_tower_bridge->vae->audio_vae"
+    _optional_components = ["transformer_audio", "dual_tower_bridge"]
     _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
 
     vae: AutoencoderKLWan
@@ -111,7 +117,10 @@ class MOVAPipeline(DiffusionPipeline):
     text_encoder: UMT5EncoderModel
     tokenizer: AutoTokenizer
     scheduler: Any
-    mova_model: MOVAModel
+    transformer: Any
+    transformer_2: Any
+    transformer_audio: Any
+    dual_tower_bridge: Any
 
     @register_to_config
     def __init__(
@@ -121,10 +130,21 @@ class MOVAPipeline(DiffusionPipeline):
         text_encoder: UMT5EncoderModel,
         tokenizer: AutoTokenizer,
         scheduler: Any,
-        mova_model: MOVAModel,
+        transformer: Any,
+        transformer_2: Any,
+        transformer_audio: Any,
+        dual_tower_bridge: Any,
         audio_vae_type: str = "dac", # type: Literal["oobleck", "dac"]
     ):
         super().__init__()
+
+        # Build MOVAModel helper internally
+        mova_model = MOVAModel(
+            transformer=transformer,
+            transformer_2=transformer_2,
+            audio_dit=transformer_audio,
+            dual_tower_bridge=dual_tower_bridge,
+        )
 
         self.register_modules(
             vae=vae,
@@ -132,7 +152,10 @@ class MOVAPipeline(DiffusionPipeline):
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             scheduler=scheduler,
-            mova_model=mova_model,
+            transformer=transformer,
+            transformer_2=transformer_2,
+            transformer_audio=transformer_audio,
+            dual_tower_bridge=dual_tower_bridge,
         )
 
         self.register_to_config(
@@ -140,6 +163,9 @@ class MOVAPipeline(DiffusionPipeline):
         )
 
         self.audio_vae_type = audio_vae_type
+        
+        # Store mova_model as internal helper (not registered as module)
+        self.mova_model = mova_model
 
         # build video vae
         self.vae_scale_factor_spatial = self.vae.spatial_compression_ratio
@@ -410,13 +436,14 @@ class MOVAPipeline(DiffusionPipeline):
         # diffusion steps
         # --------------------------------------------------
         total_steps = paired_timesteps.shape[0]
-        switched = False
         boundary_timestep = boundary * self.scheduler.config.num_train_timesteps
         
         for idx_step in tqdm(range(total_steps)):
             timestep, audio_timestep = paired_timesteps[idx_step]
 
-            # Switch to low-noise DiT
+            # Switch DiT based on timestep (Wan2.2 convention: transformer_2 = high-noise, transformer = low-noise)
+            # Large t (>= boundary) -> high noise -> transformer_2 -> use_low_noise_dit=False
+            # Small t (< boundary) -> low noise -> transformer -> use_low_noise_dit=True
             use_low_noise_dit = timestep.item() < boundary_timestep
             
             latent_model_input = torch.cat([latents, condition], dim=1)

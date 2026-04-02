@@ -335,9 +335,10 @@ class VideoSpeechDataset(Dataset):
         # Use librosa to load the entire audio (librosa.load does not support precise seeking, so load first then slice)
         audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)  # Resample to target sr
 
-        # Convert to sample indices
-        start_sample = int(start_time * self.audio_sr)
-        end_sample = int(end_time * self.audio_sr)
+        # Convert to sample indices (calculate end from start + duration to avoid float precision issues)
+        start_sample = round(start_time * self.audio_sr)
+        target_len = round(duration * self.audio_sr)
+        end_sample = start_sample + target_len
 
         # Safe slicing
         if start_sample >= len(audio_input):
@@ -346,7 +347,6 @@ class VideoSpeechDataset(Dataset):
         else:
             audio_segment = audio_input[start_sample:end_sample]
             # If too short, pad with zeros
-            target_len = int(duration * self.audio_sr)
             if len(audio_segment) < target_len:
                 raise ValueError(f"Audio file too short: {audio_path}")
 

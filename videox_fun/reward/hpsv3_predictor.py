@@ -835,7 +835,7 @@ if __name__ == "__main__":
     device = 'cuda'
     dtype = torch.bfloat16
     
-    inferencer = HPSv3RewardInferencer("/mnt/data/Code/CogVideoX-Fun-Github/models/Diffusion_Transformer/HPSv3/HPSv3.safetensors", device=device, dtype=dtype)
+    inferencer = HPSv3RewardInferencer("Diffusion_Transformer/HPSv3/HPSv3.safetensors", device=device, dtype=dtype)
 
     image_paths = [
         "assets/example1.png",

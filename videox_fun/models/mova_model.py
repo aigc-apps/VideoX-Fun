@@ -12,8 +12,9 @@ def sinusoidal_embedding_1d(dim, position):
 
 class MOVAModel(nn.Module):
     """
-    MOVA model that encapsulates transformer, transformer_2, audio_dit, and dual_tower_bridge.
+    MOVA helper class that encapsulates transformer, transformer_2, audio_dit, and dual_tower_bridge.
     Provides a clean forward interface similar to LTX2VideoTransformer3DModel.
+    This is NOT an nn.Module, just a helper class for organizing forward logic.
     """
     def __init__(self, transformer, transformer_2, audio_dit, dual_tower_bridge):
         super().__init__()
@@ -22,17 +23,59 @@ class MOVAModel(nn.Module):
         self.audio_dit = audio_dit
         self.dual_tower_bridge = dual_tower_bridge
         self.gradient_checkpointing = False
+        self.model_offload = False  # Enable offloading unused models to CPU
     
     @property
     def dtype(self):
-        """Return the dtype of the model (from transformer)."""
-        return self.transformer.dtype
+        """Return the dtype of the model (from first available transformer)."""
+        if self.transformer is not None:
+            return self.transformer.dtype
+        elif self.transformer_2 is not None:
+            return self.transformer_2.dtype
+        else:
+            raise AttributeError("MOVAModel has no available transformer to determine dtype")
+    
+    @property
+    def config(self):
+        """Return the config of the model (from first available transformer)."""
+        if self.transformer is not None:
+            return self.transformer.config
+        elif self.transformer_2 is not None:
+            return self.transformer_2.config
+        else:
+            raise AttributeError("MOVAModel has no available transformer to determine config")
     
     def enable_gradient_checkpointing(self):
         """Enable gradient checkpointing for all sub-models to save memory."""
         self.gradient_checkpointing = True
     
-    def forward(
+    def disable_gradient_checkpointing(self):
+        """Disable gradient checkpointing."""
+        self.gradient_checkpointing = False
+    
+    def enable_model_offload(self):
+        """Enable model offloading to save VRAM.
+        
+        When enabled, only the active visual DiT (transformer or transformer_2) 
+        and required components stay on GPU during forward pass.
+        """
+        self.model_offload = True
+    
+    def disable_model_offload(self):
+        """Disable model offloading."""
+        self.model_offload = False
+    
+    def set_module(self, module, module_name):
+        """Disable model offloading."""
+        setattr(self, module_name, module)
+    
+    def _move_to_device(self, model, device):
+        """Helper to move model to device."""
+        if model is not None:
+            model.to(device)
+        return model
+    
+    def __call__(
         self,
         visual_latents: torch.Tensor,
         audio_latents: torch.Tensor,
@@ -52,17 +95,48 @@ class MOVAModel(nn.Module):
             timestep: [B] or scalar
             audio_timestep: [B] or scalar
             frame_rate: float
-            use_low_noise_dit: whether to use transformer_2 (low noise)
+            use_low_noise_dit: whether to use transformer (low noise, small t)
         
         Returns:
             visual_output: [B, C_visual, T_v, H_v, W_v]
             audio_output: [B, C_audio, T_a]
         """
-        # Select which visual DiT to use
-        visual_dit = self.transformer_2 if use_low_noise_dit else self.transformer
+        device = visual_latents.device
         
-        return self._forward_single_step(
-            visual_dit=visual_dit,
+        # Select which visual DiT to use
+        # Wan2.2 convention: transformer_2 = high-noise (large t), transformer = low-noise (small t)
+        active_visual_dit = self.transformer if use_low_noise_dit else self.transformer_2
+        inactive_visual_dit = self.transformer_2 if use_low_noise_dit else self.transformer
+        
+        # Check if active model is available
+        if active_visual_dit is None:
+            raise ValueError(
+                f"Active visual DiT is None. use_low_noise_dit={use_low_noise_dit}. "
+                f"This may happen when training with boundary_type='low' or 'high'. "
+                f"Please check your training configuration."
+            )
+        
+        # Ensure all active components are on the correct device (for FSDP compatibility)
+        if not self.model_offload:
+            active_visual_dit = self._move_to_device(active_visual_dit, device)
+            self.audio_dit = self._move_to_device(self.audio_dit, device)
+            self.dual_tower_bridge = self._move_to_device(self.dual_tower_bridge, device)
+        
+        # Model offloading: move inactive models to CPU to save VRAM
+        if self.model_offload:
+            import torch.cuda
+            # Move inactive visual DiT to CPU
+            if inactive_visual_dit is not None:
+                inactive_visual_dit.to('cpu')
+            torch.cuda.empty_cache()
+            
+            # Move active visual DiT and audio_dit to GPU
+            active_visual_dit = self._move_to_device(active_visual_dit, device)
+            self.audio_dit = self._move_to_device(self.audio_dit, device)
+            self.dual_tower_bridge = self._move_to_device(self.dual_tower_bridge, device)
+        
+        output = self._forward_single_step(
+            visual_dit=active_visual_dit,
             visual_latents=visual_latents,
             audio_latents=audio_latents,
             context=context,
@@ -70,6 +144,15 @@ class MOVAModel(nn.Module):
             audio_timestep=audio_timestep,
             frame_rate=frame_rate,
         )
+        
+        # Move active models back to CPU if offloading is enabled
+        if self.model_offload:
+            active_visual_dit.to('cpu')
+            self.audio_dit.to('cpu')
+            self.dual_tower_bridge.to('cpu')
+            torch.cuda.empty_cache()
+        
+        return output
     
     def _forward_single_step(
         self,
@@ -220,8 +303,20 @@ class MOVAModel(nn.Module):
             if self.dual_tower_bridge.should_interact(layer_idx, 'a2v'):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
                     def create_custom_forward(module):
-                        def custom_forward(*inputs):
-                            return module(*inputs)
+                        def custom_forward(layer_idx, visual_x, audio_x, x_freqs, y_freqs, 
+                                         a2v_condition_scale, v2a_condition_scale, 
+                                         condition_scale, video_grid_size):
+                            return module(
+                                layer_idx,
+                                visual_x,
+                                audio_x,
+                                x_freqs=x_freqs,
+                                y_freqs=y_freqs,
+                                a2v_condition_scale=a2v_condition_scale,
+                                v2a_condition_scale=v2a_condition_scale,
+                                condition_scale=condition_scale,
+                                video_grid_size=video_grid_size,
+                            )
                         return custom_forward
                     
                     visual_x, audio_x = torch.utils.checkpoint.checkpoint(
@@ -229,12 +324,12 @@ class MOVAModel(nn.Module):
                         layer_idx,
                         visual_x,
                         audio_x,
-                        x_freqs=visual_rope_cos_sin,
-                        y_freqs=audio_rope_cos_sin,
-                        a2v_condition_scale=a2v_condition_scale,
-                        v2a_condition_scale=v2a_condition_scale,
-                        condition_scale=condition_scale,
-                        video_grid_size=grid_size,
+                        visual_rope_cos_sin,
+                        audio_rope_cos_sin,
+                        a2v_condition_scale,
+                        v2a_condition_scale,
+                        condition_scale,
+                        grid_size,
                         use_reentrant=False,
                     )
                 else:
@@ -253,8 +348,18 @@ class MOVAModel(nn.Module):
             # Visual block with optional gradient checkpointing
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
+                    def custom_forward(visual_x, visual_t_mod, visual_seq_lens, visual_grid_sizes,
+                                     wan_freqs, visual_context, visual_context_lens, visual_dtype):
+                        return module(
+                            visual_x,
+                            e=visual_t_mod,
+                            seq_lens=visual_seq_lens,
+                            grid_sizes=visual_grid_sizes,
+                            freqs=wan_freqs,
+                            context=visual_context,
+                            context_lens=visual_context_lens,
+                            dtype=visual_dtype,
+                        )
                     return custom_forward
                 
                 visual_x = torch.utils.checkpoint.checkpoint(
@@ -284,8 +389,18 @@ class MOVAModel(nn.Module):
             # Audio block with optional gradient checkpointing
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
+                    def custom_forward(audio_x, audio_t_mod, audio_seq_lens, audio_grid_sizes,
+                                     audio_freqs_dit, audio_context, audio_context_lens, audio_dtype):
+                        return module(
+                            audio_x,
+                            e=audio_t_mod,
+                            seq_lens=audio_seq_lens,
+                            grid_sizes=audio_grid_sizes,
+                            freqs=audio_freqs_dit,
+                            context=audio_context,
+                            context_lens=audio_context_lens,
+                            dtype=audio_dtype,
+                        )
                     return custom_forward
                 
                 audio_x = torch.utils.checkpoint.checkpoint(
@@ -318,8 +433,18 @@ class MOVAModel(nn.Module):
             
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
+                    def custom_forward(visual_x, visual_t_mod, visual_seq_lens, visual_grid_sizes,
+                                     wan_freqs, visual_context, visual_context_lens, visual_dtype):
+                        return module(
+                            visual_x,
+                            e=visual_t_mod,
+                            seq_lens=visual_seq_lens,
+                            grid_sizes=visual_grid_sizes,
+                            freqs=wan_freqs,
+                            context=visual_context,
+                            context_lens=visual_context_lens,
+                            dtype=visual_dtype,
+                        )
                     return custom_forward
                 
                 visual_x = torch.utils.checkpoint.checkpoint(
