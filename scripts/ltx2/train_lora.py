@@ -211,109 +211,6 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-# LTX2 helper functions for packing text embeddings and latents
-def _pack_text_embeds(
-    text_hidden_states: torch.Tensor,
-    sequence_lengths: torch.Tensor,
-    device,
-    padding_side: str = "left",
-    scale_factor: int = 8,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Packs and normalizes text encoder hidden states, respecting padding."""
-    batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
-    original_dtype = text_hidden_states.dtype
-
-    # Create padding mask
-    token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
-    if padding_side == "right":
-        mask = token_indices < sequence_lengths[:, None]
-    elif padding_side == "left":
-        start_indices = seq_len - sequence_lengths[:, None]
-        mask = token_indices >= start_indices
-    else:
-        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
-    mask = mask[:, :, None, None]
-
-    # Compute masked mean
-    masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
-    num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
-    masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
-
-    # Compute min/max
-    x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
-    x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
-
-    # Normalization
-    normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
-    normalized_hidden_states = normalized_hidden_states * scale_factor
-
-    # Pack the hidden states to 3D tensor
-    normalized_hidden_states = normalized_hidden_states.flatten(2)
-    mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
-    normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
-    normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
-    return normalized_hidden_states
-
-def _pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
-    """Packs latents [B, C, F, H, W] into token sequence [B, S, D]."""
-    batch_size, num_channels, num_frames, height, width = latents.shape
-    post_patch_num_frames = num_frames // patch_size_t
-    post_patch_height = height // patch_size
-    post_patch_width = width // patch_size
-    latents = latents.reshape(
-        batch_size,
-        -1,
-        post_patch_num_frames,
-        patch_size_t,
-        post_patch_height,
-        patch_size,
-        post_patch_width,
-        patch_size,
-    )
-    latents = latents.permute(0, 2, 4, 6, 1, 3, 5, 7).flatten(4, 7).flatten(1, 3)
-    return latents
-
-def _unpack_latents(
-    latents: torch.Tensor, num_frames: int, height: int, width: int, patch_size: int = 1, patch_size_t: int = 1
-) -> torch.Tensor:
-    """Unpacks token sequence [B, S, D] back to latents [B, C, F, H, W]."""
-    batch_size = latents.size(0)
-    latents = latents.reshape(batch_size, num_frames, height, width, -1, patch_size_t, patch_size, patch_size)
-    latents = latents.permute(0, 4, 1, 5, 2, 6, 3, 7).flatten(6, 7).flatten(4, 5).flatten(2, 3)
-    return latents
-
-def _normalize_latents(
-    latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor, scaling_factor: float = 1.0
-) -> torch.Tensor:
-    """Normalizes latents across the channel dimension [B, C, F, H, W]."""
-    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-    latents = (latents - latents_mean) * scaling_factor / latents_std
-    return latents
-
-def _pack_audio_latents(
-    latents: torch.Tensor, patch_size: int | None = None, patch_size_t: int | None = None
-) -> torch.Tensor:
-    """Packs audio latents [B, C, L, M] into token sequence."""
-    if patch_size is not None and patch_size_t is not None:
-        batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
-        post_patch_latent_length = latent_length / patch_size_t
-        post_patch_mel_bins = latent_mel_bins / patch_size
-        latents = latents.reshape(
-            batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size
-        )
-        latents = latents.permute(0, 2, 4, 1, 3, 5).flatten(3, 5).flatten(1, 2)
-    else:
-        latents = latents.transpose(1, 2).flatten(2, 3)
-    return latents
-
-def _normalize_audio_latents(latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor):
-    """Normalizes audio latents."""
-    latents_mean = latents_mean.to(latents.device, latents.dtype)
-    latents_std = latents_std.to(latents.device, latents.dtype)
-    return (latents - latents_mean) / latents_std
-
 def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder, transformer3d, network, args, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
@@ -1841,7 +1738,7 @@ def main():
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
                 # Get latent dimensions from VAE output for later use
-                bsz, channel, num_frames, height, width = latents.size()
+                bsz, _, latent_num_frames, latent_height, latent_width = latents.size()
 
                 # Encode audio to latents
                 with torch.no_grad():
@@ -1944,7 +1841,7 @@ def main():
                     torch.cuda.empty_cache()
 
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                audio_noise = torch.randn(audio_latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
+                audio_noise = torch.randn(audio_latents_raw.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1957,8 +1854,6 @@ def main():
                     indices = (u * noise_scheduler.config.num_train_timesteps).long()
                 else:
                     # Sample a random timestep for each image
-                    # timesteps = generate_timestep_with_lognorm(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                    # timesteps = torch.randint(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
                     indices = idx_sampling(bsz, generator=torch_rng, device=latents.device)
                     indices = indices.long().cpu()
                 timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
@@ -1974,15 +1869,9 @@ def main():
                         sigma = sigma.unsqueeze(-1)
                     return sigma
 
-                # Prepare latent dimensions
-                latent_num_frames = num_frames
-                latent_height = height
-                latent_width = width
-                
                 # Get transformer config for patch sizes
-                transformer_config = accelerator.unwrap_model(transformer3d).config
-                patch_size = getattr(transformer_config, 'patch_size', 1)
-                patch_size_t = getattr(transformer_config, 'patch_size_t', 1)
+                patch_size = getattr(accelerator.unwrap_model(transformer3d).config, 'patch_size', 1)
+                patch_size_t = getattr(accelerator.unwrap_model(transformer3d).config, 'patch_size_t', 1)
 
                 # ------------------ I2V Conditioning Mask ------------------
                 # Create conditioning mask for I2V training

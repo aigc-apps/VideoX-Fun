@@ -1674,7 +1674,11 @@ def main():
                         text_encoder.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                    # Convert padded tensor to list of tensors with varying lengths
+                    encoder_hidden_states = batch['encoder_hidden_states'].to(device=latents.device)
+                    encoder_attention_mask = batch['encoder_attention_mask']
+                    seq_lens = encoder_attention_mask.gt(0).sum(dim=1).long()
+                    prompt_embeds = [u[:v] for u, v in zip(encoder_hidden_states, seq_lens)]
                 else:
                     with torch.no_grad():
                         prompt_ids = tokenizer(
@@ -1735,18 +1739,18 @@ def main():
                 # Add noise
                 target = noise - latents
                 
-                target_shape = (vae.latent_channels, num_frames, width, height)
+                # Calculate sequence length for transformer
+                # Note: num_frames, width, height are already in latent space dimensions
+                latent_shape = (vae.latent_channels, num_frames, width, height)
                 seq_len = math.ceil(
-                    (target_shape[2] * target_shape[3]) /
+                    (latent_shape[2] * latent_shape[3]) /
                     (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
-                    target_shape[1]
+                    latent_shape[1]
                 )
 
                 # Predict the noise residual
-                if rng is None:
-                    audio_scale = np.random.choice([1, 0], p=[0.9, 0.1])
-                else:
-                    audio_scale = rng.choice([1, 0], p=[0.9, 0.1])
+                # audio_scale is fixed to 1.0 for training
+                audio_scale = torch.tensor([1.0]).to(latents.device, latents.dtype)
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
                         x=noisy_latents,

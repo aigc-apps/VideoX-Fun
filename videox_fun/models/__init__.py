@@ -31,6 +31,8 @@ from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
+from .flashhead_transformer3d import FlashHeadTransformer3DModel
+from .flashhead_audio_encoder import FlashHeadAudioEncoder
 from .flux2_image_processor import Flux2ImageProcessor
 from .flux2_transformer2d import Flux2Transformer2DModel
 from .flux2_transformer2d_control import Flux2ControlTransformer2DModel

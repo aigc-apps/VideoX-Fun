@@ -2,6 +2,7 @@ from .pipeline_cogvideox_fun import CogVideoXFunPipeline
 from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
 from .pipeline_fantasy_talking import FantasyTalkingPipeline
+from .pipeline_flashhead import FlashHeadPipeline
 from .pipeline_flux import FluxPipeline
 from .pipeline_flux2 import Flux2Pipeline
 from .pipeline_flux2_control import Flux2ControlPipeline

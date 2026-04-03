@@ -1317,8 +1317,11 @@ def main():
                     return_tensors="pt"
                 )
                 encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
+                    prompt_ids.input_ids,
+                    attention_mask=prompt_ids.attention_mask
                 )[0]
+                batch_size_embed, seq_len, hidden_dim = encoder_hidden_states.shape
+                encoder_hidden_states = encoder_hidden_states.view(batch_size_embed, 1, seq_len, hidden_dim)
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = encoder_hidden_states
 
@@ -1755,7 +1758,8 @@ def main():
                         prompt_attention_mask = prompt_ids.attention_mask.to(latents.device)
 
                         prompt_embeds = text_encoder(text_input_ids, attention_mask=prompt_attention_mask).last_hidden_state
-                        prompt_embeds = prompt_embeds.unsqueeze(1)
+                        batch_size_embed, seq_len, hidden_dim = prompt_embeds.shape
+                        prompt_embeds = prompt_embeds.view(batch_size_embed, 1, seq_len, hidden_dim)
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')

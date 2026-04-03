@@ -1386,6 +1386,7 @@ def main():
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     audio_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=torch.float32)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1528,7 +1529,6 @@ def main():
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
                 pixel_values = batch["pixel_values"].to(weight_dtype)
-                motion_pixel_values = batch["motion_pixel_values"].to(weight_dtype)
                 ref_pixel_values = batch["ref_pixel_values"].to(weight_dtype)
                 clip_idx = batch["clip_idx"]
                 audio = batch["audio"]
@@ -1539,7 +1539,6 @@ def main():
                 if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
-                        motion_pixel_values = torch.tile(motion_pixel_values, (4, 1, 1, 1, 1))
                         ref_pixel_values = torch.tile(ref_pixel_values, (4, 1, 1, 1, 1))
                         clip_idx = torch.tile(clip_idx, (4,))
                         audio = torch.tile(audio, (4, 1))
@@ -1552,7 +1551,6 @@ def main():
                             batch['text'] = batch['text'] * 4
                     elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
-                        motion_pixel_values = torch.tile(motion_pixel_values, (2, 1, 1, 1, 1))
                         ref_pixel_values = torch.tile(ref_pixel_values, (2, 1, 1, 1, 1))
                         clip_idx = torch.tile(clip_idx, (2,))
                         audio = torch.tile(audio, (2, 1))
@@ -1654,24 +1652,27 @@ def main():
                     # Encode reference latents
                     ref_latents = _batch_encode_vae(ref_pixel_values)
                     
-                    # Encode Motion latents (following InfiniteTalk pipeline)
-                    motion_latents_output = vae.encode(rearrange(motion_pixel_values, "b f c h w -> b c f h w"))
-                    motion_latents = motion_latents_output[0].sample().to(weight_dtype)
-                    
                     # Determine motion frames strategy (following InfiniteTalk pipeline):
-                    # - 10%: use ref_latents (simulate first clip, lat_motion_frames=1)
-                    # - 90%: use motion_latents (simulate subsequent clips)
+                    # - 50%: use ref_latents[:, :, :1] (simulate first clip, single reference frame)
+                    # - 50%: use first motion_frames of pixel_values (simulate subsequent clips)
                     if rng is None:
                         use_ref_only = np.random.choice([0, 1], p = [0.50, 0.50])
                     else:
                         use_ref_only = rng.choice([0, 1], p = [0.50, 0.50])
                     
                     if use_ref_only:
-                        # First clip mode: use ref_latents as motion frames
+                        # First clip mode: use single reference frame
                         lat_motion_frames = 1
                         motion_latents = ref_latents[:, :, :1]
                     else:
+                        # Subsequent clips mode: use first motion_frames frames from video
+                        # motion_pixel_values from dataset contains frames before start_frame
+                        # But for training, we use the first motion_frames of the current video
                         lat_motion_frames = (args.motion_frames + 3) // 4
+                        motion_latents_output = vae.encode(
+                            rearrange(pixel_values[:, :args.motion_frames], "b f c h w -> b c f h w")
+                        )
+                        motion_latents = motion_latents_output[0].sample().to(weight_dtype)
 
                     # Prepare y: mask + VAE encoded condition (following InfiniteTalk pipeline)
                     # Create mask in latent frame dimension
