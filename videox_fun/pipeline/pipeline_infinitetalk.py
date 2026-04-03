@@ -22,7 +22,7 @@ from einops import rearrange
 from tqdm import tqdm
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                      InfiniteTalkTransformer3DModel, WanAudioEncoder,
+                      InfiniteTalkTransformer3DModel, InfiniteTalkAudioEncoder,
                       WanT5EncoderModel)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
@@ -185,7 +185,7 @@ class InfiniteTalkPipeline(DiffusionPipeline):
         self,
         tokenizer: AutoTokenizer,
         text_encoder: WanT5EncoderModel,
-        audio_encoder: WanAudioEncoder,
+        audio_encoder: InfiniteTalkAudioEncoder,
         vae: AutoencoderKLWan,
         transformer: InfiniteTalkTransformer3DModel,
         scheduler: FlowMatchEulerDiscreteScheduler = None,

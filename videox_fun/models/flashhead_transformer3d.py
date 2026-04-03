@@ -156,7 +156,7 @@ class AudioCrossAttention(WanSelfAttention):
         return out
 
 
-class AudioAttentionBlock(nn.Module):
+class FlashHeadAttentionBlock(nn.Module):
     def __init__(
         self,
         cross_attn_type, # Useless
@@ -222,14 +222,28 @@ class AudioAttentionBlock(nn.Module):
 
         # cross-attention: distribute context per latent frame, ref flash_head_model.py DiTAudioBlock
         # context shape: [B, F, context_tokens, dim]
-        num_latent_frames = context.shape[1]
-        x_norm = self.norm3(x)
-        x_1 = rearrange(x_norm, 'b (f l) c -> (b f) l c', f=num_latent_frames)
-        context_1 = context.squeeze(0).to(dtype=dtype)
-        
-        x = x + self.cross_attn(
-            x_1, context_1, dtype=dtype,
-        ).flatten(0, 1).unsqueeze(0)
+        # For multi-GPU: audio_cross_attn expects full sequence, so all_gather x first
+        if hasattr(self, 'sp_world_size') and self.sp_world_size > 1 and self.all_gather is not None:
+            # All gather x to get full sequence for audio cross attention
+            x_full = self.all_gather(x, dim=1)
+            x_norm_full = self.norm3(x_full)
+            num_latent_frames = context.shape[1]
+            x_1_full = rearrange(x_norm_full, 'b (f l) c -> (b f) l c', f=num_latent_frames)
+            context_1 = context.squeeze(0).to(dtype=dtype)
+            
+            x_a_full = self.cross_attn(x_1_full, context_1, dtype=dtype)
+            # Chunk result back to local rank
+            x_a = torch.chunk(x_a_full.flatten(0, 1).unsqueeze(0), self.sp_world_size, dim=1)[self.sp_world_rank]
+            x = x + x_a
+        else:
+            num_latent_frames = context.shape[1]
+            x_norm = self.norm3(x)
+            x_1 = rearrange(x_norm, 'b (f l) c -> (b f) l c', f=num_latent_frames)
+            context_1 = context.squeeze(0).to(dtype=dtype)
+            
+            x = x + self.cross_attn(
+                x_1, context_1, dtype=dtype,
+            ).flatten(0, 1).unsqueeze(0)
 
         y = self.ffn((self.norm2(x).float() * (1 + e[4]) + e[3]).to(dtype=dtype))
         x = (x + y * e[5]).to(dtype=dtype)
@@ -239,38 +253,39 @@ class AudioAttentionBlock(nn.Module):
 class FlashHeadTransformer3DModel(WanTransformer3DModel):
     @register_to_config
     def __init__(self,
-                 model_type='i2v',
-                 patch_size=(1, 2, 2),
-                 text_len=512,
-                 in_dim=16,
-                 dim=2048,
-                 ffn_dim=8192,
-                 freq_dim=256,
-                 text_dim=4096,
-                 out_dim=16,
-                 num_heads=16,
-                 num_layers=32,
-                 window_size=(-1, -1),
-                 qk_norm=True,
-                 cross_attn_norm=True,
-                 eps=1e-6,
-                 cross_attn_type=None,
-                 # audio proj params, ref flash_head_model.py AudioProjModel
-                 audio_window=5,
-                 vae_scale=4,
-                 audio_blocks=12,
-                 audio_channels=768,
-                 intermediate_dim=512,
-                 context_tokens=32,
-                 audio_output_dim=1536,
-                 norm_output_audio=True):
+        model_type='i2v',
+        patch_size=(1, 2, 2),
+        text_len=512,
+        in_dim=16,
+        dim=2048,
+        ffn_dim=8192,
+        freq_dim=256,
+        text_dim=4096,
+        out_dim=16,
+        num_heads=16,
+        num_layers=32,
+        window_size=(-1, -1),
+        qk_norm=True,
+        cross_attn_norm=True,
+        eps=1e-6,
+        cross_attn_type=None,
+        # audio proj params, ref flash_head_model.py AudioProjModel
+        audio_window=5,
+        vae_scale=4,
+        audio_blocks=12,
+        audio_channels=768,
+        intermediate_dim=512,
+        context_tokens=32,
+        audio_output_dim=1536,
+        norm_output_audio=True
+    ):
         super().__init__(model_type, patch_size, text_len, in_dim, dim, ffn_dim, freq_dim, text_dim, out_dim,
                          num_heads, num_layers, window_size, qk_norm, cross_attn_norm, eps)
 
         if cross_attn_type is None:
             cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
-            AudioAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
+            FlashHeadAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
                               window_size, qk_norm, cross_attn_norm, eps)
             for _ in range(num_layers)
         ])
@@ -346,7 +361,25 @@ class FlashHeadTransformer3DModel(WanTransformer3DModel):
         return context
 
     def enable_multi_gpus_inference(self,):
-        super().enable_multi_gpus_inference()
+        """Enable multi-GPU inference using sequence parallel."""
+        from ..dist import (get_sequence_parallel_rank,
+                            get_sequence_parallel_world_size, get_sp_group,
+                            usp_attn_flashhead_forward)
+        import types
+        
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # Replace self_attn forward with xfuser version for all blocks
+        # and pass sp parameters to each block for audio cross_attn multi-GPU support
+        for block in self.blocks:
+            block.self_attn.forward = types.MethodType(
+                usp_attn_flashhead_forward, block.self_attn)
+            # Pass sp parameters to block for audio cross_attn multi-GPU support
+            block.sp_world_size = self.sp_world_size
+            block.sp_world_rank = self.sp_world_rank
+            block.all_gather = self.all_gather
 
     def forward(
         self,
