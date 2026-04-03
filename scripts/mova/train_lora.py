@@ -124,7 +124,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, audio_vae, text_encoder, tokenizer, mova_model, network, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, audio_vae, text_encoder, tokenizer, transformer, transformer_2, transformer_audio, dual_tower_bridge, mova_model, network, args, accelerator, weight_dtype, global_step):
     try:
         # Unwrap models if needed
         if type(mova_model).__name__ == 'DistributedDataParallel':
@@ -145,8 +145,6 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, mova_model, network,
                 low_cpu_mem_usage=True,
                 torch_dtype=weight_dtype,
             ).to(accelerator.device)
-            shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-            temp_transformer = shard_fn(temp_transformer)
             mova_model.set_module(temp_transformer, "transformer")
             print(f"[Validation] After loading: transformer device={temp_transformer.device}")
         elif args.boundary_type == "low" and transformer_2 is None:
@@ -160,7 +158,7 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, mova_model, network,
             ).to(accelerator.device)
             mova_model.set_module(temp_transformer_2, "transformer_2")
             print(f"[Validation] After loading: transformer_2 device={temp_transformer_2.device}")
-        
+
         # Use the correct transformers for validation
         val_transformer = transformer if transformer is not None else temp_transformer
         val_transformer_2 = transformer_2 if transformer_2 is not None else temp_transformer_2
@@ -670,6 +668,12 @@ def parse_args():
         help=("If you want to load the weight from other transformers, input its path."),
     )
     parser.add_argument(
+        "--transformer_high_path",
+        type=str,
+        default=None,
+        help=("If you want to load the weight from other transformers for transformer_2 (high noise), input its path."),
+    )
+    parser.add_argument(
         "--vae_path",
         type=str,
         default=None,
@@ -747,6 +751,16 @@ def parse_args():
         type=str,
         default=None,
         help=("The module is trained in loras. "),
+    )
+    parser.add_argument(
+        "--boundary_type",
+        type=str,
+        default="full",
+        choices=["low", "high", "full"],
+        help=(
+            'Which DiT to train. "low" = only low-noise DiT, '
+            '"high" = only high-noise DiT, "full" = both DiTs.'
+        ),
     )
     parser.add_argument(
         "--train_components",
@@ -1861,6 +1875,7 @@ def main():
     
     idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
 
+
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
@@ -1997,7 +2012,7 @@ def main():
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
                 # Get latent dimensions from VAE output for later use
-                bsz, channel, num_frames, height, width = latents.size()
+                bsz, _, latent_num_frames, latent_height, latent_width = latents.size()
                 
                 # Encode audio to latents
                 with torch.no_grad():
@@ -2011,7 +2026,7 @@ def main():
                     
                     # Encode audio using audio_vae
                     # audio_latents_raw shape: [batch, latent_channels, latent_time]
-                    audio_latents_raw = audio_vae.encode(audio_batch)[0].sample()
+                    audio_latents_raw = audio_vae.encode(audio_batch)[0].mode()
 
                 if args.low_vram:
                     vae.to('cpu')
@@ -2103,7 +2118,7 @@ def main():
                 
                 # Build mask: frame dim is pixel, spatial dims are latent (same as pipeline)
                 mask_pixel = torch.ones(
-                    bsz, 1, num_pixel_frames, height, width,
+                    bsz, 1, num_pixel_frames, latent_height, latent_width,
                     device=latents.device, dtype=latents.dtype
                 )
                 
@@ -2124,7 +2139,7 @@ def main():
                 mask_pixel = torch.cat([first_frame_mask, mask_pixel[:, :, 1:, :]], dim=2)
                 # View: [B, 1, F_pixel+3, H, W] -> [B, num_latent_frames, 4, H_latent, W_latent]
                 mask_lat_size = mask_pixel.view(
-                    bsz, -1, temporal_compression_ratio, height, width
+                    bsz, -1, temporal_compression_ratio, latent_height, latent_width
                 )
                 mask_lat_size = mask_lat_size.transpose(1, 2)  # [B, 4, F_latent, H, W]
                 mask_lat_size = mask_lat_size.to(latent_condition.device)
@@ -2162,7 +2177,7 @@ def main():
                 else:
                     # Full mode: switch based on timestep
                     boundary_timestep = args.boundary_ratio * noise_scheduler.config.num_train_timesteps
-                    use_low_noise_dit = timesteps[0].item() >= boundary_timestep  # large t = high noise = transformer_2
+                    use_low_noise_dit = timesteps[0].item() < boundary_timestep  # small t = low noise = transformer
                 
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred_video, noise_pred_audio = mova_model(
@@ -2199,17 +2214,12 @@ def main():
                     video_loss = video_loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
                 
                 # Audio loss
+                # Use same custom_mse_loss with threshold for consistency with video loss
                 audio_weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=audio_sigmas)
-                audio_loss = F.mse_loss(noise_pred_audio.float(), audio_target.float(), reduction='none')
-                if audio_weighting is not None:
-                    # Expand weighting to match audio shape
-                    while audio_weighting.ndim < audio_loss.ndim:
-                        audio_weighting = audio_weighting.unsqueeze(-1)
-                    audio_loss = audio_loss * audio_weighting
-                audio_loss = audio_loss.mean()
+                audio_loss = custom_mse_loss(noise_pred_audio.float(), audio_target.float(), audio_weighting.float() if audio_weighting is not None else None)
                 
                 # Combined loss (equal weighting for video and audio)
-                loss = 0.5 * video_loss + 0.5 * audio_loss
+                loss = video_loss + 0.1 * audio_loss
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
@@ -2289,6 +2299,10 @@ def main():
                         audio_vae,
                         text_encoder,
                         tokenizer,
+                        transformer,
+                        transformer_2,
+                        transformer_audio,
+                        dual_tower_bridge,
                         mova_model,
                         networks if not args.use_peft_lora else None,
                         args,
@@ -2309,6 +2323,10 @@ def main():
                 audio_vae,
                 text_encoder,
                 tokenizer,
+                transformer,
+                transformer_2,
+                transformer_audio,
+                dual_tower_bridge,
                 mova_model,
                 networks if not args.use_peft_lora else None,
                 args,
