@@ -272,9 +272,6 @@ elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_model_weight_to_float8(pipeline.transformer, exclude_module_name=["modulation",], device=device)
     convert_model_weight_to_float8(pipeline.transformer_2, exclude_module_name=["modulation",], device=device)

@@ -44,7 +44,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_full_load"
+GPU_memory_mode     = "sequential_cpu_offload"
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
