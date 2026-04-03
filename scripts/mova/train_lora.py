@@ -1692,6 +1692,13 @@ def main():
         mova_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             mova_model, optimizer, train_dataloader, lr_scheduler
         )
+    
+    if fsdp_stage != 0 or zero_stage != 0:
+        from functools import partial
+
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.encoder.block)
+        text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)

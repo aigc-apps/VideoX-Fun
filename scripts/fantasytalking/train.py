@@ -847,7 +847,9 @@ def main():
         )
         clip_image_encoder = clip_image_encoder.eval()
         
-        audio_encoder_path = args.pretrained_audio_model_name_or_path if args.pretrained_audio_model_name_or_path is not None else os.path.join(args.pretrained_model_name_or_path, "audio_encoder")
+        audio_encoder_path = args.pretrained_audio_model_name_or_path \
+            if args.pretrained_audio_model_name_or_path is not None and str(args.pretrained_audio_model_name_or_path) != "None" \
+            else os.path.join(args.pretrained_model_name_or_path, "audio_encoder")
         audio_encoder = FantasyTalkingAudioEncoder(audio_encoder_path)
             
     # Get Transformer

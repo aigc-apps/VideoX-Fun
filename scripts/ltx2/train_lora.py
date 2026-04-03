@@ -1841,7 +1841,7 @@ def main():
                     torch.cuda.empty_cache()
 
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                audio_noise = torch.randn(audio_latents_raw.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
+                audio_noise = torch.randn(audio_latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
