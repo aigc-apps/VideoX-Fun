@@ -1167,8 +1167,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             config = json.load(f)
 
         # Auto-convert WanModel config to WanTransformer3DModel config
-        if config.get('_class_name') == 'WanModel':
-            print("Detected WanModel config, converting to WanTransformer3DModel config...")
+        if 'has_image_input' in config:
+            print("Detected diffsynth config, converting to WanTransformer3DModel config...")
             config = cls._convert_from_wan_model_config(config)
 
         from diffusers.utils import WEIGHTS_NAME

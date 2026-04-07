@@ -108,7 +108,7 @@ class MOVAPipeline(DiffusionPipeline):
             Dual tower bridge for cross-modal interaction.
     """
 
-    model_cpu_offload_seq = "text_encoder->transformer->transformer_2->transformer_audio->dual_tower_bridge->vae->audio_vae"
+    model_cpu_offload_seq = "text_encoder->dual_tower_bridge->transformer_2->transformer_audio->transformer->vae->audio_vae"
     _optional_components = ["transformer_audio", "dual_tower_bridge"]
     _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
 
@@ -142,7 +142,7 @@ class MOVAPipeline(DiffusionPipeline):
         mova_model = MOVAModel(
             transformer=transformer,
             transformer_2=transformer_2,
-            audio_dit=transformer_audio,
+            transformer_audio=transformer_audio,
             dual_tower_bridge=dual_tower_bridge,
         )
 

@@ -11,16 +11,16 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
+from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLMOVAAudio, AutoencoderKLWan,
                                AutoTokenizer, MOVADualTowerConditionalBridge,
-                               UMT5EncoderModel,
-                               WanAudioTransformer3DModel,
+                               UMT5EncoderModel, WanAudioTransformer3DModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import MOVAPipeline
-from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils import (register_auto_device_hook,
                               safe_enable_group_offload)
+from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
+from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper,
                                                replace_parameters_by_name)
@@ -43,7 +43,16 @@ from videox_fun.utils.utils import save_videos_with_audio_grid
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_group_offload"
+GPU_memory_mode     = "sequential_cpu_offload"
+# Multi GPUs config
+# Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
+# For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+# If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+ulysses_degree      = 1
+ring_degree         = 1
+# Use FSDP to save more GPU memory in multi gpus.
+fsdp_dit            = False
+fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory.
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
@@ -56,9 +65,9 @@ sampler_name        = "Flow"
 boundary_ratio      = 0.9
 
 # Load pretrained model if need
-transformer_path  = None
-transformer_high_path = None
-audio_dit_path      = None
+transformer_path        = None
+transformer_high_path   = None
+transformer_audio_path  = None
 bridge_path         = None
 vae_path            = None
 audio_vae_path      = None
@@ -85,7 +94,7 @@ num_inference_steps = 50
 lora_weight         = 0.55
 save_path           = "samples/mova-videos-i2v"
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
 # The from_pretrained method automatically converts WanModel config to WanTransformer3DModel config
 print("Loading Video DiT (High Noise) with WanTransformer3DModel...")
@@ -136,13 +145,13 @@ transformer_audio = WanAudioTransformer3DModel.from_pretrained(
     torch_dtype=weight_dtype,
 )
 
-if audio_dit_path is not None:
-    print(f"From checkpoint: {audio_dit_path}")
-    if audio_dit_path.endswith("safetensors"):
+if transformer_audio_path is not None:
+    print(f"From checkpoint: {transformer_audio_path}")
+    if transformer_audio_path.endswith("safetensors"):
         from safetensors.torch import load_file
-        state_dict = load_file(audio_dit_path)
+        state_dict = load_file(transformer_audio_path)
     else:
-        state_dict = torch.load(audio_dit_path, map_location="cpu")
+        state_dict = torch.load(transformer_audio_path, map_location="cpu")
     state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
     m, u = transformer_audio.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
@@ -245,15 +254,38 @@ pipeline = MOVAPipeline(
     audio_vae_type="dac",
 )
 
+if ulysses_degree > 1 or ring_degree > 1:
+    from functools import partial
+
+    # Enable multi-GPU inference for visual transformers
+    transformer.enable_multi_gpus_inference()
+    transformer_2.enable_multi_gpus_inference()
+    
+    if fsdp_dit:
+        # Apply FSDP to visual transformer blocks
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.transformer = shard_fn(pipeline.transformer)
+        pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
+        print("Add FSDP DIT")
+    
+    if fsdp_text_encoder:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.encoder.block)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
+        print("Add FSDP TEXT ENCODER")
+
 if compile_dit:
     # Compile MOVAModel blocks
-    for i in range(len(pipeline.transformer.blocks)):
-        pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
-    for i in range(len(pipeline.transformer_2.blocks)):
-        pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
-    for i in range(len(pipeline.transformer_audio.blocks)):
-        pipeline.transformer_audio.blocks[i] = torch.compile(pipeline.transformer_audio.blocks[i])
-    print("Add Compile")
+    # NOTE: compile_dit is not compatible with fsdp_dit
+    if fsdp_dit:
+        print("WARNING: compile_dit is not compatible with fsdp_dit. Disabling compile.")
+    else:
+        for i in range(len(pipeline.transformer.blocks)):
+            pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
+        for i in range(len(pipeline.transformer_2.blocks)):
+            pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
+        for i in range(len(pipeline.transformer_audio.blocks)):
+            pipeline.transformer_audio.blocks[i] = torch.compile(pipeline.transformer_audio.blocks[i])
+        print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(pipeline.transformer, ["modulation",], device=device)
@@ -330,7 +362,11 @@ def save_results():
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         sr = getattr(pipeline.audio_vae.config, "output_sampling_rate", audio_sample_rate)
-        print("audio_sample_rate", audio_sample_rate, audio.size())
         save_videos_with_audio_grid(sample, audio, video_path, fps=fps, audio_sample_rate=sr)
 
-save_results()
+if ulysses_degree > 1 or ring_degree > 1 or fsdp_dit or fsdp_text_encoder:
+    import torch.distributed as dist
+    if dist.get_rank() == 0:
+        save_results()
+else:
+    save_results()

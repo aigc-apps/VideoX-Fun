@@ -77,10 +77,6 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
-# Skip some cfg steps in inference
-# Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0
-
 # Riflex config
 enable_riflex       = False
 # Index of intrinsic frequency
@@ -125,6 +121,7 @@ audio_path              = "asset/talk.wav"
 prompt              = "一个女孩在海边说话。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 4.5
+audio_guide_scale   = 4.0
 seed                = 43
 num_inference_steps = 40
 lora_weight         = 0.55
@@ -274,10 +271,6 @@ if coefficients is not None:
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
 
-if cfg_skip_ratio is not None:
-    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
-    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
@@ -300,6 +293,7 @@ with torch.no_grad():
         width       = sample_size[1],
         generator   = generator,
         guidance_scale = guidance_scale,
+        audio_guide_scale = audio_guide_scale,
         num_inference_steps = num_inference_steps,
 
         video       = input_video,

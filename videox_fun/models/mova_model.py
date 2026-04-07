@@ -1,4 +1,5 @@
 # Modified from hhttps://github.com/OpenMOSS/MOVA/blob/main/mova/diffusion/pipelines/pipeline_mova.py
+import math
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -12,15 +13,15 @@ def sinusoidal_embedding_1d(dim, position):
 
 class MOVAModel(nn.Module):
     """
-    MOVA helper class that encapsulates transformer, transformer_2, audio_dit, and dual_tower_bridge.
+    MOVA helper class that encapsulates transformer, transformer_2, transformer_audio, and dual_tower_bridge.
     Provides a clean forward interface similar to LTX2VideoTransformer3DModel.
     This is NOT an nn.Module, just a helper class for organizing forward logic.
     """
-    def __init__(self, transformer, transformer_2, audio_dit, dual_tower_bridge):
+    def __init__(self, transformer, transformer_2, transformer_audio, dual_tower_bridge):
         super().__init__()
         self.transformer = transformer
         self.transformer_2 = transformer_2
-        self.audio_dit = audio_dit
+        self.transformer_audio = transformer_audio
         self.dual_tower_bridge = dual_tower_bridge
         self.gradient_checkpointing = False
         self.model_offload = False  # Enable offloading unused models to CPU
@@ -116,23 +117,21 @@ class MOVAModel(nn.Module):
                 f"Please check your training configuration."
             )
         
-        # Ensure all active components are on the correct device (for FSDP compatibility)
-        if not self.model_offload:
-            active_visual_dit = self._move_to_device(active_visual_dit, device)
-            self.audio_dit = self._move_to_device(self.audio_dit, device)
-            self.dual_tower_bridge = self._move_to_device(self.dual_tower_bridge, device)
-        
         # Model offloading: move inactive models to CPU to save VRAM
         if self.model_offload:
-            import torch.cuda
             # Move inactive visual DiT to CPU
             if inactive_visual_dit is not None:
                 inactive_visual_dit.to('cpu')
             torch.cuda.empty_cache()
             
-            # Move active visual DiT and audio_dit to GPU
+            # Move active visual DiT and transformer_audio to GPU
             active_visual_dit = self._move_to_device(active_visual_dit, device)
-            self.audio_dit = self._move_to_device(self.audio_dit, device)
+            self.transformer_audio = self._move_to_device(self.transformer_audio, device)
+            self.dual_tower_bridge = self._move_to_device(self.dual_tower_bridge, device)
+        else:
+            # No offload: just ensure models are on correct device
+            active_visual_dit = self._move_to_device(active_visual_dit, device)
+            self.transformer_audio = self._move_to_device(self.transformer_audio, device)
             self.dual_tower_bridge = self._move_to_device(self.dual_tower_bridge, device)
         
         output = self._forward_single_step(
@@ -177,8 +176,8 @@ class MOVAModel(nn.Module):
             visual_t = visual_dit.time_embedding(sinusoidal_embedding_1d(visual_dit.freq_dim, timestep))
             visual_t_mod = visual_dit.time_projection(visual_t).unflatten(1, (6, visual_dit.dim))
 
-            audio_t = self.audio_dit.time_embedding(sinusoidal_embedding_1d(self.audio_dit.freq_dim, audio_timestep))
-            audio_t_mod = self.audio_dit.time_projection(audio_t).unflatten(1, (6, self.audio_dit.dim))
+            audio_t = self.transformer_audio.time_embedding(sinusoidal_embedding_1d(self.transformer_audio.freq_dim, audio_timestep))
+            audio_t_mod = self.transformer_audio.time_projection(audio_t).unflatten(1, (6, self.transformer_audio.dim))
         
         model_dtype = visual_dit.dtype
         visual_t = visual_t.to(model_dtype)
@@ -188,7 +187,7 @@ class MOVAModel(nn.Module):
         
         # Context embeddings
         visual_context_emb = visual_dit.text_embedding(visual_context)
-        audio_context_emb = self.audio_dit.text_embedding(audio_context)
+        audio_context_emb = self.transformer_audio.text_embedding(audio_context)
         
         visual_x = visual_latents.to(model_dtype)
         audio_x = audio_latents.to(model_dtype)
@@ -201,7 +200,7 @@ class MOVAModel(nn.Module):
         t, h, w = grid_size
 
         # Audio patchify
-        audio_x = self.audio_dit.patch_embedding(audio_x)
+        audio_x = self.transformer_audio.patch_embedding(audio_x)
         audio_grid_size = audio_x.shape[2:]
         audio_x = rearrange(audio_x, 'b c f -> b f c').contiguous()
         f = audio_grid_size[0]
@@ -209,13 +208,29 @@ class MOVAModel(nn.Module):
         # Audio freqs
         audio_freqs = torch.cat(
             [
-                self.audio_dit.freqs[0][:f].view(f, -1).expand(f, -1),
-                self.audio_dit.freqs[1][:f].view(f, -1).expand(f, -1),
-                self.audio_dit.freqs[2][:f].view(f, -1).expand(f, -1),
+                self.transformer_audio.freqs[0][:f].view(f, -1).expand(f, -1),
+                self.transformer_audio.freqs[1][:f].view(f, -1).expand(f, -1),
+                self.transformer_audio.freqs[2][:f].view(f, -1).expand(f, -1),
             ],
             dim=-1
         ).reshape(f, 1, -1).to(audio_x.device)
 
+        # Sequence parallel: chunk visual_x before blocks
+        # sp_world_size and sp_world_rank are also used in _forward_dual_tower_dit
+        self._sp_world_size = getattr(visual_dit, 'sp_world_size', 1)
+        self._sp_world_rank = getattr(visual_dit, 'sp_world_rank', 0)
+        if self._sp_world_size > 1:
+            # Pad sequence to be divisible by sp_world_size
+            seq_len = visual_x.shape[1]
+            padded_seq_len = int(math.ceil(seq_len / self._sp_world_size)) * self._sp_world_size
+            if padded_seq_len > seq_len:
+                visual_x = torch.cat([
+                    visual_x,
+                    visual_x.new_zeros(visual_x.shape[0], padded_seq_len - seq_len, visual_x.shape[2])
+                ], dim=1)
+            # Chunk for sequence parallel
+            visual_x = torch.chunk(visual_x, self._sp_world_size, dim=1)[self._sp_world_rank]
+        
         # Forward through dual tower DiT blocks
         visual_x, audio_x = self._forward_dual_tower_dit(
             visual_dit=visual_dit,
@@ -229,6 +244,10 @@ class MOVAModel(nn.Module):
             frame_rate=frame_rate,
         )
         
+        # Sequence parallel: all_gather visual output after blocks
+        if self._sp_world_size > 1 and hasattr(visual_dit, 'all_gather') and visual_dit.all_gather is not None:
+            visual_x = visual_dit.all_gather(visual_x, dim=1)
+        
         # Visual head + unpatchify
         visual_output = visual_dit.head(visual_x, visual_t)
         grid_sizes_tensor = torch.tensor([grid_size], dtype=torch.long, device=visual_output.device)
@@ -236,8 +255,8 @@ class MOVAModel(nn.Module):
         visual_output = visual_output[0].unsqueeze(0)
         
         # Audio head + unpatchify
-        audio_output = self.audio_dit.head(audio_x, audio_t)
-        audio_output = self.audio_dit.unpatchify(audio_output, (f, ))
+        audio_output = self.transformer_audio.head(audio_x, audio_t)
+        audio_output = self.transformer_audio.unpatchify(audio_output, (f, ))
 
         return visual_output, audio_output
     
@@ -257,8 +276,13 @@ class MOVAModel(nn.Module):
         v2a_condition_scale: float = None,
     ):
         """Forward through dual tower DiT blocks with bridge."""
-        min_layers = min(len(visual_dit.blocks), len(self.audio_dit.blocks))
+        min_layers = min(len(visual_dit.blocks), len(self.transformer_audio.blocks))
         visual_layers = len(visual_dit.blocks)
+
+        # Check if sequence parallel is enabled
+        sp_world_size = getattr(visual_dit, 'sp_world_size', 1)
+        sp_world_rank = getattr(visual_dit, 'sp_world_rank', 0)
+        sp_enabled = sp_world_size > 1 and hasattr(visual_dit, 'all_gather') and visual_dit.all_gather is not None
 
         # Prepare visual block parameters
         t, h, w = grid_size
@@ -276,9 +300,9 @@ class MOVAModel(nn.Module):
         audio_context_lens = None
         audio_dtype = audio_x.dtype
         audio_freqs_dit = torch.cat([
-            self.audio_dit.freqs[0][:audio_f].view(audio_f, -1),
-            self.audio_dit.freqs[1][:audio_f].view(audio_f, -1),
-            self.audio_dit.freqs[2][:audio_f].view(audio_f, -1),
+            self.transformer_audio.freqs[0][:audio_f].view(audio_f, -1),
+            self.transformer_audio.freqs[1][:audio_f].view(audio_f, -1),
+            self.transformer_audio.freqs[2][:audio_f].view(audio_f, -1),
         ], dim=-1).reshape(audio_f, 1, -1).to(audio_x.device)
 
         # Precompute cross-modal RoPE freqs
@@ -297,10 +321,23 @@ class MOVAModel(nn.Module):
         # Forward through blocks
         for layer_idx in range(min_layers):
             visual_block = visual_dit.blocks[layer_idx]
-            audio_block = self.audio_dit.blocks[layer_idx]
+            audio_block = self.transformer_audio.blocks[layer_idx]
 
             # Cross-modal interaction via bridge with optional gradient checkpointing
-            if self.dual_tower_bridge.should_interact(layer_idx, 'a2v'):
+            # For sequence parallel: v2a (visual->audio) needs full visual sequence as key/value
+            # So we all_gather visual_x before bridge, then chunk it back after
+            needs_interaction = (
+                self.dual_tower_bridge.should_interact(layer_idx, 'a2v') or 
+                self.dual_tower_bridge.should_interact(layer_idx, 'v2a')
+            )
+            
+            if needs_interaction:
+                # Prepare visual_x for bridge: all_gather if sequence parallel is enabled
+                if sp_enabled:
+                    visual_x_for_bridge = visual_dit.all_gather(visual_x, dim=1)
+                else:
+                    visual_x_for_bridge = visual_x
+                
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
                     def create_custom_forward(module):
                         def custom_forward(layer_idx, visual_x, audio_x, x_freqs, y_freqs, 
@@ -319,10 +356,10 @@ class MOVAModel(nn.Module):
                             )
                         return custom_forward
                     
-                    visual_x, audio_x = torch.utils.checkpoint.checkpoint(
+                    visual_x_out, audio_x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(self.dual_tower_bridge),
                         layer_idx,
-                        visual_x,
+                        visual_x_for_bridge,
                         audio_x,
                         visual_rope_cos_sin,
                         audio_rope_cos_sin,
@@ -333,9 +370,9 @@ class MOVAModel(nn.Module):
                         use_reentrant=False,
                     )
                 else:
-                    visual_x, audio_x = self.dual_tower_bridge(
+                    visual_x_out, audio_x = self.dual_tower_bridge(
                         layer_idx,
-                        visual_x,
+                        visual_x_for_bridge,
                         audio_x,
                         x_freqs=visual_rope_cos_sin,
                         y_freqs=audio_rope_cos_sin,
@@ -344,6 +381,13 @@ class MOVAModel(nn.Module):
                         condition_scale=condition_scale,
                         video_grid_size=grid_size,
                     )
+                
+                # Chunk visual_x back to local rank if sequence parallel is enabled
+                # Bridge output visual_x might be modified (a2v direction), so always chunk
+                if sp_enabled:
+                    visual_x = torch.chunk(visual_x_out, sp_world_size, dim=1)[sp_world_rank]
+                else:
+                    visual_x = visual_x_out
 
             # Visual block with optional gradient checkpointing
             if torch.is_grad_enabled() and self.gradient_checkpointing:
