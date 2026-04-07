@@ -996,7 +996,7 @@ def main():
     mova_model = MOVAModel(
         transformer=transformer,
         transformer_2=transformer_2,
-        audio_dit=transformer_audio,
+        transformer_audio=transformer_audio,
         dual_tower_bridge=dual_tower_bridge,
     )
     mova_model = mova_model.to(weight_dtype)

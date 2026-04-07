@@ -998,7 +998,7 @@ def main():
     mova_model = MOVAModel(
         transformer=transformer,
         transformer_2=transformer_2,
-        audio_dit=transformer_audio,
+        transformer_audio=transformer_audio,
         dual_tower_bridge=dual_tower_bridge,
     )
     mova_model = mova_model.to(weight_dtype)
@@ -1052,7 +1052,7 @@ def main():
         
         if "transformer_audio" in components_to_train:
             transformer_audio = inject_adapter_in_model(lora_config, transformer_audio)
-            mova_model.audio_dit = transformer_audio
+            mova_model.transformer_audio = transformer_audio
             peft_adapters["transformer_audio"] = transformer_audio
             if accelerator.is_main_process:
                 accelerator.print("Added peft LoRA to transformer_audio")
@@ -1177,14 +1177,14 @@ def main():
     component_to_attr = {
         "transformer": "transformer",
         "transformer_2": "transformer_2",
-        "transformer_audio": "audio_dit",
+        "transformer_audio": "transformer_audio",
         "dual_tower_bridge": "dual_tower_bridge",
     }
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # Component name -> MOVAModel attribute name mapping for state dict key prefixes
-        # State dict keys: transformer.network.xxx, transformer_2.network.xxx, audio_dit.network.xxx, etc.
+        # State dict keys: transformer.network.xxx, transformer_2.network.xxx, transformer_audio.network.xxx, etc.
         attr_to_component = {v: k for k, v in component_to_attr.items()}
 
         if fsdp_stage != 0 or zero_stage == 3:
