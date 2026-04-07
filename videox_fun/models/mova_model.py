@@ -72,7 +72,7 @@ class MOVAModel(nn.Module):
     
     def _move_to_device(self, model, device):
         """Helper to move model to device."""
-        if model is not None:
+        if model is not None and model.device != torch.device(type="meta"):
             model.to(device)
         return model
     
