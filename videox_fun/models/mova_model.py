@@ -147,7 +147,7 @@ class MOVAModel(nn.Module):
         # Move active models back to CPU if offloading is enabled
         if self.model_offload:
             active_visual_dit.to('cpu')
-            self.audio_dit.to('cpu')
+            self.transformer_audio.to('cpu')
             self.dual_tower_bridge.to('cpu')
             torch.cuda.empty_cache()
         
