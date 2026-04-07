@@ -1,15 +1,14 @@
 import os
 from abc import ABC, abstractmethod
+from typing import Optional, Tuple
 
 import torch
 import torchvision.transforms as transforms
 from einops import rearrange
 from torchvision.datasets.utils import download_url
-from typing import Optional, Tuple
-
 
 # All reward models.
-__all__ = ["AestheticReward", "HPSReward", "PickScoreReward", "MPSReward"]
+__all__ = ["AestheticReward", "HPSReward", "PickScoreReward", "MPSReward", "HPSv3Reward", "VideoAlignReward"]
 
 
 class BaseReward(ABC):
@@ -27,6 +26,11 @@ class BaseReward(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: Optional[list[str]] = None) -> torch.Tensor:
+        """Return per-sample rewards of shape [B], without any reduction across batch dimension."""
+        pass
+
 
 class AestheticReward(BaseReward):
     """Aesthetic Predictor [V2](https://github.com/christophschuhmann/improved-aesthetic-predictor) 
@@ -42,8 +46,8 @@ class AestheticReward(BaseReward):
         max_reward=10,
         loss_scale=0.1,
     ):
-        from .improved_aesthetic_predictor import ImprovedAestheticPredictor
-        from ..video_caption.utils.siglip_v2_5 import convert_v2_5_from_siglip
+        from .aesthetic_v2_5_predictor import convert_v2_5_from_siglip
+        from .aesthetic_v2_predictor import ImprovedAestheticPredictor
 
         self.encoder_path = encoder_path
         self.predictor_path = predictor_path
@@ -59,7 +63,6 @@ class AestheticReward(BaseReward):
             assert "clip-vit-large-patch14" in encoder_path.lower()
             self.model = ImprovedAestheticPredictor(encoder_path=self.encoder_path, predictor_path=self.predictor_path)
             # https://huggingface.co/openai/clip-vit-large-patch14/blob/main/preprocessor_config.json
-            # TODO: [transforms.Resize(224), transforms.CenterCrop(224)] for any aspect ratio.
             self.transform = transforms.Compose([
                 transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
                 transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]),
@@ -78,23 +81,26 @@ class AestheticReward(BaseReward):
     
 
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: Optional[list[str]]=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: Optional[list[str]] = None) -> torch.Tensor:
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
-        batch_loss, batch_reward = 0, 0
+        total_rewards = []
         for frames in batch_frames:
             pixel_values = torch.stack([self.transform(frame) for frame in frames])
             pixel_values = pixel_values.to(self.device, dtype=self.dtype)
             if self.version == "v2":
                 reward = self.model(pixel_values)
             elif self.version == "v2.5":
-                reward = self.model(pixel_values).logits.squeeze()
-            # Convert reward to loss in [0, 1].
-            if self.max_reward is None:
-                loss = (-1 * reward) * self.loss_scale
-            else:
-                loss = abs(reward - self.max_reward) * self.loss_scale
-            batch_loss, batch_reward = batch_loss + loss.mean(), batch_reward + reward.mean()
-        
-        return batch_loss / batch_frames.shape[0], batch_reward / batch_frames.shape[0]
+                reward = self.model(pixel_values).logits.squeeze(-1)
+            total_rewards.append(reward)
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
 
 
 class HPSReward(BaseReward):
@@ -109,7 +115,8 @@ class HPSReward(BaseReward):
         max_reward=1,
         loss_scale=1,
     ):
-        from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer
+        from hpsv2.src.open_clip import (create_model_and_transforms,
+                                         get_tokenizer)
 
         self.model_path = model_path
         self.version = version
@@ -139,8 +146,6 @@ class HPSReward(BaseReward):
         )
         self.tokenizer = get_tokenizer("ViT-H-14")
 
-        # https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/blob/main/preprocessor_config.json
-        # TODO: [transforms.Resize(224), transforms.CenterCrop(224)] for any aspect ratio.
         self.transform = transforms.Compose([
             transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]),
@@ -167,28 +172,31 @@ class HPSReward(BaseReward):
         self.model.eval()
     
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
         assert batch_frames.shape[0] == len(batch_prompt)
-        # Compute batch reward and loss in frame-wise.
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
-        batch_loss, batch_reward = 0, 0
+        total_rewards = []
+        text_inputs = self.tokenizer(batch_prompt).to(device=self.device)
+
         for frames in batch_frames:
             image_inputs = torch.stack([self.transform(frame) for frame in frames])
             image_inputs = image_inputs.to(device=self.device, dtype=self.dtype)
-            text_inputs = self.tokenizer(batch_prompt).to(device=self.device)
             outputs = self.model(image_inputs, text_inputs)
-
-            image_features, text_features = outputs["image_features"], outputs["text_features"]
+            image_features = outputs["image_features"]
+            text_features = outputs["text_features"]
             logits = image_features @ text_features.T
             reward = torch.diagonal(logits)
-            # Convert reward to loss in [0, 1].
-            if self.max_reward is None:
-                loss = (-1 * reward) * self.loss_scale
-            else:
-                loss = abs(reward - self.max_reward) * self.loss_scale
-            
-            batch_loss, batch_reward = batch_loss + loss.mean(), batch_reward + reward.mean()
+            total_rewards.append(reward)
         
-        return batch_loss / batch_frames.shape[0], batch_reward / batch_frames.shape[0]
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
 
 
 class PickScoreReward(BaseReward):
@@ -202,7 +210,7 @@ class PickScoreReward(BaseReward):
         max_reward=1,
         loss_scale=1,
     ):
-        from transformers import AutoProcessor, AutoModel
+        from transformers import AutoModel, AutoProcessor
 
         self.model_path = model_path
         self.device = device
@@ -210,7 +218,6 @@ class PickScoreReward(BaseReward):
         self.max_reward = max_reward
         self.loss_scale = loss_scale
 
-        # https://huggingface.co/yuvalkirstain/PickScore_v1/blob/main/preprocessor_config.json
         self.transform = transforms.Compose([
             transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.CenterCrop(224),
@@ -222,20 +229,29 @@ class PickScoreReward(BaseReward):
         self.model.eval()
      
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
         assert batch_frames.shape[0] == len(batch_prompt)
-        # Compute batch reward and loss in frame-wise.
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
-        batch_loss, batch_reward = 0, 0
+        total_rewards = []
+
+        text_inputs = self.processor(
+            text=batch_prompt,
+            padding=True,
+            truncation=True,
+            max_length=77,
+            return_tensors="pt",
+        ).to(self.device)
+
         for frames in batch_frames:
             image_inputs = torch.stack([self.transform(frame) for frame in frames])
             image_inputs = image_inputs.to(device=self.device, dtype=self.dtype)
-            text_inputs = self.processor(
-                text=batch_prompt,
-                padding=True,
-                truncation=True,
-                max_length=77,
-                return_tensors="pt",
-            ).to(self.device)
             image_features = self.model.get_image_features(pixel_values=image_inputs)
             text_features = self.model.get_text_features(**text_inputs)
             image_features = image_features / torch.norm(image_features, dim=-1, keepdim=True)
@@ -243,15 +259,10 @@ class PickScoreReward(BaseReward):
 
             logits = image_features @ text_features.T
             reward = torch.diagonal(logits)
-            # Convert reward to loss in [0, 1].
-            if self.max_reward is None:
-                loss = (-1 * reward) * self.loss_scale
-            else:
-                loss = abs(reward - self.max_reward) * self.loss_scale
+            total_rewards.append(reward)
 
-            batch_loss, batch_reward = batch_loss + loss.mean(), batch_reward + reward.mean()
-
-        return batch_loss / batch_frames.shape[0], batch_reward / batch_frames.shape[0]
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
 
 
 class MPSReward(BaseReward):
@@ -265,7 +276,8 @@ class MPSReward(BaseReward):
         max_reward=1,
         loss_scale=1,
     ):
-        from transformers import AutoTokenizer, AutoConfig
+        from transformers import AutoConfig, AutoTokenizer
+
         from .MPS.trainer.models.clip_model import CLIPModel
 
         self.model_path = model_path
@@ -276,15 +288,11 @@ class MPSReward(BaseReward):
         self.loss_scale = loss_scale
 
         processor_name_or_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-        # https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/blob/main/preprocessor_config.json
-        # TODO: [transforms.Resize(224), transforms.CenterCrop(224)] for any aspect ratio.
         self.transform = transforms.Compose([
             transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]),
         ])
 
-        # We convert the original [ckpt](http://drive.google.com/file/d/17qrK_aJkVNM75ZEvMEePpLj6L867MLkN/view?usp=sharing)
-        # (contains the entire model) to a `state_dict`.
         url = "https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/easyanimate/Third_Party/MPS_overall.pth"
         filename = "MPS_overall.pth"
         md5 = "1491cbbbd20565747fe07e7572e2ac56"
@@ -309,7 +317,6 @@ class MPSReward(BaseReward):
             truncation=True,
             return_tensors="pt"
         ).input_ids
-
         return input_ids
     
     def __call__(
@@ -318,31 +325,225 @@ class MPSReward(BaseReward):
         batch_prompt: list[str],
         batch_condition: Optional[list[str]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt, batch_condition)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    def get_reward(
+        self,
+        batch_frames: torch.Tensor,
+        batch_prompt: list[str],
+        batch_condition: Optional[list[str]] = None
+    ) -> torch.Tensor:
         if batch_condition is None:
             batch_condition = [self.condition] * len(batch_prompt)
+        assert batch_frames.shape[0] == len(batch_prompt)
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
-        batch_loss, batch_reward = 0, 0
+        total_rewards = []
+
+        text_inputs = self._tokenize(batch_prompt).to(self.device)
+        condition_inputs = self._tokenize(batch_condition).to(self.device)
+
         for frames in batch_frames:
             image_inputs = torch.stack([self.transform(frame) for frame in frames])
             image_inputs = image_inputs.to(device=self.device, dtype=self.dtype)
-            text_inputs = self._tokenize(batch_prompt).to(self.device)
-            condition_inputs = self._tokenize(batch_condition).to(device=self.device)
             text_features, image_features = self.model(text_inputs, image_inputs, condition_inputs)
 
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            # reward = self.model.logit_scale.exp() * torch.diag(torch.einsum('bd,cd->bc', text_features, image_features))
+
             logits = image_features @ text_features.T
             reward = torch.diagonal(logits)
-            # Convert reward to loss in [0, 1].
-            if self.max_reward is None:
-                loss = (-1 * reward) * self.loss_scale
-            else:
-                loss = abs(reward - self.max_reward) * self.loss_scale
-            
-            batch_loss, batch_reward = batch_loss + loss.mean(), batch_reward + reward.mean()
+            total_rewards.append(reward)
         
-        return batch_loss / batch_frames.shape[0], batch_reward / batch_frames.shape[0]
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
+
+
+class HPSv3Reward(BaseReward):
+    """[HPSv3](https://github.com/tgxs002/HPSv2) v3 reward model based on Qwen2-VL.
+    """
+    def __init__(
+        self,
+        config_path=None,
+        checkpoint_path=None,
+        device="cpu",
+        dtype=torch.float16,
+        max_reward=1,
+        loss_scale=1,
+    ):
+        from .hpsv3_predictor import HPSv3RewardInferencer
+
+        self.config_path = config_path
+        self.checkpoint_path = checkpoint_path
+        self.device = device
+        self.dtype = dtype
+        self.max_reward = max_reward
+        self.loss_scale = loss_scale
+
+        self.inferencer = HPSv3RewardInferencer(
+            checkpoint_path=self.checkpoint_path,
+            device=self.device,
+        )
+
+    def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt)
+        print(rewards)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    @torch.no_grad()
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
+        assert len(batch_frames) == len(batch_prompt)
+        batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
+        total_rewards = []
+
+        for frames in batch_frames:
+            # Convert tensor frames to PIL images for HPSv3
+            from PIL import Image
+            pil_images = []
+            for frame in frames:
+                # frame shape: [C, H, W], value range [0, 1]
+                frame_np = (frame.float().cpu().numpy().transpose(1, 2, 0) * 255).astype('uint8')
+                pil_images.append(Image.fromarray(frame_np))
+            
+            # Get rewards from HPSv3
+            rewards_output = self.inferencer.reward(pil_images, batch_prompt)
+            # Extract mu values (first element of each reward tuple)
+            reward = torch.stack([r[0] for r in rewards_output])
+            total_rewards.append(reward)
+
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
+
+
+class VideoAlignReward(BaseReward):
+    def __init__(
+        self,
+        model_path=None,
+        device="cpu",
+        dtype=torch.float16,
+        max_reward=1,
+        loss_scale=1,
+        reward_dim="Overall",
+        fps=24,
+        num_frames=None,
+        use_norm=True,
+    ):
+        from .video_align_predictor import VideoVLMRewardInference
+
+        self.model_path = model_path
+        self.device = device
+        self.dtype = dtype
+        self.max_reward = max_reward
+        self.loss_scale = loss_scale
+        self.reward_dim = reward_dim  # "VQ", "MQ", "TA", or "Overall"
+        self.fps = fps
+        self.num_frames = num_frames
+        self.use_norm = use_norm
+
+        self.inferencer = VideoVLMRewardInference(
+            load_from_pretrained=self.model_path,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+    def _save_frames_to_temp_video(self, frames: torch.Tensor, fps: float = 8.0) -> str:
+        """Save tensor frames to a temporary video file in memory (tmpfs).
+        
+        Args:
+            frames: Tensor of shape [T, C, H, W] with values in [0, 1]
+            fps: Frames per second for the output video
+            
+        Returns:
+            Path to the temporary video file
+        """
+        import tempfile
+        import os
+        import av
+        
+        # Use /dev/shm (tmpfs, RAM-based) to avoid disk IO, fallback to tempdir
+        shm_dir = "/dev/shm"
+        if os.path.exists(shm_dir) and os.access(shm_dir, os.W_OK):
+            temp_dir = shm_dir
+        else:
+            temp_dir = tempfile.gettempdir()
+        
+        # Generate unique filename based on frame content hash
+        frame_hash = hash((frames.shape, frames.sum().item(), frames[0].sum().item(), frames[-1].sum().item()))
+        temp_video_path = os.path.join(temp_dir, f"videovlm_reward_temp_{os.getpid()}_{frame_hash}.mp4")
+        
+        # Convert frames to numpy: [T, C, H, W] -> [T, H, W, C]
+        frames_np = (frames.float().cpu().numpy().transpose(0, 2, 3, 1) * 255).astype('uint8')
+        
+        # Write video using PyAV with high quality settings
+        t, h, w, c = frames_np.shape
+        container = av.open(temp_video_path, mode='w')
+        stream = container.add_stream('libx264', rate=fps)
+        stream.width = w
+        stream.height = h
+        stream.pix_fmt = 'yuv444p'  # Higher fidelity than yuv420p
+        stream.options = {'crf': '10', 'preset': 'fast'}  # Low CRF = high quality
+        
+        for frame_data in frames_np:
+            frame = av.VideoFrame.from_ndarray(frame_data, format='rgb24')
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        
+        for packet in stream.encode():
+            container.mux(packet)
+        container.close()
+        
+        return temp_video_path
+
+    def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        rewards = self.get_reward(batch_frames, batch_prompt)
+        if self.max_reward is None:
+            loss_per_sample = (-1 * rewards) * self.loss_scale
+        else:
+            loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
+        return loss_per_sample.mean(), rewards.mean()
+
+    @torch.no_grad()
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
+        assert len(batch_frames) == len(batch_prompt)        
+        total_rewards = []
+        temp_video_paths = []
+        
+        try:
+            for frames in batch_frames:
+                # Save frames to temp video
+                frames = rearrange(frames, "c t h w -> t c h w")
+                temp_video_path = self._save_frames_to_temp_video(frames, fps=self.fps)
+                temp_video_paths.append(temp_video_path)
+
+            # Get rewards from VideoVLMRewardInference
+            rewards_output = self.inferencer.reward(
+                video_paths=temp_video_paths,
+                prompts=batch_prompt,
+                num_frames=self.num_frames,
+                use_norm=self.use_norm,
+            )
+
+            for reward_dict in rewards_output:
+                reward_value = reward_dict[self.reward_dim]
+                total_rewards.append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
+            
+            rewards = torch.stack(total_rewards, dim=0)
+        
+        finally:
+            # Clean up temporary video files
+            for temp_path in temp_video_paths:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+        
+        return rewards
 
 
 if __name__ == "__main__":

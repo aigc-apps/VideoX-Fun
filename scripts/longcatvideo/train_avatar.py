@@ -949,7 +949,7 @@ def main():
             raise NotImplementedError("FSDP does not support EMA.")
 
         ema_transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, 'dit'),
+            os.path.join(args.pretrained_avatar_model_name_or_path, 'avatar_single'),
         ).to(weight_dtype)
 
         ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LongCatVideoAvatarTransformer3DModel, model_config=ema_transformer3d.config)
@@ -1349,8 +1349,11 @@ def main():
                     return_tensors="pt"
                 )
                 encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
+                    prompt_ids.input_ids,
+                    attention_mask=prompt_ids.attention_mask
                 )[0]
+                batch_size_embed, seq_len, hidden_dim = encoder_hidden_states.shape
+                encoder_hidden_states = encoder_hidden_states.view(batch_size_embed, 1, seq_len, hidden_dim)
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = encoder_hidden_states
 
@@ -1716,7 +1719,8 @@ def main():
                         prompt_attention_mask = prompt_ids.attention_mask.to(latents.device)
 
                         prompt_embeds = text_encoder(text_input_ids, attention_mask=prompt_attention_mask).last_hidden_state
-                        prompt_embeds = prompt_embeds.unsqueeze(1)
+                        batch_size_embed, seq_len, hidden_dim = prompt_embeds.shape
+                        prompt_embeds = prompt_embeds.view(batch_size_embed, 1, seq_len, hidden_dim)
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
                     text_encoder.to('cpu')
@@ -1906,7 +1910,6 @@ def main():
                 text_encoder,
                 tokenizer,
                 audio_encoder, 
-                wav2vec_feature_extractor,
                 transformer3d,
                 args,
                 accelerator,

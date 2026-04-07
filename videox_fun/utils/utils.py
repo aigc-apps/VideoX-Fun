@@ -108,6 +108,9 @@ def save_videos_with_audio_grid(
     from fractions import Fraction
     
     # Convert video frames to numpy arrays
+    # Support both [b, c, t, h, w] and [b, t, c, h, w]
+    if videos.shape[1] != 3:  # shape[1] is T (frames), not C (channels)
+        videos = rearrange(videos, "b t c h w -> b c t h w")
     videos = rearrange(videos, "b c t h w -> t b c h w")
     frame_list = []
     for x in videos:
@@ -129,6 +132,9 @@ def save_videos_with_audio_grid(
     audio_tensor = audio[0].float().cpu()
     if audio_tensor.ndim == 1:
         audio_tensor = audio_tensor.unsqueeze(-1)
+    elif audio_tensor.ndim == 2 and audio_tensor.shape[0] == 1:
+        # [1, N] -> [N, 1]
+        audio_tensor = audio_tensor.squeeze(0).unsqueeze(-1)
     if audio_tensor.shape[1] != 2 and audio_tensor.shape[0] == 2:
         audio_tensor = audio_tensor.T
     if audio_tensor.shape[1] != 2:

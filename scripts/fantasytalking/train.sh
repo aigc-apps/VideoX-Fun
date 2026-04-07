@@ -1,4 +1,5 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -9,6 +10,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --video_sample_size=512 \

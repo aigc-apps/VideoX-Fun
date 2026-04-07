@@ -48,6 +48,7 @@ FantasyTalking without deepspeed:
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -58,6 +59,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --video_sample_size=512 \
@@ -73,7 +75,7 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_fantasytalking" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -93,6 +95,7 @@ FantasyTalking with Deepspeed Zero-2:
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -103,6 +106,7 @@ NCCL_DEBUG=INFO
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/fantasytalking/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --video_sample_size=512 \
@@ -118,7 +122,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_fantasytalking" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -145,6 +149,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 Training shell command is as follows:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -155,6 +160,7 @@ NCCL_DEBUG=INFO
 accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/fantasytalking/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --video_sample_size=512 \
@@ -170,7 +176,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_fantasytalking" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -191,6 +197,7 @@ FantasyTalking with FSDP:
 Wan with FSDP is suitable for 14B Wan at high resolutions. Training shell command is as follows:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -201,6 +208,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=AudioAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False  scripts/fantasytalking/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_audio_model_name_or_path=$MODEL_NAME_AUDIO \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --video_sample_size=512 \
@@ -216,7 +224,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_fantasytalking" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \

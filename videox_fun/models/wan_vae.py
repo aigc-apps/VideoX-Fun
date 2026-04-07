@@ -704,16 +704,190 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
             return filtered_kwargs
 
+        def convert_state_dict_keys(state_dict):
+            """
+            Convert old checkpoint keys to new format for compatibility.
+            """
+            import re
+            new_state_dict = {}
+            
+            for old_key in state_dict:
+                new_key = old_key
+                
+                # Map quant_conv -> conv1, post_quant_conv -> conv2
+                if '.quant_conv.' in old_key and 'post_quant_conv' not in old_key:
+                    new_key = old_key.replace('.quant_conv.', '.conv1.')
+                elif '.post_quant_conv.' in old_key:
+                    new_key = old_key.replace('.post_quant_conv.', '.conv2.')
+                
+                # Map mid_block.attentions -> middle (attention is at index 1)
+                if '.encoder.mid_block.attentions.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.mid_block\.attentions\.(\d+)\.(norm|to_qkv|proj)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        new_key = f"{prefix}.encoder.middle.1.{layer_name}.{param_name}"
+                    else:
+                        continue
+                
+                if '.decoder.mid_block.attentions.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.mid_block\.attentions\.(\d+)\.(norm|to_qkv|proj)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        new_key = f"{prefix}.decoder.middle.1.{layer_name}.{param_name}"
+                    else:
+                        continue
+                
+                # 1. Map encoder.down_blocks -> encoder.downsamples
+                if '.encoder.down_blocks.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.down_blocks\.(\d+)\.(conv1|conv2|norm1|norm2|conv_shortcut|resample\.\d+|time_conv)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3',
+                            'conv_shortcut': 'shortcut'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.encoder.downsamples.{block_idx}.{new_layer}.{param_name}"
+                
+                # 2. Map decoder.up_blocks.X.resnets.Y -> decoder.upsamples
+                elif '.decoder.up_blocks.' in old_key and '.resnets.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.up_blocks\.(\d+)\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2|conv_shortcut)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        resnet_idx = match.group(3)
+                        layer_name = match.group(4)
+                        param_name = match.group(5)
+                        
+                        # Calculate upsample index based on actual structure
+                        # up_blocks.0: resnets 0,1,2 -> upsamples 0,1,2
+                        # up_blocks.1: resnets 0,1,2 -> upsamples 4,5,6 (3 is upsampler)
+                        # up_blocks.2: resnets 0,1,2 -> upsamples 8,9,10 (7 is upsampler)
+                        # up_blocks.3: resnets 0,1,2 -> upsamples 12,13,14 (11 is upsampler)
+                        block_start = {0: 0, 1: 4, 2: 8, 3: 12}
+                        upsample_idx = block_start.get(int(block_idx), 0) + int(resnet_idx)
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3',
+                            'conv_shortcut': 'shortcut'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.decoder.upsamples.{upsample_idx}.{new_layer}.{param_name}"
+                
+                # 3. Map decoder.up_blocks.X.upsamplers -> decoder.upsamples
+                elif '.decoder.up_blocks.' in old_key and '.upsamplers.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.up_blocks\.(\d+)\.upsamplers\.0\.(resample\.\d+|time_conv)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        # upsamplers are at indices 3, 7, 11
+                        upsampler_idx = {0: 3, 1: 7, 2: 11, 3: None}
+                        idx = upsampler_idx.get(int(block_idx))
+                        if idx is not None:
+                            new_key = f"{prefix}.decoder.upsamples.{idx}.{layer_name}.{param_name}"
+                        else:
+                            continue  # Skip if no upsampler for this block
+                
+                # 4. Map encoder.mid_block.resnets -> encoder.middle
+                elif '.encoder.mid_block.resnets.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.mid_block\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        resnet_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        # middle structure: [ResidualBlock(0), AttentionBlock(1), ResidualBlock(2)]
+                        middle_idx = int(resnet_idx) * 2
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.encoder.middle.{middle_idx}.{new_layer}.{param_name}"
+                
+                # 5. Map decoder.mid_block.resnets -> decoder.middle
+                elif '.decoder.mid_block.resnets.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.mid_block\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        resnet_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        middle_idx = int(resnet_idx) * 2
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.decoder.middle.{middle_idx}.{new_layer}.{param_name}"
+                
+                # 6. Map encoder.norm_out -> encoder.head
+                elif '.encoder.norm_out.' in old_key:
+                    new_key = old_key.replace('.encoder.norm_out.', '.encoder.head.0.')
+                
+                # 7. Map decoder.norm_out -> decoder.head
+                elif '.decoder.norm_out.' in old_key:
+                    new_key = old_key.replace('.decoder.norm_out.', '.decoder.head.0.')
+                
+                # 9. Map conv_in -> conv1
+                if '.encoder.conv_in.' in new_key:
+                    new_key = new_key.replace('.encoder.conv_in.', '.encoder.conv1.')
+                if '.decoder.conv_in.' in new_key:
+                    new_key = new_key.replace('.decoder.conv_in.', '.decoder.conv1.')
+                
+                # 10. Map conv_out -> head.2
+                if '.encoder.conv_out.' in new_key:
+                    new_key = new_key.replace('.encoder.conv_out.', '.encoder.head.2.')
+                if '.decoder.conv_out.' in new_key:
+                    new_key = new_key.replace('.decoder.conv_out.', '.decoder.head.2.')
+                
+                new_state_dict[new_key] = state_dict[old_key]
+            
+            return new_state_dict
+
         model = cls(**filter_kwargs(cls, additional_kwargs))
         if pretrained_model_path.endswith(".safetensors"):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
             state_dict = torch.load(pretrained_model_path, map_location="cpu")
+        
+        # Add model. prefix
         tmp_state_dict = {} 
         for key in state_dict:
-            tmp_state_dict["model." + key] = state_dict[key]
+            if not key.startswith("model."):
+                tmp_state_dict["model." + key] = state_dict[key]
+            else:
+                tmp_state_dict[key] = state_dict[key]
         state_dict = tmp_state_dict
+        # Convert keys for old checkpoint compatibility
+        state_dict = convert_state_dict_keys(state_dict)
+        
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
         print(m, u)

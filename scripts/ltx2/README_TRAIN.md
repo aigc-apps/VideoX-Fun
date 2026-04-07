@@ -4,7 +4,7 @@ The default training commands for the different versions are as follows:
 
 We can choose whether to use DeepSpeed and FSDP in LTX2, which can save a lot of video memory. 
 
-The metadata_control.json is a little different from normal json in VideoX-Fun, you need to add a audio_path.
+The metadata.json is a little different from normal json in VideoX-Fun, you need to add a audio_path.
 
 ```json
 [
@@ -49,7 +49,7 @@ LTX2 without deepspeed:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -94,7 +94,7 @@ LTX2 with Deepspeed Zero-2:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -139,7 +139,7 @@ LTX2 with FSDP:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

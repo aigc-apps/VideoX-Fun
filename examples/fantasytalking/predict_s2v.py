@@ -21,6 +21,8 @@ from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import FantasyTalkingPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper,
                                                replace_parameters_by_name)
@@ -40,6 +42,9 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_latent,
 # 
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
 # and the transformer model has been quantized to float8, which can save more GPU memory. 
+# 
+# model_group_offload transfers internal layer groups between CPU/CUDA, 
+# balancing memory efficiency and speed between full-module and leaf-level offloading methods.
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
@@ -72,10 +77,6 @@ num_skip_start_steps = 5
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
-# Skip some cfg steps in inference
-# Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0
-
 # Riflex config
 enable_riflex       = False
 # Index of intrinsic frequency
@@ -87,6 +88,8 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 # Please Download https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/summary
 # to models/Diffusion_Transformer/Wan2.1-I2V-14B-720P/audio_encoder for encoding audio.
 model_name          = "models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
+# audio encoder model path. If None, will use os.path.join(model_name, "audio_encoder")
+model_name_audio    = None
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -118,6 +121,7 @@ audio_path              = "asset/talk.wav"
 prompt              = "一个女孩在海边说话。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 4.5
+audio_guide_scale   = 4.0
 seed                = 43
 num_inference_steps = 40
 lora_weight         = 0.55
@@ -198,9 +202,8 @@ clip_image_encoder = CLIPModel.from_pretrained(
 ).to(weight_dtype)
 clip_image_encoder = clip_image_encoder.eval()
 
-audio_encoder = FantasyTalkingAudioEncoder(
-    os.path.join(model_name, "audio_encoder")
-)
+audio_encoder_path = model_name_audio if model_name_audio is not None else os.path.join(model_name, "audio_encoder")
+audio_encoder = FantasyTalkingAudioEncoder(audio_encoder_path)
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
@@ -245,6 +248,9 @@ if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)
     transformer.freqs = transformer.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
@@ -264,10 +270,6 @@ if coefficients is not None:
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
-
-if cfg_skip_ratio is not None:
-    print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
-    pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
@@ -291,6 +293,7 @@ with torch.no_grad():
         width       = sample_size[1],
         generator   = generator,
         guidance_scale = guidance_scale,
+        audio_guide_scale = audio_guide_scale,
         num_inference_steps = num_inference_steps,
 
         video       = input_video,

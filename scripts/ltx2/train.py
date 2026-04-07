@@ -82,7 +82,6 @@ from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
 if is_wandb_available():
     import wandb
 
-
 def filter_kwargs(cls, kwargs):
     import inspect
     sig = inspect.signature(cls.__init__)
@@ -1689,7 +1688,7 @@ def main():
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
                 # Get latent dimensions from VAE output for later use
-                bsz, channel, num_frames, height, width = latents.size()
+                bsz, _, latent_num_frames, latent_height, latent_width = latents.size()
 
                 # Encode audio to latents
                 with torch.no_grad():
@@ -1822,15 +1821,9 @@ def main():
                         sigma = sigma.unsqueeze(-1)
                     return sigma
 
-                # Prepare latent dimensions
-                latent_num_frames = num_frames
-                latent_height = height
-                latent_width = width
-                
                 # Get transformer config for patch sizes
-                transformer_config = accelerator.unwrap_model(transformer3d).config
-                patch_size = getattr(transformer_config, 'patch_size', 1)
-                patch_size_t = getattr(transformer_config, 'patch_size_t', 1)
+                patch_size = getattr(accelerator.unwrap_model(transformer3d).config, 'patch_size', 1)
+                patch_size_t = getattr(accelerator.unwrap_model(transformer3d).config, 'patch_size_t', 1)
 
                 # ------------------ I2V Conditioning Mask ------------------
                 # Create conditioning mask for I2V training
