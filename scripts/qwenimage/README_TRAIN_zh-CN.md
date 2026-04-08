@@ -1,40 +1,40 @@
-# Qwen-Image Full Parameter Training Guide
+# Qwen-Image 全量参数训练指南
 
-This document provides a complete workflow for full parameter training of Qwen-Image Diffusion Transformer, including environment configuration, data preparation, distributed training, and inference testing.
-
----
-
-## Table of Contents
-- [1. Environment Configuration](#1-environment-configuration)
-- [2. Data Preparation](#2-data-preparation)
-  - [2.1 Quick Test Dataset](#21-quick-test-dataset)
-  - [2.2 Dataset Structure](#22-dataset-structure)
-  - [2.3 metadata.json Format](#23-metadatajson-format)
-  - [2.4 Relative vs Absolute Path Usage](#24-relative-vs-absolute-path-usage)
-- [3. Full Parameter Training](#3-full-parameter-training)
-  - [3.1 Download Pretrained Model](#31-download-pretrained-model)
-  - [3.2 Quick Start (DeepSpeed-Zero-2)](#32-quick-start-deepspeed-zero-2)
-  - [3.3 Common Training Parameters](#33-common-training-parameters)
-  - [3.4 Training with FSDP](#34-training-with-fsdp)
-  - [3.5 Other Backends](#35-other-backends)
-  - [3.6 Multi-Machine Distributed Training](#36-multi-machine-distributed-training)
-- [4. Inference Testing](#4-inference-testing)
-  - [4.1 Single GPU Inference](#41-single-gpu-inference)
-  - [4.2 Multi-GPU Parallel Inference](#42-multi-gpu-parallel-inference)
-  - [4.3 VRAM Optimization Strategies](#43-vram-optimization-strategies)
-- [5. Additional Resources](#5-additional-resources)
+本文档提供 Qwen-Image Diffusion Transformer 全量参数训练的完整流程，包括环境配置、数据准备、分布式训练和推理测试。
 
 ---
 
-## 1. Environment Configuration
+## 目录
+- [一、环境配置](#一环境配置)
+- [二、数据准备](#二数据准备)
+  - [2.1 快速测试数据集](#21-快速测试数据集)
+  - [2.2 数据集结构](#22-数据集结构)
+  - [2.3 metadata.json 格式](#23-metadatajson-格式)
+  - [2.4 相对路径与绝对路径使用方案](#24-相对路径与绝对路径使用方案)
+- [三、全量参数训练](#三全量参数训练)
+  - [3.1 下载预训练模型](#31-下载预训练模型)
+  - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
+  - [3.3 训练常用参数解析](#33-训练常用参数解析)
+  - [3.4 使用 FSDP 训练](#34-使用-fsdp-训练)
+  - [3.5 其他后端](#35-其他后端)
+  - [3.6 多机分布式训练](#36-多机分布式训练)
+- [四、推理测试](#四推理测试)
+  - [4.1 单卡推理](#41-单卡推理)
+  - [4.2 多卡并行推理](#42-多卡并行推理)
+  - [4.3 显存优化策略](#43-显存优化策略)
+- [五、更多资源](#五更多资源)
 
-**Method 1: Using requirements.txt**
+---
+
+## 一、环境配置
+
+**方式 1：使用requirements.txt**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Method 2: Manual Dependency Installation**
+**方式 2：手动安装依赖**
 
 ```bash
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
@@ -45,9 +45,9 @@ pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
 ```
 
-**Method 3: Using Docker**
+**方式 3：使用docker**
 
-When using Docker, please ensure that the GPU driver and CUDA environment are correctly installed on your machine, then execute the following commands:
+使用docker的情况下，请保证机器中已经正确安装显卡驱动与CUDA环境，然后以此执行以下命令：
 
 ```
 # pull image
@@ -59,18 +59,18 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ---
 
-## 2. Data Preparation
+## 二、数据准备
 
-### 2.1 Quick Test Dataset
+### 2.1 快速测试数据集
 
-We provide a test dataset containing several training samples.
+我们提供了一个测试的数据集，其中包含若干训练数据。
 
 ```bash
-# Download official demo dataset
+# 下载官方示例数据集
 modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun-Images-Demo
 ```
 
-### 2.2 Dataset Structure
+### 2.2 数据集结构
 
 ```
 📦 datasets/
@@ -82,9 +82,9 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
 │   └── 📄 metadata.json
 ```
 
-### 2.3 metadata.json Format
+### 2.3 metadata.json 格式
 
-**Relative Path Format** (example):
+**相对路径格式**（示例格式）：
 ```json
 [
   {
@@ -102,7 +102,7 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
 ]
 ```
 
-**Absolute Path Format**:
+**绝对路径格式**：
 ```json
 [
   {
@@ -114,56 +114,56 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
 ]
 ```
 
-**Key Fields Description**:
-- `file_path`: Image path (relative or absolute)
-- `text`: Image description (English prompt)
-- `width` / `height`: Image dimensions (**recommended** to provide for bucket training; if not provided, they will be automatically read during training, which may slow down training when data is stored on slow systems like OSS)
-  - You can use `scripts/process_json_add_width_and_height.py` to add width and height fields to JSON files without these fields, supporting both images and videos
-  - Usage: `python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Images-Demo/metadata.json --output_file datasets/X-Fun-Images-Demo/metadata_add_width_height.json`
+**关键字段说明**：
+- `file_path`：图片路径（相对或绝对路径）
+- `text`：图片描述（英文提示词）
+- `width` / `height`：图片宽高（**最好提供**，用于分桶训练，如果不提供则自动在训练时读取，当数据存储在如oss这样的速度较慢的系统上时，可能会影响训练速度）。
+  - 可以使用`scripts/process_json_add_width_and_height.py`文件对无width与height字段的json进行提取，支持处理图片与视频。
+  - 使用方案为`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Images-Demo/metadata.json --output_file datasets/X-Fun-Images-Demo/metadata_add_width_height.json`。
 
-### 2.4 Relative vs Absolute Path Usage
+### 2.4 相对路径与绝对路径使用方案
 
-**Relative Paths**:
+**相对路径**：
 
-If your data uses relative paths, configure the training script as follows:
+如果数据的路径为相对路径，则在训练脚本中设置：
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 ```
 
-**Absolute Paths**:
+**绝对路径**：
 
-If your data uses absolute paths, configure the training script as follows:
+如果数据的路径为绝对路径，则在训练脚本中设置：
 
 ```bash
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-> 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
+> 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
 
 ---
 
-## 3. Full Parameter Training
+## 三、全量参数训练
 
-### 3.1 Download Pretrained Model
+### 3.1 下载预训练模型
 
 ```bash
-# Create model directory
+# 创建模型目录
 mkdir -p models/Diffusion_Transformer
 
-# Download Qwen-Image official weights
+# 下载 Qwen-Image 官方权重
 modelscope download --model Qwen/Qwen-Image --local_dir models/Diffusion_Transformer/Qwen-Image
 ```
 
-### 3.2 Quick Start (DeepSpeed-Zero-2)
+### 3.2 快速开始（DeepSpeed-Zero-2）
 
-If you have downloaded the data as per **2.1 Quick Test Dataset** and the weights as per **3.1 Download Pretrained Model**, you can directly copy and run the quick start command.
+如果按照 **2.1 快速测试数据集下载数据** 与 **3.1 下载预训练模型下载权重**后，直接复制快速开始的启动指令进行启动。
 
-DeepSpeed-Zero-2 and FSDP are recommended for training. Here we use DeepSpeed-Zero-2 as an example.
+推荐使用DeepSpeed-Zero-2与FSDP方案进行训练。这里使用DeepSpeed-Zero-2为例配置shell文件。
 
-The difference between DeepSpeed-Zero-2 and FSDP lies in whether the model weights are sharded. **If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP.
+本文中DeepSpeed-Zero-2与FSDP的差别在于是否对模型权重进行分片，**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
@@ -200,42 +200,42 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --trainable_modules "."
 ```
 
-### 3.3 Common Training Parameters
+### 3.3 训练常用参数解析
 
-**Key Parameter Descriptions**:
+**关键参数说明**：
 
-| Parameter | Description | Example Value |
+| 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--pretrained_model_name_or_path` | Path to pretrained model | `models/Diffusion_Transformer/Qwen-Image` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
-| `--train_batch_size` | Samples per batch | 1 |
-| `--image_sample_size` | Maximum training resolution, auto bucketing | 1328 |
-| `--gradient_accumulation_steps` | Gradient accumulation steps (equivalent to larger batch) | 1 |
-| `--dataloader_num_workers` | DataLoader subprocesses | 8 |
-| `--num_train_epochs` | Number of training epochs | 100 |
-| `--checkpointing_steps` | Save checkpoint every N steps | 50 |
-| `--learning_rate` | Initial learning rate | 2e-05 |
-| `--lr_scheduler` | Learning rate scheduler | `constant_with_warmup` |
-| `--lr_warmup_steps` | Learning rate warmup steps | 100 |
-| `--seed` | Random seed | 42 |
-| `--output_dir` | Output directory | `output_dir` |
-| `--gradient_checkpointing` | Enable activation checkpointing | - |
-| `--mixed_precision` | Mixed precision: `fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW weight decay | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon value | 1e-10 |
-| `--vae_mini_batch` | Mini-batch size for VAE encoding | 1 |
-| `--max_grad_norm` | Gradient clipping threshold | 0.05 |
-| `--enable_bucket` | Enable bucket training: trains entire images grouped by resolution without center cropping | - |
-| `--random_hw_adapt` | Auto-scale images to random size in range `[512, image_sample_size]` | - |
-| `--resume_from_checkpoint` | Resume training from checkpoint path, use `"latest"` to auto-select latest | None |
-| `--uniform_sampling` | Uniform timestep sampling | - |
-| `--trainable_modules` | Trainable modules (`"."` means all modules) | `"."` |
+| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Qwen-Image` |
+| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_batch_size` | 每批次样本数 | 1 |
+| `--image_sample_size` | 最大训练分辨率，代码会自动分桶 | 1328 |
+| `--gradient_accumulation_steps` | 梯度累积步数（等效增大 batch） | 1 |
+| `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
+| `--num_train_epochs` | 训练 epoch 数 | 100 |
+| `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
+| `--learning_rate` | 初始学习率 | 2e-05 |
+| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
+| `--lr_warmup_steps` | 学习率预热步数 | 100 |
+| `--seed` | 随机种子 | 42 |
+| `--output_dir` | 输出目录 | `output_dir` |
+| `--gradient_checkpointing` | 激活重计算 | - |
+| `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
+| `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
+| `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
+| `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
+| `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
+| `--enable_bucket` | 启用分桶训练，不裁剪图片，按分辨率分组训练整个图像 | - |
+| `--random_hw_adapt` | 自动缩放图片到 `[512, image_sample_size]` 范围内的随机尺寸 | - |
+| `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
+| `--uniform_sampling` | 均匀采样 timestep | - |
+| `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
 
 
-### 3.4 Training with FSDP
+### 3.4 使用 FSDP 训练
 
-**If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP.
+**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
@@ -272,21 +272,21 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --trainable_modules "."
 ```
 
-### 3.5 Other Backends
+### 3.5 其他后端
 
-#### 3.5.1 Training with DeepSpeed-Zero-3
+#### 3.5.1 使用DeepSpeed-Zero-3进行训练
 
-DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
+目前不太推荐使用 DeepSpeed Zero-3。在本仓库中，使用 FSDP 出错更少且更稳定。
 
-DeepSpeed Zero-3:
+DeepSpeed Zero-3：
 
-After training, you can use the following command to get the final model:
+训练完成后，您可以使用以下命令获取最终模型：
 
 ```sh
 python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
 ```
 
-Training shell command:
+执行命令为：
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
 export DATASET_NAME="datasets/internal_datasets/"
@@ -322,9 +322,9 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --trainable_modules "."
 ```
 
-#### 3.5.2 Training Without DeepSpeed or FSDP
+#### 3.5.2 不使用 DeepSpeed 与 FSDP 训练
 
-**This approach is not recommended as it lacks VRAM-saving backends and may easily cause out-of-memory errors**. This is provided for reference only.
+**该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练Shell用于参考训练。
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
@@ -361,24 +361,24 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train.py \
   --trainable_modules "."
 ```
 
-### 3.6 Multi-Machine Distributed Training
+### 3.6 多机分布式训练
 
-**Suitable for**: Ultra-large-scale datasets, faster training speed
+**适合场景**：超大规模数据集、需要更快的训练速度
 
-#### 3.6.1 Environment Configuration
+#### 3.6.1 环境配置
 
-Assuming 2 machines with 8 GPUs each:
+假设有 2 台机器，每台 8 张 GPU：
 
-**Machine 0 (Master)**:
+**机器 0（Master）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
-export MASTER_ADDR="192.168.1.100"  # Master machine IP
+export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
-export WORLD_SIZE=2                  # Total number of machines
-export NUM_PROCESS=16                # Total processes = machines × 8
-export RANK=0                        # Current machine rank (0 or 1)
+export WORLD_SIZE=2                  # 机器总数
+export NUM_PROCESS=16                # 总进程数 = 机器数 × 8
+export RANK=0                        # 当前机器 rank（0 或 1）
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -410,49 +410,49 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --trainable_modules "."
 ```
 
-**Machine 1 (Worker)**:
+**机器 1（Worker）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
-export MASTER_ADDR="192.168.1.100"  # Same as Master
+export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2
 export NUM_PROCESS=16
-export RANK=1  # Note this is 1
+export RANK=1  # 注意这里是 1
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-# Use the same accelerate launch command as Machine 0
+# 使用与机器 0 相同的 accelerate launch 命令
 ```
 
-#### 3.6.2 Multi-Machine Training Notes
+#### 3.6.2 多机训练注意事项
 
-- **Network Requirements**:
-   - RDMA/InfiniBand recommended (high performance)
-   - Without RDMA, add environment variables:
+- **网络要求**：
+   - 推荐 RDMA/InfiniBand（高性能）
+   - 无 RDMA 时添加环境变量：
      ```bash
      export NCCL_IB_DISABLE=1
      export NCCL_P2P_DISABLE=1
      ```
 
-- **Data Synchronization**: All machines must be able to access the same data paths (NFS/shared storage)
+- **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
 
-## 4. Inference Testing
+## 四、推理测试
 
-### 4.1 Single GPU Inference
+### 4.1 单卡推理
 
-#### Quick Start
+#### 快速开始
 
 ```bash
 python examples/qwenimage/predict_t2i.py
 ```
 
-#### Core Configuration
+#### 核心配置说明
 
-Edit `examples/qwenimage/predict_t2i.py`:
+编辑 `examples/qwenimage/predict_t2i.py`
 
 ```python
 GPU_memory_mode = "model_group_offload"
@@ -467,46 +467,46 @@ sample_size = [1328, 1328]
 save_path = "samples/qwenimage-output"
 ```
 
-### 4.2 Multi-GPU Parallel Inference
+### 4.2 多卡并行推理
 
-**Suitable for**: High-resolution generation, accelerated inference
+**适合场景**：高分辨率生成、加速推理
 
-#### Install Parallel Inference Dependencies
+#### 安装并行推理依赖
 
 ```bash
 pip install xfuser==0.4.2 yunchang==0.6.2
 ```
 
-#### Configure Parallel Strategy
+#### 配置并行策略
 
-Edit `examples/qwenimage/predict_t2i.py`:
+编辑 `examples/qwenimage/predict_t2i.py`：
 
 ```python
-# Ensure ulysses_degree × ring_degree = number of GPUs
-# For example, using 2 GPUs:
-ulysses_degree = 2  # Head dimension parallelization
-ring_degree = 1     # Sequence dimension parallelization
+# 确保 ulysses_degree × ring_degree = GPU 数量
+# 例如使用 2 张 GPU：
+ulysses_degree = 2  # Head 维度并行
+ring_degree = 1     # Sequence 维度并行
 ```
 
-**Configuration Principles**:
-- `ulysses_degree` must evenly divide the model's number of heads
-- `ring_degree` splits on sequence dimension, affecting communication overhead; avoid using it when heads can be divided
+**配置原则**：
+- `ulysses_degree` 必须能整除模型的head数。
+- `ring_degree` 会在sequence上切分，影响通信开销，在head数能切分的时候尽量不用。
 
-**Example Configurations**:
+**示例配置**：
 
-| GPU Count | ulysses_degree | ring_degree | Description |
+| GPU 数量 | ulysses_degree | ring_degree | 说明 |
 |---------|---------------|-------------|------|
-| 1 | 1 | 1 | Single GPU |
-| 4 | 4 | 1 | Head parallelization |
-| 8 | 8 | 1 | Head parallelization |
-| 8 | 4 | 2 | Hybrid parallelization |
+| 1 | 1 | 1 | 单卡 |
+| 4 | 4 | 1 | Head 并行 |
+| 8 | 8 | 1 | Head 并行 |
+| 8 | 4 | 2 | 混合并行 |
 
-#### Run Multi-GPU Inference
+#### 运行多卡推理
 
 ```bash
 torchrun --nproc-per-node=8 examples/qwenimage/predict_t2i.py
 ```
 
-## 5. Additional Resources
+## 五、更多资源
 
-- **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun
+- **官方 GitHub**：https://github.com/aigc-apps/VideoX-Fun
