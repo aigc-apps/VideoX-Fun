@@ -14,6 +14,7 @@ English | [简体中文](./README_zh-CN.md) | [日本語](./README_ja-JP.md)
 - [Table of Contents](#table-of-contents)
 - [Introduction](#introduction)
 - [Quick Start](#quick-start)
+- [Version Check](#version-check)
 - [Video Result](#video-result)
 - [How to use](#how-to-use)
 - [Model zoo](#model-zoo)
@@ -89,6 +90,16 @@ mkdir models/Personalized_Model
 ```
 
 ### 2. Local install: Environment Check/Downloading/Installation
+
+## Version Check
+
+After installation, you can verify the installed package version from Python:
+
+```python
+import videox_fun
+
+print(videox_fun.__version__)
+```
 #### a. Environment Check
 We have verified this repo execution on the following environment:
 
