@@ -1,6 +1,6 @@
-# Qwen-Image LoRA 微调训练指南
+# FLUX.1 LoRA 微调训练指南
 
-本文档提供 Qwen-Image LoRA 微调训练的完整流程，包括环境配置、数据准备、多种分布式训练策略和推理测试。
+本文档提供 FLUX.1 LoRA 微调训练的完整流程，包括环境配置、数据准备、多种分布式训练策略和推理测试。
 
 ---
 
@@ -96,8 +96,8 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
   {
     "file_path": "train/image002.png",
     "text": "Portrait of a young woman, studio lighting, high quality",
-    "width": 1328,
-    "height": 1328
+    "width": 1024,
+    "height": 1024
   }
 ]
 ```
@@ -117,31 +117,31 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
 **关键字段说明**：
 - `file_path`：图片路径（相对或绝对路径）
 - `text`：图片描述（英文提示词）
-- `width` / `height`：图片宽高（**最好提供**，用于分桶训练，如果不提供则自动在训练时读取，当数据存储在如oss这样的速度较慢的系统上时，可能会影响训练速度）。
-  - 可以使用`scripts/process_json_add_width_and_height.py`文件对无width与height字段的json进行提取，支持处理图片与视频。
-  - 使用方案为`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Images-Demo/metadata.json --output_file datasets/X-Fun-Images-Demo/metadata_add_width_height.json`。
+- `width` / `height`：图片宽高（**建议**提供以支持 bucket 训练；若不提供，训练时会自动读取，但在 OSS 等较慢系统中可能拖慢训练速度）
+  - 可使用 `scripts/process_json_add_width_and_height.py` 为没有宽高字段的 JSON 文件添加，支持图片和视频
+  - 用法：`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Images-Demo/metadata.json --output_file datasets/X-Fun-Images-Demo/metadata_add_width_height.json`
 
 ### 2.4 相对路径与绝对路径使用方案
 
-**相对路径**：
+**使用相对路径**：
 
-如果数据的路径为相对路径，则在训练脚本中设置：
+如果你的数据使用相对路径，训练脚本中这样配置：
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 ```
 
-**绝对路径**：
+**使用绝对路径**：
 
-如果数据的路径为绝对路径，则在训练脚本中设置：
+如果你的数据使用绝对路径，训练脚本中这样配置：
 
 ```bash
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-> 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
+> 💡 **建议**：如果数据集较小且存储在本地，使用相对路径。如果数据集存储在外部存储（如 NAS、OSS）或多机共享，使用绝对路径。
 
 ---
 
@@ -153,40 +153,40 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
 
-# 下载 Qwen-Image 官方权重
-modelscope download --model Qwen/Qwen-Image --local_dir models/Diffusion_Transformer/Qwen-Image
+# 下载 FLUX.1 官方权重
+modelscope download --model black-forest-labs/FLUX.1-dev --local_dir models/Diffusion_Transformer/FLUX.1-dev
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
 
-如果按照 **2.1 快速测试数据集下载数据** 与 **3.1 下载预训练模型下载权重**后，直接复制快速开始的启动指令进行启动。
+如果你已经按照 **2.1 快速测试数据集** 下载了数据，按照 **3.1 下载预训练模型** 下载了权重，则可以直接复制运行快速开始的命令。
 
-推荐使用 DeepSpeed-Zero-2 与 FSDP 方案进行训练。这里使用 DeepSpeed-Zero-2 为例配置 shell 文件。
+训练推荐使用 DeepSpeed-Zero-2 或 FSDP。这里以 DeepSpeed-Zero-2 为例。
 
-本文中 DeepSpeed-Zero-2 与 FSDP 的差别在于是否对模型权重进行分片，**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。
+DeepSpeed-Zero-2 和 FSDP 的区别在于是否对模型权重进行分片。**如果多卡使用 DeepSpeed-Zero-2 时显存不足**，可以切换为 FSDP。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/flux/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1328 \
+  --image_sample_size=1024 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_flux_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -194,9 +194,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
   --use_peft_lora \
   --uniform_sampling
 ```
@@ -207,57 +207,58 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Qwen-Image` |
+| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/FLUX.1-dev` |
 | `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
 | `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
-| `--train_batch_size` | 每批次样本数 | 1 |
-| `--image_sample_size` | 最大训练分辨率，代码会自动分桶 | 1328 |
-| `--gradient_accumulation_steps` | 梯度累积步数（等效增大 batch） | 1 |
+| `--train_batch_size` | 每张卡的批次大小 | 1 |
+| `--image_sample_size` | 最大训练分辨率（自动分桶） | 1024 |
+| `--gradient_accumulation_steps` | 梯度累积步数（等效增大 batch size） | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
-| `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
+| `--checkpointing_steps` | 每 N 步保存检查点 | 50 |
 | `--learning_rate` | 初始学习率（LoRA 推荐值） | 1e-04 |
+| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--seed` | 随机种子（可复现训练） | 42 |
-| `--output_dir` | 输出目录 | `output_dir_qwenimage_lora` |
-| `--gradient_checkpointing` | 激活重计算 | - |
+| `--output_dir` | 输出目录 | `output_dir_flux_lora` |
+| `--gradient_checkpointing` | 启用梯度检查点 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
-| `--enable_bucket` | 启用分桶训练，不裁剪图片，按分辨率分组训练整个图像 | - |
-| `--uniform_sampling` | 均匀采样 timestep（推荐启用） | - |
-| `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
-| `--rank` | LoRA 更新矩阵的维度（rank 越大表达能力越强，但显存占用越高） | 128 |
-| `--network_alpha` | LoRA 更新矩阵的缩放系数（通常设置为 rank 的一半） | 64 |
-| `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔 | `to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2` |
+| `--enable_bucket` | 启用桶训练（不中心裁剪，按分辨率分组后训练完整图像） | - |
+| `--uniform_sampling` | 均匀时间步采样（推荐） | - |
+| `--resume_from_checkpoint` | 恢复训练的路径，使用 `"latest"` 自动选择最新检查点 | None |
+| `--rank` | LoRA 更新矩阵维度（rank 越高表达能力越强但显存占用越大） | 64 |
+| `--network_alpha` | LoRA 更新矩阵缩放系数（通常为 rank 的一半或相同） | 32 |
+| `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔 | `to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2` |
 | `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更节省显存） | - |
 
 ### 3.4 使用 FSDP 训练
 
-**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。
+**如果多卡使用 DeepSpeed-Zero-2 时显存不足**，可以切换为 FSDP。
 
-> ✅ **推荐**：FSDP 在当前仓库中经过充分测试，错误更少、更稳定。
+> ✅ **推荐**：FSDP 在本仓库中经过充分测试，错误更少且更稳定。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=QwenImageTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap FluxSingleTransformerBlock,FluxTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/flux/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1328 \
+  --image_sample_size=1024 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_flux_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -265,50 +266,50 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
   --use_peft_lora \
   --uniform_sampling
 ```
 
 ### 3.5 其他后端
 
-#### 3.5.1 使用DeepSpeed-Zero-3进行训练
+#### 3.5.1 使用 DeepSpeed-Zero-3 训练
 
-目前不太推荐使用 DeepSpeed Zero-3。在本仓库中，使用 FSDP 出错更少且更稳定。
+当前不推荐使用 DeepSpeed Zero-3。在本仓库中，FSDP 错误更少且更稳定。
 
 DeepSpeed Zero-3：
 
-训练完成后，您可以使用以下命令获取最终模型：
+训练完成后，可以使用以下命令获取最终模型：
 
 ```sh
-python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
+python scripts/zero_to_bf16.py output_dir/checkpoint-{your-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
 ```
 
-执行命令为：
+执行命令：
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/flux/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1328 \
+  --image_sample_size=1024 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_flux_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -316,39 +317,39 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
   --use_peft_lora \
   --uniform_sampling
 ```
 
-#### 3.5.2 不使用 DeepSpeed 与 FSDP 训练
+#### 3.5.2 不使用 DeepSpeed 或 FSDP 训练
 
-**该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练 Shell 用于参考训练。
+**不推荐此方法，因为没有显存优化的后端，可能导致显存不足**。仅供参考。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/flux/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1328 \
+  --image_sample_size=1024 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_flux_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -356,49 +357,49 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
   --use_peft_lora \
   --uniform_sampling
 ```
 
 ### 3.6 多机分布式训练
 
-**适合场景**：超大规模数据集、需要更快的训练速度
+**适用场景**：大规模数据集，更快的训练速度
 
 #### 3.6.1 环境配置
 
-假设有 2 台机器，每台 8 张 GPU：
+假设 2 台机器，每台 8 张 GPU：
 
 **机器 0（Master）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
-export WORLD_SIZE=2                  # 机器总数
+export WORLD_SIZE=2                  # 总机器数
 export NUM_PROCESS=16                # 总进程数 = 机器数 × 8
 export RANK=0                        # 当前机器 rank（0 或 1）
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/flux/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --train_batch_size=1 \
-  --image_sample_size=1328 \
+  --image_sample_size=1024 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_flux_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -406,16 +407,16 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
   --use_peft_lora \
   --uniform_sampling
 ```
 
 **机器 1（Worker）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
@@ -423,7 +424,7 @@ export MASTER_PORT=10086
 export WORLD_SIZE=2
 export NUM_PROCESS=16
 export RANK=1  # 注意这里是 1
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
@@ -434,14 +435,14 @@ NCCL_DEBUG=INFO
 #### 3.6.2 多机训练注意事项
 
 - **网络要求**：
-   - 推荐 RDMA/InfiniBand（高性能）
-   - 无 RDMA 时添加环境变量：
+   - 推荐使用 RDMA/InfiniBand（高性能）
+   - 无 RDMA 时，添加环境变量：
      ```bash
      export NCCL_IB_DISABLE=1
      export NCCL_P2P_DISABLE=1
      ```
 
-- **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
+- **数据同步**：所有机器必须能访问相同的数据路径（NFS/共享存储）
 
 ---
 
@@ -453,72 +454,65 @@ NCCL_DEBUG=INFO
 
 | 参数 | 说明 | 示例值 |
 |------|------|-------|
-| `GPU_memory_mode` | 显存管理模式，可选值见下表 | `model_group_offload` |
-| `ulysses_degree` | Head 维度并行度，单卡时为 1 | 1 |
-| `ring_degree` | Sequence 维度并行度，单卡时为 1 | 1 |
-| `fsdp_dit` | 多卡推理时对 Transformer 使用 FSDP 节省显存 | `False` |
+| `GPU_memory_mode` | GPU 显存管理模式，见下表 | `model_cpu_offload_and_qfloat8` |
+| `ulysses_degree` | 头维度并行度，单卡为 1 | 1 |
+| `ring_degree` | 序列维度并行度，单卡为 1 | 1 |
+| `fsdp_dit` | 多卡推理时对 Transformer 使用 FSDP 以节省显存 | `False` |
 | `fsdp_text_encoder` | 多卡推理时对文本编码器使用 FSDP | `False` |
-| `compile_dit` | 编译 Transformer 加速推理（固定分辨率下有效） | `False` |
-| `enable_teacache` | 启用 TeaCache 加速推理 | `True` |
-| `teacache_threshold` | TeaCache 阈值，建议 0.05~0.30，越大越快但质量可能下降 | 0.25 |
-| `num_skip_start_steps` | 推理开始跳过的步数，减少对生成质量的影响 | 5 |
-| `teacache_offload` | 将 TeaCache 张量卸载到 CPU 节省显存 | `False` |
-| `cfg_skip_ratio` | 跳过部分 CFG 步数加速推理，建议 0.00~0.25 | 0 |
-| `model_name` | 模型路径 | `models/Diffusion_Transformer/Qwen-Image` |
+| `compile_dit` | 编译 Transformer 以加速推理（固定分辨率时有效） | `False` |
+| `model_name` | 模型路径 | `models/Diffusion_Transformer/FLUX.1-dev` |
 | `sampler_name` | 采样器类型：`Flow`、`Flow_Unipc`、`Flow_DPM++` | `Flow` |
-| `transformer_path` | 加载训练好的 Transformer 权重路径 | `None` |
-| `vae_path` | 加载训练好的 VAE 权重路径 | `None` |
+| `transformer_path` | 训练后的 Transformer 权重路径 | `None` |
+| `vae_path` | 训练后的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `None` |
-| `sample_size` | 生成图像分辨率 `[高度, 宽度]` | `[1344, 768]` |
+| `sample_size` | 生成图像分辨率 `[height, width]` | `[1344, 768]` |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
-| `prompt` | 正向提示词，描述生成内容 | `"1girl, black_hair..."` |
-| `negative_prompt` | 负向提示词，避免生成的内容 | `" "` |
-| `guidance_scale` | 引导强度 | 4.0 |
+| `prompt` | 正向提示词，描述要生成的内容 | `"1girl, black_hair..."` |
+| `negative_prompt` | 反向提示词，描述要避免的内容 | `"The video is not of a high quality..."` |
+| `guidance_scale` | 引导强度 | 1.0 |
 | `seed` | 随机种子，用于复现结果 | 43 |
 | `num_inference_steps` | 推理步数 | 50 |
 | `lora_weight` | LoRA 权重强度 | 0.55 |
-| `save_path` | 生成图像保存路径 | `samples/qwenimage-t2i` |
+| `save_path` | 生成图像保存路径 | `samples/flux-t2i` |
 
-**显存管理模式说明**：
+**GPU 显存管理模式**：
 
 | 模式 | 说明 | 显存占用 |
 |------|------|---------|
-| `model_full_load` | 整个模型加载到 GPU | 最高 |
-| `model_full_load_and_qfloat8` | 全量加载 + FP8 量化 | 高 |
-| `model_cpu_offload` | 使用后将模型卸载到 CPU | 中等 |
+| `model_full_load` | 加载整个模型到 GPU | 最高 |
+| `model_full_load_and_qfloat8` | 完整加载 + FP8 量化 | 高 |
+| `model_cpu_offload` | 使用后卸载模型到 CPU | 中 |
 | `model_cpu_offload_and_qfloat8` | CPU 卸载 + FP8 量化 | 中低 |
 | `model_group_offload` | 层组在 CPU/CUDA 间切换 | 低 |
-| `sequential_cpu_offload` | 逐层卸载（速度最慢） | 最低 |
+| `sequential_cpu_offload` | 逐层卸载（最慢） | 最低 |
 
 ### 4.2 单卡推理
 
-#### 快速开始
-
-单卡推理运行如下命令：
+使用以下命令运行单卡推理：
 
 ```bash
-python examples/qwenimage/predict_t2i.py
+python examples/flux/predict_t2i.py
 ```
 
-根据需求修改编辑 `examples/qwenimage/predict_t2i.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
+根据需要编辑 `examples/flux/predict_t2i.py`。首次推理时重点关注以下参数，其他参数见上方推理参数解析。
 
 ```python
-# 根据显卡显存选择
-GPU_memory_mode = "model_group_offload"
+# 根据 GPU 显存选择
+GPU_memory_mode = "model_cpu_offload_and_qfloat8"
 # 根据实际模型路径
-model_name = "models/Diffusion_Transformer/Qwen-Image"  
-# LoRA 权重路径，如 "output_dir_qwenimage_lora/checkpoint-xxx/lora_weights.safetensors"
+model_name = "models/Diffusion_Transformer/FLUX.1-dev"  
+# LoRA 权重路径，例如 "output_dir_flux_lora/checkpoint-xxx/lora_weights.safetensors"
 lora_path = None
 # LoRA 权重强度
 lora_weight = 0.55
-# 根据生成内容编写
-prompt = "a young girl with flowing long hair, wearing a white halter dress"  
+# 根据要生成的内容编写
+prompt = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"  
 # ...
 ```
 
 ### 4.3 多卡并行推理
 
-**适合场景**：高分辨率生成、加速推理
+**适用场景**：高分辨率生成，更快的推理速度
 
 #### 安装并行推理依赖
 
@@ -528,32 +522,32 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 `examples/qwenimage/predict_t2i.py`：
+编辑 `examples/flux/predict_t2i.py`：
 
 ```python
-# 确保 ulysses_degree × ring_degree = GPU 数量
+# 确保 ulysses_degree × ring_degree = 使用的 GPU 数
 # 例如使用 2 张 GPU：
-ulysses_degree = 2  # Head 维度并行
-ring_degree = 1     # Sequence 维度并行
+ulysses_degree = 2  # 头维度并行
+ring_degree = 1     # 序列维度并行
 ```
 
 **配置原则**：
-- `ulysses_degree` 必须能整除模型的head数。
-- `ring_degree` 会在sequence上切分，影响通信开销，在head数能切分的时候尽量不用。
+- `ulysses_degree` 必须能整除模型的头数。
+- `ring_degree` 在序列维度切分，影响通信开销。头数能整除时尽量避免使用。
 
 **示例配置**：
 
 | GPU 数量 | ulysses_degree | ring_degree | 说明 |
 |---------|---------------|-------------|------|
 | 1 | 1 | 1 | 单卡 |
-| 4 | 4 | 1 | Head 并行 |
-| 8 | 8 | 1 | Head 并行 |
+| 4 | 4 | 1 | 头并行 |
+| 8 | 8 | 1 | 头并行 |
 | 8 | 4 | 2 | 混合并行 |
 
 #### 运行多卡推理
 
 ```bash
-torchrun --nproc-per-node=2 examples/qwenimage/predict_t2i.py
+torchrun --nproc-per-node=2 examples/flux/predict_t2i.py
 ```
 
 ## 五、更多资源

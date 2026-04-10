@@ -1,6 +1,8 @@
-# Qwen-Image LoRA 微调训练指南
+# Z-Image 全量参数训练指南
 
-本文档提供 Qwen-Image LoRA 微调训练的完整流程，包括环境配置、数据准备、多种分布式训练策略和推理测试。
+本文档提供 Z-Image Diffusion Transformer 全量参数训练的完整流程，包括环境配置、数据准备、分布式训练和推理测试。
+
+> **说明**：Z-Image 有两个模型变体：`Z-Image`（标准版）和 `Z-Image-Turbo`（快速推理版）。本指南默认使用 `Z-Image`，如需使用 `Z-Image-Turbo`，替换对应的模型路径即可。
 
 ---
 
@@ -11,10 +13,10 @@
   - [2.2 数据集结构](#22-数据集结构)
   - [2.3 metadata.json 格式](#23-metadatajson-格式)
   - [2.4 相对路径与绝对路径使用方案](#24-相对路径与绝对路径使用方案)
-- [三、LoRA 训练](#三lora-训练)
+- [三、全量参数训练](#三全量参数训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
   - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
-  - [3.3 LoRA 专用参数解析](#33-lora-专用参数解析)
+  - [3.3 训练常用参数解析](#33-训练常用参数解析)
   - [3.4 使用 FSDP 训练](#34-使用-fsdp-训练)
   - [3.5 其他后端](#35-其他后端)
   - [3.6 多机分布式训练](#36-多机分布式训练)
@@ -145,7 +147,7 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 
 ---
 
-## 三、LoRA 训练
+## 三、全量参数训练
 
 ### 3.1 下载预训练模型
 
@@ -153,20 +155,23 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
 
-# 下载 Qwen-Image 官方权重
-modelscope download --model Qwen/Qwen-Image --local_dir models/Diffusion_Transformer/Qwen-Image
+# 下载 Z-Image 官方权重
+modelscope download --model Tongyi-MAI/Z-Image --local_dir models/Diffusion_Transformer/Z-Image
+
+# （可选）下载 Z-Image-Turbo 快速推理版
+modelscope download --model Tongyi-MAI/Z-Image-Turbo --local_dir models/Diffusion_Transformer/Z-Image-Turbo
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
 
 如果按照 **2.1 快速测试数据集下载数据** 与 **3.1 下载预训练模型下载权重**后，直接复制快速开始的启动指令进行启动。
 
-推荐使用 DeepSpeed-Zero-2 与 FSDP 方案进行训练。这里使用 DeepSpeed-Zero-2 为例配置 shell 文件。
+推荐使用DeepSpeed-Zero-2与FSDP方案进行训练。这里使用DeepSpeed-Zero-2为例配置shell文件。
 
-本文中 DeepSpeed-Zero-2 与 FSDP 的差别在于是否对模型权重进行分片，**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。
+本文中DeepSpeed-Zero-2与FSDP的差别在于是否对模型权重进行分片，**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -174,7 +179,7 @@ export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.j
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -184,9 +189,11 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -194,20 +201,17 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
-  --use_peft_lora \
-  --uniform_sampling
+  --uniform_sampling \
+  --trainable_modules "."
 ```
 
-### 3.3 LoRA 专用参数解析
+### 3.3 训练常用参数解析
 
-**LoRA 关键参数说明**：
+**关键参数说明**：
 
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Qwen-Image` |
+| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Z-Image` |
 | `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
 | `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
@@ -216,28 +220,30 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
-| `--learning_rate` | 初始学习率（LoRA 推荐值） | 1e-04 |
+| `--learning_rate` | 初始学习率 | 2e-05 |
+| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
-| `--seed` | 随机种子（可复现训练） | 42 |
-| `--output_dir` | 输出目录 | `output_dir_qwenimage_lora` |
+| `--seed` | 随机种子 | 42 |
+| `--output_dir` | 输出目录 | `output_dir_z_image` |
 | `--gradient_checkpointing` | 激活重计算 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
+| `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
+| `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
+| `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
+| `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
 | `--enable_bucket` | 启用分桶训练，不裁剪图片，按分辨率分组训练整个图像 | - |
-| `--uniform_sampling` | 均匀采样 timestep（推荐启用） | - |
+| `--random_hw_adapt` | 自动缩放图片到 `[512, image_sample_size]` 范围内的随机尺寸 | - |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
-| `--rank` | LoRA 更新矩阵的维度（rank 越大表达能力越强，但显存占用越高） | 128 |
-| `--network_alpha` | LoRA 更新矩阵的缩放系数（通常设置为 rank 的一半） | 64 |
-| `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔 | `to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2` |
-| `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更节省显存） | - |
+| `--uniform_sampling` | 均匀采样 timestep | - |
+| `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
+
 
 ### 3.4 使用 FSDP 训练
 
-**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。
-
-> ✅ **推荐**：FSDP 在当前仓库中经过充分测试，错误更少、更稳定。
+**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -245,7 +251,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=QwenImageTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap ZImageTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -255,9 +261,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -265,11 +273,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
-  --use_peft_lora \
-  --uniform_sampling
+  --uniform_sampling \
+  --trainable_modules "."
 ```
 
 ### 3.5 其他后端
@@ -288,7 +293,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 
 执行命令为：
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -296,7 +301,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -306,9 +311,11 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -316,19 +323,16 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
-  --use_peft_lora \
-  --uniform_sampling
+  --uniform_sampling \
+  --trainable_modules "."
 ```
 
 #### 3.5.2 不使用 DeepSpeed 与 FSDP 训练
 
-**该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练 Shell 用于参考训练。
+**该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练Shell用于参考训练。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -336,7 +340,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -346,9 +350,11 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -356,11 +362,8 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
-  --use_peft_lora \
-  --uniform_sampling
+  --uniform_sampling \
+  --trainable_modules "."
 ```
 
 ### 3.6 多机分布式训练
@@ -373,7 +376,7 @@ accelerate launch --mixed_precision="bf16" scripts/qwenimage/train_lora.py \
 
 **机器 0（Master）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
@@ -386,7 +389,7 @@ export RANK=0                        # 当前机器 rank（0 或 1）
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/qwenimage/train_lora.py \
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/z_image/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -396,9 +399,11 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_qwenimage_lora" \
+  --output_dir="output_dir_z_image" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -406,16 +411,13 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --vae_mini_batch=1 \
   --max_grad_norm=0.05 \
   --enable_bucket \
-  --rank=128 \
-  --network_alpha=64 \
-  --target_name="to_q,to_k,to_v,img_mod.1,txt_mod.1,img_mlp.0,img_mlp.2,txt_mlp.0,txt_mlp.2" \
-  --use_peft_lora \
-  --uniform_sampling
+  --uniform_sampling \
+  --trainable_modules "."
 ```
 
 **机器 1（Worker）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Z-Image"
 export DATASET_NAME="datasets/X-Fun-Images-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
@@ -443,8 +445,6 @@ NCCL_DEBUG=INFO
 
 - **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
 
----
-
 ## 四、推理测试
 
 ### 4.1 推理参数解析
@@ -453,31 +453,26 @@ NCCL_DEBUG=INFO
 
 | 参数 | 说明 | 示例值 |
 |------|------|-------|
-| `GPU_memory_mode` | 显存管理模式，可选值见下表 | `model_group_offload` |
+| `GPU_memory_mode` | 显存管理模式，可选值见下表 | `model_cpu_offload` |
 | `ulysses_degree` | Head 维度并行度，单卡时为 1 | 1 |
 | `ring_degree` | Sequence 维度并行度，单卡时为 1 | 1 |
 | `fsdp_dit` | 多卡推理时对 Transformer 使用 FSDP 节省显存 | `False` |
 | `fsdp_text_encoder` | 多卡推理时对文本编码器使用 FSDP | `False` |
 | `compile_dit` | 编译 Transformer 加速推理（固定分辨率下有效） | `False` |
-| `enable_teacache` | 启用 TeaCache 加速推理 | `True` |
-| `teacache_threshold` | TeaCache 阈值，建议 0.05~0.30，越大越快但质量可能下降 | 0.25 |
-| `num_skip_start_steps` | 推理开始跳过的步数，减少对生成质量的影响 | 5 |
-| `teacache_offload` | 将 TeaCache 张量卸载到 CPU 节省显存 | `False` |
-| `cfg_skip_ratio` | 跳过部分 CFG 步数加速推理，建议 0.00~0.25 | 0 |
-| `model_name` | 模型路径 | `models/Diffusion_Transformer/Qwen-Image` |
+| `model_name` | 模型路径 | `models/Diffusion_Transformer/Z-Image` |
 | `sampler_name` | 采样器类型：`Flow`、`Flow_Unipc`、`Flow_DPM++` | `Flow` |
 | `transformer_path` | 加载训练好的 Transformer 权重路径 | `None` |
 | `vae_path` | 加载训练好的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `None` |
-| `sample_size` | 生成图像分辨率 `[高度, 宽度]` | `[1344, 768]` |
+| `sample_size` | 生成图像分辨率 `[高度, 宽度]` | `[1728, 992]` |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
-| `prompt` | 正向提示词，描述生成内容 | `"1girl, black_hair..."` |
-| `negative_prompt` | 负向提示词，避免生成的内容 | `" "` |
-| `guidance_scale` | 引导强度 | 4.0 |
+| `prompt` | 正向提示词，描述生成内容 | `"一位年轻女子..."` |
+| `negative_prompt` | 负向提示词，避免生成的内容 | `"低分辨率，低画质..."` |
+| `guidance_scale` | 引导强度，Turbo 模型建议设为 0.0 | 4.0 / 0.0 |
 | `seed` | 随机种子，用于复现结果 | 43 |
-| `num_inference_steps` | 推理步数 | 50 |
+| `num_inference_steps` | 推理步数，Turbo 模型可大幅减少 | 25 / 9 |
 | `lora_weight` | LoRA 权重强度 | 0.55 |
-| `save_path` | 生成图像保存路径 | `samples/qwenimage-t2i` |
+| `save_path` | 生成图像保存路径 | `samples/z-image-t2i` |
 
 **显存管理模式说明**：
 
@@ -492,27 +487,47 @@ NCCL_DEBUG=INFO
 
 ### 4.2 单卡推理
 
-#### 快速开始
+#### Z-Image（标准版）
 
 单卡推理运行如下命令：
 
 ```bash
-python examples/qwenimage/predict_t2i.py
+python examples/z_image/predict_t2i.py
 ```
 
-根据需求修改编辑 `examples/qwenimage/predict_t2i.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
+根据需求修改编辑 `examples/z_image/predict_t2i.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
 
 ```python
 # 根据显卡显存选择
-GPU_memory_mode = "model_group_offload"
+GPU_memory_mode = "model_cpu_offload"
 # 根据实际模型路径
-model_name = "models/Diffusion_Transformer/Qwen-Image"  
-# LoRA 权重路径，如 "output_dir_qwenimage_lora/checkpoint-xxx/lora_weights.safetensors"
-lora_path = None
-# LoRA 权重强度
-lora_weight = 0.55
+model_name = "models/Diffusion_Transformer/Z-Image-Turbo"  
+# 训练好的权重路径，如 "output_dir_z_image/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+transformer_path = None  
 # 根据生成内容编写
-prompt = "a young girl with flowing long hair, wearing a white halter dress"  
+prompt = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。"  
+# ...
+```
+
+#### Z-Image-Turbo（快速版）
+
+单卡推理运行如下命令：
+
+```bash
+python examples/z_image/predict_turbo_t2i.py
+```
+
+根据需求修改编辑 `examples/z_image/predict_turbo_t2i.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
+
+```python
+# 根据显卡显存选择
+GPU_memory_mode = "model_cpu_offload"
+# 根据实际模型路径
+model_name = "models/Diffusion_Transformer/Z-Image-Turbo"  
+# 训练好的权重路径，如 "output_dir_z_image/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+transformer_path = None  
+# 根据生成内容编写
+prompt = "一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。"  
 # ...
 ```
 
@@ -528,7 +543,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 `examples/qwenimage/predict_t2i.py`：
+编辑 `examples/z_image/predict_t2i.py`：
 
 ```python
 # 确保 ulysses_degree × ring_degree = GPU 数量
@@ -553,7 +568,7 @@ ring_degree = 1     # Sequence 维度并行
 #### 运行多卡推理
 
 ```bash
-torchrun --nproc-per-node=2 examples/qwenimage/predict_t2i.py
+torchrun --nproc-per-node=2 examples/z_image/predict_t2i.py
 ```
 
 ## 五、更多资源

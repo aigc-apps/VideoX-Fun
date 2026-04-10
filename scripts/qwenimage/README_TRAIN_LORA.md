@@ -19,9 +19,9 @@ This document provides a complete workflow for Qwen-Image LoRA fine-tuning train
   - [3.5 Other Backends](#35-other-backends)
   - [3.6 Multi-Machine Distributed Training](#36-multi-machine-distributed-training)
 - [4. Inference Testing](#4-inference-testing)
-  - [4.1 Single GPU Inference](#41-single-gpu-inference)
-  - [4.2 Multi-GPU Parallel Inference](#42-multi-gpu-parallel-inference)
-  - [4.3 VRAM Optimization Strategies](#43-vram-optimization-strategies)
+  - [4.1 Inference Parameter Parsing](#41-inference-parameter-parsing)
+  - [4.2 Single GPU Inference](#42-single-gpu-inference)
+  - [4.3 Multi-GPU Parallel Inference](#43-multi-gpu-parallel-inference)
 - [5. Additional Resources](#5-additional-resources)
 
 ---
@@ -447,33 +447,76 @@ NCCL_DEBUG=INFO
 
 ## 4. Inference Testing
 
-### 4.1 Single GPU Inference
+### 4.1 Inference Parameter Parsing
+
+**Key Parameter Descriptions**:
+
+| Parameter | Description | Example Value |
+|------|------|-------|
+| `GPU_memory_mode` | VRAM management mode, see table below for options | `model_group_offload` |
+| `ulysses_degree` | Head dimension parallelism degree, set to 1 for single GPU | 1 |
+| `ring_degree` | Sequence dimension parallelism degree, set to 1 for single GPU | 1 |
+| `fsdp_dit` | Use FSDP for Transformer during multi-GPU inference to save VRAM | `False` |
+| `fsdp_text_encoder` | Use FSDP for text encoder during multi-GPU inference | `False` |
+| `compile_dit` | Compile Transformer for faster inference (effective at fixed resolution) | `False` |
+| `enable_teacache` | Enable TeaCache for faster inference | `True` |
+| `teacache_threshold` | TeaCache threshold, recommended 0.05~0.30, higher is faster but may reduce quality | 0.25 |
+| `num_skip_start_steps` | Number of steps to skip at inference start, reduces impact on generation quality | 5 |
+| `teacache_offload` | Offload TeaCache tensors to CPU to save VRAM | `False` |
+| `cfg_skip_ratio` | Skip some CFG steps for faster inference, recommended 0.00~0.25 | 0 |
+| `model_name` | Model path | `models/Diffusion_Transformer/Qwen-Image` |
+| `sampler_name` | Sampler type: `Flow`, `Flow_Unipc`, `Flow_DPM++` | `Flow` |
+| `transformer_path` | Path to load trained Transformer weights | `None` |
+| `vae_path` | Path to load trained VAE weights | `None` |
+| `lora_path` | LoRA weights path | `None` |
+| `sample_size` | Generated image resolution `[height, width]` | `[1344, 768]` |
+| `weight_dtype` | Model weight precision, use `torch.float16` for GPUs without bf16 support | `torch.bfloat16` |
+| `prompt` | Positive prompt describing the generation content | `"1girl, black_hair..."` |
+| `negative_prompt` | Negative prompt for content to avoid | `" "` |
+| `guidance_scale` | Guidance strength | 4.0 |
+| `seed` | Random seed for reproducible results | 43 |
+| `num_inference_steps` | Number of inference steps | 50 |
+| `lora_weight` | LoRA weight strength | 0.55 |
+| `save_path` | Path to save generated images | `samples/qwenimage-t2i` |
+
+**VRAM Management Mode Description**:
+
+| Mode | Description | VRAM Usage |
+|------|------|---------|
+| `model_full_load` | Load entire model to GPU | Highest |
+| `model_full_load_and_qfloat8` | Full load + FP8 quantization | High |
+| `model_cpu_offload` | Offload model to CPU after use | Medium |
+| `model_cpu_offload_and_qfloat8` | CPU offload + FP8 quantization | Medium-Low |
+| `model_group_offload` | Layer groups switch between CPU/CUDA | Low |
+| `sequential_cpu_offload` | Sequential layer offload (slowest) | Lowest |
+
+### 4.2 Single GPU Inference
 
 #### Quick Start
+
+Run the following command for single GPU inference:
 
 ```bash
 python examples/qwenimage/predict_t2i.py
 ```
 
-#### Core Configuration
-
-Edit `examples/qwenimage/predict_t2i.py`:
+Edit `examples/qwenimage/predict_t2i.py` according to your needs. For first-time inference, focus on these parameters. For other parameters, refer to the inference parameter parsing above.
 
 ```python
+# Choose based on GPU VRAM
 GPU_memory_mode = "model_group_offload"
-prompts = "a young girl with flowing long hair, wearing a white halter dress"
-negative_prompt = " "
-guidance_scale = 1.0
-seed = 43
-num_inference_steps = 2 
-model_name = "models/Diffusion_Transformer/Qwen-Image"
-lora_path = "output_dir_qwenimage_lora/checkpoint-500/lora_weights.safetensors"  # Optional
-sample_size = [1328, 1328] 
-
-save_path = "samples/qwenimage-output"
+# Based on actual model path
+model_name = "models/Diffusion_Transformer/Qwen-Image"  
+# LoRA weights path, e.g., "output_dir_qwenimage_lora/checkpoint-xxx/lora_weights.safetensors"
+lora_path = None
+# LoRA weight strength
+lora_weight = 0.55
+# Write based on generation content
+prompt = "a young girl with flowing long hair, wearing a white halter dress"  
+# ...
 ```
 
-### 4.2 Multi-GPU Parallel Inference
+### 4.3 Multi-GPU Parallel Inference
 
 **Suitable for**: High-resolution generation, accelerated inference
 
@@ -510,7 +553,7 @@ ring_degree = 1     # Sequence dimension parallelization
 #### Run Multi-GPU Inference
 
 ```bash
-torchrun --nproc-per-node=8 examples/qwenimage/predict_t2i.py
+torchrun --nproc-per-node=2 examples/qwenimage/predict_t2i.py
 ```
 
 ## 5. Additional Resources
