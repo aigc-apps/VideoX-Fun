@@ -13,9 +13,9 @@ for project_root in project_roots:
 
 from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
                                Gemma3ForConditionalGeneration,
-                               GemmaTokenizerFast, LTX2TextConnectors,
-                               LTX2VideoTransformer3DModel, LTX2Vocoder)
-from videox_fun.pipeline import LTX2Pipeline
+                               GemmaTokenizerFast, LTX2TextConnectors, Gemma3Processor,
+                               LTX2VideoTransformer3DModel, LTX2VocoderWithBWE)
+from videox_fun.pipeline import LTX2I2VPipeline
 from videox_fun.utils import (register_auto_device_hook,
                               safe_enable_group_offload)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
@@ -45,7 +45,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "sequential_cpu_offload"
+GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -60,7 +60,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # model path
-model_name          = "models/Diffusion_Transformer/LTX-2"
+model_name          = "models/Diffusion_Transformer/LTX-2.3-Diffusers"
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 
@@ -77,13 +77,29 @@ fps                 = 24
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
+# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
+validation_image_start  = "asset/1.png"
+
+# prompts
 prompt              = "A brown dog barks on a sofa, sitting on a light-colored couch in a cozy room. Behind the dog, there is a framed painting on a shelf, surrounded by pink flowers. "
 negative_prompt     = "worst quality, inconsistent motion, blurry, jittery, distorted, static, low quality, artifacts"
-guidance_scale      = 6.0
+# CFG guidance scale for video and audio modality
+guidance_scale          = 3.0
+audio_guidance_scale    = 7.0
+# Spatio-Temporal Guidance (STG) scale for video and audio
+stg_scale               = 1.0
+audio_stg_scale         = 1.0
+# Modality isolation guidance scale for video and audio
+modality_scale          = 3.0
+audio_modality_scale    = 3.0
+# Guidance rescale factor for video and audio to prevent overexposure
+guidance_rescale        = 0.7
+audio_guidance_rescale  = 0.7
+spatio_temporal_guidance_blocks = [28]
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/ltx2-videos-t2v"
+save_path           = "samples/ltx2-videos-i2v"
 
 # Audio sample rate will be read from vocoder config
 audio_sample_rate   = 24000
@@ -136,11 +152,14 @@ audio_vae = AutoencoderKLLTX2Audio.from_pretrained(
     torch_dtype=weight_dtype,
 )
 
-# Get Tokenizer
-tokenizer = GemmaTokenizerFast.from_pretrained(
+# Get Processor
+processor = Gemma3Processor.from_pretrained(
     model_name,
-    subfolder="tokenizer",
+    subfolder="processor",
 )
+
+# Get Tokenizer
+tokenizer = processor.tokenizer
 
 # Get Text encoder
 text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
@@ -159,7 +178,7 @@ connectors = LTX2TextConnectors.from_pretrained(
 )
 
 # Vocoder
-vocoder = LTX2Vocoder.from_pretrained(
+vocoder = LTX2VocoderWithBWE.from_pretrained(
     model_name,
     subfolder="vocoder",
     torch_dtype=weight_dtype,
@@ -176,12 +195,13 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = LTX2Pipeline(
+pipeline = LTX2I2VPipeline(
     scheduler=scheduler,
     vae=vae,
     audio_vae=audio_vae,
     text_encoder=text_encoder,
     tokenizer=tokenizer,
+    processor=processor,
     connectors=connectors,
     transformer=transformer,
     vocoder=vocoder,
@@ -231,6 +251,7 @@ if lora_path is not None:
 
 with torch.no_grad():
     output = pipeline(
+        image=Image.open(validation_image_start),
         prompt=prompt,
         negative_prompt=negative_prompt,
         height=sample_size[0],
@@ -239,6 +260,14 @@ with torch.no_grad():
         frame_rate=fps,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
+        stg_scale=stg_scale,
+        modality_scale=modality_scale,
+        guidance_rescale=guidance_rescale,
+        audio_guidance_scale=audio_guidance_scale,
+        audio_stg_scale=audio_stg_scale,
+        audio_modality_scale=audio_modality_scale,
+        audio_guidance_rescale=audio_guidance_rescale,
+        spatio_temporal_guidance_blocks=spatio_temporal_guidance_blocks,
         generator=generator,
         output_type="pt",
     )

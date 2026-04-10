@@ -69,9 +69,9 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  get_random_mask)
 from videox_fun.data.dataset_video import VideoSpeechDataset
 from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
-                               Gemma3ForConditionalGeneration,
-                               GemmaTokenizerFast, LTX2TextConnectors,
-                               LTX2VideoTransformer3DModel, LTX2Vocoder)
+                               Gemma3ForConditionalGeneration, Gemma3Processor,
+                               LTX2TextConnectors,
+                               LTX2VideoTransformer3DModel, LTX2VocoderWithBWE)
 from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
@@ -102,7 +102,50 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
 
-# LTX2 helper functions for packing latents
+# LTX2 helper functions for packing text embeddings and latents
+def _pack_text_embeds(
+    text_hidden_states: torch.Tensor,
+    sequence_lengths: torch.Tensor,
+    device,
+    padding_side: str = "left",
+    scale_factor: int = 8,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Packs and normalizes text encoder hidden states, respecting padding."""
+    batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
+    original_dtype = text_hidden_states.dtype
+
+    # Create padding mask
+    token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
+    if padding_side == "right":
+        mask = token_indices < sequence_lengths[:, None]
+    elif padding_side == "left":
+        start_indices = seq_len - sequence_lengths[:, None]
+        mask = token_indices >= start_indices
+    else:
+        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
+    mask = mask[:, :, None, None]
+
+    # Compute masked mean
+    masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
+    num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
+    masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
+
+    # Compute min/max
+    x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
+    x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
+
+    # Normalization
+    normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
+    normalized_hidden_states = normalized_hidden_states * scale_factor
+
+    # Pack the hidden states to 3D tensor
+    normalized_hidden_states = normalized_hidden_states.flatten(2)
+    mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
+    normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
+    normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
+    return normalized_hidden_states
+
 def _pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
     """Packs latents [B, C, F, H, W] into token sequence [B, S, D]."""
     batch_size, num_channels, num_frames, height, width = latents.shape
@@ -167,7 +210,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder, transformer3d, args, accelerator, weight_dtype, global_step):
+def log_validation(vae, audio_vae, text_encoder, tokenizer, processor, connectors, vocoder, transformer3d, args, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -181,10 +224,11 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder,
             )
         
             pipeline = LTX2Pipeline(
-                vae=vae, 
+                vae=vae,
                 audio_vae=audio_vae,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
+                processor=processor,
                 connectors=connectors,
                 transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                 vocoder=vocoder,
@@ -202,14 +246,21 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder,
             for i in range(len(args.validation_prompts)):
                 output = pipeline(
                     args.validation_prompts[i],
-                    negative_prompt     = "worst quality, inconsistent motion, blurry, jittery, distorted, static, low quality, artifacts",
-                    height              = args.video_sample_size,
-                    width               = args.video_sample_size,
-                    num_frames          = args.video_sample_n_frames,
-                    frame_rate          = 24,
-                    num_inference_steps = 25,
-                    guidance_scale      = 4.5,
-                    generator           = generator,
+                    negative_prompt         = "worst quality, inconsistent motion, blurry, jittery, distorted, static, low quality, artifacts",
+                    height                  = args.video_sample_size,
+                    width                   = args.video_sample_size,
+                    num_frames              = args.video_sample_n_frames,
+                    num_inference_steps     = 25,
+                    guidance_scale          = 3.0,
+                    audio_guidance_scale    = 7.0,
+                    stg_scale               = 1.0,
+                    audio_stg_scale         = 1.0,
+                    modality_scale          = 3.0,
+                    audio_modality_scale    = 3.0,
+                    guidance_rescale        = 0.7,
+                    audio_guidance_rescale  = 0.7,
+                    spatio_temporal_guidance_blocks = [28],
+                    generator               = generator,
                 )
                 sample = output.videos
                 audio = output.audio
@@ -817,11 +868,14 @@ def main():
         subfolder="scheduler"
     )
 
-    # Get Tokenizer
-    tokenizer = GemmaTokenizerFast.from_pretrained(
+    # Get Processor
+    processor = Gemma3Processor.from_pretrained(
         args.pretrained_model_name_or_path,
-        subfolder="tokenizer",
+        subfolder="processor",
     )
+
+    # Get Tokenizer from processor
+    tokenizer = processor.tokenizer
 
     def deepspeed_zero_init_disabled_context_manager():
         """
@@ -848,17 +902,20 @@ def main():
             args.pretrained_model_name_or_path,
             subfolder="text_encoder",
             low_cpu_mem_usage=True,
+            torch_dtype=weight_dtype,
         )
         text_encoder = text_encoder.eval()
         # Get Vae
         vae = AutoencoderKLLTX2Video.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="vae",
+            torch_dtype=weight_dtype,
         )
         vae.eval()
         audio_vae = AutoencoderKLLTX2Audio.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="audio_vae",
+            torch_dtype=weight_dtype,
         )
         audio_vae.eval()
 
@@ -866,11 +923,13 @@ def main():
         connectors = LTX2TextConnectors.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="connectors",
+            torch_dtype=weight_dtype,
         )
         # Vocoder
-        vocoder = LTX2Vocoder.from_pretrained(
+        vocoder = LTX2VocoderWithBWE.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="vocoder",
+            torch_dtype=weight_dtype,
         )
         
     # Get Transformer
@@ -1345,19 +1404,28 @@ def main():
             
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                # Gemma expects left padding for chat-style prompts
-                tokenizer.padding_side = "left"
-                if tokenizer.pad_token is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                    
-                prompt_ids = tokenizer(
-                    new_examples['text'], 
-                    max_length=args.tokenizer_max_length, 
-                    padding="max_length", 
-                    add_special_tokens=True, 
-                    truncation=True, 
-                    return_tensors="pt"
-                )
+                # Use processor for LTX-2.3 prompt encoding (same as pipeline)
+                if processor is not None:
+                    prompt_ids = processor(
+                        text=new_examples['text'],
+                        max_length=args.tokenizer_max_length,
+                        padding="max_length",
+                        truncation=True,
+                        return_tensors="pt"
+                    )
+                else:
+                    # Fallback to tokenizer
+                    tokenizer.padding_side = "left"
+                    if tokenizer.pad_token is None:
+                        tokenizer.pad_token = tokenizer.eos_token
+                    prompt_ids = tokenizer(
+                        new_examples['text'],
+                        max_length=args.tokenizer_max_length,
+                        padding="max_length",
+                        add_special_tokens=True,
+                        truncation=True,
+                        return_tensors="pt"
+                    )
                 text_encoder_outputs = text_encoder(
                     input_ids=prompt_ids.input_ids,
                     attention_mask=prompt_ids.attention_mask,
@@ -1365,9 +1433,9 @@ def main():
                 )
                 text_encoder_hidden_states = text_encoder_outputs.hidden_states
                 text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-                
-                # Pack text embeddings (flatten to 3D, same as pipeline)
-                prompt_embeds = text_encoder_hidden_states.flatten(2, 3)
+
+                # Pack text embeddings to 3D tensor (flatten last two dims)
+                prompt_embeds = text_encoder_hidden_states.flatten(2)
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
 
@@ -1694,33 +1762,43 @@ def main():
                     prompt_attention_mask = batch['encoder_attention_mask'].to(device=latents.device)
                 else:
                     with torch.no_grad():
-                        # Gemma expects left padding for chat-style prompts
-                        tokenizer.padding_side = "left"
-                        if tokenizer.pad_token is None:
-                            tokenizer.pad_token = tokenizer.eos_token
-
-                        prompt_ids = tokenizer(
-                            batch['text'], 
-                            padding="max_length", 
-                            max_length=args.tokenizer_max_length, 
-                            truncation=True, 
-                            add_special_tokens=True, 
-                            return_tensors="pt"
-                        )
+                        # Use processor for LTX-2.3 prompt encoding (same as pipeline)
+                        if processor is not None:
+                            prompt_ids = processor(
+                                text=batch['text'],
+                                padding="max_length",
+                                max_length=args.tokenizer_max_length,
+                                truncation=True,
+                                return_tensors="pt"
+                            )
+                        else:
+                            # Fallback to tokenizer
+                            tokenizer.padding_side = "left"
+                            if tokenizer.pad_token is None:
+                                tokenizer.pad_token = tokenizer.eos_token
+                            prompt_ids = tokenizer(
+                                batch['text'],
+                                padding="max_length",
+                                max_length=args.tokenizer_max_length,
+                                truncation=True,
+                                add_special_tokens=True,
+                                return_tensors="pt"
+                            )
                         text_input_ids = prompt_ids.input_ids.to(latents.device)
                         prompt_attention_mask = prompt_ids.attention_mask.to(latents.device)
 
                         # Get text encoder hidden states
                         text_encoder_outputs = text_encoder(
-                            input_ids=text_input_ids, 
-                            attention_mask=prompt_attention_mask, 
+                            input_ids=text_input_ids,
+                            attention_mask=prompt_attention_mask,
                             output_hidden_states=True
                         )
                         text_encoder_hidden_states = text_encoder_outputs.hidden_states
                         text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-                        
-                        # Pack text embeddings (flatten to 3D, same as pipeline)
-                        prompt_embeds = text_encoder_hidden_states.flatten(2, 3).to(dtype=weight_dtype)
+
+                        # Pack text embeddings to 3D tensor (flatten last two dims)
+                        prompt_embeds = text_encoder_hidden_states.flatten(2)  # [B, seq_len, hidden_dim * num_layers]
+                        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
 
                 # Use connectors to process prompt embeddings
                 with torch.no_grad():
@@ -1846,28 +1924,18 @@ def main():
                 audio_coords = accelerator.unwrap_model(transformer3d).audio_rope.prepare_audio_coords(
                     bsz, audio_num_frames, audio_latents.device
                 )
+
                 # -------- Forward --------
                 # Predict the noise residual
-                # Expand timestep to match batch dimension (same as pipeline)
-                if video_timestep.ndim == 1:
-                    video_timestep_expanded = video_timestep.expand(noisy_latents_packed.shape[0])
-                else:
-                    video_timestep_expanded = video_timestep
-                if audio_timestep.ndim == 1:
-                    audio_timestep_expanded = audio_timestep.expand(noisy_audio_latents.shape[0])
-                else:
-                    audio_timestep_expanded = audio_timestep
-                
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred_video, noise_pred_audio = transformer3d(
                         hidden_states=noisy_latents_packed,
                         audio_hidden_states=noisy_audio_latents,
                         encoder_hidden_states=connector_prompt_embeds,
                         audio_encoder_hidden_states=connector_audio_prompt_embeds,
-                        timestep=video_timestep_expanded,
-                        audio_timestep=audio_timestep_expanded,
-                        sigma=video_timestep_expanded,  # LTX-2.3 uses sigma for cross attention modulation
-                        audio_sigma=audio_timestep_expanded,
+                        timestep=video_timestep,
+                        audio_timestep=audio_timestep,
+                        sigma=timesteps,  # LTX-2.3 uses sigma
                         encoder_attention_mask=connector_attention_mask,
                         audio_encoder_attention_mask=connector_attention_mask,
                         num_frames=latent_num_frames,
@@ -1881,7 +1949,6 @@ def main():
                         spatio_temporal_guidance_blocks=None,
                         perturbation_mask=None,
                         use_cross_timestep=False,
-                        attention_kwargs=None,
                         return_dict=False,
                     )
                 
@@ -2012,6 +2079,7 @@ def main():
                         audio_vae,
                         text_encoder,
                         tokenizer,
+                        processor,
                         connectors,
                         vocoder,
                         transformer3d,
@@ -2040,6 +2108,7 @@ def main():
                 audio_vae,
                 text_encoder,
                 tokenizer,
+                processor,
                 connectors,
                 vocoder,
                 transformer3d,

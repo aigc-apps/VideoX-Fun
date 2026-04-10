@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
+export MODEL_NAME="models/Diffusion_Transformer/LTX-2.3-Diffusers"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -23,7 +23,7 @@ accelerate launch --mixed_precision="bf16" scripts/ltx2/train_lora.py \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_ltx2_lora" \
+  --output_dir="output_dir_ltx2.3_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
