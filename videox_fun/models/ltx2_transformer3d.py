@@ -32,6 +32,11 @@ from diffusers.utils import USE_PEFT_BACKEND, is_torch_version, logging
 from diffusers.utils.outputs import BaseOutput
 
 from .attention_utils import attention
+from ..dist import (LTX2MultiGPUsAttnProcessor,
+                    LTX2PerturbedMultiGPUsAttnProcessor,
+                    get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, get_sp_group)
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -382,6 +387,23 @@ class LTX2Attention(torch.nn.Module):
 
         if processor is None:
             processor = self._default_processor_cls()
+        self.processor = processor
+
+    def set_processor(self, processor) -> None:
+        """
+        Set the attention processor to use.
+
+        Args:
+            processor: The attention processor to use.
+        """
+        if (
+            hasattr(self, "processor")
+            and isinstance(self.processor, torch.nn.Module)
+            and not isinstance(processor, torch.nn.Module)
+        ):
+            logger.info(f"You are removing possibly trained weights of {self.processor} with {processor}")
+            self._modules.pop("processor")
+
         self.processor = processor
 
     def prepare_attention_mask(
@@ -1354,6 +1376,39 @@ class LTX2VideoTransformer3DModel(
         else:
             raise ValueError("Invalid set gradient checkpointing")
 
+    def enable_multi_gpus_inference(self):
+        """Enable multi-GPU inference using sequence parallel."""
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # Choose processor based on perturbed_attn config
+        if self.config.perturbed_attn:
+            processor_cls = LTX2PerturbedMultiGPUsAttnProcessor
+        else:
+            processor_cls = LTX2MultiGPUsAttnProcessor
+
+        # Set multi-GPU processor for attention layers that need it
+        # Note: text cross-attention (attn2, audio_attn2) does NOT need special handling
+        # because text embeddings are not chunked - each GPU has full text embeddings
+        # Audio self-attention (audio_attn1) and audio-to-video cross-attention also use standard
+        # processors since they don't require cross-rank communication:
+        #   - audio_attn1: Q,K,V are all full audio (no chunking)
+        #   - audio_to_video_attn: Q=video(chunked), K,V=audio(full) - each rank computes locally
+        for block in self.transformer_blocks:
+            # Video self-attention (chunked) -> multi-GPU processor for all-to-all communication
+            block.attn1.set_processor(processor_cls())
+            block.attn1.sp_world_size = self.sp_world_size
+            block.attn1.sp_world_rank = self.sp_world_rank
+            block.attn1.all_gather = self.all_gather
+            
+            # Video-to-audio cross-attention: Q=audio(full), K,V=video(chunked)
+            # Needs to all_gather K,V from video chunks across ranks
+            block.video_to_audio_attn.set_processor(processor_cls())
+            block.video_to_audio_attn.sp_world_size = self.sp_world_size
+            block.video_to_audio_attn.sp_world_rank = self.sp_world_rank
+            block.video_to_audio_attn.all_gather = self.all_gather
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1467,7 +1522,7 @@ class LTX2VideoTransformer3DModel(
 
         batch_size = hidden_states.size(0)
 
-        # 1. Prepare RoPE positional embeddings
+        # 1. Prepare coords for RoPE (will generate embeddings after patchification and sequence chunking)
         if video_coords is None:
             video_coords = self.rope.prepare_video_coords(
                 batch_size, num_frames, height, width, hidden_states.device, fps=fps
@@ -1477,6 +1532,30 @@ class LTX2VideoTransformer3DModel(
                 batch_size, audio_num_frames, audio_hidden_states.device
             )
 
+        # 2. Patchify input projections
+        hidden_states = self.proj_in(hidden_states)
+        audio_hidden_states = self.audio_proj_in(audio_hidden_states)
+
+        # Sequence parallel: chunk video and audio hidden states and coords
+        if hasattr(self, 'sp_world_size') and self.sp_world_size > 1:
+            from ..dist.fuser import sequence_parallel_chunk, get_sequence_parallel_rank, get_sequence_parallel_world_size
+            
+            sp_rank = get_sequence_parallel_rank()
+            sp_world_size = get_sequence_parallel_world_size()
+            
+            # Chunk video hidden states
+            hidden_states = sequence_parallel_chunk(hidden_states, dim=1)
+            
+            # Chunk video coords for RoPE
+            if video_coords is not None:
+                video_coords_chunks = torch.chunk(video_coords, sp_world_size, dim=2)
+                video_coords = video_coords_chunks[sp_rank]
+
+            # Chunk per-patch timestep for I2V (timestep shape [B, num_patches])
+            if timestep.ndim == 2:
+                timestep = sequence_parallel_chunk(timestep, dim=1)
+
+        # 3. Prepare RoPE positional embeddings (after sequence chunking so RoPE matches chunked sequence length)
         video_rotary_emb = self.rope(video_coords, device=hidden_states.device)
         audio_rotary_emb = self.audio_rope(audio_coords, device=audio_hidden_states.device)
 
@@ -1485,10 +1564,7 @@ class LTX2VideoTransformer3DModel(
             audio_coords[:, 0:1, :], device=audio_hidden_states.device
         )
 
-        # 2. Patchify input projections
-        hidden_states = self.proj_in(hidden_states)
-        audio_hidden_states = self.audio_proj_in(audio_hidden_states)
-        # 3. Prepare timestep embeddings and modulation parameters
+        # 4. Prepare timestep embeddings and modulation parameters
         timestep_cross_attn_gate_scale_factor = (
             self.config.cross_attn_timestep_scale_multiplier / self.config.timestep_scale_multiplier
         )
@@ -1663,6 +1739,12 @@ class LTX2VideoTransformer3DModel(
         audio_hidden_states = self.audio_norm_out(audio_hidden_states)
         audio_hidden_states = audio_hidden_states * (1 + audio_scale) + audio_shift
         audio_output = self.audio_proj_out(audio_hidden_states)
+
+        # Sequence parallel: gather video outputs from all ranks
+        # Audio output is NOT gathered since it was never chunked
+        if hasattr(self, 'sp_world_size') and self.sp_world_size > 1:
+            from ..dist.fuser import sequence_parallel_all_gather
+            output = sequence_parallel_all_gather(output, dim=1)
 
         if not return_dict:
             return (output, audio_output)

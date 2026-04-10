@@ -18,6 +18,7 @@ from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
 from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils import (register_auto_device_hook,
                               safe_enable_group_offload)
+from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -45,6 +46,15 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "sequential_cpu_offload"
+# Multi GPUs config
+# Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
+# For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+# If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+ulysses_degree      = 1
+ring_degree         = 1
+# Use FSDP to save more GPU memory in multi gpus.
+fsdp_dit            = False
+fsdp_text_encoder   = False
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
@@ -78,7 +88,7 @@ save_path           = "samples/ltx2-videos-t2v"
 # Audio sample rate will be read from vocoder config
 audio_sample_rate   = 24000
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
 # Transformer
 transformer = LTX2VideoTransformer3DModel.from_pretrained(
@@ -177,6 +187,20 @@ pipeline = LTX2Pipeline(
     vocoder=vocoder,
 )
 
+if ulysses_degree > 1 or ring_degree > 1:
+    from functools import partial
+    transformer.enable_multi_gpus_inference()
+    if fsdp_dit:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, 
+                          module_to_wrapper=list(transformer.transformer_blocks))
+        pipeline.transformer = shard_fn(pipeline.transformer)
+        print("Add FSDP DIT")
+    if fsdp_text_encoder:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, 
+                          module_to_wrapper=text_encoder.language_model.layers)
+        text_encoder = shard_fn(text_encoder)
+        print("Add FSDP TEXT ENCODER")
+
 if compile_dit:
     for i in range(len(pipeline.transformer.transformer_blocks)):
         pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
@@ -244,4 +268,9 @@ def save_results():
         sr = getattr(pipeline.vocoder.config, "output_sampling_rate", audio_sample_rate)
         save_videos_with_audio_grid(sample, audio, video_path, fps=fps, audio_sample_rate=sr)
 
-save_results()
+if ulysses_degree * ring_degree > 1:
+    import torch.distributed as dist
+    if dist.get_rank() == 0:
+        save_results()
+else:
+    save_results()
