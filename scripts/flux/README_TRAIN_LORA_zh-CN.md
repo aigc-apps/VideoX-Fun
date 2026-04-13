@@ -273,58 +273,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling
 ```
 
-### 3.5 其他后端
-
-#### 3.5.1 使用 DeepSpeed-Zero-3 训练
-
-当前不推荐使用 DeepSpeed Zero-3。在本仓库中，FSDP 错误更少且更稳定。
-
-DeepSpeed Zero-3：
-
-训练完成后，可以使用以下命令获取最终模型：
-
-```sh
-python scripts/zero_to_bf16.py output_dir/checkpoint-{your-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
-```
-
-执行命令：
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/FLUX.1-dev"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/flux/train_lora.py \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --train_batch_size=1 \
-  --image_sample_size=1024 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
-  --seed=42 \
-  --output_dir="output_dir_flux_lora" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --enable_bucket \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
-  --use_peft_lora \
-  --uniform_sampling
-```
-
-#### 3.5.2 不使用 DeepSpeed 或 FSDP 训练
+### 3.5 不使用 DeepSpeed 或 FSDP 训练
 
 **不推荐此方法，因为没有显存优化的后端，可能导致显存不足**。仅供参考。
 

@@ -3,7 +3,6 @@ import argparse
 import multiprocessing as mp
 from pathlib import Path
 from PIL import Image
-from decord import VideoReader, cpu
 
 # Supported file extensions
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.gif'}
@@ -25,8 +24,14 @@ def process_media_sample(sample):
                 width, height = img.size
         elif ext in VIDEO_EXTENSIONS:
             # Extract dimensions from video using decord
-            vr = VideoReader(file_path, ctx=cpu(0))
-            width, height = vr.width, vr.height
+            import cv2
+            cap = cv2.VideoCapture(file_path)
+            if not cap.isOpened():
+                print(f"Warning: Cannot open video {file_path}")
+                return sample
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
         else:
             print(f"Warning: Unsupported format '{ext}' for {file_path}")
             return sample

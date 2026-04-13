@@ -272,58 +272,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling
 ```
 
-### 3.5 Other Backends
-
-#### 3.5.1 Training with DeepSpeed-Zero-3
-
-DeepSpeed Zero-3 is not currently recommended. In this repository, FSDP has fewer errors and is more stable.
-
-DeepSpeed Zero-3:
-
-After training, you can use the following command to get the final model:
-
-```sh
-python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
-```
-
-Execution command:
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/flux2/train_lora.py \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --train_batch_size=1 \
-  --image_sample_size=1328 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
-  --seed=42 \
-  --output_dir="output_dir_flux2_lora" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --enable_bucket \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2" \
-  --use_peft_lora \
-  --uniform_sampling
-```
-
-#### 3.5.2 Training without DeepSpeed or FSDP
+### 3.5 Training without DeepSpeed or FSDP
 
 **This approach is not recommended as there is no memory-saving backend, which may cause insufficient VRAM.** This is provided for reference only.
 

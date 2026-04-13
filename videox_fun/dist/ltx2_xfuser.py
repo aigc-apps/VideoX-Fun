@@ -18,10 +18,35 @@ Multi-GPU sequence parallel attention processors for LTX2 transformer.
 
 from typing import Tuple
 
+import os
 import torch
 
 from .fuser import xFuserLongContextAttention
-from ..models.attention_utils import attention
+
+try:
+    major, minor = torch.cuda.get_device_capability(0)
+    if f"{major}.{minor}" == "8.0":
+        from sageattention_sm80 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif f"{major}.{minor}" == "8.6":
+        from sageattention_sm86 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif f"{major}.{minor}" == "8.9":
+        from sageattention_sm89 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif f"{major}.{minor}" == "9.0":
+        from sageattention_sm90 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    elif major > 9:
+        from sageattention_sm120 import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+except Exception:
+    try:
+        from sageattention import sageattn
+        SAGE_ATTENTION_AVAILABLE = True
+    except Exception:
+        sageattn = None
+        SAGE_ATTENTION_AVAILABLE = False
 
 
 class LTX2MultiGPUsAttnProcessor:
@@ -175,12 +200,17 @@ class LTX2MultiGPUsAttnProcessor:
                 value = all_gather(value.contiguous(), dim=1)
             
             # Regular attention with [B, S, H, D] layout
-            hidden_states = attention(
-                half(query),
-                half(key),
-                half(value),
-                dropout_p=0.0,
-            )  # [B, S_q, H, D]
+            q_attn, k_attn, v_attn = half(query), half(key), half(value)
+            attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
+            if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
+                hidden_states = sageattn(q_attn, k_attn, v_attn, tensor_layout="NHD", is_causal=False)
+            else:
+                q_attn = q_attn.transpose(1, 2)
+                k_attn = k_attn.transpose(1, 2)
+                v_attn = v_attn.transpose(1, 2)
+                hidden_states = torch.nn.functional.scaled_dot_product_attention(
+                    q_attn, k_attn, v_attn, is_causal=False, dropout_p=0.0)
+                hidden_states = hidden_states.transpose(1, 2).contiguous()
         
         hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.to(query.dtype)
@@ -346,12 +376,17 @@ class LTX2PerturbedMultiGPUsAttnProcessor:
                     value = all_gather(value.contiguous(), dim=1)
                 
                 # Regular attention with [B, S, H, D] layout
-                hidden_states = attention(
-                    half(query),
-                    half(key),
-                    half(value),
-                    dropout_p=0.0,
-                )  # [B, S_q, H, D]
+                q_attn, k_attn, v_attn = half(query), half(key), half(value)
+                attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION")
+                if attention_type == "SAGE_ATTENTION" and SAGE_ATTENTION_AVAILABLE:
+                    hidden_states = sageattn(q_attn, k_attn, v_attn, tensor_layout="NHD", is_causal=False)
+                else:
+                    q_attn = q_attn.transpose(1, 2)
+                    k_attn = k_attn.transpose(1, 2)
+                    v_attn = v_attn.transpose(1, 2)
+                    hidden_states = torch.nn.functional.scaled_dot_product_attention(
+                        q_attn, k_attn, v_attn, is_causal=False, dropout_p=0.0)
+                    hidden_states = hidden_states.transpose(1, 2).contiguous()
 
             hidden_states = hidden_states.flatten(2, 3)
             hidden_states = hidden_states.to(query.dtype)

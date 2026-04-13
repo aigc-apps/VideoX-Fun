@@ -272,57 +272,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --trainable_modules "."
 ```
 
-### 3.5 其他后端
-
-#### 3.5.1 使用DeepSpeed-Zero-3进行训练
-
-目前不太推荐使用 DeepSpeed Zero-3。在本仓库中，使用 FSDP 出错更少且更稳定。
-
-DeepSpeed Zero-3：
-
-训练完成后，您可以使用以下命令获取最终模型：
-
-```sh
-python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
-```
-
-执行命令为：
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/FLUX.2-dev"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/flux2/train.py \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --train_batch_size=1 \
-  --image_sample_size=1328 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-05 \
-  --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
-  --seed=42 \
-  --output_dir="output_dir_flux2" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --enable_bucket \
-  --uniform_sampling \
-  --trainable_modules "."
-```
-
-#### 3.5.2 不使用 DeepSpeed 与 FSDP 训练
+### 3.5 不使用 DeepSpeed 与 FSDP 训练
 
 **该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练Shell用于参考训练。
 
