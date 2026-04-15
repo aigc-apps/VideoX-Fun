@@ -82,6 +82,7 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
         if path.endswith("mp4"):
             path = path.replace('.mp4', '.gif')
         outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
+    print(f"Saved video to: {path}")
 
 def save_videos_with_audio_grid(
     videos: torch.Tensor, 

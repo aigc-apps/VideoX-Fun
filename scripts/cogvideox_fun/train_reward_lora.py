@@ -143,7 +143,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network,
                     sample = pipeline(
                         validation_prompt, 
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height = args.validation_sample_height,
                         width = args.validation_sample_width,
                         guidance_scale = 7,

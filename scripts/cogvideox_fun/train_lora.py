@@ -206,7 +206,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height      = height,
                         width       = width,
                         generator   = generator,
@@ -229,7 +229,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
@@ -1049,10 +1049,14 @@ def main():
 
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
-        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+        video_sample_size=args.video_sample_size, 
+        video_sample_stride=args.video_sample_stride, 
+        video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+        enable_bucket=args.enable_bucket, 
+        enable_inpaint=True if args.train_mode != "normal" else False,
+        inpaint_mask_fill_value=-1.0,
     )
     
     if args.enable_bucket:

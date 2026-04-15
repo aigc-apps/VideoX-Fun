@@ -1,27 +1,15 @@
-import csv
 import gc
-import io
-import json
 import math
-import os
 import random
 from contextlib import contextmanager
-from random import shuffle
-from threading import Thread
 
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
-import torchvision.transforms as transforms
 from decord import VideoReader
 from einops import rearrange
-from func_timeout import FunctionTimedOut, func_timeout
 from packaging import version as pver
 from PIL import Image
-from safetensors.torch import load_file
-from torch.utils.data import BatchSampler, Sampler
-from torch.utils.data.dataset import Dataset
 
 VIDEO_READER_TIMEOUT = 20
 
@@ -37,8 +25,8 @@ def get_random_mask(shape, image_start_only=False):
         if mask_index == 0:
             center_x = torch.randint(0, w, (1,)).item()
             center_y = torch.randint(0, h, (1,)).item()
-            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
+            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # Width range of the block
+            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # Height range of the block
 
             start_x = max(center_x - block_size_x // 2, 0)
             end_x = min(center_x + block_size_x // 2, w)
@@ -56,8 +44,8 @@ def get_random_mask(shape, image_start_only=False):
         elif mask_index == 4:
             center_x = torch.randint(0, w, (1,)).item()
             center_y = torch.randint(0, h, (1,)).item()
-            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
+            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # Width range of the block
+            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # Height range of the block
 
             start_x = max(center_x - block_size_x // 2, 0)
             end_x = min(center_x + block_size_x // 2, w)
@@ -82,27 +70,25 @@ def get_random_mask(shape, image_start_only=False):
         elif mask_index == 7:
             center_x = torch.randint(0, w, (1,)).item()
             center_y = torch.randint(0, h, (1,)).item()
-            a = torch.randint(min(w, h) // 8, min(w, h) // 4, (1,)).item()  # 长半轴
-            b = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()  # 短半轴
+            a = torch.randint(min(w, h) // 8, min(w, h) // 4, (1,)).item()  # Semi-major axis
+            b = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()  # Semi-minor axis
 
-            for i in range(h):
-                for j in range(w):
-                    if ((i - center_y) ** 2) / (b ** 2) + ((j - center_x) ** 2) / (a ** 2) < 1:
-                        mask[:, :, i, j] = 1
+            # Vectorized ellipse mask using meshgrid
+            y_grid, x_grid = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing='ij')
+            mask[0, 0, :, :] = (((y_grid - center_y) ** 2) / (b ** 2) + ((x_grid - center_x) ** 2) / (a ** 2) < 1).to(torch.uint8)
         elif mask_index == 8:
             center_x = torch.randint(0, w, (1,)).item()
             center_y = torch.randint(0, h, (1,)).item()
             radius = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()
-            for i in range(h):
-                for j in range(w):
-                    if (i - center_y) ** 2 + (j - center_x) ** 2 < radius ** 2:
-                        mask[:, :, i, j] = 1
+            # Vectorized circle mask using meshgrid
+            y_grid, x_grid = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing='ij')
+            mask[0, 0, :, :] = ((y_grid - center_y) ** 2 + (x_grid - center_x) ** 2 < radius ** 2).to(torch.uint8)
         elif mask_index == 9:
             for idx in range(f):
                 if np.random.rand() > 0.5:
                     mask[idx, :, :, :] = 1
         else:
-            raise ValueError(f"The mask_index {mask_index} is not define")
+            raise ValueError(f"The mask_index {mask_index} is not defined")
     else:
         if f != 1:
             mask[1:, :, :, :] = 1
@@ -169,15 +155,15 @@ def padding_image(images, new_width, new_height):
 
 def resize_image_with_target_area(img: Image.Image, target_area: int = 1024 * 1024) -> Image.Image:
     """
-    将 PIL 图像缩放到接近指定像素面积（target_area），保持原始宽高比，
-    并确保新宽度和高度均为 32 的整数倍。
+    Resize PIL image to approximately target_area pixels while maintaining original aspect ratio,
+    and ensure new width and height are multiples of 32.
 
-    参数:
-        img (PIL.Image.Image): 输入图像
-        target_area (int): 目标像素总面积，例如 1024*1024 = 1048576
+    Args:
+        img (PIL.Image.Image): Input image
+        target_area (int): Target pixel area, e.g., 1024*1024 = 1048576
 
-    返回:
-        PIL.Image.Image: Resize 后的图像
+    Returns:
+        PIL.Image.Image: Resized image
     """
     orig_w, orig_h = img.size
     if orig_w == 0 or orig_h == 0:

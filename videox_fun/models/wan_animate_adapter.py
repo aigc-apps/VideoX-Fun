@@ -1,3 +1,4 @@
+# Modified from https://github.com/Wan-Video/Wan2.2/blob/main/wan/modules/animate/face_blocks.py
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
 from typing import Optional, Tuple
@@ -126,7 +127,6 @@ class CausalConv1d(nn.Module):
         return self.conv(x)
 
 
-
 class FaceEncoder(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, num_heads=int, dtype=None, device=None):
         factory_kwargs = {"dtype": dtype, "device": device}
@@ -175,7 +175,6 @@ class FaceEncoder(nn.Module):
         x_local = x.clone()
 
         return x_local
-
 
 
 class RMSNorm(nn.Module):
@@ -292,7 +291,6 @@ class FaceAdapter(nn.Module):
     ) -> torch.Tensor:
 
         return self.fuser_blocks[idx](x, motion_embed, freqs_cis_q, freqs_cis_k)
-
 
 
 class FaceBlock(nn.Module):

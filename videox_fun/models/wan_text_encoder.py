@@ -65,7 +65,7 @@ class T5Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim_attn // num_heads
 
-        # layers
+        # Layers
         self.q = nn.Linear(dim, dim_attn, bias=False)
         self.k = nn.Linear(dim, dim_attn, bias=False)
         self.v = nn.Linear(dim, dim_attn, bias=False)
@@ -78,16 +78,16 @@ class T5Attention(nn.Module):
         context:    [B, L2, C] or None.
         mask:       [B, L2] or [B, L1, L2] or None.
         """
-        # check inputs
+        # Check inputs
         context = x if context is None else context
         b, n, c = x.size(0), self.num_heads, self.head_dim
 
-        # compute query, key, value
+        # Compute query, key, value
         q = self.q(x).view(b, -1, n, c)
         k = self.k(context).view(b, -1, n, c)
         v = self.v(context).view(b, -1, n, c)
 
-        # attention bias
+        # Attention bias
         attn_bias = x.new_zeros(b, n, q.size(1), k.size(1))
         if pos_bias is not None:
             attn_bias += pos_bias
@@ -97,12 +97,12 @@ class T5Attention(nn.Module):
                              -1) if mask.ndim == 2 else mask.unsqueeze(1)
             attn_bias.masked_fill_(mask == 0, torch.finfo(x.dtype).min)
 
-        # compute attention (T5 does not use scaling)
+        # Compute attention (T5 does not use scaling)
         attn = torch.einsum('binc,bjnc->bnij', q, k) + attn_bias
         attn = F.softmax(attn.float(), dim=-1).type_as(attn)
         x = torch.einsum('bnij,bjnc->binc', attn, v)
 
-        # output
+        # Output
         x = x.reshape(b, -1, n * c)
         x = self.o(x)
         x = self.dropout(x)
@@ -116,7 +116,7 @@ class T5FeedForward(nn.Module):
         self.dim = dim
         self.dim_ffn = dim_ffn
 
-        # layers
+        # Layers
         self.gate = nn.Sequential(nn.Linear(dim, dim_ffn, bias=False), GELU())
         self.fc1 = nn.Linear(dim, dim_ffn, bias=False)
         self.fc2 = nn.Linear(dim_ffn, dim, bias=False)
@@ -147,7 +147,7 @@ class T5SelfAttention(nn.Module):
         self.num_buckets = num_buckets
         self.shared_pos = shared_pos
 
-        # layers
+        # Layers
         self.norm1 = T5LayerNorm(dim)
         self.attn = T5Attention(dim, dim_attn, num_heads, dropout)
         self.norm2 = T5LayerNorm(dim)
@@ -180,7 +180,7 @@ class T5CrossAttention(nn.Module):
         self.num_buckets = num_buckets
         self.shared_pos = shared_pos
 
-        # layers
+        # Layers
         self.norm1 = T5LayerNorm(dim)
         self.self_attn = T5Attention(dim, dim_attn, num_heads, dropout)
         self.norm2 = T5LayerNorm(dim)
@@ -213,7 +213,7 @@ class T5RelativeEmbedding(nn.Module):
         self.bidirectional = bidirectional
         self.max_dist = max_dist
 
-        # layers
+        # Layers
         self.embedding = nn.Embedding(num_buckets, num_heads)
 
     def forward(self, lq, lk):
@@ -233,7 +233,7 @@ class T5RelativeEmbedding(nn.Module):
         return rel_pos_embeds.contiguous()
 
     def _relative_position_bucket(self, rel_pos):
-        # preprocess
+        # Preprocess
         if self.bidirectional:
             num_buckets = self.num_buckets // 2
             rel_buckets = (rel_pos > 0).long() * num_buckets
@@ -243,7 +243,7 @@ class T5RelativeEmbedding(nn.Module):
             rel_buckets = 0
             rel_pos = -torch.min(rel_pos, torch.zeros_like(rel_pos))
 
-        # embeddings for small and large positions
+        # Embeddings for small and large positions
         max_exact = num_buckets // 2
         rel_pos_large = max_exact + (torch.log(rel_pos.float() / max_exact) /
                                      math.log(self.max_dist / max_exact) *
@@ -273,7 +273,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.num_buckets = num_buckets
         self.shared_pos = shared_pos
 
-        # layers
+        # Layers
         self.token_embedding = vocab if isinstance(vocab, nn.Embedding) \
             else nn.Embedding(vocab, dim)
         self.pos_embedding = T5RelativeEmbedding(
@@ -285,7 +285,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         ])
         self.norm = T5LayerNorm(dim)
 
-        # initialize weights
+        # Initialize weights
         self.apply(init_weights)
 
     def forward(
@@ -348,7 +348,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         model_name_or_path=pretrained_model_path,
                     )
                 else:
-                    # move the params from meta device to cpu
+                    # Move the params from meta device to cpu
                     missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
                     if len(missing_keys) > 0:
                         raise ValueError(

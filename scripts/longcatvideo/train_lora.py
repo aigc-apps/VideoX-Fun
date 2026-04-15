@@ -195,7 +195,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                 sample = pipeline(
                     prompt          = args.validation_prompts[i],
                     num_frames      = args.video_sample_n_frames,
-                    negative_prompt = "bad detailed",
+                    negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
                     height      = args.video_sample_size,
                     width       = args.video_sample_size,
                     generator   = generator,

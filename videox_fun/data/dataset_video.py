@@ -1,12 +1,8 @@
 import csv
-import gc
-import io
 import json
 import math
 import os
 import random
-from contextlib import contextmanager
-from threading import Thread
 
 import cv2
 import librosa
@@ -17,23 +13,24 @@ from decord import VideoReader
 from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from PIL import Image
-from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.dataset import Dataset
 
-from .utils import (VIDEO_READER_TIMEOUT, Camera, VideoReader_contextmanager,
-                    custom_meshgrid, get_random_mask, get_relative_pose,
-                    get_video_reader_batch, padding_image, process_pose_file,
-                    process_pose_params, ray_condition, resize_frame,
-                    resize_image_with_target_area)
+from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
+                    get_random_mask, get_video_reader_batch, resize_frame)
 
 
 class WebVid10M(Dataset):
     def __init__(
-            self,
-            csv_path, video_folder,
-            sample_size=256, sample_stride=4, sample_n_frames=16,
-            enable_bucket=False, enable_inpaint=False, is_image=False,
-        ):
+        self,
+        csv_path, 
+        video_folder,
+        sample_size=256, 
+        sample_stride=4, 
+        sample_n_frames=16,
+        enable_bucket=False, 
+        enable_inpaint=False, 
+        is_image=False,
+    ):
         print(f"loading annotations from {csv_path} ...")
         with open(csv_path, 'r') as csvfile:
             self.dataset = list(csv.DictReader(csvfile))
@@ -105,22 +102,36 @@ class WebVid10M(Dataset):
 
 
 class VideoDataset(Dataset):
+    """Dataset for video training with inpainting support."""
     def __init__(
         self,
-        ann_path, data_root=None,
-        sample_size=256, sample_stride=4, sample_n_frames=16,
-        enable_bucket=False, enable_inpaint=False
+        ann_path, 
+        data_root=None,
+        sample_size=256, 
+        sample_stride=4, 
+        sample_n_frames=16,
+        enable_bucket=False, 
+        enable_inpaint=False,
+        inpaint_mask_fill_value=0,
+        video_length_drop_start=0.0,
+        video_length_drop_end=1.0,
+        text_drop_ratio=0.1,
     ):
+        # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         self.dataset = json.load(open(ann_path, 'r'))
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
 
-        self.data_root       = data_root
-        self.sample_stride   = sample_stride
+        self.data_root = data_root
+        self.sample_stride = sample_stride
         self.sample_n_frames = sample_n_frames
-        self.enable_bucket   = enable_bucket
-        self.enable_inpaint  = enable_inpaint
+        self.enable_bucket = enable_bucket
+        self.enable_inpaint = enable_inpaint
+        self.inpaint_mask_fill_value = inpaint_mask_fill_value
+        self.video_length_drop_start = video_length_drop_start
+        self.video_length_drop_end = video_length_drop_end
+        self.text_drop_ratio = text_drop_ratio
         
         sample_size = tuple(sample_size) if not isinstance(sample_size, int) else (sample_size, sample_size)
         self.pixel_transforms = transforms.Compose(
@@ -132,24 +143,28 @@ class VideoDataset(Dataset):
         )
     
     def get_batch(self, idx):
+        """Load and preprocess a single video sample."""
         video_dict = self.dataset[idx]
         video_id, text = video_dict['file_path'], video_dict['text']
 
+        # Resolve video path
         if self.data_root is None:
             video_dir = video_id
         else:
             video_dir = os.path.join(self.data_root, video_id)
 
         with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+            # Calculate frame sampling range with length dropout
             min_sample_n_frames = min(
-                self.video_sample_n_frames, 
-                int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
+                self.sample_n_frames, 
+                int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.sample_stride)
             )
             if min_sample_n_frames == 0:
                 raise ValueError(f"No Frames in video.")
 
+            # Select contiguous clip with random start position
             video_length = int(self.video_length_drop_end * len(video_reader))
-            clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
+            clip_length = min(video_length, (min_sample_n_frames - 1) * self.sample_stride + 1)
             start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
@@ -163,17 +178,14 @@ class VideoDataset(Dataset):
             except Exception as e:
                 raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+            # Convert to tensor, normalize to [-1, 1], apply transforms
             if not self.enable_bucket:
                 pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
                 del video_reader
-            else:
-                pixel_values = pixel_values
-
-            if not self.enable_bucket:
-                pixel_values = self.video_transforms(pixel_values)
+                pixel_values = self.pixel_transforms(pixel_values)
             
-            # Random use no text generation
+            # Random text dropout for classifier-free guidance
             if random.random() < self.text_drop_ratio:
                 text = ''
             return pixel_values, text
@@ -182,6 +194,7 @@ class VideoDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
         while True:
             sample = {}
             try:
@@ -198,68 +211,75 @@ class VideoDataset(Dataset):
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size())
-            mask_pixel_values = pixel_values * (1 - mask) + torch.zeros_like(pixel_values) * mask
+            # Fill masked regions with configurable value (default -1.0, some models use 0.0)
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
-            clip_pixel_values = sample["pixel_values"][0].permute(1, 2, 0).contiguous()
-            clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
-            sample["clip_pixel_values"] = clip_pixel_values
+            # Prepare CLIP pixel values for first frame
+            sample["clip_pixel_values"] = (sample["pixel_values"][0].permute(1, 2, 0).contiguous() * 0.5 + 0.5) * 255
 
         return sample
 
 
 class VideoSpeechDataset(Dataset):
+    """Dataset for video-speech paired training with motion and inpainting support."""
     def __init__(
         self,
-        ann_path, data_root=None,
-        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        ann_path, 
+        data_root=None,
+        video_sample_size=512,
+        video_sample_stride=4,
+        video_sample_n_frames=16,
         enable_bucket=False, 
         enable_inpaint=False,
-        audio_sr=16000,  # New: target audio sample rate
-        text_drop_ratio=0.1,  # New: text drop probability
+        inpaint_mask_fill_value=0,
+        audio_sr=16000,
+        text_drop_ratio=0.1,
         enable_motion_info=False,
         motion_frames=73,
+        return_file_name=False,
     ):
+        # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         self.dataset = json.load(open(ann_path, 'r'))
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
 
         self.data_root = data_root
-        self.video_sample_stride = video_sample_stride
-        self.video_sample_n_frames = video_sample_n_frames
         self.enable_bucket = enable_bucket
         self.enable_inpaint = enable_inpaint
+        self.inpaint_mask_fill_value = inpaint_mask_fill_value
         self.audio_sr = audio_sr
         self.text_drop_ratio = text_drop_ratio
         self.enable_motion_info = enable_motion_info
         self.motion_frames = motion_frames
+        self.return_file_name = return_file_name
         
-        video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
+        # Video params: resize, center crop, normalize to [-1, 1]
+        self.video_sample_stride = video_sample_stride
+        self.video_sample_n_frames = video_sample_n_frames
+        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
-                transforms.Resize(video_sample_size[0]),
-                transforms.CenterCrop(video_sample_size),
+                transforms.Resize(self.video_sample_size[0]),
+                transforms.CenterCrop(self.video_sample_size),
                 transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
             ]
         )
-
-        self.video_sample_size = video_sample_size
     
     def get_batch(self, idx):
+        """Load and preprocess a single video sample with corresponding audio."""
         video_dict = self.dataset[idx]
         video_id, text = video_dict['file_path'], video_dict['text']
         audio_id = video_dict['audio_path']
 
+        # Resolve video and audio paths
         if self.data_root is None:
             video_path = video_id
-        else:
-            video_path = os.path.join(self.data_root, video_id)
-
-        if self.data_root is None:
             audio_path = audio_id
         else:
+            video_path = os.path.join(self.data_root, video_id)
             audio_path = os.path.join(self.data_root, audio_id)
 
         if not os.path.exists(audio_path):
@@ -267,16 +287,16 @@ class VideoSpeechDataset(Dataset):
 
         with VideoReader_contextmanager(video_path, num_threads=2) as video_reader:
             total_frames = len(video_reader)
-            fps = video_reader.get_avg_fps()  # Get the original video frame rate
+            fps = video_reader.get_avg_fps()
 
-            # Avoid fps > 30
+            # Adjust stride to avoid fps > 30
             local_video_sample_stride = self.video_sample_stride
             new_fps = int(fps // local_video_sample_stride)
             while new_fps > 30:
                 local_video_sample_stride = local_video_sample_stride + 1
                 new_fps = int(fps // local_video_sample_stride)
 
-            # Calculate the actual number of sampled video frames (considering boundaries)
+            # Calculate the actual number of sampled frames (considering boundaries)
             max_possible_frames = (total_frames - 1) // local_video_sample_stride + 1
             actual_n_frames = min(self.video_sample_n_frames, max_possible_frames)
             if actual_n_frames <= 0:
@@ -290,28 +310,45 @@ class VideoSpeechDataset(Dataset):
             # Read video frames
             try:
                 sample_args = (video_reader, frame_indices)
-                pixel_values = func_timeout(
+                raw_frames = func_timeout(
                     VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                 )
+                # Resize each frame and free the original array early to reduce peak memory
+                resized_frames = []
+                for i in range(len(raw_frames)):
+                    resized_frames.append(resize_frame(raw_frames[i], max(self.video_sample_size)))
+                del raw_frames
+                pixel_values = np.array(resized_frames)
+                del resized_frames
             except FunctionTimedOut:
                 raise ValueError(f"Read {idx} timeout.")
             except Exception as e:
                 raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
-            # Motion Video Process
+            # Motion video processing
             _, height, width, channel = np.shape(pixel_values)
             if self.enable_motion_info:
                 motion_pixel_values = np.ones([self.motion_frames, height, width, channel]) * 127.5
                 if start_frame > 0:
-                    motion_max_possible_frames = (start_frame - 1) // local_video_sample_stride + 1
-                    motion_frame_indices = [0 + i * local_video_sample_stride for i in range(motion_max_possible_frames)]
-                    motion_frame_indices = motion_frame_indices[-self.motion_frames:]
+                    # Collect motion frames before start_frame (from start_frame-stride towards 0)
+                    motion_frame_indices = []
+                    current_idx = start_frame - local_video_sample_stride
+                    while current_idx >= 0 and len(motion_frame_indices) < self.motion_frames:
+                        motion_frame_indices.append(current_idx)
+                        current_idx -= local_video_sample_stride
+                    motion_frame_indices = motion_frame_indices[::-1]  # Reverse to ascending order
 
                     _motion_sample_args = (video_reader, motion_frame_indices)
-                    _motion_pixel_values = func_timeout(
+                    motion_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=_motion_sample_args
                     )
-                    motion_pixel_values[-len(motion_frame_indices):] = _motion_pixel_values
+                    # Resize each frame and free the original array early
+                    motion_resized_frames = []
+                    for i in range(len(motion_raw_frames)):
+                        motion_resized_frames.append(resize_frame(motion_raw_frames[i], max(self.video_sample_size)))
+                    del motion_raw_frames
+                    motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
+                    del motion_resized_frames
 
                 if not self.enable_bucket:
                     motion_pixel_values = torch.from_numpy(motion_pixel_values).permute(0, 3, 1, 2).contiguous()
@@ -320,37 +357,35 @@ class VideoSpeechDataset(Dataset):
             else:
                 motion_pixel_values = None
 
-            # Video post-processing
+            # Video post-processing: convert to tensor, normalize to [-1, 1], apply transforms
             if not self.enable_bucket:
                 pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
                 pixel_values = self.pixel_transforms(pixel_values)
 
-        # === New: Load and extract the corresponding audio segment ===
-        # Start and end times (in seconds) of the video clip
+        # Load and extract the corresponding audio segment
+        # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
-        end_time = (start_frame + (actual_n_frames - 1) * self.video_sample_stride) / fps
+        end_time = (start_frame + (actual_n_frames - 1) * local_video_sample_stride) / fps
         duration = end_time - start_time
 
-        # Use librosa to load the entire audio (librosa.load does not support precise seeking, so load first then slice)
-        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)  # Resample to target sr
+        # Load entire audio and resample to target sample rate
+        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)
 
-        # Convert to sample indices (calculate end from start + duration to avoid float precision issues)
+        # Convert time to sample indices
         start_sample = round(start_time * self.audio_sr)
         target_len = round(duration * self.audio_sr)
         end_sample = start_sample + target_len
 
-        # Safe slicing
+        # Extract audio segment with validation
         if start_sample >= len(audio_input):
-            # Audio is too short, pad with zeros or truncate
             raise ValueError(f"Audio file too short: {audio_path}")
         else:
             audio_segment = audio_input[start_sample:end_sample]
-            # If too short, pad with zeros
             if len(audio_segment) < target_len:
                 raise ValueError(f"Audio file too short: {audio_path}")
 
-        # === Random text dropping ===
+        # Random text dropout for classifier-free guidance
         if random.random() < self.text_drop_ratio:
             text = ''
 
@@ -360,6 +395,8 @@ class VideoSpeechDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
+        data_info = self.dataset[idx % len(self.dataset)]
         while True:
             sample = {}
             try:
@@ -367,18 +404,24 @@ class VideoSpeechDataset(Dataset):
                 sample["pixel_values"] = pixel_values
                 sample["motion_pixel_values"] = motion_pixel_values
                 sample["text"] = text
-                sample["audio"] = torch.from_numpy(audio).float()  # Convert to tensor
+                sample["audio"] = torch.from_numpy(audio).float()
                 sample["sample_rate"] = sample_rate
                 sample["fps"] = fps
                 sample["idx"] = idx
-                break
+                
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(data_info['file_path'])
+
+                if len(sample) > 0:
+                    break
             except Exception as e:
-                print(f"Error processing {idx}: {e}, retrying with random idx...")
+                print(e, self.dataset[idx % len(self.dataset)])
                 idx = random.randint(0, self.length - 1)
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size(), image_start_only=True)
-            mask_pixel_values = pixel_values * (1 - mask) + torch.zeros_like(pixel_values) * mask
+            # Fill masked regions with configurable value (default -1.0, some models use 0.0)
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
@@ -390,63 +433,67 @@ class VideoSpeechDataset(Dataset):
 
 
 class VideoSpeechControlDataset(Dataset):
+    """Dataset for video-speech-control paired training with motion and inpainting support."""
     def __init__(
         self,
-        ann_path, data_root=None,
-        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        ann_path, 
+        data_root=None,
+        video_sample_size=512, 
+        video_sample_stride=4, 
+        video_sample_n_frames=16,
         enable_bucket=False, 
         enable_inpaint=False,
+        inpaint_mask_fill_value=0,
         audio_sr=16000,
         text_drop_ratio=0.1,
         enable_motion_info=False,
         motion_frames=73,
+        return_file_name=False,
     ):
+        # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         self.dataset = json.load(open(ann_path, 'r'))
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
 
         self.data_root = data_root
-        self.video_sample_stride = video_sample_stride
-        self.video_sample_n_frames = video_sample_n_frames
         self.enable_bucket = enable_bucket
         self.enable_inpaint = enable_inpaint
+        self.inpaint_mask_fill_value = inpaint_mask_fill_value
         self.audio_sr = audio_sr
         self.text_drop_ratio = text_drop_ratio
         self.enable_motion_info = enable_motion_info
         self.motion_frames = motion_frames
+        self.return_file_name = return_file_name
         
-        video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
+        # Video params: resize, center crop, normalize to [-1, 1]
+        self.video_sample_stride = video_sample_stride
+        self.video_sample_n_frames = video_sample_n_frames
+        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
-                transforms.Resize(video_sample_size[0]),
-                transforms.CenterCrop(video_sample_size),
+                transforms.Resize(self.video_sample_size[0]),
+                transforms.CenterCrop(self.video_sample_size),
                 transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
             ]
         )
-
-        self.video_sample_size = video_sample_size
     
     def get_batch(self, idx):
+        """Load and preprocess a single video sample with control and audio."""
         video_dict = self.dataset[idx]
         video_id, text = video_dict['file_path'], video_dict['text']
         audio_id = video_dict['audio_path']
         control_video_id = video_dict['control_file_path']
 
+        # Resolve video, audio, and control paths
         if self.data_root is None:
             video_path = video_id
+            audio_path = audio_id
+            control_path = control_video_id
         else:
             video_path = os.path.join(self.data_root, video_id)
-
-        if self.data_root is None:
-            audio_path = audio_id
-        else:
             audio_path = os.path.join(self.data_root, audio_id)
-        
-        if self.data_root is None:
-            control_video_id = control_video_id
-        else:
-            control_video_id = os.path.join(self.data_root, control_video_id)
+            control_path = os.path.join(self.data_root, control_video_id)
 
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found for {video_path}")
@@ -479,28 +526,45 @@ class VideoSpeechControlDataset(Dataset):
             # Read video frames
             try:
                 sample_args = (video_reader, frame_indices)
-                pixel_values = func_timeout(
+                raw_frames = func_timeout(
                     VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                 )
+                # Resize each frame and free the original array early to reduce peak memory
+                resized_frames = []
+                for i in range(len(raw_frames)):
+                    resized_frames.append(resize_frame(raw_frames[i], max(self.video_sample_size)))
+                del raw_frames
+                pixel_values = np.array(resized_frames)
+                del resized_frames
             except FunctionTimedOut:
                 raise ValueError(f"Read {idx} timeout.")
             except Exception as e:
                 raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
-            # Motion Video Process for Wan-S2V
+            # Motion video processing
             _, height, width, channel = np.shape(pixel_values)
             if self.enable_motion_info:
                 motion_pixel_values = np.ones([self.motion_frames, height, width, channel]) * 127.5
                 if start_frame > 0:
-                    motion_max_possible_frames = (start_frame - 1) // local_video_sample_stride + 1
-                    motion_frame_indices = [0 + i * local_video_sample_stride for i in range(motion_max_possible_frames)]
-                    motion_frame_indices = motion_frame_indices[-self.motion_frames:]
+                    # Collect motion frames before start_frame (from start_frame-stride towards 0)
+                    motion_frame_indices = []
+                    current_idx = start_frame - local_video_sample_stride
+                    while current_idx >= 0 and len(motion_frame_indices) < self.motion_frames:
+                        motion_frame_indices.append(current_idx)
+                        current_idx -= local_video_sample_stride
+                    motion_frame_indices = motion_frame_indices[::-1]  # Reverse to ascending order
 
                     _motion_sample_args = (video_reader, motion_frame_indices)
-                    _motion_pixel_values = func_timeout(
+                    motion_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=_motion_sample_args
                     )
-                    motion_pixel_values[-len(motion_frame_indices):] = _motion_pixel_values
+                    # Resize each frame and free the original array early
+                    motion_resized_frames = []
+                    for i in range(len(motion_raw_frames)):
+                        motion_resized_frames.append(resize_frame(motion_raw_frames[i], max(self.video_sample_size)))
+                    del motion_raw_frames
+                    motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
+                    del motion_resized_frames
 
                 if not self.enable_bucket:
                     motion_pixel_values = torch.from_numpy(motion_pixel_values).permute(0, 3, 1, 2).contiguous()
@@ -509,25 +573,26 @@ class VideoSpeechControlDataset(Dataset):
             else:
                 motion_pixel_values = None
 
-            # Video post-processing
+            # Video post-processing: convert to tensor, normalize to [-1, 1], apply transforms
             if not self.enable_bucket:
                 pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
                 pixel_values = self.pixel_transforms(pixel_values)
 
         # Control information
-        with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
+        with VideoReader_contextmanager(control_path, num_threads=2) as control_video_reader:
             try:
                 sample_args = (control_video_reader, frame_indices)
-                control_pixel_values = func_timeout(
+                control_raw_frames = func_timeout(
                     VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                 )
+                # Resize each frame and free the original array early
                 resized_frames = []
-                for i in range(len(control_pixel_values)):
-                    frame = control_pixel_values[i]
-                    resized_frame = resize_frame(frame, max(self.video_sample_size))
-                    resized_frames.append(resized_frame)
-                control_pixel_values = np.array(control_pixel_values)
+                for i in range(len(control_raw_frames)):
+                    resized_frames.append(resize_frame(control_raw_frames[i], max(self.video_sample_size)))
+                del control_raw_frames
+                control_pixel_values = np.stack(resized_frames)
+                del resized_frames
             except FunctionTimedOut:
                 raise ValueError(f"Read {idx} timeout.")
             except Exception as e:
@@ -537,33 +602,30 @@ class VideoSpeechControlDataset(Dataset):
                 control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
                 control_pixel_values = control_pixel_values / 255.
                 control_pixel_values = self.pixel_transforms(control_pixel_values)
-                del control_video_reader
 
-        # === New: Load and extract the corresponding audio segment ===
-        # Start and end times (in seconds) of the video clip
+        # Load and extract the corresponding audio segment
+        # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
         end_time = (start_frame + (actual_n_frames - 1) * local_video_sample_stride) / fps
         duration = end_time - start_time
 
-        # Use librosa to load the entire audio (librosa.load does not support precise seeking, so load first then slice)
-        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)  # Resample to target sr
+        # Load entire audio and resample to target sample rate
+        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)
 
-        # Convert to sample indices
-        start_sample = int(start_time * self.audio_sr)
-        end_sample = int(end_time * self.audio_sr)
+        # Convert time to sample indices
+        start_sample = round(start_time * self.audio_sr)
+        target_len = round(duration * self.audio_sr)
+        end_sample = start_sample + target_len
 
-        # Safe slicing
+        # Extract audio segment with validation
         if start_sample >= len(audio_input):
-            # Audio is too short, pad with zeros or truncate
             raise ValueError(f"Audio file too short: {audio_path}")
         else:
             audio_segment = audio_input[start_sample:end_sample]
-            # If too short, pad with zeros
-            target_len = int(duration * self.audio_sr)
             if len(audio_segment) < target_len:
                 raise ValueError(f"Audio file too short: {audio_path}")
 
-        # === Random text dropping ===
+        # Random text dropout for classifier-free guidance
         if random.random() < self.text_drop_ratio:
             text = ''
 
@@ -573,26 +635,34 @@ class VideoSpeechControlDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
+        data_info = self.dataset[idx % len(self.dataset)]
         while True:
             sample = {}
             try:
-                pixel_values, motion_pixel_values, control_pixel_values, text, audio, sample_rate, new_fps = self.get_batch(idx)
+                pixel_values, motion_pixel_values, control_pixel_values, text, audio, sample_rate, fps = self.get_batch(idx)
                 sample["pixel_values"] = pixel_values
                 sample["motion_pixel_values"] = motion_pixel_values
                 sample["control_pixel_values"] = control_pixel_values
                 sample["text"] = text
-                sample["audio"] = torch.from_numpy(audio).float()  # 转为 tensor
+                sample["audio"] = torch.from_numpy(audio).float()
                 sample["sample_rate"] = sample_rate
-                sample["fps"] = new_fps
+                sample["fps"] = fps
                 sample["idx"] = idx
-                break
+                
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(data_info['file_path'])
+
+                if len(sample) > 0:
+                    break
             except Exception as e:
-                print(f"Error processing {idx}: {e}, retrying with random idx...")
-                idx = random.randint(0, self.length - 1)
+                print(e, self.dataset[idx % len(self.dataset)])
+                idx = random.randint(0, self.length-1)
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size(), image_start_only=True)
-            mask_pixel_values = pixel_values * (1 - mask) + torch.zeros_like(pixel_values) * mask
+            # Fill masked regions with configurable value (default -1.0, some models use 0.0)
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
@@ -604,9 +674,11 @@ class VideoSpeechControlDataset(Dataset):
 
 
 class VideoAnimateDataset(Dataset):
+    """Dataset for video animation training with control, face, background, and mask support."""
     def __init__(
         self,
-        ann_path, data_root=None,
+        ann_path, 
+        data_root=None,
         video_sample_size=512, 
         video_sample_stride=4, 
         video_sample_n_frames=16,
@@ -627,7 +699,7 @@ class VideoAnimateDataset(Dataset):
     
         self.data_root = data_root
 
-        # It's used to balance num of images and videos.
+        # Balance image/video ratio by duplicating video entries
         if video_repeat > 0:
             self.dataset = []
             for data in dataset:
@@ -644,16 +716,17 @@ class VideoAnimateDataset(Dataset):
 
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
-        # TODO: enable bucket training
+        
         self.enable_bucket = enable_bucket
         self.text_drop_ratio = text_drop_ratio
+        self.return_file_name = return_file_name
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
 
-        # Video params
-        self.video_sample_stride    = video_sample_stride
-        self.video_sample_n_frames  = video_sample_n_frames
+        # Video params: resize, center crop, normalize to [-1, 1]
+        self.video_sample_stride = video_sample_stride
+        self.video_sample_n_frames = video_sample_n_frames
         self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.video_transforms = transforms.Compose(
             [
@@ -666,15 +739,18 @@ class VideoAnimateDataset(Dataset):
         self.larger_side_of_image_and_video = min(self.video_sample_size)
     
     def get_batch(self, idx):
+        """Load and preprocess a single video sample with control, face, background, and mask."""
         data_info = self.dataset[idx % len(self.dataset)]
         video_id, text = data_info['file_path'], data_info['text']
 
+        # Resolve video path
         if self.data_root is None:
             video_dir = video_id
         else:
             video_dir = os.path.join(self.data_root, video_id)
 
         with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+            # Calculate frame sampling range with length dropout
             min_sample_n_frames = min(
                 self.video_sample_n_frames, 
                 int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
@@ -682,203 +758,193 @@ class VideoAnimateDataset(Dataset):
             if min_sample_n_frames == 0:
                 raise ValueError(f"No Frames in video.")
 
+            # Select contiguous clip with random start position
             video_length = int(self.video_length_drop_end * len(video_reader))
             clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-            start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+            start_idx = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
             try:
                 sample_args = (video_reader, batch_index)
-                pixel_values = func_timeout(
+                raw_frames = func_timeout(
                     VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                 )
+                # Resize each frame and free the original array early
                 resized_frames = []
-                for i in range(len(pixel_values)):
-                    frame = pixel_values[i]
-                    resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                    resized_frames.append(resized_frame)
-                pixel_values = np.array(resized_frames)
+                for i in range(len(raw_frames)):
+                    resized_frames.append(resize_frame(raw_frames[i], self.larger_side_of_image_and_video))
+                del raw_frames
+                pixel_values = np.stack(resized_frames)
+                del resized_frames
             except FunctionTimedOut:
                 raise ValueError(f"Read {idx} timeout.")
             except Exception as e:
                 raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+            # Release video reader early
+            del video_reader
+
+            # Convert to tensor and apply transforms
             if not self.enable_bucket:
                 pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
-                del video_reader
-            else:
-                pixel_values = pixel_values
-
-            if not self.enable_bucket:
                 pixel_values = self.video_transforms(pixel_values)
             
-            # Random use no text generation
+            # Random text dropout for classifier-free guidance
             if random.random() < self.text_drop_ratio:
                 text = ''
 
+        # Load control video
         control_video_id = data_info['control_file_path']
+        if control_video_id is not None:
+            control_video_path = control_video_id if self.data_root is None else os.path.join(self.data_root, control_video_id)
+        else:
+            control_video_path = None
         
-        if control_video_id is not None:
-            if self.data_root is None:
-                control_video_id = control_video_id
-            else:
-                control_video_id = os.path.join(self.data_root, control_video_id)
-            
-        if control_video_id is not None:
-            with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
+        if control_video_path is not None:
+            with VideoReader_contextmanager(control_video_path, num_threads=2) as control_video_reader:
                 try:
                     sample_args = (control_video_reader, batch_index)
-                    control_pixel_values = func_timeout(
+                    control_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early
                     resized_frames = []
-                    for i in range(len(control_pixel_values)):
-                        frame = control_pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    control_pixel_values = np.array(resized_frames)
+                    for i in range(len(control_raw_frames)):
+                        resized_frames.append(resize_frame(control_raw_frames[i], self.larger_side_of_image_and_video))
+                    del control_raw_frames
+                    control_pixel_values = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                # Release control video reader early
+                del control_video_reader
+
+                # Convert to tensor and apply transforms
                 if not self.enable_bucket:
                     control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
                     control_pixel_values = control_pixel_values / 255.
-                    del control_video_reader
-                else:
-                    control_pixel_values = control_pixel_values
-
-                if not self.enable_bucket:
                     control_pixel_values = self.video_transforms(control_pixel_values)
         else:
-            if not self.enable_bucket:
-                control_pixel_values = torch.zeros_like(pixel_values)
-            else:
-                control_pixel_values = np.zeros_like(pixel_values)
+            control_pixel_values = torch.zeros_like(pixel_values) if not self.enable_bucket else np.zeros_like(pixel_values)
 
+        # Load face video
         face_video_id = data_info['face_file_path']
+        if face_video_id is not None:
+            face_video_path = face_video_id if self.data_root is None else os.path.join(self.data_root, face_video_id)
+        else:
+            face_video_path = None
         
-        if face_video_id is not None:
-            if self.data_root is None:
-                face_video_id = face_video_id
-            else:
-                face_video_id = os.path.join(self.data_root, face_video_id)
-            
-        if face_video_id is not None:
-            with VideoReader_contextmanager(face_video_id, num_threads=2) as face_video_reader:
+        if face_video_path is not None:
+            with VideoReader_contextmanager(face_video_path, num_threads=2) as face_video_reader:
                 try:
                     sample_args = (face_video_reader, batch_index)
-                    face_pixel_values = func_timeout(
+                    face_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early
                     resized_frames = []
-                    for i in range(len(face_pixel_values)):
-                        frame = face_pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    face_pixel_values = np.array(resized_frames)
+                    for i in range(len(face_raw_frames)):
+                        resized_frames.append(resize_frame(face_raw_frames[i], self.larger_side_of_image_and_video))
+                    del face_raw_frames
+                    face_pixel_values = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                # Release face video reader early
+                del face_video_reader
+
+                # Convert to tensor and apply transforms
                 if not self.enable_bucket:
                     face_pixel_values = torch.from_numpy(face_pixel_values).permute(0, 3, 1, 2).contiguous()
                     face_pixel_values = face_pixel_values / 255.
-                    del face_video_reader
-                else:
-                    face_pixel_values = face_pixel_values
-
-                if not self.enable_bucket:
                     face_pixel_values = self.video_transforms(face_pixel_values)
         else:
-            if not self.enable_bucket:
-                face_pixel_values = torch.zeros_like(pixel_values)
-            else:
-                face_pixel_values = np.zeros_like(pixel_values)
+            face_pixel_values = torch.zeros_like(pixel_values) if not self.enable_bucket else np.zeros_like(pixel_values)
 
+        # Load background video
         background_video_id = data_info.get('background_file_path', None)
+        if background_video_id is not None:
+            background_video_path = background_video_id if self.data_root is None else os.path.join(self.data_root, background_video_id)
+        else:
+            background_video_path = None
         
-        if background_video_id is not None:
-            if self.data_root is None:
-                background_video_id = background_video_id
-            else:
-                background_video_id = os.path.join(self.data_root, background_video_id)
-            
-        if background_video_id is not None:
-            with VideoReader_contextmanager(background_video_id, num_threads=2) as background_video_reader:
+        if background_video_path is not None:
+            with VideoReader_contextmanager(background_video_path, num_threads=2) as background_video_reader:
                 try:
                     sample_args = (background_video_reader, batch_index)
-                    background_pixel_values = func_timeout(
+                    background_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early
                     resized_frames = []
-                    for i in range(len(background_pixel_values)):
-                        frame = background_pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    background_pixel_values = np.array(resized_frames)
+                    for i in range(len(background_raw_frames)):
+                        resized_frames.append(resize_frame(background_raw_frames[i], self.larger_side_of_image_and_video))
+                    del background_raw_frames
+                    background_pixel_values = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                # Release background video reader early
+                del background_video_reader
+
+                # Convert to tensor and apply transforms
                 if not self.enable_bucket:
                     background_pixel_values = torch.from_numpy(background_pixel_values).permute(0, 3, 1, 2).contiguous()
                     background_pixel_values = background_pixel_values / 255.
-                    del background_video_reader
-                else:
-                    background_pixel_values = background_pixel_values
-
-                if not self.enable_bucket:
                     background_pixel_values = self.video_transforms(background_pixel_values)
         else:
-            if not self.enable_bucket:
-                background_pixel_values = torch.ones_like(pixel_values) * 127.5
-            else:
-                background_pixel_values = np.ones_like(pixel_values) * 127.5
+            background_pixel_values = torch.ones_like(pixel_values) * 127.5 if not self.enable_bucket else np.ones_like(pixel_values) * 127.5
 
+        # Load mask video
         mask_video_id = data_info.get('mask_file_path', None)
+        if mask_video_id is not None:
+            mask_video_path = mask_video_id if self.data_root is None else os.path.join(self.data_root, mask_video_id)
+        else:
+            mask_video_path = None
         
-        if mask_video_id is not None:
-            if self.data_root is None:
-                mask_video_id = mask_video_id
-            else:
-                mask_video_id = os.path.join(self.data_root, mask_video_id)
-            
-        if mask_video_id is not None:
-            with VideoReader_contextmanager(mask_video_id, num_threads=2) as mask_video_reader:
+        if mask_video_path is not None:
+            with VideoReader_contextmanager(mask_video_path, num_threads=2) as mask_video_reader:
                 try:
                     sample_args = (mask_video_reader, batch_index)
-                    mask = func_timeout(
+                    mask_raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early
                     resized_frames = []
-                    for i in range(len(mask)):
-                        frame = mask[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    mask = np.array(resized_frames)
+                    for i in range(len(mask_raw_frames)):
+                        resized_frames.append(resize_frame(mask_raw_frames[i], self.larger_side_of_image_and_video))
+                    del mask_raw_frames
+                    mask = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                # Release mask video reader early
+                del mask_video_reader
+
+                # Convert to tensor (no transforms for mask)
                 if not self.enable_bucket:
                     mask = torch.from_numpy(mask).permute(0, 3, 1, 2).contiguous()
                     mask = mask / 255.
-                    del mask_video_reader
-                else:
-                    mask = mask
         else:
-            if not self.enable_bucket:
-                mask = torch.ones_like(pixel_values)
-            else:
-                mask = np.ones_like(pixel_values) * 255
+            mask = torch.ones_like(pixel_values) if not self.enable_bucket else np.ones_like(pixel_values) * 255
+        
+        # Extract only the first channel
         mask = mask[:, :, :, :1]
         
+        # Load reference image
         ref_pixel_values_path = data_info.get('ref_file_path', [])
         if self.data_root is not None:
             ref_pixel_values_path = os.path.join(self.data_root, ref_pixel_values_path)
@@ -895,6 +961,7 @@ class VideoAnimateDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
         data_info = self.dataset[idx % len(self.dataset)]
         data_type = data_info.get('type', 'image')
         while True:
@@ -918,6 +985,9 @@ class VideoAnimateDataset(Dataset):
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx
+
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(data_info['file_path'])
 
                 if len(sample) > 0:
                     break

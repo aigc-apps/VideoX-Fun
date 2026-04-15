@@ -1021,7 +1021,9 @@ def main():
 
     train_dataset = ImageVideoControlDataset(
         args.train_data_meta, args.train_data_dir,
-        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+        video_sample_size=args.video_sample_size, 
+        video_sample_stride=args.video_sample_stride, 
+        video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket, 

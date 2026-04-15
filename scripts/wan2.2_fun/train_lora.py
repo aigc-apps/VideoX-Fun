@@ -215,7 +215,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = height,
                         width       = width,
                         generator   = generator,
@@ -224,7 +224,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                         mask_video   = input_video_mask,
                         num_inference_steps = 25,
                         guidance_scale      = 4.5,
-                        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
 
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -239,12 +239,13 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
                         num_inference_steps = 25,
                         guidance_scale      = 4.5,
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                     save_videos_grid(

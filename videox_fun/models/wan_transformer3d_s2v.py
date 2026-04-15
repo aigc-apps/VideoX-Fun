@@ -55,19 +55,20 @@ def torch_dfs(model: nn.Module, parent_name='root'):
 @amp.autocast(enabled=False)
 @torch.compiler.disable()
 def s2v_rope_apply(x, grid_sizes, freqs, start=None):
+    dtype = x.dtype
     n, c = x.size(2), x.size(3) // 2
-    # loop over samples
+    # Loop over samples
     output = []
     for i, _ in enumerate(x):
         s = x.size(1)
-        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(s, n, -1, 2))
+        x_i = torch.view_as_complex(x[i, :s].to(torch.float32).reshape(s, n, -1, 2))
         freqs_i = freqs[i, :s]
-        # apply rotary embedding
+        # Apply rotary embedding
         x_i = torch.view_as_real(x_i * freqs_i).flatten(2)
         x_i = torch.cat([x_i, x[i, s:]])
-        # append to collection
+        # Append to collection
         output.append(x_i)
-    return torch.stack(output).float()
+    return torch.stack(output).to(dtype)
 
 
 def s2v_rope_apply_qk(q, k, grid_sizes, freqs):
@@ -88,7 +89,7 @@ class WanS2VSelfAttention(WanSelfAttention):
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
-        # query, key, value function
+        # Query, key, value function
         def qkv_fn(x):
             q = self.norm_q(self.q(x)).view(b, s, n, d)
             k = self.norm_k(self.k(x)).view(b, s, n, d)
@@ -105,9 +106,8 @@ class WanS2VSelfAttention(WanSelfAttention):
             v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size)
-        x = x.to(dtype)
 
-        # output
+        # Output
         x = x.flatten(2)
         x = self.o(x)
         return x
@@ -130,47 +130,42 @@ class WanS2VAttentionBlock(WanAttentionBlock):
         self.self_attn = WanS2VSelfAttention(dim, num_heads, window_size,qk_norm, eps)
 
     def forward(self, x, e, seq_lens, grid_sizes, freqs, context, context_lens, dtype=torch.bfloat16, t=0):
-        # e
         seg_idx = e[1].item()
         seg_idx = min(max(0, seg_idx), x.size(1))
         seg_idx = [0, seg_idx, x.size(1)]
         e = e[0]
         modulation = self.modulation.unsqueeze(2)
         e = (modulation + e).chunk(6, dim=1)
-        e = [element.squeeze(1) for element in e]
 
-        # norm
-        norm_x = self.norm1(x).float()
+        e = [element.squeeze(1) for element in e]
+        norm_x = self.norm1(x)
         parts = []
         for i in range(2):
             parts.append(norm_x[:, seg_idx[i]:seg_idx[i + 1]] *
                          (1 + e[1][:, i:i + 1]) + e[0][:, i:i + 1])
         norm_x = torch.cat(parts, dim=1)
-        # self-attention
+        # Self-attention
         y = self.self_attn(norm_x, seq_lens, grid_sizes, freqs)
-        with amp.autocast(dtype=torch.float32):
-            z = []
-            for i in range(2):
-                z.append(y[:, seg_idx[i]:seg_idx[i + 1]] * e[2][:, i:i + 1])
-            y = torch.cat(z, dim=1)
-            x = x + y
-
-        # cross-attention & ffn function
+        z = []
+        for i in range(2):
+            z.append(y[:, seg_idx[i]:seg_idx[i + 1]] * e[2][:, i:i + 1])
+        y = torch.cat(z, dim=1)
+        x = x + y
+        # Cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             x = x + self.cross_attn(self.norm3(x), context, context_lens)
-            norm2_x = self.norm2(x).float()
+            norm2_x = self.norm2(x)
             parts = []
             for i in range(2):
                 parts.append(norm2_x[:, seg_idx[i]:seg_idx[i + 1]] *
                              (1 + e[4][:, i:i + 1]) + e[3][:, i:i + 1])
             norm2_x = torch.cat(parts, dim=1)
             y = self.ffn(norm2_x)
-            with amp.autocast(dtype=torch.float32):
-                z = []
-                for i in range(2):
-                    z.append(y[:, seg_idx[i]:seg_idx[i + 1]] * e[5][:, i:i + 1])
-                y = torch.cat(z, dim=1)
-                x = x + y
+            z = []
+            for i in range(2):
+                z.append(y[:, seg_idx[i]:seg_idx[i + 1]] * e[5][:, i:i + 1])
+            y = torch.cat(z, dim=1)
+            x = x + y
             return x
 
         x = cross_attn_ffn(x, context, context_lens, e)
@@ -178,6 +173,8 @@ class WanS2VAttentionBlock(WanAttentionBlock):
 
 
 class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
+    """Wan Transformer 3D model for Speech-to-Video generation."""
+    
     # ignore_for_config = [
     #     'args', 'kwargs', 'patch_size', 'cross_attn_norm', 'qk_norm',
     #     'text_dim', 'window_size'
@@ -222,6 +219,75 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         *args,
         **kwargs
     ):
+        r"""
+        Initialize the S2V diffusion model backbone.
+        
+        Args:
+            cond_dim (`int`, *optional*, defaults to 0):
+                Condition dimension for pose/control
+            audio_dim (`int`, *optional*, defaults to 5120):
+                Audio embedding dimension
+            num_audio_token (`int`, *optional*, defaults to 4):
+                Number of audio tokens
+            enable_adain (`bool`, *optional*, defaults to False):
+                Enable adaptive instance normalization
+            adain_mode (`str`, *optional*, defaults to "attn_norm"):
+                AdaIN mode for audio injection
+            audio_inject_layers (`list`, *optional*, defaults to [0, 4, 8, ...]):
+                Layer indices for audio injection
+            zero_init (`bool`, *optional*, defaults to False):
+                Initialize audio injector with zeros
+            zero_timestep (`bool`, *optional*, defaults to False):
+                Use zero timestep for ref/motion
+            enable_motioner (`bool`, *optional*, defaults to True):
+                Enable motion encoder
+            add_last_motion (`bool`, *optional*, defaults to True):
+                Add last motion frame
+            enable_tsm (`bool`, *optional*, defaults to False):
+                Enable temporal shift module
+            trainable_token_pos_emb (`bool`, *optional*, defaults to False):
+                Enable trainable token position embedding
+            motion_token_num (`int`, *optional*, defaults to 1024):
+                Number of motion tokens
+            enable_framepack (`bool`, *optional*, defaults to False):
+                Enable frame packing (mutually exclusive with enable_motioner)
+            framepack_drop_mode (`str`, *optional*, defaults to "drop"):
+                Frame packing drop mode
+            model_type (`str`, *optional*, defaults to 's2v'):
+                Model variant - speech-to-video
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                3D patch dimensions for video embedding
+            text_len (`int`, *optional*, defaults to 512):
+                Fixed length for text embeddings
+            in_dim (`int`, *optional*, defaults to 16):
+                Input video channels
+            dim (`int`, *optional*, defaults to 2048):
+                Hidden dimension of the transformer
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Intermediate dimension in feed-forward network
+            freq_dim (`int`, *optional*, defaults to 256):
+                Dimension for sinusoidal time embeddings
+            text_dim (`int`, *optional*, defaults to 4096):
+                Input dimension for text embeddings
+            out_dim (`int`, *optional*, defaults to 16):
+                Output video channels
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer blocks
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for local attention
+            qk_norm (`bool`, *optional*, defaults to True):
+                Enable query/key normalization
+            cross_attn_norm (`bool`, *optional*, defaults to True):
+                Enable cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon value for normalization layers
+            in_channels (`int`, *optional*, defaults to 16):
+                Alias for in_dim (diffusers compatibility)
+            hidden_size (`int`, *optional*, defaults to 2048):
+                Alias for dim (diffusers compatibility)
+        """
         super().__init__(
             model_type=model_type,
             patch_size=patch_size,
@@ -243,35 +309,39 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         )
 
         assert model_type == 's2v'
-        self.enbale_adain = enable_adain
-        # Whether to assign 0 value timestep to ref/motion
+        self.enable_adain = enable_adain
         self.adain_mode = adain_mode
         self.zero_timestep = zero_timestep  
         self.enable_motioner = enable_motioner
         self.add_last_motion = add_last_motion
         self.enable_framepack = enable_framepack
 
-        # Replace blocks
+        # Replace blocks with S2V attention blocks
         self.blocks = nn.ModuleList([
             WanS2VAttentionBlock("cross_attn", dim, ffn_dim, num_heads, window_size, qk_norm,
                                  cross_attn_norm, eps)
             for _ in range(num_layers)
         ])
 
-        # init audio injector
+        # Initialize audio injector and related components
         all_modules, all_modules_names = torch_dfs(self.blocks, parent_name="root.transformer_blocks")
         if cond_dim > 0:
+            # Condition encoder for pose/control
             self.cond_encoder = nn.Conv3d(
                 cond_dim,
                 self.dim,
                 kernel_size=self.patch_size,
                 stride=self.patch_size)
         self.trainable_cond_mask = nn.Embedding(3, self.dim)
+        
+        # Causal audio encoder
         self.casual_audio_encoder = CausalAudioEncoder(
             dim=audio_dim,
             out_dim=self.dim,
             num_token=num_audio_token,
             need_global=enable_adain)
+        
+        # Audio injector for injecting audio features
         self.audio_injector = AudioInjector_WAN(
             all_modules,
             all_modules_names,
@@ -287,7 +357,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         if zero_init:
             self.zero_init_weights()
 
-        # init motioner
+        # Initialize motioner
         if enable_motioner and enable_framepack:
             raise ValueError(
                 "enable_motioner and enable_framepack are mutually exclusive, please set one of them to False"
@@ -399,6 +469,17 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                                             motion_latents,
                                             drop_motion_frames=False,
                                             add_last_motion=True):
+        """
+        Process motion frames using transformer-based motioner.
+        
+        Args:
+            motion_latents: List of motion latent tensors
+            drop_motion_frames: Whether to drop motion frame information
+            add_last_motion: Whether to add the last motion frame
+        
+        Returns:
+            Tuple of (motion tensors, motion rope embeddings)
+        """
         batch_size, height, width = len(
             motion_latents), motion_latents[0].shape[2] // self.patch_size[
                 1], motion_latents[0].shape[3] // self.patch_size[2]
@@ -408,12 +489,12 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         if freqs.device != device:
             freqs = freqs.to(device)
         if self.trainable_token_pos_emb:
-            with amp.autocast(dtype=torch.float64):
-                token_freqs = self.token_freqs.to(torch.float64)
-                token_freqs = token_freqs / token_freqs.norm(
-                    dim=-1, keepdim=True)
-                freqs = [freqs, torch.view_as_complex(token_freqs)]
+            token_freqs = self.token_freqs
+            token_freqs = token_freqs / token_freqs.norm(
+                dim=-1, keepdim=True)
+            freqs = [freqs, torch.view_as_complex(token_freqs)]
 
+        # Prepare last motion frame
         if not drop_motion_frames and add_last_motion:
             last_motion_latent = [u[:, -1:] for u in motion_latents]
             last_mot = [
@@ -434,6 +515,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                                    dtype=motion_latents[0].dtype)
             gride_sizes = []
 
+        # Encode motion with motioner (with optional gradient checkpointing)
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
@@ -447,9 +529,13 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             )
         else:
             zip_motion = self.motioner(motion_latents)
+        
+        # Project motioner output
         zip_motion = self.zip_motion_out(zip_motion)
         if drop_motion_frames:
             zip_motion = zip_motion * 0.0
+        
+        # Prepare grid sizes for motion rope embedding
         zip_motion_grid_sizes = [[
             torch.tensor([-1, 0, 0]).unsqueeze(0).repeat(batch_size, 1),
             torch.tensor([
@@ -463,6 +549,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         mot = torch.cat([last_mot, zip_motion], dim=1)
         gride_sizes = gride_sizes + zip_motion_grid_sizes
 
+        # Compute motion rope embeddings
         motion_rope_emb = rope_precompute(
             mot.detach().view(batch_size, mot.shape[1], self.num_heads,
                               self.dim // self.num_heads),
@@ -513,6 +600,16 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         return x, seq_lens, rope_embs, mask_input
 
     def after_transformer_block(self, block_idx, hidden_states):
+        """
+        Post-processing after each transformer block with audio injection.
+        
+        Args:
+            block_idx: Current transformer block index
+            hidden_states: Hidden states from the transformer block
+        
+        Returns:
+            Updated hidden states with audio features injected
+        """
         if block_idx in self.audio_injector.injected_block_id.keys():
             audio_attn_id = self.audio_injector.injected_block_id[block_idx]
             audio_emb = self.merged_audio_emb  # b f n c
@@ -525,7 +622,8 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             input_hidden_states = rearrange(
                 input_hidden_states, "b (t n) c -> (b t) n c", t=num_frames)
 
-            if self.enbale_adain and self.adain_mode == "attn_norm":
+            # Apply AdaIN for audio injection
+            if self.enable_adain and self.adain_mode == "attn_norm":
                 audio_emb_global = self.audio_emb_global
                 audio_emb_global = rearrange(audio_emb_global,
                                              "b t n c -> (b t) n c")
@@ -543,11 +641,11 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                 attn_hidden_states.shape[0], dtype=torch.long, device=attn_hidden_states.device
             ) * attn_audio_emb.shape[1]
 
+            # Audio cross-attention (with optional gradient checkpointing)
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         return module(*inputs)
-
                     return custom_forward
                 ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                 residual_out = torch.utils.checkpoint.checkpoint(
@@ -562,6 +660,8 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                     x=attn_hidden_states,
                     context=attn_audio_emb,
                     context_lens=context_lens)
+            
+            # Reshape and add residual to hidden states
             residual_out = rearrange(residual_out, "(b t) n c -> b (t n) c", t=num_frames)
             hidden_states[:, :self.original_seq_len] = hidden_states[:, :self.original_seq_len] + residual_out
 
@@ -589,22 +689,39 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         *extra_args,
         **extra_kwargs
     ):
-        """
-        x:                  A list of videos each with shape [C, T, H, W].
-        t:                  [B].
-        context:            A list of text embeddings each with shape [L, C].
-        seq_len:            A list of video token lens, no need for this model.
-        ref_latents         A list of reference image for each video with shape [C, 1, H, W].
-        motion_latents      A list of  motion frames for each video with shape [C, T_m, H, W].
-        cond_states         A list of condition frames (i.e. pose) each with shape [C, T, H, W].
-        audio_input         The input audio embedding [B, num_wav2vec_layer, C_a, T_a].
-        motion_frames       The number of motion frames and motion latents frames encoded by vae, i.e. [17, 5]
-        add_last_motion     For the motioner, if add_last_motion > 0, it means that the most recent frame (i.e., the last frame) will be added.
-                            For frame packing, the behavior depends on the value of add_last_motion:
-                            add_last_motion = 0: Only the farthest part of the latent (i.e., clean_latents_4x) is included.
-                            add_last_motion = 1: Both clean_latents_2x and clean_latents_4x are included.
-                            add_last_motion = 2: All motion-related latents are used.
-        drop_motion_frames  Bool, whether drop the motion frames info
+        r"""
+        Forward pass through the S2V diffusion model.
+        
+        Args:
+            x (List[Tensor]):
+                List of input videos each with shape [C, T, H, W]
+            t (Tensor):
+                Diffusion timesteps tensor of shape [B]
+            context (List[Tensor]):
+                List of text embeddings each with shape [L, C]
+            seq_len (`int`):
+                Video token length (not used for this model)
+            ref_latents (List[Tensor]):
+                List of reference images for each video with shape [C, 1, H, W]
+            motion_latents (List[Tensor]):
+                List of motion frames for each video with shape [C, T_m, H, W]
+            cond_states (List[Tensor]):
+                List of condition frames (i.e. pose) each with shape [C, T, H, W]
+            audio_input (Tensor, *optional*):
+                Input audio embedding [B, num_wav2vec_layer, C_a, T_a]
+            motion_frames (`list`, *optional*, defaults to [17, 5]):
+                Number of motion frames and motion latents frames encoded by VAE
+            add_last_motion (`int`, *optional*, defaults to 2):
+                For motioner: if > 0, adds the most recent frame.
+                For frame packing: 0=only clean_latents_4x, 1=clean_latents_2x+4x, 2=all
+            drop_motion_frames (`bool`, *optional*, defaults to False):
+                Whether to drop the motion frames info
+            cond_flag (`bool`, *optional*, defaults to True):
+                Flag for conditional vs unconditional forward pass
+        
+        Returns:
+            List[Tensor]:
+                List of denoised video tensors with original input shapes
         """
         device = self.patch_embedding.weight.device
         dtype = x.dtype
@@ -612,41 +729,52 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             self.freqs = self.freqs.to(device)
         add_last_motion = self.add_last_motion * add_last_motion
 
-        # Embeddings
-        x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
-
+        # Parse motion frames configuration
         if isinstance(motion_frames[0], list):
             motion_frames_0 = motion_frames[0][0]
             motion_frames_1 = motion_frames[0][1]
         else:
             motion_frames_0 = motion_frames[0]
             motion_frames_1 = motion_frames[1]
-        # Audio process
-        audio_input = torch.cat([audio_input[..., 0:1].repeat(1, 1, 1, motion_frames_0), audio_input], dim=-1)
+        
+        # Prepare checkpointing utilities
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs)
-
+                return custom_forward
+            def create_custom_forward_with_audio(module, block_idx):
+                def custom_forward(*inputs):
+                    x = module(*inputs)
+                    x = self.after_transformer_block(block_idx, x)
+                    return x
                 return custom_forward
             ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-            audio_emb_res = torch.utils.checkpoint.checkpoint(create_custom_forward(self.casual_audio_encoder), audio_input, **ckpt_kwargs)
+
+        # Patch embedding: convert video to sequence of patches
+        x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
+        
+        # Encode audio features (with optional gradient checkpointing)
+        audio_input = torch.cat([audio_input[..., 0:1].repeat(1, 1, 1, motion_frames_0), audio_input], dim=-1)
+        
+        # Encode audio (with optional gradient checkpointing)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            audio_emb_res = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.casual_audio_encoder), 
+                audio_input, 
+                **ckpt_kwargs
+            )
         else:
             audio_emb_res = self.casual_audio_encoder(audio_input)
-        if self.enbale_adain:
+        if self.enable_adain:
             audio_emb_global, audio_emb = audio_emb_res
             self.audio_emb_global = audio_emb_global[:, motion_frames_1:].clone()
         else:
             audio_emb = audio_emb_res
         self.merged_audio_emb = audio_emb[:, motion_frames_1:, :]
 
-        # Cond states
+        # Encode condition states (with optional gradient checkpointing)
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-                return custom_forward
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
             cond = [
                 torch.utils.checkpoint.checkpoint(
                     create_custom_forward(self.cond_encoder), 
@@ -656,8 +784,11 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             ]
         else:
             cond = [self.cond_encoder(c.unsqueeze(0)) for c in cond_states]
+        
+        # Add condition features to input
         x = [x_ + pose for x_, pose in zip(x, cond)]
 
+        # Get grid sizes and flatten sequences
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
@@ -666,13 +797,14 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         original_grid_sizes = deepcopy(grid_sizes)
         grid_sizes = [[torch.zeros_like(grid_sizes), grid_sizes, grid_sizes]]
 
-        # Ref latents 
+        # Add reference image embeddings
         ref = [self.patch_embedding(r.unsqueeze(0)) for r in ref_latents]
         batch_size = len(ref)
         height, width = ref[0].shape[3], ref[0].shape[4]
         ref = [r.flatten(2).transpose(1, 2) for r in ref]  # r: 1 c f h w
         x = [torch.cat([u, r], dim=1) for u, r in zip(x, ref)]
 
+        # Store original sequence length before adding reference
         self.original_seq_len = seq_lens[0]
         seq_lens = seq_lens + torch.tensor([r.size(1) for r in ref], dtype=torch.long)
         ref_grid_sizes = [
@@ -684,7 +816,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         ]
         grid_sizes = grid_sizes + ref_grid_sizes
 
-        # Compute the rope embeddings for the input
+        # Compute rope embeddings for the input
         x = torch.cat(x)
         b, s, n, d = x.size(0), x.size(1), self.num_heads, self.dim // self.num_heads
         self.pre_compute_freqs = rope_precompute(
@@ -692,10 +824,8 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         x = [u.unsqueeze(0) for u in x]
         self.pre_compute_freqs = [u.unsqueeze(0) for u in self.pre_compute_freqs]
 
-        # Inject Motion latents.
-        # Initialize masks to indicate noisy latent, ref latent, and motion latent.
-        # However, at this point, only the first two (noisy and ref latents) are marked;
-        # the marking of motion latent will be implemented inside `inject_motion`.
+        # Inject motion latents and initialize masks
+        # Masks indicate: 0=noisy latent, 1=ref latent, 2=motion latent
         mask_input = [
             torch.zeros([1, u.shape[1]], dtype=torch.long, device=x[0].device)
             for u in x
@@ -716,7 +846,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         self.pre_compute_freqs = torch.cat(self.pre_compute_freqs, dim=0)
         mask_input = torch.cat(mask_input, dim=0)
 
-        # Apply trainable_cond_mask
+        # Apply trainable condition mask
         x = x + self.trainable_cond_mask(mask_input).to(x.dtype)
 
         seq_len = seq_lens.max()
@@ -728,14 +858,12 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                       dim=1) for u in x
         ])
 
-        # Time embeddings
+        # Compute time embeddings with sinusoidal encoding
         if self.zero_timestep:
             t = torch.cat([t, torch.zeros([1], dtype=t.dtype, device=t.device)])
-        with amp.autocast(dtype=torch.float32):
-            e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float())
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            assert e.dtype == torch.float32 and e0.dtype == torch.float32
+        e = self.time_embedding(
+            sinusoidal_embedding_1d(self.freq_dim, t))
+        e0 = self.time_projection(e).unflatten(1, (6, self.dim))
 
         if self.zero_timestep:
             e = e[:-1]
@@ -755,7 +883,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             e0 = e0.unsqueeze(2).repeat(1, 1, 2, 1)
             e0 = [e0, 0]
 
-        # context
+        # Encode text context (padded to fixed length)
         context_lens = None
         context = self.text_embedding(
             torch.stack([
@@ -780,7 +908,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             self.pre_compute_freqs = torch.chunk(self.pre_compute_freqs, self.sp_world_size, dim=1)
             self.pre_compute_freqs = self.pre_compute_freqs[self.sp_world_rank]
 
-        # TeaCache
+        # TeaCache optimization: skip computation when change is small
         if self.teacache is not None:
             if cond_flag:
                 if t.dim() != 1:
@@ -805,9 +933,10 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             else:
                 self.should_calc = self.teacache.should_calc
 
-        # TeaCache
+        # Main transformer loop
         if self.teacache is not None:
             if not self.should_calc:
+                # Skip: use cached residual
                 previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
                 x = x + previous_residual.to(x.device)[-x.size()[0]:,]
             else:
@@ -815,15 +944,6 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
 
                 for idx, block in enumerate(self.blocks):
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                        def create_custom_forward_with_audio(module, block_idx):
-                            def custom_forward(*inputs):
-                                x = module(*inputs)
-                                x = self.after_transformer_block(block_idx, x)
-                                return x
-
-                            return custom_forward
-                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward_with_audio(block, idx),
                             x,
@@ -838,7 +958,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                             **ckpt_kwargs,
                         )
                     else:
-                        # arguments
+                        # Arguments
                         kwargs = dict(
                             e=e0,
                             seq_lens=seq_lens,
@@ -859,15 +979,6 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         else:
             for idx, block in enumerate(self.blocks):
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                    def create_custom_forward_with_audio(module, block_idx):
-                        def custom_forward(*inputs):
-                            x = module(*inputs)
-                            x = self.after_transformer_block(block_idx, x)
-                            return x
-
-                        return custom_forward
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward_with_audio(block, idx),
                         x,
@@ -882,7 +993,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                         **ckpt_kwargs,
                     )
                 else:
-                    # arguments
+                    # Arguments
                     kwargs = dict(
                         e=e0,
                         seq_lens=seq_lens,
@@ -896,55 +1007,35 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
                     x = block(x, **kwargs)
                     x = self.after_transformer_block(idx, x)
 
-        # Context Parallel
+        # Context Parallel: gather results from all GPUs
         if self.sp_world_size > 1:
             x = self.all_gather(x.contiguous(), dim=1)
 
-        # Unpatchify
+        # Truncate to original sequence length
         x = x[:, :self.original_seq_len]
-        # head
+        
+        # Head: project to output space
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-            x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
+            x = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.head), 
+                x, 
+                e, 
+                **ckpt_kwargs
+            )
         else:
             x = self.head(x, e)
+
+        # Unpatchify: reconstruct video from patches
         x = self.unpatchify(x, original_grid_sizes)
         x = torch.stack(x)
+
+        # Increment TeaCache counter and reset if completed
         if self.teacache is not None and cond_flag:
             self.teacache.cnt += 1
             if self.teacache.cnt == self.teacache.num_steps:
                 self.teacache.reset()
         return x
 
-    def unpatchify(self, x, grid_sizes):
-        """
-        Reconstruct video tensors from patch embeddings.
-
-        Args:
-            x (List[Tensor]):
-                List of patchified features, each with shape [L, C_out * prod(patch_size)]
-            grid_sizes (Tensor):
-                Original spatial-temporal grid dimensions before patching,
-                    shape [B, 3] (3 dimensions correspond to F_patches, H_patches, W_patches)
-
-        Returns:
-            List[Tensor]:
-                Reconstructed video tensors with shape [C_out, F, H / 8, W / 8]
-        """
-
-        c = self.out_dim
-        out = []
-        for u, v in zip(x, grid_sizes.tolist()):
-            u = u[:math.prod(v)].view(*v, *self.patch_size, c)
-            u = torch.einsum('fhwpqrc->cfphqwr', u)
-            u = u.reshape(c, *[i * j for i, j in zip(v, self.patch_size)])
-            out.append(u)
-        return out
 
     def zero_init_weights(self):
         with torch.no_grad():
@@ -955,6 +1046,6 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
             for i in range(self.audio_injector.injector.__len__()):
                 self.audio_injector.injector[i].o = zero_module(
                     self.audio_injector.injector[i].o)
-                if self.enbale_adain:
+                if self.enable_adain:
                     self.audio_injector.injector_adain_layers[i].linear = \
                         zero_module(self.audio_injector.injector_adain_layers[i].linear)

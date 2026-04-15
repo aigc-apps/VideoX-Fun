@@ -231,6 +231,13 @@ class MOVAModel(nn.Module):
             # Chunk for sequence parallel
             visual_x = torch.chunk(visual_x, self._sp_world_size, dim=1)[self._sp_world_rank]
         
+        # Prepare checkpointing utilities
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+        
         # Forward through dual tower DiT blocks
         visual_x, audio_x = self._forward_dual_tower_dit(
             visual_dit=visual_dit,
@@ -249,13 +256,23 @@ class MOVAModel(nn.Module):
             visual_x = visual_dit.all_gather(visual_x, dim=1)
         
         # Visual head + unpatchify
-        visual_output = visual_dit.head(visual_x, visual_t)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            visual_output = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(visual_dit.head), visual_x, visual_t, use_reentrant=False
+            )
+        else:
+            visual_output = visual_dit.head(visual_x, visual_t)
         grid_sizes_tensor = torch.tensor([grid_size], dtype=torch.long, device=visual_output.device)
         visual_output = visual_dit.unpatchify(visual_output, grid_sizes_tensor)
         visual_output = visual_output[0].unsqueeze(0)
         
         # Audio head + unpatchify
-        audio_output = self.transformer_audio.head(audio_x, audio_t)
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            audio_output = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.transformer_audio.head), audio_x, audio_t, use_reentrant=False
+            )
+        else:
+            audio_output = self.transformer_audio.head(audio_x, audio_t)
         audio_output = self.transformer_audio.unpatchify(audio_output, (f, ))
 
         return visual_output, audio_output
@@ -284,6 +301,32 @@ class MOVAModel(nn.Module):
         sp_world_rank = getattr(visual_dit, 'sp_world_rank', 0)
         sp_enabled = sp_world_size > 1 and hasattr(visual_dit, 'all_gather') and visual_dit.all_gather is not None
 
+        # Prepare checkpointing utilities
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            
+            def create_custom_forward_bridge(module):
+                def custom_forward(layer_idx, visual_x, audio_x, x_freqs, y_freqs, 
+                                 a2v_condition_scale, v2a_condition_scale, 
+                                 condition_scale, video_grid_size):
+                    return module(
+                        layer_idx,
+                        visual_x,
+                        audio_x,
+                        x_freqs=x_freqs,
+                        y_freqs=y_freqs,
+                        a2v_condition_scale=a2v_condition_scale,
+                        v2a_condition_scale=v2a_condition_scale,
+                        condition_scale=condition_scale,
+                        video_grid_size=video_grid_size,
+                    )
+                return custom_forward
+            
+            ckpt_kwargs = {"use_reentrant": False}
+        
         # Prepare visual block parameters
         t, h, w = grid_size
         seq_len = t * h * w
@@ -339,25 +382,8 @@ class MOVAModel(nn.Module):
                     visual_x_for_bridge = visual_x
                 
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    def create_custom_forward(module):
-                        def custom_forward(layer_idx, visual_x, audio_x, x_freqs, y_freqs, 
-                                         a2v_condition_scale, v2a_condition_scale, 
-                                         condition_scale, video_grid_size):
-                            return module(
-                                layer_idx,
-                                visual_x,
-                                audio_x,
-                                x_freqs=x_freqs,
-                                y_freqs=y_freqs,
-                                a2v_condition_scale=a2v_condition_scale,
-                                v2a_condition_scale=v2a_condition_scale,
-                                condition_scale=condition_scale,
-                                video_grid_size=video_grid_size,
-                            )
-                        return custom_forward
-                    
                     visual_x_out, audio_x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(self.dual_tower_bridge),
+                        create_custom_forward_bridge(self.dual_tower_bridge),
                         layer_idx,
                         visual_x_for_bridge,
                         audio_x,
@@ -391,21 +417,6 @@ class MOVAModel(nn.Module):
 
             # Visual block with optional gradient checkpointing
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module):
-                    def custom_forward(visual_x, visual_t_mod, visual_seq_lens, visual_grid_sizes,
-                                     wan_freqs, visual_context, visual_context_lens, visual_dtype):
-                        return module(
-                            visual_x,
-                            e=visual_t_mod,
-                            seq_lens=visual_seq_lens,
-                            grid_sizes=visual_grid_sizes,
-                            freqs=wan_freqs,
-                            context=visual_context,
-                            context_lens=visual_context_lens,
-                            dtype=visual_dtype,
-                        )
-                    return custom_forward
-                
                 visual_x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(visual_block),
                     visual_x,
@@ -416,7 +427,7 @@ class MOVAModel(nn.Module):
                     visual_context,
                     visual_context_lens,
                     visual_dtype,
-                    use_reentrant=False,
+                    **ckpt_kwargs,
                 )
             else:
                 visual_x = visual_block(
@@ -432,21 +443,6 @@ class MOVAModel(nn.Module):
             
             # Audio block with optional gradient checkpointing
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module):
-                    def custom_forward(audio_x, audio_t_mod, audio_seq_lens, audio_grid_sizes,
-                                     audio_freqs_dit, audio_context, audio_context_lens, audio_dtype):
-                        return module(
-                            audio_x,
-                            e=audio_t_mod,
-                            seq_lens=audio_seq_lens,
-                            grid_sizes=audio_grid_sizes,
-                            freqs=audio_freqs_dit,
-                            context=audio_context,
-                            context_lens=audio_context_lens,
-                            dtype=audio_dtype,
-                        )
-                    return custom_forward
-                
                 audio_x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(audio_block),
                     audio_x,
@@ -457,7 +453,7 @@ class MOVAModel(nn.Module):
                     audio_context,
                     audio_context_lens,
                     audio_dtype,
-                    use_reentrant=False,
+                    **ckpt_kwargs,
                 )
             else:
                 audio_x = audio_block(
@@ -476,21 +472,6 @@ class MOVAModel(nn.Module):
             visual_block = visual_dit.blocks[layer_idx]
             
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module):
-                    def custom_forward(visual_x, visual_t_mod, visual_seq_lens, visual_grid_sizes,
-                                     wan_freqs, visual_context, visual_context_lens, visual_dtype):
-                        return module(
-                            visual_x,
-                            e=visual_t_mod,
-                            seq_lens=visual_seq_lens,
-                            grid_sizes=visual_grid_sizes,
-                            freqs=wan_freqs,
-                            context=visual_context,
-                            context_lens=visual_context_lens,
-                            dtype=visual_dtype,
-                        )
-                    return custom_forward
-                
                 visual_x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(visual_block),
                     visual_x,
@@ -501,7 +482,7 @@ class MOVAModel(nn.Module):
                     visual_context,
                     visual_context_lens,
                     visual_dtype,
-                    use_reentrant=False,
+                    **ckpt_kwargs,
                 )
             else:
                 visual_x = visual_block(

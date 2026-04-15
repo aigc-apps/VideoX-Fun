@@ -67,6 +67,7 @@ class BaseQwenImageTransformerBlock(QwenImageTransformerBlock):
             hidden_states = hidden_states + hints[self.block_id] * context_scale
         return encoder_hidden_states, hidden_states
     
+
 class QwenImageControlTransformer2DModel(QwenImageTransformer2DModel):
     @register_to_config
     def __init__(
