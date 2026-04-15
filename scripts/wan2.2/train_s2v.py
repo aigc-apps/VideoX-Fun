@@ -1557,7 +1557,7 @@ def main():
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
                 ref_pixel_values = batch["ref_pixel_values"].cpu()
                 ref_pixel_values = rearrange(ref_pixel_values, "b f c h w -> b c f h w")
                 for idx, (ref_pixel_value, text) in enumerate(zip(ref_pixel_values, texts)):
@@ -1570,7 +1570,7 @@ def main():
                 for idx, (motion_pixel_value, text) in enumerate(zip(motion_pixel_values, texts)):
                     motion_pixel_value = motion_pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(motion_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_motion.gif", rescale=True)
+                    save_videos_grid(motion_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_motion.mp4", rescale=True)
 
                 clip_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['text']
                 for idx, (clip_pixel_value, text) in enumerate(zip(clip_pixel_values, texts)):

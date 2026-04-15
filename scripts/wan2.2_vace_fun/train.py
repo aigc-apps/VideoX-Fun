@@ -196,7 +196,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     sample, 
                     os.path.join(
                         args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     )
                 )
 
@@ -1567,8 +1567,8 @@ def main():
                     pixel_value = pixel_value[None, ...]
                     control_pixel_value = control_pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
+                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.mp4", rescale=True)
                 
                 ref_pixel_values = batch["ref_pixel_values"].cpu()
                 ref_pixel_values = rearrange(ref_pixel_values, "b f c h w -> b c f h w")
@@ -1589,7 +1589,7 @@ def main():
                 for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space

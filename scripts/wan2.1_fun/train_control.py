@@ -168,7 +168,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                     sample, 
                     os.path.join(
                         args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     )
                 )
 
@@ -1518,8 +1518,8 @@ def main():
                     pixel_value = pixel_value[None, ...]
                     control_pixel_value = control_pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
+                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.mp4", rescale=True)
                 
                 if args.train_mode != "control":
                     ref_pixel_values = batch["ref_pixel_values"].cpu()

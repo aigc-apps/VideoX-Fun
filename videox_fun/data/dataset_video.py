@@ -347,7 +347,8 @@ class VideoSpeechDataset(Dataset):
                     for i in range(len(motion_raw_frames)):
                         motion_resized_frames.append(resize_frame(motion_raw_frames[i], max(self.video_sample_size)))
                     del motion_raw_frames
-                    motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
+                    if len(motion_resized_frames) > 0:
+                        motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
                     del motion_resized_frames
 
                 if not self.enable_bucket:
@@ -563,7 +564,8 @@ class VideoSpeechControlDataset(Dataset):
                     for i in range(len(motion_raw_frames)):
                         motion_resized_frames.append(resize_frame(motion_raw_frames[i], max(self.video_sample_size)))
                     del motion_raw_frames
-                    motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
+                    if len(motion_resized_frames) > 0:
+                        motion_pixel_values[-len(motion_resized_frames):] = motion_resized_frames
                     del motion_resized_frames
 
                 if not self.enable_bucket:

@@ -27,6 +27,7 @@ def rope_apply(x, grid_sizes, freqs):
     grid_sizes: [B, 3].
     freqs:      [M, C // 2].
     """
+    dtype = x.dtype
     s, n, c = x.size(1), x.size(2), x.size(3) // 2
     # split freqs
     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
@@ -58,7 +59,7 @@ def rope_apply(x, grid_sizes, freqs):
 
         # append to collection
         output.append(x_i)
-    return torch.stack(output)
+    return torch.stack(output).to(dtype)
 
 def rope_apply_qk(q, k, grid_sizes, freqs):
     q = rope_apply(q, grid_sizes, freqs)

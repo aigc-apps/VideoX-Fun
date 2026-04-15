@@ -862,7 +862,7 @@ class Wan2_2Transformer3DModel_S2V(Wan2_2Transformer3DModel):
         if self.zero_timestep:
             t = torch.cat([t, torch.zeros([1], dtype=t.dtype, device=t.device)])
         e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, t))
+            sinusoidal_embedding_1d(self.freq_dim, t).float()).to(dtype)
         e0 = self.time_projection(e).unflatten(1, (6, self.dim))
 
         if self.zero_timestep:

@@ -152,7 +152,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                             mask_video   = input_video_mask,
                         ).videos
                         os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.mp4"))
 
                         video_length = 1
                         input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
@@ -169,7 +169,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                             mask_video   = input_video_mask,
                         ).videos
                         os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
+                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.mp4"))
                 else:
                     with torch.autocast("cuda", dtype=weight_dtype):
                         sample = pipeline(
@@ -181,7 +181,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                             generator   = generator
                         ).videos
                         os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.mp4"))
 
                         sample = pipeline(
                             args.validation_prompts[i], 
@@ -192,7 +192,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
                             generator   = generator
                         ).videos
                         os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
+                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.mp4"))
 
         del pipeline
         del transformer3d_val
