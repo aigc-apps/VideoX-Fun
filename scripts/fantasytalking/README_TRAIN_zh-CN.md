@@ -541,7 +541,7 @@ NCCL_DEBUG=INFO
 | `compile_dit` | 编译 Transformer 加速推理（固定分辨率有效） | `False` |
 | `config_path` | 模型配置文件路径 | `config/wan2.1/wan_civitai.yaml` |
 | `model_name` | 模型路径 | `models/Diffusion_Transformer/Wan2.1-I2V-14B-720P` |
-| `model_name_audio` | 音频编码器路径 | `None` |
+| `model_name_audio` | 音频编码器路径 | `models/Diffusion_Transformer/wav2vec2-base-960h` |
 | `sampler_name` | 采样器类型：`Flow`、`Flow_Unipc`、`Flow_DPM++` | `Flow` |
 | `shift` | 采样器 shift 参数 | 5.0 |
 | `transformer_path` | 训练后的 Transformer 权重路径 | `models/Personalized_Model/FantasyTalking/fantasytalking_model.ckpt` |
@@ -599,7 +599,7 @@ config_path = "config/wan2.1/wan_civitai.yaml"
 # 你的实际模型路径
 model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
 # 音频编码器路径
-model_name_audio = None  # 或 "models/Diffusion_Transformer/wav2vec2-base-960h"
+model_name_audio = "models/Diffusion_Transformer/wav2vec2-base-960h"
 # 训练后的权重路径，如 "output_dir_fantasytalking/checkpoint-xxx/diffusion_pytorch_model.safetensors"
 transformer_path = "models/Personalized_Model/FantasyTalking/fantasytalking_model.ckpt"
 # 参考图像路径

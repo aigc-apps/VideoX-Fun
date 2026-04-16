@@ -541,7 +541,7 @@ Main parameters in the inference script [predict_s2v.py](file:///home/zhoumo.xjq
 | `compile_dit` | Compile Transformer for faster inference (fixed resolution only) | `False` |
 | `config_path` | Model configuration file path | `config/wan2.1/wan_civitai.yaml` |
 | `model_name` | Model path | `models/Diffusion_Transformer/Wan2.1-I2V-14B-720P` |
-| `model_name_audio` | Audio encoder path | `None` |
+| `model_name_audio` | Audio encoder path | `models/Diffusion_Transformer/wav2vec2-base-960h` |
 | `sampler_name` | Sampler type: `Flow`, `Flow_Unipc`, `Flow_DPM++` | `Flow` |
 | `shift` | Sampler shift parameter | 5.0 |
 | `transformer_path` | Trained Transformer weights path | `models/Personalized_Model/FantasyTalking/fantasytalking_model.ckpt` |
@@ -599,7 +599,7 @@ config_path = "config/wan2.1/wan_civitai.yaml"
 # Your actual model path
 model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
 # Audio encoder path
-model_name_audio = None  # or "models/Diffusion_Transformer/wav2vec2-base-960h"
+model_name_audio = "models/Diffusion_Transformer/wav2vec2-base-960h"
 # Trained weights path, e.g., "output_dir_fantasytalking/checkpoint-xxx/diffusion_pytorch_model.safetensors"
 transformer_path = "models/Personalized_Model/FantasyTalking/fantasytalking_model.ckpt"
 # Reference image path
