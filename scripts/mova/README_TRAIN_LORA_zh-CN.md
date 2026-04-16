@@ -178,12 +178,7 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 ```bash
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
-
-# 下载 MOVA 官方权重（ModelScope）
-modelscope download --model modelscope/MOVA-360p --local_dir models/Diffusion_Transformer/MOVA-360p
-
-# 或使用 Hugging Face
-# hf download modelscope/MOVA-360p --local-dir models/Diffusion_Transformer/MOVA-360p
+hf download OpenMOSS-Team/MOVA-360p --local-dir models/Diffusion_Transformer/MOVA-360p
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
