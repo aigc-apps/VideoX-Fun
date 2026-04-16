@@ -15,9 +15,10 @@
   - [3.1 下载预训练模型](#31-下载预训练模型)
   - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
   - [3.3 训练常用参数解析](#33-训练常用参数解析)
-  - [3.4 使用 FSDP 训练](#34-使用-fsdp-训练)
-  - [3.5 其他后端](#35-其他后端)
-  - [3.6 多机分布式训练](#36-多机分布式训练)
+  - [3.4 训练验证](#34-训练验证)
+  - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
+  - [3.6 其他后端](#36-其他后端)
+  - [3.7 多机分布式训练](#37-多机分布式训练)
 - [四、推理测试](#四推理测试)
   - [4.1 推理参数解析](#41-推理参数解析)
   - [4.2 单卡推理](#42-单卡推理)
@@ -231,9 +232,35 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
 | `--uniform_sampling` | 均匀采样 timestep | - |
 | `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 100 |
+| `--validation_prompts` | 验证图像生成的提示词 | `"1girl, black_hair, ..."` |
 
+### 3.4 训练验证
 
-### 3.4 使用 FSDP 训练
+你可以配置验证参数，在训练过程中定期生成测试图像，以便监控训练进度和模型质量。
+
+**验证参数说明**：
+
+| 参数 | 说明 | 推荐值 |
+|------|------|--------|
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 100 |
+| `--validation_prompts` | 验证图像生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
+
+**示例**：
+
+```bash
+  --validation_steps=100 \
+  --validation_epochs=100 \
+  --validation_prompts="1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
+```
+
+**注意事项**：
+- 验证图像会保存到 `output_dir` 目录中
+- 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
+
+### 3.5 使用 FSDP 训练
 
 **如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
@@ -272,7 +299,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --trainable_modules "."
 ```
 
-### 3.5 不使用 DeepSpeed 与 FSDP 训练
+### 3.6 不使用 DeepSpeed 与 FSDP 训练
 
 **该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练Shell用于参考训练。
 
@@ -311,11 +338,11 @@ accelerate launch --mixed_precision="bf16" scripts/flux2/train.py \
   --trainable_modules "."
 ```
 
-### 3.6 多机分布式训练
+### 3.7 多机分布式训练
 
 **适合场景**：超大规模数据集、需要更快的训练速度
 
-#### 3.6.1 环境配置
+#### 3.7.1 环境配置
 
 假设有 2 台机器，每台 8 张 GPU：
 
@@ -378,7 +405,7 @@ NCCL_DEBUG=INFO
 # 使用与机器 0 相同的 accelerate launch 命令
 ```
 
-#### 3.6.2 多机训练注意事项
+#### 3.7.2 多机训练注意事项
 
 - **网络要求**：
    - 推荐 RDMA/InfiniBand（高性能）

@@ -15,9 +15,10 @@ This document provides a complete workflow for FLUX.1 LoRA fine-tuning training,
   - [3.1 Download Pretrained Model](#31-download-pretrained-model)
   - [3.2 Quick Start (DeepSpeed-Zero-2)](#32-quick-start-deepspeed-zero-2)
   - [3.3 LoRA-Specific Parameters](#33-lora-specific-parameters)
-  - [3.4 Training with FSDP](#34-training-with-fsdp)
-  - [3.5 Other Backends](#35-other-backends)
-  - [3.6 Multi-Machine Distributed Training](#36-multi-machine-distributed-training)
+  - [3.4 Training Validation](#34-training-validation)
+  - [3.5 Training with FSDP](#35-training-with-fsdp)
+  - [3.6 Other Backends](#36-other-backends)
+  - [3.7 Multi-Machine Distributed Training](#37-multi-machine-distributed-training)
 - [4. Inference Testing](#4-inference-testing)
   - [4.1 Inference Parameter Parsing](#41-inference-parameter-parsing)
   - [4.2 Single GPU Inference](#42-single-gpu-inference)
@@ -230,8 +231,35 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--network_alpha` | LoRA update matrix scaling coefficient (typically half of rank or same) | 32 |
 | `--target_name` | Components/modules to apply LoRA, comma-separated | `to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2` |
 | `--use_peft_lora` | Use PEFT module to add LoRA (more memory efficient) | - |
+| `--validation_steps` | Execute validation every N steps | 100 |
+| `--validation_epochs` | Execute validation every N epochs | 100 |
+| `--validation_prompts` | Prompts used during validation | `"1girl, black_hair, ..."` |
 
-### 3.4 Training with FSDP
+### 3.4 Training Validation
+
+You can configure validation parameters to periodically generate test images during training, allowing you to monitor training progress and model quality.
+
+**Validation Parameters**:
+
+| Parameter | Description | Recommended Value |
+|-----------|-------------|-------------------|
+| `--validation_steps` | Execute validation every N steps | 100 |
+| `--validation_epochs` | Execute validation every N epochs | 100 |
+| `--validation_prompts` | Prompt for validation image generation. Use multiple space-separated prompt strings | Space-separated prompt strings |
+
+**Example**:
+
+```bash
+  --validation_steps=100 \
+  --validation_epochs=100 \
+  --validation_prompts="1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
+```
+
+**Notes**:
+- Validation images will be saved to the `output_dir` directory
+- For multi-prompt validation, use: `--validation_prompts "prompt1" "prompt2" "prompt3"`
+
+### 3.5 Training with FSDP
 
 **If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP.
 
@@ -273,7 +301,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling
 ```
 
-### 3.5 Training Without DeepSpeed or FSDP
+### 3.6 Training Without DeepSpeed or FSDP
 
 **This approach is not recommended as there is no memory-saving backend, which may cause insufficient VRAM.** This is provided for reference only.
 
@@ -313,11 +341,11 @@ accelerate launch --mixed_precision="bf16" scripts/flux/train_lora.py \
   --uniform_sampling
 ```
 
-### 3.6 Multi-Machine Distributed Training
+### 3.7 Multi-Machine Distributed Training
 
 **Suitable for**: Large-scale datasets, faster training speed
 
-#### 3.6.1 Environment Configuration
+#### 3.7.1 Environment Configuration
 
 Assume 2 machines, each with 8 GPUs:
 
@@ -381,7 +409,7 @@ NCCL_DEBUG=INFO
 # Use the same accelerate launch command as machine 0
 ```
 
-#### 3.6.2 Multi-Machine Training Notes
+#### 3.7.2 Multi-Machine Training Notes
 
 - **Network Requirements**:
    - RDMA/InfiniBand recommended (high performance)

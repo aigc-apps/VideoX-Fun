@@ -65,16 +65,20 @@ sampler_name        = "Flow"
 boundary_ratio      = 0.9
 
 # Load pretrained model if need
+# The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
 transformer_path        = None
 transformer_high_path   = None
 transformer_audio_path  = None
 bridge_path         = None
 vae_path            = None
 audio_vae_path      = None
+# Load lora model if need
+# The lora_path is used for low noise model, the lora_high_path is used for high noise model.
 lora_path           = None
+lora_high_path      = None
 
 # Other params
-sample_size         = [352, 640]
+sample_size         = [640, 352]
 video_length        = 81
 fps                 = 24
 
@@ -83,15 +87,17 @@ fps                 = 24
 weight_dtype        = torch.bfloat16
 
 # Input image for I2V
-validation_image    = "asset/single_person.jpg"
+validation_image    = "asset/8.png"
 
 # prompts
-prompt              = "A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"I would also say that this election in Germany wasn't surprising.\""
+prompt              = "Medium shot of a girl by the ocean. She starts with a bright smile, then gently nods her head while speaking. Her mouth moves naturally to say: \"Hi, nice to meet you.\" She maintains eye contact throughout. The background shows calm waves. Smooth motion, cinematic quality, realistic facial expressions."
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指"
 guidance_scale      = 5.0
 seed                = 43
 num_inference_steps = 50
+# The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
+lora_high_weight    = 0.55
 save_path           = "samples/mova-videos-i2v"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
@@ -317,6 +323,7 @@ generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 # Run inference
 print("Running inference...")
@@ -338,6 +345,7 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 sample = output.videos
 audio = output.audio
@@ -364,7 +372,7 @@ def save_results():
         sr = getattr(pipeline.audio_vae.config, "output_sampling_rate", audio_sample_rate)
         save_videos_with_audio_grid(sample, audio, video_path, fps=fps, audio_sample_rate=sr)
 
-if ulysses_degree > 1 or ring_degree > 1 or fsdp_dit or fsdp_text_encoder:
+if ulysses_degree > 1 or ring_degree > 1:
     import torch.distributed as dist
     if dist.get_rank() == 0:
         save_results()

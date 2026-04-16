@@ -1,7 +1,7 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

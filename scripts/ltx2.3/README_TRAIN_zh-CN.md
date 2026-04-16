@@ -13,13 +13,14 @@
   - [2.2 数据集结构](#22-数据集结构)
   - [2.3 metadata.json 格式](#23-metadatajson-格式)
   - [2.4 相对路径与绝对路径使用](#24-相对路径与绝对路径使用)
-- [三、全参数训练](#三全参数训练)
+- [三、全量参数训练](#三全量参数训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
   - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
   - [3.3 常用训练参数](#33-常用训练参数)
-  - [3.4 使用 FSDP 训练](#34-使用-fsdp-训练)
-  - [3.5 不使用 DeepSpeed 或 FSDP 训练](#35-不使用-deepspeed-或-fsdp-训练)
-  - [3.6 多机分布式训练](#36-多机分布式训练)
+  - [3.4 训练验证](#34-训练验证)
+  - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
+  - [3.6 不使用 DeepSpeed 或 FSDP 训练](#36-不使用-deepspeed-或-fsdp-训练)
+  - [3.7 多机分布式训练](#37-多机分布式训练)
 - [四、推理测试](#四推理测试)
   - [4.1 推理参数](#41-推理参数)
   - [4.2 单 GPU 推理](#42-单-gpu-推理)
@@ -271,9 +272,36 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--low_vram` | 启用低显存优化 | - |
 | `--resume_from_checkpoint` | 从检查点路径恢复训练，使用 `"latest"` 自动选择最新检查点 | None |
 | `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
+| `--validation_prompts` | 验证视频生成的提示词 | `"A man in a blue blazer..."` |
 
 
-### 3.4 使用 FSDP 训练
+### 3.4 训练验证
+
+你可以配置验证参数，在训练过程中定期生成测试视频，以便监控训练进度和模型质量。
+
+**验证参数说明**：
+
+| 参数 | 说明 | 推荐值 |
+|------|------|--------|
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
+| `--validation_prompts` | 验证视频生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
+
+**示例**：
+
+```bash
+  --validation_steps=100 \
+  --validation_epochs=500 \
+  --validation_prompts="A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"Hi.\""
+```
+
+**注意事项**：
+- 验证视频会保存到 `output_dir` 目录中
+- 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
+
+### 3.5 使用 FSDP 训练
 
 **如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
@@ -320,7 +348,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --trainable_modules "."
 ```
 
-### 3.5 不使用 DeepSpeed 或 FSDP 训练
+### 3.6 不使用 DeepSpeed 或 FSDP 训练
 
 **不推荐此方式，因为缺少显存优化后端，容易显存溢出**。仅供参考。
 
@@ -367,11 +395,11 @@ accelerate launch --mixed_precision="bf16" scripts/ltx2/train.py \
   --trainable_modules "."
 ```
 
-### 3.6 多机分布式训练
+### 3.7 多机分布式训练
 
 **适用场景**：超大规模数据集，更快训练速度
 
-#### 3.6.1 环境配置
+#### 3.7.1 环境配置
 
 假设 2 台机器，每台 8 张 GPU：
 
@@ -442,7 +470,7 @@ NCCL_DEBUG=INFO
 # 使用与机器 0 相同的 accelerate launch 命令
 ```
 
-#### 3.6.2 多机训练注意事项
+#### 3.7.2 多机训练注意事项
 
 - **网络要求**：
    - 推荐使用 RDMA/InfiniBand（高性能）
@@ -543,9 +571,9 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 ```python
 # 确保 ulysses_degree × ring_degree = 使用的 GPU 数
-# 例如使用 8 张 GPU：
+# 例如使用 2 张 GPU：
 ulysses_degree = 2  # Head 维度并行
-ring_degree = 4     # Sequence 维度并行
+ring_degree = 1     # Sequence 维度并行
 ```
 
 **配置原则**：

@@ -17,9 +17,10 @@ This document provides a complete workflow for LoRA (Low-Rank Adaptation) traini
   - [3.1 Download Pretrained Model](#31-download-pretrained-model)
   - [3.2 Quick Start (DeepSpeed-Zero-2)](#32-quick-start-deepspeed-zero-2)
   - [3.3 LoRA Training Parameters](#33-lora-training-parameters)
-  - [3.4 Training with FSDP](#34-training-with-fsdp)
-  - [3.5 Training Without DeepSpeed or FSDP](#35-training-without-deepspeed-or-fsdp)
-  - [3.6 Multi-Machine Distributed Training](#36-multi-machine-distributed-training)
+  - [3.4 Training Validation](#34-training-validation)
+  - [3.5 Training with FSDP](#35-training-with-fsdp)
+  - [3.6 Training Without DeepSpeed or FSDP](#36-training-without-deepspeed-or-fsdp)
+  - [3.7 Multi-Machine Distributed Training](#37-multi-machine-distributed-training)
 - [4. Inference Testing](#4-inference-testing)
   - [4.1 Inference Parameters](#41-inference-parameters)
   - [4.2 Single GPU Inference](#42-single-gpu-inference)
@@ -278,9 +279,36 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--uniform_sampling` | Uniform timestep sampling | - |
 | `--low_vram` | Enable low VRAM optimizations | - |
 | `--resume_from_checkpoint` | Resume training from checkpoint path, use `"latest"` to auto-select latest | None |
+| `--validation_steps` | Execute validation every N steps | 100 |
+| `--validation_epochs` | Execute validation every N epochs | 500 |
+| `--validation_prompts` | Prompts used during validation | `"A man in a blue blazer..."` |
 
 
-### 3.4 Training with FSDP
+### 3.4 Training Validation
+
+You can configure validation parameters to periodically generate test videos during training, allowing you to monitor training progress and model quality.
+
+**Validation Parameters**:
+
+| Parameter | Description | Recommended Value |
+|-----------|-------------|-------------------|
+| `--validation_steps` | Execute validation every N steps | 100 |
+| `--validation_epochs` | Execute validation every N epochs | 500 |
+| `--validation_prompts` | Prompt for validation video generation. Use multiple space-separated prompt strings | Space-separated prompt strings |
+
+**Example**:
+
+```bash
+  --validation_steps=100 \
+  --validation_epochs=500 \
+  --validation_prompts="A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"Hi.\""
+```
+
+**Notes**:
+- Validation videos will be saved to the `output_dir` directory
+- For multi-prompt validation, use: `--validation_prompts "prompt1" "prompt2" "prompt3"`
+
+### 3.5 Training with FSDP
 
 **If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP.
 
@@ -328,7 +356,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --low_vram
 ```
 
-### 3.5 Training Without DeepSpeed or FSDP
+### 3.6 Training Without DeepSpeed or FSDP
 
 **This approach is not recommended as it lacks VRAM-saving backends and may easily cause out-of-memory errors**. This is provided for reference only.
 
@@ -376,11 +404,11 @@ accelerate launch --mixed_precision="bf16" scripts/ltx2/train_lora.py \
   --low_vram
 ```
 
-### 3.6 Multi-Machine Distributed Training
+### 3.7 Multi-Machine Distributed Training
 
 **Suitable for**: Ultra-large-scale datasets, faster training speed
 
-#### 3.6.1 Environment Configuration
+#### 3.7.1 Environment Configuration
 
 Assuming 2 machines with 8 GPUs each:
 
@@ -452,7 +480,7 @@ NCCL_DEBUG=INFO
 # Use the same accelerate launch command as Machine 0
 ```
 
-#### 3.6.2 Multi-Machine Training Notes
+#### 3.7.2 Multi-Machine Training Notes
 
 - **Network Requirements**:
    - RDMA/InfiniBand recommended (high performance)
@@ -530,8 +558,8 @@ Edit `examples/ltx2.3/predict_t2v.py` according to your needs. For LoRA inferenc
 GPU_memory_mode = "model_group_offload"
 # Your actual model path
 model_name = "models/Diffusion_Transformer/LTX-2.3-Diffusers"  
-# LoRA weights path from training
-lora_path = "output_dir_ltx2.3_lora/pytorch_lora_weights.safetensors"  
+# LoRA 权重路径，如 "output_dir_ltx2.3_lora/checkpoint-xxx/lora_weights.safetensors"
+lora_path = None
 # LoRA weight strength
 lora_weight = 0.55  
 # Write based on content to generate
@@ -555,9 +583,9 @@ Edit `examples/ltx2.3/predict_t2v.py`:
 
 ```python
 # Ensure ulysses_degree × ring_degree = number of GPUs
-# For example, using 8 GPUs:
+# For example, using 2 GPUs:
 ulysses_degree = 2  # Head dimension parallelization
-ring_degree = 4     # Sequence dimension parallelization
+ring_degree = 1     # Sequence dimension parallelization
 ```
 
 **Configuration Principles**:

@@ -1,11 +1,10 @@
-# LTX-2 LoRA 训练指南
+# MOVA 全参数训练指南
 
-本文档提供 LTX-2（Lightricks 文生视频模型）LoRA（Low-Rank Adaptation）训练的完整工作流，包括环境配置、数据准备、分布式训练和推理测试。
+本文档提供 MOVA（音视频生成模型）全参数训练的完整工作流，包括环境配置、数据准备、分布式训练和推理测试。
 
-> **注意**：LTX-2 是一个音视频生成视频模型，可以同时生成视频和对应的音频。训练数据需要同时包含视频和音频文件。
+> **注意**：MOVA 是一个音视频生成模型,可以同时生成视频和对应的音频。训练数据需要同时包含视频和音频文件。
 
 ---
-
 ## 目录
 - [一、环境配置](#一环境配置)
 - [二、数据准备](#二数据准备)
@@ -13,10 +12,10 @@
   - [2.2 数据集结构](#22-数据集结构)
   - [2.3 metadata.json 格式](#23-metadatajson-格式)
   - [2.4 相对路径与绝对路径使用](#24-相对路径与绝对路径使用)
-- [三、LoRA 训练](#三lora-训练)
+- [三、全参数训练](#三全参数训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
-  - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
-  - [3.3 LoRA 训练参数](#33-lora-训练参数)
+  - [3.2 快速开始(DeepSpeed-Zero-2)](#32-快速开始deepspeed-zero-2)
+  - [3.3 常用训练参数](#33-常用训练参数)
   - [3.4 训练验证](#34-训练验证)
   - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
   - [3.6 不使用 DeepSpeed 或 FSDP 训练](#36-不使用-deepspeed-或-fsdp-训练)
@@ -27,7 +26,6 @@
   - [4.3 多 GPU 并行推理](#43-多-gpu-并行推理)
 - [五、更多资源](#五更多资源)
 
----
 
 ## 一、环境配置
 
@@ -91,7 +89,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 ### 2.3 metadata.json 格式
 
-> ⚠️ **重要**：LTX-2 是音视频生成模型，与普通视频训练不同，**必须在 metadata.json 中提供 `audio_path` 字段**。
+> ⚠️ **重要**：MOVA 是音视频生成模型，与普通视频训练不同，**必须在 metadata.json 中提供 `audio_path` 字段**。
 
 **相对路径格式**（示例）：
 ```json
@@ -131,21 +129,21 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 **关键字段说明**：
 - `file_path`：视频文件路径（相对或绝对）
-- `audio_path`：音频文件路径（**LTX-2 特有且必须提供**，与普通视频训练的主要区别）
+- `audio_path`：音频文件路径（**MOVA 特有且必须提供**，与普通视频训练的主要区别）
   - 音频文件通常为 `.wav` 格式
   - 路径应与 `file_path` 对应，如 `train/video001.mp4` 对应 `wav/audio001.wav`
 - `text`：视频描述（英文提示词）
 - `type`：数据类型，固定为 `"video"`
-- `width` / `height`：视频尺寸（**建议**提供以启用 bucket 训练；若不提供，训练时会自动读取，但当数据存储在 OSS 等较慢的系统中时可能会拖慢训练速度）
-  - 可使用 `scripts/process_json_add_width_and_height.py` 为没有宽高字段的 JSON 文件添加宽高字段，支持图片和视频
-  - 使用方法：`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Audios-Demo/metadata.json --output_file datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json`
+- `width` / `height`: 视频尺寸（**建议**提供以启用 bucket 训练;若不提供,训练时会自动读取,但当数据存储在 OSS 等较慢的系统中时可能会拖慢训练速度）
+  - 可使用 `scripts/process_json_add_width_and_height.py` 为没有宽高字段的 JSON 文件添加宽高字段,支持图片和视频
+  - 使用方法:`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Audios-Demo/metadata.json --output_file datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json`
 
-**LTX-2 与普通视频训练的数据集对比**：
+**MOVA 与普通视频训练的数据集对比**：
 
 | 模型类型 | 必需字段 | 音频字段 |
-|---------|---------|---------|
+|---------|---------|---------||
 | 普通视频（WAN、CogVideoX 等） | `file_path`, `text`, `type` | ❌ 不需要 |
-| **LTX-2（音视频生成）** | `file_path`, `audio_path`, `text`, `type` | ✅ **必须提供** |
+| **MOVA（音视频生成）** | `file_path`, `audio_path`, `text`, `type` | ✅ **必须提供** |
 
 ### 2.4 相对路径与绝对路径使用
 
@@ -171,7 +169,7 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 
 ---
 
-## 三、LoRA 训练
+## 三、全参数训练
 
 ### 3.1 下载预训练模型
 
@@ -179,11 +177,11 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
 
-# 下载 LTX-2 官方权重（ModelScope）
-modelscope download --model Lightricks/LTX-2 --local_dir models/Diffusion_Transformer/LTX-2
+# 下载 MOVA 官方权重（ModelScope）
+modelscope download --model modelscope/MOVA-360p --local_dir models/Diffusion_Transformer/MOVA-360p
 
 # 或使用 Hugging Face
-# hf download Lightricks/LTX-2 --local-dir models/Diffusion_Transformer/LTX-2
+# hf download modelscope/MOVA-360p --local-dir models/Diffusion_Transformer/MOVA-360p
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
@@ -195,32 +193,34 @@ modelscope download --model Lightricks/LTX-2 --local_dir models/Diffusion_Transf
 DeepSpeed-Zero-2 与 FSDP 的区别在于模型权重是否分片。**如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
+export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/ltx2/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
-  --video_sample_n_frames=121 \
+  --video_sample_n_frames=193 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --checkpointing_steps=100 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_ltx2_lora" \
+  --output_dir="output_dir_mova" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -231,45 +231,38 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
-  --use_peft_lora \
-  --low_vram
+  --low_vram \
+  --trainable_modules "." \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
+  --train_components="transformer,transformer_2"
 ```
 
-### 3.3 LoRA 训练参数
+### 3.3 常用训练参数
 
-**LoRA 专用参数**：
-
-| 参数 | 说明 | 示例值 |
-|-----|------|-------|
-| `--rank` | LoRA 更新矩阵维度 | 64 |
-| `--network_alpha` | LoRA 更新矩阵缩放系数 | 32 |
-| `--target_name` | 应用 LoRA 的组件/模块（逗号分隔） | `to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2` |
-| `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更省显存） | - |
-
-**常用训练参数**：
+**核心参数说明**：
 
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/LTX-2` |
+| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/MOVA-360p` |
 | `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
 | `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
 | `--train_batch_size` | 每批训练的样本数 | 1 |
-| `--image_sample_size` | 最大训练分辨率，自动 bucket | 640 |
-| `--video_sample_size` | 视频最大训练分辨率 | 640 |
-| `--token_sample_size` | Token 长度采样大小 | 640 |
+| `--image_sample_size` | 最大训练分辨率，自动 bucket | 480 |
+| `--video_sample_size` | 视频最大训练分辨率 | 480 |
+| `--token_sample_size` | Token 长度采样大小 | 480 |
 | `--video_sample_stride` | 帧采样步长 | 1 |
-| `--video_sample_n_frames` | 采样帧数 | 121 |
+| `--video_sample_n_frames` | 采样帧数 | 193 |
 | `--video_repeat` | 每个视频在每个 epoch 重复次数 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效于更大 batch） | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练轮数 | 100 |
-| `--checkpointing_steps` | 每 N 步保存检查点 | 50 |
-| `--learning_rate` | 初始学习率（LoRA 通常比全量训练使用更高的学习率） | 1e-04 |
+| `--checkpointing_steps` | 每 N 步保存检查点 | 100 |
+| `--learning_rate` | 初始学习率 | 2e-05 |
+| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
+| `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--seed` | 随机种子 | 42 |
-| `--output_dir` | 输出目录 | `output_dir_ltx2_lora` |
+| `--output_dir` | 输出目录 | `output_dir_mova` |
 | `--gradient_checkpointing` | 启用激活检查点 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
 | `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
@@ -281,11 +274,18 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--enable_bucket` | 启用 bucket 训练：不进行中心裁剪，而是按分辨率分组训练完整视频 | - |
 | `--uniform_sampling` | 均匀时间步采样 | - |
 | `--low_vram` | 启用低显存优化 | - |
-| `--resume_from_checkpoint` | 从检查点路径恢复训练，使用 `"latest"` 自动选择最新检查点 | None |
+| `--resume_from_checkpoint` | 从检查点路径恢复训练,使用 `"latest"` 自动选择最新检查点 | None |
+| `--trainable_modules` | 可训练模块(`"."` 表示所有模块) | `"."` |
+| `--boundary_type` | 指定训练哪个 DiT:`low`=仅低噪声 DiT,`high`=仅高噪声 DiT,`full`=两个 DiT | `low` |
+| `--boundary_ratio` | 高低噪声 DiT 切换的边界比例。低于此比例的时间步使用低噪声 DiT | 0.9 |
+| `--train_components` | 指定训练哪些组件,逗号分隔:`transformer`, `transformer_2`, `transformer_audio`, `dual_tower_bridge`, 或 `all` | `transformer,transformer_2` |
+| `--i2v_ratio` | I2V 样本在训练中的比例:0.0=纯 T2V,1.0=纯 I2V,0.5=50% T2V + 50% I2V(默认) | 0.5 |
+| `--i2v_noise_scale` | I2V 第一帧条件的噪声强度:0.0 表示首帧保持干净(默认),更高值添加轻微噪声 | 0.0 |
 | `--validation_steps` | 每 N 步执行一次验证 | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
-| `--validation_prompts` | 验证视频生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
+| `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 500 |
+| `--validation_prompts` | 验证视频生成的提示词 | `"Medium shot of a girl..."` |
 
+- `1.0`：纯图生视频（I2V）
 
 ### 3.4 训练验证
 
@@ -304,19 +304,70 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
   --validation_steps=100 \
   --validation_epochs=500 \
-  --validation_prompts="A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"Hi.\""
+  --validation_paths "asset/8.png" \
+  --validation_prompts="Medium shot of a girl by the ocean. She starts with a bright smile, then gently nods her head while speaking. Her mouth moves naturally to say: \"Hi, nice to meet you.\" She maintains eye contact throughout. The background shows calm waves. Smooth motion, cinematic quality, realistic facial expressions."
 ```
 
 **注意事项**：
-- 验证视频将保存到 `output_dir` 目录
-- 多提示词验证请使用：`--validation_prompts "prompt1" "prompt2" "prompt3"`
+- 验证视频会保存到 `output_dir` 目录中
+- 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
+
+### 3.5 不使用 DeepSpeed 或 FSDP 训练
+
+**不推荐此方式，因为缺少显存优化后端，容易显存溢出**。仅供参考。
+
+```sh
+export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
+  --video_sample_stride=1 \
+  --video_sample_n_frames=193 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_mova" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --low_vram \
+  --trainable_modules "." \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
+  --train_components="transformer,transformer_2"
+```
 
 ### 3.5 使用 FSDP 训练
 
 **如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
+export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
@@ -324,24 +375,29 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap LTX2VideoTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/ltx2/train_lora.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock,AudioWanAttentionBlock,ConditionalCrossAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
+    --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/mova/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
-  --video_sample_n_frames=121 \
+  --video_sample_n_frames=193 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_ltx2_lora" \
+  --output_dir="output_dir_mova" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -352,59 +408,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
-  --use_peft_lora \
-  --low_vram
-```
-
-### 3.6 不使用 DeepSpeed 或 FSDP 训练
-
-**不推荐此方式，因为缺少显存优化后端，容易显存溢出**。仅供参考。
-
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --mixed_precision="bf16" scripts/ltx2/train_lora.py \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=121 \
-  --train_batch_size=1 \
-  --video_repeat=1 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
-  --seed=42 \
-  --output_dir="output_dir_ltx2_lora" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --random_hw_adapt \
-  --training_with_video_token_length \
-  --enable_bucket \
-  --uniform_sampling \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
-  --use_peft_lora \
-  --low_vram
+  --low_vram \
+  --trainable_modules "." \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
+  --train_components="transformer,transformer_2"
 ```
 
 ### 3.7 多机分布式训练
@@ -417,9 +425,9 @@ accelerate launch --mixed_precision="bf16" scripts/ltx2/train_lora.py \
 
 **机器 0（Master）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
+export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -430,24 +438,26 @@ export RANK=0                        # 当前机器 rank（0 或 1）
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/ltx2/train_lora.py \
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK scripts/mova/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
-  --video_sample_n_frames=121 \
+  --video_sample_n_frames=193 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
+  --learning_rate=2e-05 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_ltx2_lora" \
+  --output_dir="output_dir_mova" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -458,18 +468,18 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="to_q,to_k,to_v,ff.0,ff.2,audio_ff.0,audio_ff.2" \
-  --use_peft_lora \
-  --low_vram
+  --low_vram \
+  --trainable_modules "." \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
+  --train_components="transformer,transformer_2"
 ```
 
 **机器 1（Worker）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
+export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2
@@ -495,6 +505,8 @@ NCCL_DEBUG=INFO
 
 - **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
 
+---
+
 ## 四、推理测试
 
 ### 4.1 推理参数
@@ -507,25 +519,33 @@ NCCL_DEBUG=INFO
 | `ulysses_degree` | Head 维度并行度，单 GPU 为 1 | 1 |
 | `ring_degree` | Sequence 维度并行度，单 GPU 为 1 | 1 |
 | `fsdp_dit` | 多 GPU 推理时对 Transformer 使用 FSDP 节省显存 | `False` |
-| `fsdp_text_encoder` | 多 GPU 推理时对文本编码器使用 FSDP | `False` |
-| `compile_dit` | 编译 Transformer 加速推理（固定分辨率有效） | `False` |
-| `model_name` | 模型路径 | `models/Diffusion_Transformer/LTX-2` |
+| `fsdp_text_encoder` | 多 GPU 推理时对文本编码器使用 FSDP | `True` |
+| `compile_dit` | 编译 Transformer 加速推理（固定分辨率有效，与 sequential_cpu_offload 不兼容） | `False` |
+| `model_name` | 模型路径 | `models/Diffusion_Transformer/MOVA-360p` |
 | `sampler_name` | 采样器类型：`Flow`、`Flow_Unipc`、`Flow_DPM++` | `Flow` |
-| `transformer_path` | 训练后的 Transformer 权重路径 | `None` |
-| `vae_path` | 训练后的 VAE 权重路径 | `None` |
-| `lora_path` | LoRA 权重路径 | `output_dir_ltx2_lora/pytorch_lora_weights.safetensors` |
-| `sample_size` | 生成视频分辨率 `[height, width]` | `[512, 768]` |
-| `video_length` | 生成帧数 | 121 |
+| `boundary_ratio` | 高低噪声 DiT 切换比例 | 0.9 |
+| `transformer_path` | 训练后的低噪声 Transformer 权重路径 | `None` |
+| `transformer_high_path` | 训练后的高噪声 Transformer 权重路径 | `None` |
+| `transformer_audio_path` | 训练后的音频 Transformer 权重路径 | `None` |
+| `bridge_path` | 训练后的双塔桥接权重路径 | `None` |
+| `vae_path` | 训练后的视频 VAE 权重路径 | `None` |
+| `audio_vae_path` | 训练后的音频 VAE 权重路径 | `None` |
+| `lora_path` | 低噪声模型 LoRA 权重路径 | `None` |
+| `lora_high_path` | 高噪声模型 LoRA 权重路径 | `None` |
+| `validation_image` | I2V 模式的输入图片 | `asset/8.png` |
+| `sample_size` | 生成视频分辨率 `[height, width]` | `[640, 352]` |
+| `video_length` | 生成帧数 | 81 |
 | `fps` | 每秒帧数 | 24 |
-| `weight_dtype` | 模型权重精度，无 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
-| `prompt` | 正向提示词，描述要生成的内容 | `"A brown dog barks..."` |
-| `negative_prompt` | 负向提示词，描述要避免的内容 | `"worst quality, inconsistent motion..."` |
-| `guidance_scale` | 引导强度 | 6.0 |
+| `weight_dtype` | 模型权重精度，无 bf16 的显卡使用 `torch.float16`（如 v100、2080ti） | `torch.bfloat16` |
+| `prompt` | 正向提示词，描述要生成的内容 | `"Medium shot of a girl..."` |
+| `negative_prompt` | 负向提示词，描述要避免的内容 | `"色调艳丽，过曝..."` |
+| `guidance_scale` | 引导强度 | 5.0 |
 | `seed` | 随机种子，保证可重复性 | 43 |
 | `num_inference_steps` | 推理步数 | 50 |
-| `lora_weight` | LoRA 权重强度 | 0.55 |
-| `save_path` | 生成视频保存路径 | `samples/ltx2-videos-t2v` |
-| `audio_sample_rate` | 音频采样率（从 vocoder 配置读取） | 24000 |
+| `lora_weight` | 低噪声模型 LoRA 权重强度 | 0.55 |
+| `lora_high_weight` | 高噪声模型 LoRA 权重强度 | 0.55 |
+| `save_path` | 生成视频保存路径 | `samples/mova-videos-i2v` |
+| `audio_sample_rate` | 音频采样率（从 audio_vae 配置读取） | 24000 |
 
 **GPU 显存模式说明**：
 
@@ -543,22 +563,28 @@ NCCL_DEBUG=INFO
 运行单卡推理：
 
 ```bash
-python examples/ltx2/predict_t2v.py
+python examples/mova/predict_i2v.py
 ```
 
-根据需求编辑 `examples/ltx2/predict_t2v.py`。LoRA 推理请重点关注以下参数：
+根据需求编辑 `examples/mova/predict_i2v.py`。首次推理请重点修改以下参数，其他参数见上方推理参数说明。
 
 ```python
 # 根据显卡显存选择
 GPU_memory_mode = "sequential_cpu_offload"
 # 你的实际模型路径
-model_name = "models/Diffusion_Transformer/LTX-2"  
-# LoRA 权重路径，如 "output_dir_ltx2_lora/checkpoint-xxx/lora_weights.safetensors"
+model_name = "models/Diffusion_Transformer/MOVA-360p"  
+# I2V 输入图片
+validation_image = "asset/8.png"
+# 训练后的权重路径，如 "output_dir_mova/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+transformer_path = None
+transformer_high_path = None
+transformer_audio_path = None
+bridge_path = None
+# LoRA 权重路径（如需要）
 lora_path = None
-# LoRA 权重强度
-lora_weight = 0.55  
+lora_high_path = None
 # 根据要生成的内容编写
-prompt = "A brown dog barks on a sofa, sitting on a light-colored couch in a cozy room"  
+prompt = "Medium shot of a girl by the ocean. She starts with a bright smile, then gently nods her head while speaking. Her mouth moves naturally to say: \"Hi, nice to meet you.\" She maintains eye contact throughout. The background shows calm waves. Smooth motion, cinematic quality, realistic facial expressions."  
 # ...
 ```
 
@@ -574,7 +600,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 `examples/ltx2/predict_t2v.py`：
+编辑 `examples/mova/predict_i2v.py`：
 
 ```python
 # 确保 ulysses_degree × ring_degree = 使用的 GPU 数
@@ -599,8 +625,10 @@ ring_degree = 1     # Sequence 维度并行
 #### 运行多 GPU 推理
 
 ```bash
-torchrun --nproc-per-node=2 examples/ltx2/predict_t2v.py
+torchrun --nproc-per-node=2 examples/mova/predict_i2v.py
 ```
+
+---
 
 ## 五、更多资源
 

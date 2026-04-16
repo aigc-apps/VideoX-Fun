@@ -1,7 +1,7 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
-export MODEL_NAME_AUDIO=None  # If None, will use $MODEL_NAME/audio_encoder
+export MODEL_NAME_AUDIO="models/Diffusion_Transformer/wav2vec2-base-960h"  # If None, will use $MODEL_NAME/audio_encoder
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -38,5 +38,5 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
-  --transformer_path="models/FantasyTalking/fantasytalking_model.ckpt" \
+  --transformer_path="models/Personalized_Model/FantasyTalking/fantasytalking_model.ckpt" \
   --trainable_modules "processor." "proj_model."
