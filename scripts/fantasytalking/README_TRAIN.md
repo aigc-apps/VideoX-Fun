@@ -338,7 +338,7 @@ You can configure validation parameters to periodically generate test videos dur
 
 ### 3.5 Training with FSDP
 
-**If you run out of VRAM with DeepSpeed-Zero-2 on multiple GPUs**, you can switch to FSDP.
+**If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
@@ -396,7 +396,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ### 3.6 Training without DeepSpeed or FSDP
 
-If you only have one GPU or don't want to use distributed training, you can run directly:
+**This approach is not recommended as it lacks VRAM-saving backends and may easily cause out-of-memory errors**. This is provided for reference only.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
