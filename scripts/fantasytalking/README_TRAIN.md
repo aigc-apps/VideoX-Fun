@@ -75,67 +75,78 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 ### 2.2 Dataset Structure
 
-```text
-datasets/internal_datasets/
-├── train/
-│   ├── 00000001.mp4
-│   ├── 00000002.mp4
-│   └── ...
-├── wav/
-│   ├── 00000001.wav
-│   ├── 00000002.wav
-│   └── ...
-└── metadata.json
 ```
-
-**Directory Description**:
-- `train/`: Training video files (MP4 format)
-- `wav/`: Corresponding audio files (WAV format)
-- `metadata.json`: Dataset metadata file describing the path and text description for each sample
+📦 datasets/
+├── 📂 my_dataset/
+│   ├── 📂 train/
+│   │   ├── 📄 video001.mp4
+│   │   ├── 📄 video002.mp4
+│   │   └── 📄 ...
+│   ├── 📂 wav/
+│   │   ├── 📄 audio001.wav
+│   │   ├── 📄 audio002.wav
+│   │   └── 📄 ...
+│   └── 📄 metadata.json
+```
 
 ### 2.3 metadata.json Format
 
 The `metadata.json` for FantasyTalking is slightly different from the normal JSON format in VideoX-Fun. **You need to add an `audio_path` field**.
 
-**Example Format**:
+**Relative Path Format** (Example):
 
 ```json
 [
-    {
-      "file_path": "train/00000001.mp4",
-      "audio_path": "wav/00000001.wav",
-      "text": "A girl talking by the sea.",
-      "type": "video"
-    },
-    {
-      "file_path": "train/00000002.mp4",
-      "audio_path": "wav/00000002.wav",
-      "text": "A man talking in a room.",
-      "type": "video"
-    }
+  {
+    "file_path": "train/00000001.mp4",
+    "audio_path": "wav/00000001.wav",
+    "text": "A girl talking by the sea.",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  },
+  {
+    "file_path": "train/00000002.mp4",
+    "audio_path": "wav/00000002.wav",
+    "text": "A man talking in a room.",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  }
+]
+```
+
+**Absolute Path Format**:
+
+```json
+[
+  {
+    "file_path": "/path/to/your/dataset/train/00000001.mp4",
+    "audio_path": "/path/to/your/dataset/wav/00000001.wav",
+    "text": "A girl talking by the sea.",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  }
 ]
 ```
 
 **Field Description**:
 - `file_path`: Relative or absolute path to the video file
 - `audio_path`: Relative or absolute path to the audio file (**Required field for FantasyTalking**)
-- `text`: Text description (prompt) for the video
-- `type`: Data type, usually `"video"`
+  - Audio files are typically in `.wav` format
+  - Path should correspond to `file_path`, e.g., `train/00000001.mp4` corresponds to `wav/00000001.wav`
+- `text`: Text description (prompt) for the video (optional)
+- `type`: Data type, fixed as `"video"`
+- `width` / `height`: Video dimensions (**Recommended** to provide for bucket training; if not provided, they will be automatically read during training, which may slow down training when data is stored on slow systems like OSS)
+  - You can use `scripts/process_json_add_width_and_height.py` to add width and height fields to JSON files that don't have them, supporting both images and videos
+  - Usage: `python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Audios-Demo/metadata.json --output_file datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json`
 
 ### 2.4 Relative vs Absolute Paths
 
-**Relative Paths (Recommended)**:
+**Relative Paths**:
 
-Paths in `metadata.json` are relative to the dataset root directory:
-
-```json
-{
-  "file_path": "train/00000001.mp4",
-  "audio_path": "wav/00000001.wav"
-}
-```
-
-Specify the dataset root directory in the training command:
+If your data uses relative paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
@@ -144,14 +155,14 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 **Absolute Paths**:
 
-You can also use absolute paths:
+If your data uses absolute paths, configure the training script as follows:
 
-```json
-{
-  "file_path": "/path/to/your/dataset/train/00000001.mp4",
-  "audio_path": "/path/to/your/dataset/wav/00000001.wav"
-}
+```bash
+export DATASET_NAME=""
+export DATASET_META_NAME="/path/to/your/metadata.json"
 ```
+
+> 💡 **Tip**: If your dataset is small and stored locally, use relative paths. If your dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
 
 ---
 
@@ -161,33 +172,32 @@ You can also use absolute paths:
 
 Before training, you need to download the following pretrained models:
 
-**1. Base Video Generation Model**
-
 ```bash
+# Create model directories
+mkdir -p models/Diffusion_Transformer
+mkdir -p models/Personalized_Model
+
 # Download Wan2.1-I2V-14B-720P model
-modelscope download --model Wan-AI/Wan2.1-I2V-14B-720P --local_dir models/Diffusion_Transformer/Wan2.1-I2V-14B-720P/
-```
+modelscope download --model Wan-AI/Wan2.1-I2V-14B-720P --local_dir models/Diffusion_Transformer/Wan2.1-I2V-14B-720P
 
-**2. Audio Encoder**
-
-```bash
 # Download wav2vec2 audio encoder
 modelscope download --model AI-ModelScope/wav2vec2-base-960h --local_dir models/Diffusion_Transformer/wav2vec2-base-960h
-```
 
-**3. FantasyTalking Pretrained Weights**
-
-```bash
+# Download FantasyTalking pretrained weights
 modelscope download --model amap_cvlab/FantasyTalking --local_dir models/Personalized_Model/FantasyTalking/
 ```
 
 ### 3.2 Quick Start (DeepSpeed-Zero-2)
 
-Here is the recommended configuration for distributed training with DeepSpeed-Zero-2:
+If you have downloaded the data according to **2.1 Quick Test Dataset** and the weights according to **3.1 Download Pretrained Models**, you can directly copy and run the quick start command.
+
+DeepSpeed-Zero-2 or FSDP is recommended for training. Here we use DeepSpeed-Zero-2 as an example.
+
+The difference between DeepSpeed-Zero-2 and FSDP is whether model weights are sharded. **If you run out of VRAM with DeepSpeed-Zero-2 on multiple GPUs**, you can switch to FSDP.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
-export MODEL_NAME_AUDIO="models/Diffusion_Transformer/wav2vec2-base-960h"  # If None, will use $MODEL_NAME/audio_encoder
+export MODEL_NAME_AUDIO="models/Diffusion_Transformer/wav2vec2-base-960h"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # Uncomment the following two lines for multi-node training without RDMA
@@ -328,9 +338,7 @@ You can configure validation parameters to periodically generate test videos dur
 
 ### 3.5 Training with FSDP
 
-FSDP (Fully Sharded Data Parallel) is suitable for training 14B models at high resolutions and can effectively save VRAM.
-
-**Training Command**:
+**If you run out of VRAM with DeepSpeed-Zero-2 on multiple GPUs**, you can switch to FSDP.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
@@ -434,7 +442,7 @@ accelerate launch --mixed_precision="bf16" scripts/fantasytalking/train.py \
 
 ### 3.7 Multi-Node Distributed Training
 
-**Use Case**: Ultra-large-scale datasets, faster training speed
+**This approach is not recommended as it lacks VRAM-saving backends and may easily cause out-of-memory errors**. This is provided for reference only.
 
 #### 3.7.1 Environment Configuration
 
@@ -530,7 +538,7 @@ After training is complete, you can use the inference script to test the generat
 
 ### 4.1 Inference Parameters
 
-Main parameters in the inference script [predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py):
+Main parameters in the inference script `examples/fantasytalking/predict_s2v.py`:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -589,7 +597,7 @@ Run single GPU inference:
 python examples/fantasytalking/predict_s2v.py
 ```
 
-Edit [examples/fantasytalking/predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py) according to your needs. For first-time inference, focus on modifying the following parameters. For other parameters, see the inference parameters description above.
+Edit `examples/fantasytalking/predict_s2v.py` according to your needs. For first-time inference, focus on modifying the following parameters. For other parameters, see the inference parameters description above.
 
 ```python
 # Choose based on your GPU memory
@@ -623,7 +631,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### Configure Parallel Strategy
 
-Edit [examples/fantasytalking/predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py):
+Edit `examples/fantasytalking/predict_s2v.py`:
 
 ```python
 # Ensure ulysses_degree × ring_degree = number of GPUs used

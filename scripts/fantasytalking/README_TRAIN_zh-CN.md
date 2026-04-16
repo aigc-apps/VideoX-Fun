@@ -75,67 +75,78 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 ### 2.2 数据集结构
 
-```text
-datasets/internal_datasets/
-├── train/
-│   ├── 00000001.mp4
-│   ├── 00000002.mp4
-│   └── ...
-├── wav/
-│   ├── 00000001.wav
-│   ├── 00000002.wav
-│   └── ...
-└── metadata.json
 ```
-
-**目录说明**：
-- `train/`：存放训练视频文件（MP4 格式）
-- `wav/`：存放与视频对应的音频文件（WAV 格式）
-- `metadata.json`：数据集元数据文件，描述每个样本的路径和文本描述
+📦 datasets/
+├── 📂 my_dataset/
+│   ├── 📂 train/
+│   │   ├── 📄 video001.mp4
+│   │   ├── 📄 video002.mp4
+│   │   └── 📄 ...
+│   ├── 📂 wav/
+│   │   ├── 📄 audio001.wav
+│   │   ├── 📄 audio002.wav
+│   │   └── 📄 ...
+│   └── 📄 metadata.json
+```
 
 ### 2.3 metadata.json 格式
 
 FantasyTalking 的 `metadata.json` 与 VideoX-Fun 的普通 JSON 格式略有不同，**需要额外添加 `audio_path` 字段**。
 
-**示例格式**：
+**相对路径格式**（示例）：
 
 ```json
 [
-    {
-      "file_path": "train/00000001.mp4",
-      "audio_path": "wav/00000001.wav",
-      "text": "一个女孩在海边说话。",
-      "type": "video"
-    },
-    {
-      "file_path": "train/00000002.mp4",
-      "audio_path": "wav/00000002.wav",
-      "text": "一个男人在房间里讲话。",
-      "type": "video"
-    }
+  {
+    "file_path": "train/00000001.mp4",
+    "audio_path": "wav/00000001.wav",
+    "text": "一个女孩在海边说话。",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  },
+  {
+    "file_path": "train/00000002.mp4",
+    "audio_path": "wav/00000002.wav",
+    "text": "一个男人在房间里讲话。",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  }
+]
+```
+
+**绝对路径格式**：
+
+```json
+[
+  {
+    "file_path": "/path/to/your/dataset/train/00000001.mp4",
+    "audio_path": "/path/to/your/dataset/wav/00000001.wav",
+    "text": "一个女孩在海边说话。",
+    "type": "video",
+    "width": 512,
+    "height": 512
+  }
 ]
 ```
 
 **字段说明**：
 - `file_path`：视频文件的相对路径或绝对路径
 - `audio_path`：音频文件的相对路径或绝对路径（**FantasyTalking 必需字段**）
-- `text`：视频的文本描述（prompt）
-- `type`：数据类型，通常为 `"video"`
+  - 音频文件通常为 `.wav` 格式
+  - 路径应与 `file_path` 对应，如 `train/00000001.mp4` 对应 `wav/00000001.wav`
+- `text`：视频的文本描述（prompt，可选）
+- `type`：数据类型，固定为 `"video"`
+- `width` / `height`：视频尺寸（**推荐**提供，用于 bucket 训练；如果不提供，训练时会自动读取，当数据存储在 OSS 等慢速系统时可能拖慢训练速度）
+  - 可以使用 `scripts/process_json_add_width_and_height.py` 为没有这些字段的 JSON 文件添加 width 和 height 字段，支持图片和视频
+  - 使用方法：`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Audios-Demo/metadata.json --output_file datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json`
 
 ### 2.4 相对路径与绝对路径使用
 
-**相对路径（推荐）**：
+**相对路径**：
 
-`metadata.json` 中的路径是相对于数据集根目录的相对路径：
-
-```json
-{
-  "file_path": "train/00000001.mp4",
-  "audio_path": "wav/00000001.wav"
-}
-```
-
-训练命令中指定数据集根目录：
+如果你的数据使用的是相对路径，训练脚本中请这样配置：
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
@@ -144,14 +155,14 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 **绝对路径**：
 
-也可以使用绝对路径：
+如果你的数据使用的是绝对路径，训练脚本中请这样配置：
 
-```json
-{
-  "file_path": "/path/to/your/dataset/train/00000001.mp4",
-  "audio_path": "/path/to/your/dataset/wav/00000001.wav"
-}
+```bash
+export DATASET_NAME=""
+export DATASET_META_NAME="/path/to/your/metadata.json"
 ```
+
+> 💡 **建议**：如果数据集较小且存放在本地，请使用相对路径。如果数据集存放在外部存储（如 NAS、OSS）或多机共享，请使用绝对路径。
 
 ---
 
@@ -161,33 +172,32 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 训练前需要下载以下预训练模型：
 
-**1. 基础视频生成模型**
-
 ```bash
+# 创建模型目录
+mkdir -p models/Diffusion_Transformer
+mkdir -p models/Personalized_Model
+
 # 下载 Wan2.1-I2V-14B-720P 模型
-modelscope download --model Wan-AI/Wan2.1-I2V-14B-720P --local_dir models/Diffusion_Transformer/Wan2.1-I2V-14B-720P/
-```
+modelscope download --model Wan-AI/Wan2.1-I2V-14B-720P --local_dir models/Diffusion_Transformer/Wan2.1-I2V-14B-720P
 
-**2. 音频编码器**
-
-```bash
-# 下载 wav2vec2 音频编码器
+# 下载音频编码器（wav2vec2）
 modelscope download --model AI-ModelScope/wav2vec2-base-960h --local_dir models/Diffusion_Transformer/wav2vec2-base-960h
-```
 
-**3. FantasyTalking 预训练权重**
-
-```bash
+# 下载 FantasyTalking 预训练权重
 modelscope download --model amap_cvlab/FantasyTalking --local_dir models/Personalized_Model/FantasyTalking/
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
 
-以下是使用 DeepSpeed-Zero-2 进行分布式训练的推荐配置：
+如果你已按 **2.1 快速测试数据集** 下载了数据，按 **3.1 下载预训练模型** 下载了权重，你可以直接复制运行快速开始命令。
+
+推荐使用 DeepSpeed-Zero-2 或 FSDP 进行训练。这里以 DeepSpeed-Zero-2 为例。
+
+DeepSpeed-Zero-2 与 FSDP 的区别在于模型权重是否分片。**如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
-export MODEL_NAME_AUDIO="models/Diffusion_Transformer/wav2vec2-base-960h"  # 如果为 None，将使用 $MODEL_NAME/audio_encoder
+export MODEL_NAME_AUDIO="models/Diffusion_Transformer/wav2vec2-base-960h"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # 如果没有 RDMA 的多节点训练，取消注释以下两行
@@ -328,9 +338,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ### 3.5 使用 FSDP 训练
 
-FSDP（Fully Sharded Data Parallel）适合在高分辨率下训练 14B 模型，可以有效节省显存。
-
-**训练命令**：
+**如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
@@ -388,7 +396,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ### 3.6 不使用 DeepSpeed 或 FSDP 训练
 
-如果你只有一张 GPU 或不想使用分布式训练，可以直接运行：
+**不推荐此方式，因为缺少显存优化后端，容易显存溢出**。仅供参考。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P"
@@ -530,7 +538,7 @@ NCCL_DEBUG=INFO
 
 ### 4.1 推理参数
 
-推理脚本 [predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py) 中的主要参数：
+推理脚本 `examples/fantasytalking/predict_s2v.py` 中的主要参数：
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
@@ -589,7 +597,7 @@ NCCL_DEBUG=INFO
 python examples/fantasytalking/predict_s2v.py
 ```
 
-根据需求编辑 [examples/fantasytalking/predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py)。首次推理请重点修改以下参数，其他参数见上方推理参数说明。
+根据需求编辑 `examples/fantasytalking/predict_s2v.py`。首次推理请重点修改以下参数，其他参数见上方推理参数说明。
 
 ```python
 # 根据显卡显存选择
@@ -623,7 +631,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 [examples/fantasytalking/predict_s2v.py](file:///home/zhoumo.xjq/disk1/Code/VideoX-Fun-Github/examples/fantasytalking/predict_s2v.py)：
+编辑 `examples/fantasytalking/predict_s2v.py`：
 
 ```python
 # 确保 ulysses_degree × ring_degree = 使用的 GPU 数
