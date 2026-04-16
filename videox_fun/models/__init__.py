@@ -4,9 +4,9 @@ from diffusers import AutoencoderKL
 from transformers import (AutoProcessor, AutoTokenizer, CLIPImageProcessor,
                           CLIPTextModel, CLIPTokenizer,
                           CLIPVisionModelWithProjection,
-                          Gemma3ForConditionalGeneration, GemmaTokenizer,
-                          GemmaTokenizerFast, LlamaModel, LlamaTokenizerFast,
-                          LlavaForConditionalGeneration,
+                          Gemma3ForConditionalGeneration, Gemma3Processor,
+                          GemmaTokenizer, GemmaTokenizerFast, LlamaModel,
+                          LlamaTokenizerFast, LlavaForConditionalGeneration,
                           Mistral3ForConditionalGeneration, PixtralProcessor,
                           Qwen3Config, Qwen3ForCausalLM, T5EncoderModel,
                           T5Tokenizer, T5TokenizerFast, UMT5EncoderModel,
@@ -31,8 +31,8 @@ from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
-from .flashhead_transformer3d import FlashHeadTransformer3DModel
 from .flashhead_audio_encoder import FlashHeadAudioEncoder
+from .flashhead_transformer3d import FlashHeadTransformer3DModel
 from .flux2_image_processor import Flux2ImageProcessor
 from .flux2_transformer2d import Flux2Transformer2DModel
 from .flux2_transformer2d_control import Flux2ControlTransformer2DModel
@@ -52,7 +52,7 @@ from .ltx2_connecter import LTX2TextConnectors
 from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
-from .ltx2_vocoder import LTX2Vocoder
+from .ltx2_vocoder import LTX2Vocoder, LTX2VocoderWithBWE
 from .mova_audio_transformer3d import WanAudioTransformer3DModel
 from .mova_interactionv2 import MOVADualTowerConditionalBridge
 from .mova_model import MOVAModel

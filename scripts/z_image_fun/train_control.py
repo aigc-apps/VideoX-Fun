@@ -214,8 +214,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, accelerato
                     height      = height,
                     width       = width,
                     generator   = generator,
-                    guidance_scale = 0,
-                    num_inference_steps = 8,
+                    guidance_scale = 0 if  "turbo" in args.pretrained_model_name_or_path.lower() else 4.5,
+                    num_inference_steps = 8 if  "turbo" in args.pretrained_model_name_or_path.lower() else 25,
                     control_image = control_image,
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)

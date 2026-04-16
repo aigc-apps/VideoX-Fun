@@ -420,9 +420,9 @@ class SparseLinearAttention(nn.Module):
     def forward(self, q, k, v, return_sparsity=False):
         R'''
         Args:
-            q: queries of shape (B, H, L, D).
-            k: keys of shape (B, H, L, D).
-            v: values of shape (B, H, L, D).
+            q: queries  [B, L, H, D]
+            k: keys     [B, L, H, D].
+            v: values   [B, L, H, D].
             return_sparsity: whether to return the actual sparsity.
         '''
         dtype = q.dtype

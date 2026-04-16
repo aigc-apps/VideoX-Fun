@@ -34,7 +34,7 @@ def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
 
 def split_token_counts_and_frame_ids(T, token_frame, world_size, rank):
     S = T * token_frame
-    # compute split sizes per rank
+    # Compute split sizes per rank
     base = S // world_size
     rem = S % world_size
     split_sizes = torch.full((world_size,), base, dtype=torch.long)
@@ -43,14 +43,14 @@ def split_token_counts_and_frame_ids(T, token_frame, world_size, rank):
     start = split_sizes[:rank].sum()
     end = start + split_sizes[rank]
 
-    # vectorized mapping: global index -> frame id
+    # Vectorized mapping: global index -> frame id
     idx = torch.arange(start, end, dtype=torch.long)
     frame_ids = idx // token_frame.to(idx.device)
 
-    # unique counts
+    # Unique counts
     unique_frames, counts = torch.unique(frame_ids, return_counts=True)
 
-    # return as Python list (optional)
+    # Return as Python list (optional)
     return counts.tolist(), unique_frames.tolist()
 
 
@@ -164,7 +164,22 @@ class SingleStreamAttention(nn.Module):
         self.add_q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.add_k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
 
-    def forward(self, x: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, enable_sp=False, kv_seq=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, enable_sp=False, kv_seq=None, dtype=torch.bfloat16) -> torch.Tensor:
+        r"""
+        Args:
+            x (`Tensor`):
+                Input tensor
+            encoder_hidden_states (`Tensor`):
+                Encoder hidden states
+            shape (`tuple`, *optional*):
+                Grid shape (N_t, N_h, N_w)
+            enable_sp (`bool`, *optional*, defaults to False):
+                Whether to enable sequence parallel
+            kv_seq (`int`, *optional*):
+                KV sequence length
+            dtype (`torch.dtype`, *optional*, defaults to torch.bfloat16):
+                Output dtype to match transformer precision
+        """
         N_t, N_h, N_w = shape
         if not enable_sp:
             x = rearrange(x, "B (N_t S) C -> (B N_t) S C", N_t=N_t)
@@ -184,8 +199,8 @@ class SingleStreamAttention(nn.Module):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        # Use attention from attention_utils
-        x = attention(q=q, k=encoder_k, v=encoder_v, attention_type="FLASH_ATTENTION")
+        # Use attention from attention_utils with dtype conversion
+        x = attention(q=q.to(dtype), k=encoder_k.to(dtype), v=encoder_v.to(dtype), attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B M H K -> B H M K")
         x_output_shape = (B, N, C)
         x = x.transpose(1, 2)
@@ -230,10 +245,25 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         self.rope_bak = int(self.class_range // 2)
         self.rope_1d = RotaryPositionalEmbedding1D(self.head_dim)
 
-    def forward(self, x: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, x_ref_attn_map=None, human_num=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, x_ref_attn_map=None, human_num=None, dtype=torch.bfloat16) -> torch.Tensor:
+        r"""
+        Args:
+            x (`Tensor`):
+                Input tensor
+            encoder_hidden_states (`Tensor`):
+                Audio encoder hidden states
+            shape (`tuple`, *optional*):
+                Grid shape (N_t, N_h, N_w)
+            x_ref_attn_map (`Tensor`, *optional*):
+                Reference attention map
+            human_num (`int`, *optional*):
+                Number of humans
+            dtype (`torch.dtype`, *optional*, defaults to torch.bfloat16):
+                Output dtype to match transformer precision
+        """
         encoder_hidden_states = encoder_hidden_states.squeeze(0)
         if human_num == 1:
-            return super().forward(x, encoder_hidden_states, shape)
+            return super().forward(x, encoder_hidden_states, shape, dtype=dtype)
         N_t, _, _ = shape
         x = rearrange(x, "B (N_t S) C -> (B N_t) S C", N_t=N_t)
         B, N, C = x.shape
@@ -273,8 +303,9 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        # Use attention from attention_utils
-        x = attention(q=q, k=encoder_k, v=encoder_v, attention_type="FLASH_ATTENTION")
+        
+        # Use attention from attention_utils with dtype conversion
+        x = attention(q=q.to(dtype), k=encoder_k.to(dtype), v=encoder_v.to(dtype), attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B M H K -> B H M K")
         x_output_shape = (B, N, C)
         x = x.transpose(1, 2)
@@ -302,7 +333,7 @@ class WanSelfAttention(nn.Module):
         self.qk_norm = qk_norm
         self.eps = eps
 
-        # layers
+        # Layers
         self.q = nn.Linear(dim, dim)
         self.k = nn.Linear(dim, dim)
         self.v = nn.Linear(dim, dim)
@@ -314,10 +345,27 @@ class WanSelfAttention(nn.Module):
         """Helper method for computing attention map, used by xfuser."""
         return get_attn_map_with_target(visual_q, ref_k, shape, ref_target_masks, split_num)
 
-    def forward(self, x, seq_lens, grid_sizes, freqs, ref_target_masks=None):
+    def forward(self, x, seq_lens, grid_sizes, freqs, ref_target_masks=None, dtype=torch.bfloat16, t=0):
+        r"""
+        Args:
+            x (`Tensor`):
+                Input tensor with shape [B, L, C]
+            seq_lens (`Tensor`):
+                Sequence lengths
+            grid_sizes (`Tensor`):
+                Grid sizes [(N_t, N_h, N_w), ...]
+            freqs (`Tensor`):
+                RoPE frequencies
+            ref_target_masks (`Tensor`, *optional*):
+                Reference target masks for attention map computation
+            dtype (`torch.dtype`, *optional*, defaults to torch.bfloat16):
+                Output dtype to match transformer precision
+            t (`int`, *optional*, defaults to 0):
+                Timestep (unused, kept for API compatibility)
+        """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
-        # query, key, value function
+        # Query, key, value function
         def qkv_fn(x):
             q = self.norm_q(self.q(x)).view(b, s, n, d)
             k = self.norm_k(self.k(x)).view(b, s, n, d)
@@ -329,24 +377,30 @@ class WanSelfAttention(nn.Module):
         k = rope_apply(k, grid_sizes, freqs)
 
         x = attention(
-            q=q,
-            k=k,
-            v=v,
+            q.to(dtype),
+            k.to(dtype),
+            v=v.to(dtype),
             k_lens=seq_lens,
             window_size=self.window_size
-        ).type_as(x)
+        )
 
-        # output
+        # Output
         x = x.flatten(2)
         x = self.o(x)
+        
+        # Compute attention map for audio cross-attention
         with torch.no_grad():
-            x_ref_attn_map = get_attn_map_with_target(q.type_as(x), k.type_as(x), grid_sizes[0], 
+            x_ref_attn_map = get_attn_map_with_target(q, k, grid_sizes[0], 
                                                     ref_target_masks=ref_target_masks)
 
         return x, x_ref_attn_map
 
 
 class WanAttentionBlock(nn.Module):
+    r"""
+    Attention block with audio cross-attention support.
+    """
+
     def __init__(self,
                  cross_attn_type,
                  dim,
@@ -361,6 +415,35 @@ class WanAttentionBlock(nn.Module):
                  norm_input_visual=True,
                  class_range=24,
                  class_interval=4):
+        r"""
+        Args:
+            cross_attn_type (`str`):
+                Cross-attention type (unused)
+            dim (`int`):
+                Transformer dimension
+            ffn_dim (`int`):
+                Feed-forward network dimension
+            num_heads (`int`):
+                Number of attention heads
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for windowed attention
+            qk_norm (`bool`, *optional*, defaults to True):
+                Whether to apply QK normalization
+            cross_attn_norm (`bool`, *optional*, defaults to False):
+                Whether to apply cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon for layer normalization
+            output_dim (`int`, *optional*, defaults to 768):
+                Output dimension for audio projection
+            context_tokens (`int`, *optional*, defaults to 32):
+                Number of context tokens for audio
+            norm_input_visual (`bool`, *optional*, defaults to True):
+                Whether to normalize visual input
+            class_range (`int`, *optional*, defaults to 24):
+                Range for positional embedding
+            class_interval (`int`, *optional*, defaults to 4):
+                Interval for positional embedding
+        """
         super().__init__()
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -375,7 +458,7 @@ class WanAttentionBlock(nn.Module):
         self.sp_world_rank = 0
         self.all_gather = None
 
-        # layers
+        # Layers
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm, eps)
         self.norm3 = WanLayerNorm(
@@ -391,10 +474,10 @@ class WanAttentionBlock(nn.Module):
             nn.Linear(dim, ffn_dim), nn.GELU(approximate='tanh'),
             nn.Linear(ffn_dim, dim))
 
-        # modulation
+        # Modulation
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
-        # init audio module
+        # Init audio module
         self.audio_cross_attn = SingleStreamMutiAttention(
             dim=dim,
             encoder_hidden_states_dim=output_dim, 
@@ -421,46 +504,101 @@ class WanAttentionBlock(nn.Module):
         audio_embedding=None,
         ref_target_masks=None,
         human_num=None,
+        dtype=torch.bfloat16,
+        t=0,
     ):
-        dtype = x.dtype
-        with amp.autocast(dtype=torch.float32):
-            e = (self.modulation.to(e.device) + e).chunk(6, dim=1)
+        r"""
+        Args:
+            x (`Tensor`):
+                Input tensor with shape [B, L, C]
+            e (`Tensor`):
+                Time embedding modulation with shape [B, 6, C]
+            seq_lens (`Tensor`):
+                Sequence lengths with shape [B]
+            grid_sizes (`Tensor`):
+                Grid sizes with shape [B, 3], contains (F, H, W)
+            freqs (`Tensor`):
+                RoPE frequencies
+            context (`Tensor`):
+                Text context embeddings with shape [B, L_context, C]
+            context_lens (`Tensor`, *optional*):
+                Context lengths with shape [B]
+            audio_embedding (`Tensor`, *optional*):
+                Audio embeddings for cross-attention
+            ref_target_masks (`Tensor`, *optional*):
+                Reference target masks
+            human_num (`int`, *optional*):
+                Number of humans in the scene
+            dtype (`torch.dtype`, *optional*, defaults to torch.bfloat16):
+                Output dtype to match transformer precision
+            t (`int`, *optional*, defaults to 0):
+                Timestep
+        """
+        # Modulation
+        e = (self.modulation + e).chunk(6, dim=1)
 
-        # self-attention
+        # Self-attention with modulation
+        temp_x = self.norm1(x) * (1 + e[1]) + e[0]
+        temp_x = temp_x.to(dtype)
+
         y, x_ref_attn_map = self.self_attn(
-            (self.norm1(x).float() * (1 + e[1]) + e[0]).type_as(x), seq_lens, grid_sizes,
-            freqs, ref_target_masks=ref_target_masks)
-        with amp.autocast(dtype=torch.float32):
-            x = x + y * e[2]
+            temp_x, 
+            seq_lens, 
+            grid_sizes,
+            freqs, 
+            ref_target_masks=ref_target_masks,
+            dtype=dtype,
+            t=t,
+        )
+        x = x + y * e[2]
         
-        x = x.to(dtype)
+        # Cross-attention and audio cross-attention with modulation
+        def cross_attn_ffn(x, context, context_lens, e):
+            # Cross-attention: attend to text context
+            x = x + self.cross_attn(self.norm3(x).to(x.dtype), context, context_lens, dtype=dtype)
 
-        # cross-attention of text
-        x = x + self.cross_attn(self.norm3(x), context, context_lens, dtype=dtype)
+            # Cross-attention for audio
+            # For multi-GPU: audio_cross_attn expects full sequence, so all_gather x first
+            if self.sp_world_size > 1 and self.all_gather is not None:
+                # All gather x to get full sequence for audio cross attention
+                x_full = self.all_gather(x, dim=1)
+                x_a_full = self.audio_cross_attn(
+                    self.norm_x(x_full), 
+                    encoder_hidden_states=audio_embedding,
+                    shape=grid_sizes[0], 
+                    x_ref_attn_map=x_ref_attn_map, 
+                    human_num=human_num,
+                    dtype=dtype,
+                )
+                # Chunk result back to local rank
+                x_a = torch.chunk(x_a_full, self.sp_world_size, dim=1)[self.sp_world_rank]
+            else:
+                x_a = self.audio_cross_attn(
+                    self.norm_x(x), 
+                    encoder_hidden_states=audio_embedding,
+                    shape=grid_sizes[0], 
+                    x_ref_attn_map=x_ref_attn_map, 
+                    human_num=human_num,
+                    dtype=dtype,
+                )
+            x = x + x_a
 
-        # cross attn of audio
-        # For multi-GPU: audio_cross_attn expects full sequence, so all_gather x first
-        if self.sp_world_size > 1 and self.all_gather is not None:
-            # All gather x to get full sequence for audio cross attention
-            x_full = self.all_gather(x, dim=1)
-            x_a_full = self.audio_cross_attn(self.norm_x(x_full), encoder_hidden_states=audio_embedding,
-                                             shape=grid_sizes[0], x_ref_attn_map=x_ref_attn_map, human_num=human_num)
-            # Chunk result back to local rank
-            x_a = torch.chunk(x_a_full, self.sp_world_size, dim=1)[self.sp_world_rank]
-        else:
-            x_a = self.audio_cross_attn(self.norm_x(x), encoder_hidden_states=audio_embedding,
-                                            shape=grid_sizes[0], x_ref_attn_map=x_ref_attn_map, human_num=human_num)
-        x = x + x_a
-
-        y = self.ffn((self.norm2(x).float() * (1 + e[4]) + e[3]).to(dtype))
-        with amp.autocast(dtype=torch.float32):
+            # FFN with modulation
+            temp_x = self.norm2(x) * (1 + e[4]) + e[3]
+            temp_x = temp_x.to(dtype)
+            
+            y = self.ffn(temp_x)
             x = x + y * e[5]
+            return x
 
-        x = x.to(dtype)
+        x = cross_attn_ffn(x, context, context_lens, e)
         return x
 
 
 class AudioProjModel(ModelMixin, ConfigMixin):
+    r"""
+    Audio projection model to process audio embeddings.
+    """
     def __init__(
         self,
         seq_len=5,
@@ -472,6 +610,25 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         context_tokens=32,
         norm_output_audio=False,
     ):
+        r"""
+        Args:
+            seq_len (`int`, *optional*, defaults to 5):
+                Sequence length for first frame audio
+            seq_len_vf (`int`, *optional*, defaults to 12):
+                Sequence length for subsequent frames audio
+            blocks (`int`, *optional*, defaults to 12):
+                Number of wav2vec blocks
+            channels (`int`, *optional*, defaults to 768):
+                Number of channels per block
+            intermediate_dim (`int`, *optional*, defaults to 512):
+                Intermediate projection dimension
+            output_dim (`int`, *optional*, defaults to 768):
+                Output dimension
+            context_tokens (`int`, *optional*, defaults to 32):
+                Number of context tokens
+            norm_output_audio (`bool`, *optional*, defaults to False):
+                Whether to apply layer normalization to output
+        """
         super().__init__()
 
         self.seq_len = seq_len
@@ -483,28 +640,47 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         self.context_tokens = context_tokens
         self.output_dim = output_dim
 
-        # define multiple linear layers
+        # Define multiple linear layers
         self.proj1 = nn.Linear(self.input_dim, intermediate_dim)
         self.proj1_vf = nn.Linear(self.input_dim_vf, intermediate_dim)
         self.proj2 = nn.Linear(intermediate_dim, intermediate_dim)
         self.proj3 = nn.Linear(intermediate_dim, context_tokens * output_dim)
         self.norm = nn.LayerNorm(output_dim) if norm_output_audio else nn.Identity()
 
-    def forward(self, audio_embeds, audio_embeds_vf):
+    def forward(self, audio_embeds, audio_embeds_vf, dtype=torch.bfloat16):
+        r"""
+        Args:
+            audio_embeds (`Tensor`):
+                First frame audio with shape [B, 1, seq_len, blocks, channels]
+            audio_embeds_vf (`Tensor`):
+                Subsequent frames audio with shape [B, F-1, seq_len_vf, blocks, channels]
+            dtype (`torch.dtype`, *optional*, defaults to torch.bfloat16):
+                Output dtype to match transformer precision
+            
+        Returns:
+            `Tensor`:
+                Context tokens with shape [B, F, context_tokens, output_dim]
+        """
+        # Ensure input dtype matches target dtype
+        if audio_embeds.dtype != dtype:
+            audio_embeds = audio_embeds.to(dtype=dtype)
+        if audio_embeds_vf.dtype != dtype:
+            audio_embeds_vf = audio_embeds_vf.to(dtype=dtype)
+        
         video_length = audio_embeds.shape[1] + audio_embeds_vf.shape[1]
-        B, _, _, S, C = audio_embeds.shape
+        B = audio_embeds.shape[0]
 
-        # process audio of first frame
+        # Process first frame audio
         audio_embeds = rearrange(audio_embeds, "bz f w b c -> (bz f) w b c")
         batch_size, window_size, blocks, channels = audio_embeds.shape
         audio_embeds = audio_embeds.reshape(batch_size, window_size * blocks * channels)
 
-        # process audio of latter frame
+        # Process latter frame audio
         audio_embeds_vf = rearrange(audio_embeds_vf, "bz f w b c -> (bz f) w b c")
         batch_size_vf, window_size_vf, blocks_vf, channels_vf = audio_embeds_vf.shape
         audio_embeds_vf = audio_embeds_vf.reshape(batch_size_vf, window_size_vf * blocks_vf * channels_vf)
 
-        # first projection
+        # First projection
         audio_embeds = torch.relu(self.proj1(audio_embeds)) 
         audio_embeds_vf = torch.relu(self.proj1_vf(audio_embeds_vf)) 
         audio_embeds = rearrange(audio_embeds, "(bz f) c -> bz f c", bz=B)
@@ -513,20 +689,26 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         batch_size_c, N_t, C_a = audio_embeds_c.shape
         audio_embeds_c = audio_embeds_c.view(batch_size_c*N_t, C_a)
 
-        # second projection
+        # Second projection
         audio_embeds_c = torch.relu(self.proj2(audio_embeds_c))
 
         context_tokens = self.proj3(audio_embeds_c).reshape(batch_size_c*N_t, self.context_tokens, self.output_dim)
 
-        # normalization and reshape
-        with amp.autocast(dtype=torch.float32):
-            context_tokens = self.norm(context_tokens)
+        # Normalization and reshape
+        context_tokens = self.norm(context_tokens)
         context_tokens = rearrange(context_tokens, "(bz f) m c -> bz f m c", f=video_length)
+
+        # Ensure output dtype matches transformer precision
+        if context_tokens.dtype != dtype:
+            context_tokens = context_tokens.to(dtype=dtype)
 
         return context_tokens
 
 
 class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
+    r"""
+    InfiniteTalk Transformer 3D model with audio integration.
+    """
     ignore_for_config = [
         'patch_size', 'cross_attn_norm', 'qk_norm', 'text_dim', 'window_size'
     ]
@@ -550,20 +732,75 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         qk_norm=True,
         cross_attn_norm=True,
         eps=1e-6,
-        # audio params
+        # Audio params
         audio_window=5,
         intermediate_dim=512,
         output_dim=768,
         context_tokens=32,
-        vae_scale=4, # vae timedownsample scale
+        vae_scale=4, # VAE time downsample scale
 
         norm_input_visual=True,
         norm_output_audio=True,
         weight_init=True,
-        # custom block params
+        # Custom block params
         class_range=24,
         class_interval=4,
     ):
+        r"""
+        Initialize the InfiniteTalk diffusion model backbone.
+
+        Args:
+            model_type (`str`, *optional*, defaults to 'i2v'):
+                Model type, must be 'i2v' for InfiniteTalk
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                Patch embedding size (t, h, w)
+            text_len (`int`, *optional*, defaults to 512):
+                Maximum text sequence length
+            in_dim (`int`, *optional*, defaults to 16):
+                Input channels
+            dim (`int`, *optional*, defaults to 2048):
+                Transformer dimension
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Feed-forward network dimension
+            freq_dim (`int`, *optional*, defaults to 256):
+                Frequency dimension for time embedding
+            text_dim (`int`, *optional*, defaults to 4096):
+                Text embedding dimension
+            out_dim (`int`, *optional*, defaults to 16):
+                Output channels
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer layers
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for windowed attention
+            qk_norm (`bool`, *optional*, defaults to True):
+                Whether to apply QK normalization
+            cross_attn_norm (`bool`, *optional*, defaults to True):
+                Whether to apply cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon for layer normalization
+            audio_window (`int`, *optional*, defaults to 5):
+                Audio window size
+            intermediate_dim (`int`, *optional*, defaults to 512):
+                Intermediate dimension for audio projection
+            output_dim (`int`, *optional*, defaults to 768):
+                Output dimension for audio projection
+            context_tokens (`int`, *optional*, defaults to 32):
+                Number of context tokens for audio
+            vae_scale (`int`, *optional*, defaults to 4):
+                VAE temporal downsample factor
+            norm_input_visual (`bool`, *optional*, defaults to True):
+                Whether to normalize visual input
+            norm_output_audio (`bool`, *optional*, defaults to True):
+                Whether to normalize audio output
+            weight_init (`bool`, *optional*, defaults to True):
+                Whether to initialize weights
+            class_range (`int`, *optional*, defaults to 24):
+                Range for positional embedding
+            class_interval (`int`, *optional*, defaults to 4):
+                Interval for positional embedding
+        """
         # Call parent class initialization
         super().__init__(
             model_type=model_type,
@@ -604,7 +841,7 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         ])
         
         # Initialize audio adapter
-        # blocks should match the number of hidden layers from audio encoder
+        # Blocks should match the number of hidden layers from audio encoder
         # Wav2Vec2 base has 12 transformer layers, so blocks=12
         self.audio_proj = AudioProjModel(
             seq_len=audio_window,
@@ -622,13 +859,15 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
             self.init_weights()
 
     def enable_multi_gpus_inference(self):
-        """Enable multi-GPU inference using sequence parallel."""
+        r"""
+        Enable multi-GPU inference using sequence parallel.
+        """
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
         self.all_gather = get_sp_group().all_gather
 
         # Replace self_attn forward with xfuser version for all blocks
-        # and pass sp parameters to each block for audio_cross_attn
+        # And pass sp parameters to each block for audio_cross_attn
         for block in self.blocks:
             block.self_attn.forward = types.MethodType(
                 usp_attn_infinitetalk_forward, block.self_attn)
@@ -649,11 +888,39 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         ref_target_masks=None,
         cond_flag=True,
     ):
-        assert clip_fea is not None and y is not None
+        r"""
+        Forward pass through the diffusion model.
+
+        Args:
+            x (`List[Tensor]`):
+                List of input video tensors, each with shape [C_in, F, H, W]
+            t (`Tensor`):
+                Diffusion timesteps tensor of shape [B]
+            context (`List[Tensor]`):
+                List of text embeddings each with shape [L, C]
+            seq_len (`int`):
+                Maximum sequence length for positional encoding
+            clip_fea (`Tensor`, *optional*):
+                CLIP image features for image-to-video mode
+            y (`List[Tensor]`, *optional*):
+                Conditional video inputs for image-to-video mode, same shape as x
+            audio (`Tensor`, *optional*):
+                Audio wav2vec features
+            ref_target_masks (`Tensor`, *optional*):
+                Reference target masks for attention
+            cond_flag (`bool`, *optional*, defaults to True):
+                Whether this is conditional forward pass
+
+        Returns:
+            `List[Tensor]`:
+                List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
+        """
+        # Get device and dtype
         device = self.patch_embedding.weight.device
+        dtype = x.dtype
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
-        x[0] = x[0].to(context[0].dtype)
+        x[0] = x[0].to(dtype)
 
         # Get size
         _, T, H, W = x[0].shape
@@ -661,16 +928,18 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         N_h = H // self.patch_size[1]
         N_w = W // self.patch_size[2]
 
+        # Concatenate condition video to input (for I2V)
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
-        # embeddings
+        # Patch embedding: convert video to sequence of patches
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
-        # Align seq_len for multi-GPU
+        
+        # Padding for multi-GPU inference
         if hasattr(self, 'sp_world_size') and self.sp_world_size > 1:
             seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
         assert seq_lens.max() <= seq_len
@@ -679,16 +948,12 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
                       dim=1) for u in x
         ])
 
-        # time embeddings
-        with amp.autocast(dtype=torch.float32):
-            e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float())
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            # assert e.dtype == torch.float32 and e0.dtype == torch.float32
-            # e0 = e0.to(dtype)
-            # e = e.to(dtype)
+        # Time embeddings
+        e = self.time_embedding(
+            sinusoidal_embedding_1d(self.freq_dim, t).float()).to(dtype)
+        e0 = self.time_projection(e).unflatten(1, (6, self.dim))
 
-        # text embedding
+        # Text embeddings
         context_lens = None
         context = self.text_embedding(
             torch.stack([
@@ -697,11 +962,12 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
                 for u in context
             ]))
 
-        # clip embedding
+        # CLIP embeddings
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea) 
-            context = torch.concat([context_clip, context], dim=1).to(x.dtype)
+            context = torch.concat([context_clip, context], dim=1)
         
+        # Audio processing
         audio_cond = audio.to(device=x.device, dtype=x.dtype)
         first_frame_audio_emb_s = audio_cond[:, :1, ...] 
         latter_frame_audio_emb = audio_cond[:, 1:, ...] 
@@ -714,22 +980,26 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         latter_middle_frame_audio_emb = latter_frame_audio_emb[:, :, 1:-1, middle_index:middle_index+1, ...] 
         latter_middle_frame_audio_emb = rearrange(latter_middle_frame_audio_emb, "b n_t n w s c -> b n_t (n w) s c") 
         latter_frame_audio_emb_s = torch.concat([latter_first_frame_audio_emb, latter_middle_frame_audio_emb, latter_last_frame_audio_emb], dim=2) 
-        audio_embedding = self.audio_proj(first_frame_audio_emb_s, latter_frame_audio_emb_s) 
+        
+        # Project audio to context tokens
+        audio_embedding = self.audio_proj(first_frame_audio_emb_s, latter_frame_audio_emb_s, dtype=dtype)
         human_num = len(audio_embedding)
-        audio_embedding = torch.concat(audio_embedding.split(1), dim=2).to(x.dtype)
+        audio_embedding = torch.concat(audio_embedding.split(1), dim=2)
 
-        # convert ref_target_masks to token_ref_target_masks
+        # Convert ref_target_masks to token_ref_target_masks
         if ref_target_masks is not None:
-            ref_target_masks = ref_target_masks.unsqueeze(0).to(torch.float32) 
+            ref_target_masks = ref_target_masks.unsqueeze(0) 
             token_ref_target_masks = nn.functional.interpolate(ref_target_masks, size=(N_h, N_w), mode='nearest') 
             token_ref_target_masks = token_ref_target_masks.squeeze(0)
             token_ref_target_masks = (token_ref_target_masks > 0)
             token_ref_target_masks = token_ref_target_masks.view(token_ref_target_masks.shape[0], -1) 
             token_ref_target_masks = token_ref_target_masks.to(x.dtype)
 
-        # Context Parallel
+        # Context Parallel: split input across GPUs
         if hasattr(self, 'sp_world_size') and self.sp_world_size > 1:
             x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+            e0 = torch.chunk(e0, self.sp_world_size, dim=1)[self.sp_world_rank]
+            e = torch.chunk(e, self.sp_world_size, dim=1)[self.sp_world_rank]
 
         # TeaCache
         if self.teacache is not None:
@@ -753,40 +1023,57 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
             else:
                 self.should_calc = self.teacache.should_calc
 
-        # Arguments
-        kwargs = dict(
-            e=e0,
-            seq_lens=seq_lens,
-            grid_sizes=grid_sizes,
-            freqs=self.freqs,
-            context=context,
-            context_lens=context_lens,
-            audio_embedding=audio_embedding,
-            ref_target_masks=token_ref_target_masks,
-            human_num=human_num,
-        )
+        # Prepare checkpointing utilities
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+
+        # Main transformer loop
         if self.teacache is not None:
             if not self.should_calc:
+                # Skip: use cached residual
                 previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
                 x = x + previous_residual.to(x.device)[-x.size()[0]:,]
             else:
                 ori_x = x.clone().cpu() if self.teacache.offload else x.clone()
+
                 for block in self.blocks:
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-                        def create_custom_forward(module):
-                            def custom_forward(*inputs):
-                                return module(*inputs)
-                            return custom_forward
-                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block),
-                            x, e0, seq_lens, grid_sizes, self.freqs,
-                            context, context_lens, audio_embedding,
-                            token_ref_target_masks, human_num,
+                            x,
+                            e0,
+                            seq_lens,
+                            grid_sizes,
+                            self.freqs,
+                            context,
+                            context_lens,
+                            audio_embedding,
+                            token_ref_target_masks,
+                            human_num,
+                            dtype,
+                            t,
                             **ckpt_kwargs,
                         )
                     else:
-                        x = block(x, **kwargs)
+                        x = block(
+                            x,
+                            e=e0,
+                            seq_lens=seq_lens,
+                            grid_sizes=grid_sizes,
+                            freqs=self.freqs,
+                            context=context,
+                            context_lens=context_lens,
+                            audio_embedding=audio_embedding,
+                            ref_target_masks=token_ref_target_masks,
+                            human_num=human_num,
+                            dtype=dtype,
+                            t=t,
+                        )
+                    
                 if cond_flag:
                     self.teacache.previous_residual_cond = x.cpu() - ori_x if self.teacache.offload else x - ori_x
                 else:
@@ -794,39 +1081,53 @@ class InfiniteTalkTransformer3DModel(WanTransformer3DModel):
         else:
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    def create_custom_forward(module):
-                        def custom_forward(*inputs):
-                            return module(*inputs)
-                        return custom_forward
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
-                        x, e0, seq_lens, grid_sizes, self.freqs,
-                        context, context_lens, audio_embedding,
-                        token_ref_target_masks, human_num,
+                        x,
+                        e0,
+                        seq_lens,
+                        grid_sizes,
+                        self.freqs,
+                        context,
+                        context_lens,
+                        audio_embedding,
+                        token_ref_target_masks,
+                        human_num,
+                        dtype,
+                        t,
                         **ckpt_kwargs,
                     )
                 else:
-                    x = block(x, **kwargs)
+                    x = block(
+                        x,
+                        e=e0,
+                        seq_lens=seq_lens,
+                        grid_sizes=grid_sizes,
+                        freqs=self.freqs,
+                        context=context,
+                        context_lens=context_lens,
+                        audio_embedding=audio_embedding,
+                        ref_target_masks=token_ref_target_masks,
+                        human_num=human_num,
+                        dtype=dtype,
+                        t=t,
+                    )
 
-        # head
+        # Head: project to output space
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-                return custom_forward
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
             x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
         else:
             x = self.head(x, e)
 
-        # Context Parallel all_gather
+        # Context Parallel: gather results from all GPUs
         if hasattr(self, 'sp_world_size') and self.sp_world_size > 1:
             x = self.all_gather(x, dim=1)
 
-        # unpatchify
+        # Unpatchify: reconstruct video from patches
         x = self.unpatchify(x, grid_sizes)
         x = torch.stack(x)
+        
+        # Increment teacache counter and reset if completed
         if self.teacache is not None and cond_flag:
             self.teacache.cnt += 1
             if self.teacache.cnt == self.teacache.num_steps:

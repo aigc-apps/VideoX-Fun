@@ -11,13 +11,14 @@ Wan-Fun:
 [English](./README.md) | 简体中文 | [日本語](./README_ja-JP.md)
 
 # 目录
-- [目录](#目录)
 - [简介](#简介)
 - [快速启动](#快速启动)
 - [视频作品](#视频作品)
 - [如何使用](#如何使用)
 - [模型地址](#模型地址)
 - [参考文献](#参考文献)
+- [引用](#引用)
+- [限制与风险](#限制与风险)
 - [许可证](#许可证)
 
 # 简介
@@ -688,6 +689,31 @@ V1.1:
 - ComfyUI-EasyAnimateWrapper: https://github.com/kijai/ComfyUI-EasyAnimateWrapper
 - ComfyUI-CameraCtrl-Wrapper: https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper
 - CameraCtrl: https://github.com/hehao13/CameraCtrl
+
+# 引用
+
+如果您在研究或项目中使用了 VideoX-Fun，请按以下格式引用：
+
+```bibtex
+@misc{aigc_apps_VideoX_Fun_2026,
+  author = {aigc-apps},
+  title = {VideoX-Fun: A Video Generation Pipeline for Diffusion Transformer},
+  year = {2026},
+  publisher = {GitHub},
+  url = {https://github.com/aigc-apps/VideoX-Fun}
+}
+```
+
+# 限制与风险
+
+- 生成的视频可能存在伪影或质量问题，尤其在复杂场景中。
+- 模型在处理精细细节、文字渲染或特定艺术风格时可能有困难。
+- 性能因输入提示词质量、分辨率等参数而异。
+- 该技术可能被滥用于创建误导性内容（如深度伪造）。用户需对道德使用负责。
+- 模型可能反映训练数据中存在的偏见。
+- 用户在使用真人图片或视频时应尊重隐私和版权。
+
+我们鼓励负责任地使用该技术，并建议在生产环境中实施安全措施。
 
 # 许可证
 本项目采用 [Apache License (Version 2.0)](https://github.com/modelscope/modelscope/blob/master/LICENSE).

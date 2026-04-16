@@ -1,6 +1,9 @@
 # Modified from https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/wan_vace.py
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
+
+"""VACE (Video Attention Control Extension) model implementation for Wan transformer."""
+
 from typing import Any, Dict
 
 import os
@@ -9,7 +12,7 @@ import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 from diffusers.configuration_utils import register_to_config
-from diffusers.utils import is_torch_version
+from diffusers.utils import is_torch_version, logging
 
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
@@ -18,7 +21,10 @@ from ..utils import cfg_skip
 
 VIDEOX_OFFLOAD_VACE_LATENTS = os.environ.get("VIDEOX_OFFLOAD_VACE_LATENTS", False)
 
+
 class VaceWanAttentionBlock(WanAttentionBlock):
+    """VACE attention block with before/after projection layers."""
+    
     def __init__(
             self,
             cross_attn_type,
@@ -33,15 +39,31 @@ class VaceWanAttentionBlock(WanAttentionBlock):
     ):
         super().__init__(cross_attn_type, dim, ffn_dim, num_heads, window_size, qk_norm, cross_attn_norm, eps)
         self.block_id = block_id
+        
+        # Initialize projection layers for the first block
         if block_id == 0:
             self.before_proj = nn.Linear(self.dim, self.dim)
             nn.init.zeros_(self.before_proj.weight)
             nn.init.zeros_(self.before_proj.bias)
+        
+        # Initialize after projection for all blocks
         self.after_proj = nn.Linear(self.dim, self.dim)
         nn.init.zeros_(self.after_proj.weight)
         nn.init.zeros_(self.after_proj.bias)
 
     def forward(self, c, x, **kwargs):
+        r"""
+        Forward pass for VACE attention block.
+        
+        Args:
+            c: Control tensor from VACE layers
+            x: Input tensor from main transformer
+            **kwargs: Additional arguments passed to parent block
+        
+        Returns:
+            Stacked control tensors for hint injection
+        """
+        # Process control tensor at block boundaries
         if self.block_id == 0:
             c = self.before_proj(c) + x
             all_c = []
@@ -49,12 +71,15 @@ class VaceWanAttentionBlock(WanAttentionBlock):
             all_c = list(torch.unbind(c))
             c = all_c.pop(-1)
 
+        # Move to correct device if offloading
         if VIDEOX_OFFLOAD_VACE_LATENTS:
             c = c.to(x.device)
 
+        # Apply parent block forward
         c = super().forward(c, **kwargs)
         c_skip = self.after_proj(c)
 
+        # Offload to CPU if enabled
         if VIDEOX_OFFLOAD_VACE_LATENTS:
             c_skip = c_skip.to("cpu")
             c = c.to("cpu")
@@ -65,6 +90,8 @@ class VaceWanAttentionBlock(WanAttentionBlock):
     
     
 class BaseWanAttentionBlock(WanAttentionBlock):
+    """Base Wan attention block with optional hint injection."""
+    
     def __init__(
         self,
         cross_attn_type,
@@ -81,7 +108,21 @@ class BaseWanAttentionBlock(WanAttentionBlock):
         self.block_id = block_id
 
     def forward(self, x, hints, context_scale=1.0, **kwargs):
+        r"""
+        Forward pass with optional VACE hint injection.
+        
+        Args:
+            x: Input tensor from previous layer
+            hints: List of hint tensors from VACE blocks
+            context_scale: Scaling factor for hints
+            **kwargs: Additional arguments passed to parent block
+        
+        Returns:
+            Output tensor with hints added if applicable
+        """
         x = super().forward(x, **kwargs)
+        
+        # Add hints at specified block positions
         if self.block_id is not None:
             if VIDEOX_OFFLOAD_VACE_LATENTS:
                 x = x + hints[self.block_id].to(x.device) * context_scale
@@ -91,36 +132,95 @@ class BaseWanAttentionBlock(WanAttentionBlock):
     
     
 class VaceWanTransformer3DModel(WanTransformer3DModel):
+    """Wan Transformer 3D model with VACE (Video Attention Control Extension) support."""
+    
     @register_to_config
-    def __init__(self,
-                 vace_layers=None,
-                 vace_in_dim=None,
-                 model_type='t2v',
-                 patch_size=(1, 2, 2),
-                 text_len=512,
-                 in_dim=16,
-                 dim=2048,
-                 ffn_dim=8192,
-                 freq_dim=256,
-                 text_dim=4096,
-                 out_dim=16,
-                 num_heads=16,
-                 num_layers=32,
-                 window_size=(-1, -1),
-                 qk_norm=True,
-                 cross_attn_norm=True,
-                 eps=1e-6):
+    def __init__(
+        self,
+        vace_layers=None,
+        vace_in_dim=None,
+        model_type='t2v',
+        patch_size=(1, 2, 2),
+        text_len=512,
+        in_dim=16,
+        dim=2048,
+        ffn_dim=8192,
+        freq_dim=256,
+        text_dim=4096,
+        out_dim=16,
+        num_heads=16,
+        num_layers=32,
+        window_size=(-1, -1),
+        qk_norm=True,
+        cross_attn_norm=True,
+        eps=1e-6
+    ):
+        r"""
+        Initialize the VACE diffusion model backbone.
+        
+        Args:
+            vace_layers (`list`, *optional*):
+                List of layer indices for VACE processing (defaults to even layers)
+            vace_in_dim (`int`, *optional*):
+                Input channels for VACE (defaults to same as model input)
+            model_type (`str`, *optional*, defaults to 't2v'):
+                Model variant - text-to-video
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                3D patch dimensions for video embedding
+            text_len (`int`, *optional*, defaults to 512):
+                Fixed length for text embeddings
+            in_dim (`int`, *optional*, defaults to 16):
+                Input video channels
+            dim (`int`, *optional*, defaults to 2048):
+                Hidden dimension of the transformer
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Intermediate dimension in feed-forward network
+            freq_dim (`int`, *optional*, defaults to 256):
+                Dimension for sinusoidal time embeddings
+            text_dim (`int`, *optional*, defaults to 4096):
+                Input dimension for text embeddings
+            out_dim (`int`, *optional*, defaults to 16):
+                Output video channels
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer blocks
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for local attention
+            qk_norm (`bool`, *optional*, defaults to True):
+                Enable query/key normalization
+            cross_attn_norm (`bool`, *optional*, defaults to True):
+                Enable cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon value for normalization layers
+        """
         model_type = "t2v"   # TODO: Hard code for both preview and official versions.
-        super().__init__(model_type, patch_size, text_len, in_dim, dim, ffn_dim, freq_dim, text_dim, out_dim,
-                         num_heads, num_layers, window_size, qk_norm, cross_attn_norm, eps)
+        super().__init__(
+            model_type=model_type,
+            patch_size=patch_size,
+            text_len=text_len,
+            in_dim=in_dim,
+            dim=dim,
+            ffn_dim=ffn_dim,
+            freq_dim=freq_dim,
+            text_dim=text_dim,
+            out_dim=out_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            window_size=window_size,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+        )
 
+        # Configure VACE layers (even layers by default)
         self.vace_layers = [i for i in range(0, self.num_layers, 2)] if vace_layers is None else vace_layers
         self.vace_in_dim = self.in_dim if vace_in_dim is None else vace_in_dim
 
         assert 0 in self.vace_layers
         self.vace_layers_mapping = {i: n for n, i in enumerate(self.vace_layers)}
 
-        # blocks
+        # Replace blocks with BaseWanAttentionBlock (with hint injection)
         self.blocks = nn.ModuleList([
             BaseWanAttentionBlock('t2v_cross_attn', self.dim, self.ffn_dim, self.num_heads, self.window_size, self.qk_norm,
                                   self.cross_attn_norm, self.eps,
@@ -128,14 +228,14 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             for i in range(self.num_layers)
         ])
 
-        # vace blocks
+        # VACE blocks for control processing
         self.vace_blocks = nn.ModuleList([
             VaceWanAttentionBlock('t2v_cross_attn', self.dim, self.ffn_dim, self.num_heads, self.window_size, self.qk_norm,
                                      self.cross_attn_norm, self.eps, block_id=i)
             for i in self.vace_layers
         ])
 
-        # vace patch embeddings
+        # VACE patch embeddings for control input
         self.vace_patch_embedding = nn.Conv3d(
             self.vace_in_dim, self.dim, kernel_size=self.patch_size, stride=self.patch_size
         )
@@ -147,28 +247,44 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         seq_len,
         kwargs
     ):
-        # embeddings
+        r"""
+        Process VACE control inputs through VACE blocks.
+        
+        Args:
+            x: Main transformer input tensor
+            vace_context: List of VACE control inputs
+            seq_len: Maximum sequence length
+            kwargs: Additional arguments for block forward pass
+        
+        Returns:
+            List of hint tensors for injection into main transformer
+        """
+        # Patch embed VACE control inputs
         c = [self.vace_patch_embedding(u.unsqueeze(0)) for u in vace_context]
         c = [u.flatten(2).transpose(1, 2) for u in c]
         c = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
                       dim=1) for u in c
         ])
-        # Context Parallel
+        # Context Parallel: split across GPUs
         if self.sp_world_size > 1:
             c = torch.chunk(c, self.sp_world_size, dim=1)[self.sp_world_rank]
 
-        # arguments
+        # Prepare arguments
         new_kwargs = dict(x=x)
         new_kwargs.update(kwargs)
         
+        # Prepare checkpointing utilities
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module, **static_kwargs):
+                def custom_forward(*inputs):
+                    return module(*inputs, **static_kwargs)
+                return custom_forward
+            ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+        
+        # Process through VACE blocks with checkpointing support
         for block in self.vace_blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def create_custom_forward(module, **static_kwargs):
-                    def custom_forward(*inputs):
-                        return module(*inputs, **static_kwargs)
-                    return custom_forward
-                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
                 c = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block, **new_kwargs),
                     c,
@@ -176,6 +292,8 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                 )
             else:
                 c = block(c, **new_kwargs)
+        
+        # Extract hints (remove last element)
         hints = torch.unbind(c)[:-1]
         return hints
 
@@ -193,42 +311,45 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         cond_flag=True
     ):
         r"""
-        Forward pass through the diffusion model
-
+        Forward pass through the VACE diffusion model.
+        
         Args:
             x (List[Tensor]):
                 List of input video tensors, each with shape [C_in, F, H, W]
             t (Tensor):
                 Diffusion timesteps tensor of shape [B]
+            vace_context (List[Tensor]):
+                List of VACE control inputs
             context (List[Tensor]):
                 List of text embeddings each with shape [L, C]
             seq_len (`int`):
                 Maximum sequence length for positional encoding
+            vace_context_scale (`float`, *optional*, defaults to 1.0):
+                Scaling factor for VACE hints
             clip_fea (Tensor, *optional*):
                 CLIP image features for image-to-video mode
             y (List[Tensor], *optional*):
-                Conditional video inputs for image-to-video mode, same shape as x
-
+                Conditional video inputs for image-to-video mode
+            cond_flag (`bool`, *optional*, defaults to True):
+                Flag for conditional vs unconditional forward pass
+        
         Returns:
             List[Tensor]:
-                List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
+                List of denoised video tensors with original input shapes
         """
-        # if self.model_type == 'i2v':
-        #     assert clip_fea is not None and y is not None
-        # params
+        # Get device and dtype
         device = self.patch_embedding.weight.device
         dtype = x.dtype
         if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
-        # if y is not None:
-        #     x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
-
-        # embeddings
+        # Patch embedding: convert video to sequence of patches
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
+        
+        # Padding for multi-gpu inference
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         if self.sp_world_size > 1:
             seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
@@ -238,14 +359,12 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                       dim=1) for u in x
         ])
 
-        # time embeddings
-        with amp.autocast(dtype=torch.float32):
-            e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float())
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
-            assert e.dtype == torch.float32 and e0.dtype == torch.float32
+        # Time embeddings with sinusoidal encoding
+        e = self.time_embedding(
+            sinusoidal_embedding_1d(self.freq_dim, t).float()).to(dtype)
+        e0 = self.time_projection(e).unflatten(1, (6, self.dim))
 
-        # context
+        # Context: text embeddings (padded to fixed length)
         context_lens = None
         context = self.text_embedding(
             torch.stack([
@@ -254,11 +373,11 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                 for u in context
             ]))
 
-        # Context Parallel
+        # Context Parallel: split input across GPUs
         if self.sp_world_size > 1:
             x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
             
-        # arguments
+        # Prepare arguments
         kwargs = dict(
             e=e0,
             seq_lens=seq_lens,
@@ -268,12 +387,13 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             context_lens=context_lens,
             dtype=dtype,
             t=t)
+        
+        # Process VACE control inputs to generate hints
         hints = self.forward_vace(x, vace_context, seq_len, kwargs)
-
         kwargs['hints'] = hints
         kwargs['context_scale'] = vace_context_scale
 
-        # TeaCache
+        # TeaCache: skip computation when change is small
         if self.teacache is not None:
             if cond_flag:
                 if t.dim() != 1:
@@ -298,9 +418,18 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
             else:
                 self.should_calc = self.teacache.should_calc
         
-        # TeaCache
+        # Prepare checkpointing utilities
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            def create_custom_forward(module, **static_kwargs):
+                def custom_forward(*inputs):
+                    return module(*inputs, **static_kwargs)
+                return custom_forward
+            ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+        
+        # Main transformer loop
         if self.teacache is not None:
             if not self.should_calc:
+                # Skip: use cached residual
                 previous_residual = self.teacache.previous_residual_cond if cond_flag else self.teacache.previous_residual_uncond
                 x = x + previous_residual.to(x.device)[-x.size()[0]:,]
             else:
@@ -308,10 +437,6 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
 
                 for block in self.blocks:
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-                        def create_custom_forward(module, **static_kwargs):
-                            def custom_forward(*inputs):
-                                return module(*inputs, **static_kwargs)
-                            return custom_forward
                         extra_kwargs = {
                             'e': e0,
                             'seq_lens': seq_lens,
@@ -322,9 +447,6 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                             'dtype': dtype,
                             't': t,
                         }
-
-                        ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block, **extra_kwargs),
                             x,
@@ -342,10 +464,6 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         else:
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    def create_custom_forward(module, **static_kwargs):
-                        def custom_forward(*inputs):
-                            return module(*inputs, **static_kwargs)
-                        return custom_forward
                     extra_kwargs = {
                         'e': e0,
                         'seq_lens': seq_lens,
@@ -356,9 +474,6 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                         'dtype': dtype,
                         't': t,
                     }
-
-                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block, **extra_kwargs),
                         x,
@@ -369,24 +484,21 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
                 else:
                     x = block(x, **kwargs)
 
-        # head
+        # Head: project to output space
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
             x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.head), x, e, **ckpt_kwargs)
         else:
             x = self.head(x, e)
 
+        # Context Parallel: gather results from all GPUs
         if self.sp_world_size > 1:
             x = self.all_gather(x, dim=1)
 
-        # unpatchify
+        # Unpatchify: reconstruct video from patches
         x = self.unpatchify(x, grid_sizes)
         x = torch.stack(x)
+        
+        # Increment teacache counter and reset if completed
         if self.teacache is not None and cond_flag:
             self.teacache.cnt += 1
             if self.teacache.cnt == self.teacache.num_steps:

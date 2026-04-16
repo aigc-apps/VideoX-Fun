@@ -234,7 +234,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = height,
                         width       = width,
                         generator   = generator,
@@ -243,7 +243,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                         mask_video   = input_video_mask,
                         num_inference_steps = 25,
                         guidance_scale      = 4.5,
-                        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
 
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -251,27 +251,27 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                         sample, 
                         os.path.join(
                             args.output_dir, 
-                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                         )
                     )
                 else:
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
                         num_inference_steps = 25,
                         guidance_scale      = 4.5,
-                        boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                     save_videos_grid(
                         sample, 
                         os.path.join(
                             args.output_dir, 
-                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                         )
                     )
 
@@ -1535,14 +1535,14 @@ def main():
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
                 if args.train_mode != "normal":
                     clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
                     mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
                     for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
                         pixel_value = pixel_value[None, ...]
                         Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
-                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
+                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space

@@ -206,7 +206,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height      = height,
                         width       = width,
                         generator   = generator,
@@ -222,14 +222,14 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                         sample, 
                         os.path.join(
                             args.output_dir, 
-                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                         )
                     )
                 else:
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
@@ -241,7 +241,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                         sample, 
                         os.path.join(
                             args.output_dir, 
-                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                         )
                     )
 
@@ -1049,10 +1049,14 @@ def main():
 
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
-        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+        video_sample_size=args.video_sample_size, 
+        video_sample_stride=args.video_sample_stride, 
+        video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+        enable_bucket=args.enable_bucket, 
+        enable_inpaint=True if args.train_mode != "normal" else False,
+        inpaint_mask_fill_value=-1.0,
     )
     
     if args.enable_bucket:
@@ -1451,13 +1455,13 @@ def main():
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
                 if args.train_mode != "normal":
                     mask_pixel_values, texts = batch['mask_pixel_values'].cpu(), batch['text']
                     mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
                     for idx, (pixel_value, text) in enumerate(zip(mask_pixel_values, texts)):
                         pixel_value = pixel_value[None, ...]
-                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
+                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space

@@ -103,50 +103,7 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     t = 1 / (1 + torch.exp(-u)) * (high - low) + low
     return torch.clip(t.to(torch.int32), low, high - 1)
 
-# LTX2 helper functions for packing text embeddings and latents
-def _pack_text_embeds(
-    text_hidden_states: torch.Tensor,
-    sequence_lengths: torch.Tensor,
-    device,
-    padding_side: str = "left",
-    scale_factor: int = 8,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Packs and normalizes text encoder hidden states, respecting padding."""
-    batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
-    original_dtype = text_hidden_states.dtype
-
-    # Create padding mask
-    token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
-    if padding_side == "right":
-        mask = token_indices < sequence_lengths[:, None]
-    elif padding_side == "left":
-        start_indices = seq_len - sequence_lengths[:, None]
-        mask = token_indices >= start_indices
-    else:
-        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
-    mask = mask[:, :, None, None]
-
-    # Compute masked mean
-    masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
-    num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
-    masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
-
-    # Compute min/max
-    x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
-    x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
-
-    # Normalization
-    normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
-    normalized_hidden_states = normalized_hidden_states * scale_factor
-
-    # Pack the hidden states to 3D tensor
-    normalized_hidden_states = normalized_hidden_states.flatten(2)
-    mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
-    normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
-    normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
-    return normalized_hidden_states
-
+# LTX2 helper functions for packing latents
 def _pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
     """Packs latents [B, C, F, H, W] into token sequence [B, S, D]."""
     batch_size, num_channels, num_frames, height, width = latents.shape
@@ -246,17 +203,19 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder,
             for i in range(len(args.validation_prompts)):
                 output = pipeline(
                     args.validation_prompts[i],
-                    num_frames = args.video_sample_n_frames,
-                    negative_prompt = "bad detailed",
-                    height      = args.video_sample_size,
-                    width       = args.video_sample_size,
-                    generator   = generator,
+                    negative_prompt     = "worst quality, inconsistent motion, blurry, jittery, distorted, static, low quality, artifacts",
+                    height              = args.video_sample_size,
+                    width               = args.video_sample_size,
+                    num_frames          = args.video_sample_n_frames,
+                    frame_rate          = 24,
                     num_inference_steps = 25,
                     guidance_scale      = 4.5,
+                    generator           = generator,
                 )
                 sample = output.videos
                 audio = output.audio
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                sr = getattr(pipeline.vocoder.config, "output_sampling_rate", 24000)
                 save_videos_with_audio_grid(
                     sample,
                     audio,
@@ -265,7 +224,7 @@ def log_validation(vae, audio_vae, text_encoder, tokenizer, connectors, vocoder,
                         f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     ),
                     fps=24,
-                    audio_sample_rate=24000,
+                    audio_sample_rate=sr,
                 )
 
             del pipeline
@@ -1386,15 +1345,8 @@ def main():
                 text_encoder_hidden_states = text_encoder_outputs.hidden_states
                 text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
                 
-                # Pack text embeddings (normalized and flattened)
-                sequence_lengths = prompt_ids.attention_mask.sum(dim=-1)
-                prompt_embeds = _pack_text_embeds(
-                    text_encoder_hidden_states,
-                    sequence_lengths,
-                    device=text_encoder_hidden_states.device,
-                    padding_side=tokenizer.padding_side,
-                    scale_factor=8,
-                )
+                # Pack text embeddings (flatten to 3D, same as pipeline)
+                prompt_embeds = text_encoder_hidden_states.flatten(2, 3)
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
 
@@ -1634,7 +1586,7 @@ def main():
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
@@ -1817,22 +1769,13 @@ def main():
                         text_encoder_hidden_states = text_encoder_outputs.hidden_states
                         text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
                         
-                        # Pack text embeddings (normalized and flattened)
-                        sequence_lengths = prompt_attention_mask.sum(dim=-1)
-                        prompt_embeds = _pack_text_embeds(
-                            text_encoder_hidden_states,
-                            sequence_lengths,
-                            device=latents.device,
-                            padding_side=tokenizer.padding_side,
-                            scale_factor=8,
-                        )
-                        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+                        # Pack text embeddings (flatten to 3D, same as pipeline)
+                        prompt_embeds = text_encoder_hidden_states.flatten(2, 3).to(dtype=weight_dtype)
 
                 # Use connectors to process prompt embeddings
                 with torch.no_grad():
-                    additive_attention_mask = (1 - prompt_attention_mask.to(prompt_embeds.device, prompt_embeds.dtype)) * -1000000.0
                     connector_prompt_embeds, connector_audio_prompt_embeds, connector_attention_mask = connectors(
-                        prompt_embeds, additive_attention_mask, additive_mask=True
+                        prompt_embeds, prompt_attention_mask, padding_side=tokenizer.padding_side
                     )
 
                 if args.low_vram and not args.enable_text_encoder_in_dataloader:
@@ -1954,14 +1897,26 @@ def main():
 
                 # -------- Forward --------
                 # Predict the noise residual
+                # Expand timestep to match batch dimension (same as pipeline)
+                if video_timestep.ndim == 1:
+                    video_timestep_expanded = video_timestep.expand(noisy_latents_packed.shape[0])
+                else:
+                    video_timestep_expanded = video_timestep
+                if audio_timestep.ndim == 1:
+                    audio_timestep_expanded = audio_timestep.expand(noisy_audio_latents.shape[0])
+                else:
+                    audio_timestep_expanded = audio_timestep
+                
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred_video, noise_pred_audio = transformer3d(
                         hidden_states=noisy_latents_packed,
                         audio_hidden_states=noisy_audio_latents,
                         encoder_hidden_states=connector_prompt_embeds,
                         audio_encoder_hidden_states=connector_audio_prompt_embeds,
-                        timestep=video_timestep,
-                        audio_timestep=audio_timestep,
+                        timestep=video_timestep_expanded,
+                        audio_timestep=audio_timestep_expanded,
+                        sigma=video_timestep_expanded,  # LTX-2.3 uses sigma for cross attention modulation
+                        audio_sigma=audio_timestep_expanded,
                         encoder_attention_mask=connector_attention_mask,
                         audio_encoder_attention_mask=connector_attention_mask,
                         num_frames=latent_num_frames,
@@ -1971,6 +1926,11 @@ def main():
                         audio_num_frames=audio_num_frames,
                         video_coords=video_coords,
                         audio_coords=audio_coords,
+                        isolate_modalities=False,
+                        spatio_temporal_guidance_blocks=None,
+                        perturbation_mask=None,
+                        use_cross_timestep=False,
+                        attention_kwargs=None,
                         return_dict=False,
                     )
                 

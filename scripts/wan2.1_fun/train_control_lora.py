@@ -157,19 +157,21 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                 sample = pipeline(
                     args.validation_prompts[i], 
                     num_frames = video_length,
-                    negative_prompt = "bad detailed",
+                    negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                     height      = height,
                     width       = width,
                     generator   = generator,
 
-                    control_video = input_video,
+                    control_video       = input_video,
+                    num_inference_steps = 25,
+                    guidance_scale      = 4.5,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 save_videos_grid(
                     sample, 
                     os.path.join(
                         args.output_dir, 
-                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.gif"
+                        f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
                     )
                 )
 
@@ -1564,8 +1566,8 @@ def main():
                     pixel_value = pixel_value[None, ...]
                     control_pixel_value = control_pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
-                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
+                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}_control.mp4", rescale=True)
                 
                 if args.train_mode != "control":
                     ref_pixel_values = batch["ref_pixel_values"].cpu()

@@ -69,7 +69,7 @@ class SelfAttention(nn.Module):
         self.attn_dropout = attn_dropout
         self.proj_dropout = proj_dropout
 
-        # layers
+        # Layers
         self.to_qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
 
@@ -79,15 +79,15 @@ class SelfAttention(nn.Module):
         """
         b, s, c, n, d = *x.size(), self.num_heads, self.head_dim
 
-        # compute query, key, value
+        # Compute query, key, value
         q, k, v = self.to_qkv(x).view(b, s, 3, n, d).unbind(2)
 
-        # compute attention
+        # Compute attention
         p = self.attn_dropout if self.training else 0.0
         x = attention(q, k, v, dropout_p=p, causal=self.causal, attention_type="none")
         x = x.reshape(b, s, c)
 
-        # output
+        # Output
         x = self.proj(x)
         x = F.dropout(x, self.proj_dropout, self.training)
         return x
@@ -100,7 +100,7 @@ class SwiGLU(nn.Module):
         self.dim = dim
         self.mid_dim = mid_dim
 
-        # layers
+        # Layers
         self.fc1 = nn.Linear(dim, mid_dim)
         self.fc2 = nn.Linear(dim, mid_dim)
         self.fc3 = nn.Linear(mid_dim, dim)
@@ -132,7 +132,7 @@ class AttentionBlock(nn.Module):
         self.causal = causal
         self.norm_eps = norm_eps
 
-        # layers
+        # Layers
         self.norm1 = LayerNorm(dim, eps=norm_eps)
         self.attn = SelfAttention(dim, num_heads, causal, attn_dropout,
                                   proj_dropout)
@@ -173,7 +173,7 @@ class AttentionPool(nn.Module):
         self.proj_dropout = proj_dropout
         self.norm_eps = norm_eps
 
-        # layers
+        # Layers
         gain = 1.0 / math.sqrt(dim)
         self.cls_embedding = nn.Parameter(gain * torch.randn(1, 1, dim))
         self.to_q = nn.Linear(dim, dim)
@@ -191,19 +191,19 @@ class AttentionPool(nn.Module):
         """
         b, s, c, n, d = *x.size(), self.num_heads, self.head_dim
 
-        # compute query, key, value
+        # Compute query, key, value
         q = self.to_q(self.cls_embedding).view(1, 1, n, d).expand(b, -1, -1, -1)
         k, v = self.to_kv(x).view(b, s, 2, n, d).unbind(2)
 
-        # compute attention
+        # Compute attention
         x = flash_attention(q, k, v, version=2)
         x = x.reshape(b, 1, c)
 
-        # output
+        # Output
         x = self.proj(x)
         x = F.dropout(x, self.proj_dropout, self.training)
 
-        # mlp
+        # Mlp
         x = x + self.mlp(self.norm(x))
         return x[:, 0]
 
@@ -245,7 +245,7 @@ class VisionTransformer(nn.Module):
         self.post_norm = post_norm
         self.norm_eps = norm_eps
 
-        # embeddings
+        # Embeddings
         gain = 1.0 / math.sqrt(dim)
         self.patch_embedding = nn.Conv2d(
             3,
@@ -260,7 +260,7 @@ class VisionTransformer(nn.Module):
             (1 if pool_type in ('token', 'token_fc') else 0), dim))
         self.dropout = nn.Dropout(embedding_dropout)
 
-        # transformer
+        # Transformer
         self.pre_norm = LayerNorm(dim, eps=norm_eps) if pre_norm else None
         self.transformer = nn.Sequential(*[
             AttentionBlock(dim, mlp_ratio, num_heads, post_norm, False,
@@ -269,7 +269,7 @@ class VisionTransformer(nn.Module):
         ])
         self.post_norm = LayerNorm(dim, eps=norm_eps)
 
-        # head
+        # Head
         if pool_type == 'token':
             self.head = nn.Parameter(gain * torch.randn(dim, out_dim))
         elif pool_type == 'token_fc':
@@ -281,7 +281,7 @@ class VisionTransformer(nn.Module):
     def forward(self, x, interpolation=False, use_31_block=False):
         b = x.size(0)
 
-        # embeddings
+        # Embeddings
         x = self.patch_embedding(x).flatten(2).permute(0, 2, 1)
         if self.pool_type in ('token', 'token_fc'):
             x = torch.cat([self.cls_embedding.expand(b, -1, -1), x], dim=1)
@@ -293,7 +293,7 @@ class VisionTransformer(nn.Module):
         if self.pre_norm is not None:
             x = self.pre_norm(x)
 
-        # transformer
+        # Transformer
         if use_31_block:
             x = self.transformer[:-1](x)
             return x
@@ -308,21 +308,21 @@ class XLMRobertaWithHead(XLMRoberta):
         self.out_dim = kwargs.pop('out_dim')
         super().__init__(**kwargs)
 
-        # head
+        # Head
         mid_dim = (self.dim + self.out_dim) // 2
         self.head = nn.Sequential(
             nn.Linear(self.dim, mid_dim, bias=False), nn.GELU(),
             nn.Linear(mid_dim, self.out_dim, bias=False))
 
     def forward(self, ids):
-        # xlm-roberta
+        # Xlm-roberta
         x = super().forward(ids)
 
-        # average pooling
+        # Average pooling
         mask = ids.ne(self.pad_id).unsqueeze(-1).to(x)
         x = (x * mask).sum(dim=1) / mask.sum(dim=1)
 
-        # head
+        # Head
         x = self.head(x)
         return x
 
@@ -375,7 +375,7 @@ class XLMRobertaCLIP(nn.Module):
         self.text_post_norm = text_post_norm
         self.norm_eps = norm_eps
 
-        # models
+        # Models
         self.visual = VisionTransformer(
             image_size=image_size,
             patch_size=patch_size,
@@ -442,24 +442,24 @@ def _clip(pretrained=False,
           dtype=torch.float32,
           device='cpu',
           **kwargs):
-    # init a model on device
+    # Init a model on device
     with torch.device(device):
         model = model_cls(**kwargs)
 
-    # set device
+    # Set device
     model = model.to(dtype=dtype, device=device)
     output = (model,)
 
-    # init transforms
+    # Init transforms
     if return_transforms:
-        # mean and std
+        # Mean and std
         if 'siglip' in pretrained_name.lower():
             mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
         else:
             mean = [0.48145466, 0.4578275, 0.40821073]
             std = [0.26862954, 0.26130258, 0.27577711]
 
-        # transforms
+        # Transforms
         transforms = T.Compose([
             T.Resize((model.image_size, model.image_size),
                      interpolation=T.InterpolationMode.BICUBIC),
@@ -504,14 +504,14 @@ class CLIPModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def __init__(self):
         super(CLIPModel, self).__init__()
-        # init model
+        # Init model
         self.model, self.transforms = clip_xlm_roberta_vit_h_14(
             pretrained=False,
             return_transforms=True,
             return_tokenizer=False)
 
     def forward(self, videos):
-        # preprocess
+        # Preprocess
         size = (self.model.image_size,) * 2
         videos = torch.cat([
             F.interpolate(
@@ -522,7 +522,7 @@ class CLIPModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         ])
         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
 
-        # forward
+        # Forward
         with torch.cuda.amp.autocast(dtype=self.dtype):
             out = self.model.visual(videos, use_31_block=True)
             return out
