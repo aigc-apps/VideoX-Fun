@@ -274,18 +274,18 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--output_dir` | Output directory | `output_dir_longcat_avatar_lora` |
 | `--gradient_checkpointing` | Enable activation checkpointing | - |
 | `--mixed_precision` | Mixed precision: `fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW weight decay (code default `1e-2`) | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon value (code default `1e-08`) | 1e-10 |
+| `--adam_weight_decay` | AdamW weight decay | 3e-2 |
+| `--adam_epsilon` | AdamW epsilon value | 1e-10 |
 | `--vae_mini_batch` | Mini-batch size for VAE encoding | 1 |
-| `--max_grad_norm` | Gradient clipping threshold (code default `1.0`) | 0.05 |
+| `--max_grad_norm` | Gradient clipping threshold | 0.05 |
 | `--random_hw_adapt` | Auto-scale videos to random size in range `[512, video_sample_size]` | - |
 | `--training_with_video_token_length` | Train based on token length instead of fixed resolution | - |
 | `--enable_bucket` | Enable bucket training: trains entire videos grouped by resolution without center cropping | - |
 | `--uniform_sampling` | Uniform timestep sampling | - |
 | `--low_vram` | Enable low VRAM optimizations | - |
 | `--resume_from_checkpoint` | Resume training from checkpoint path, use `"latest"` to auto-select latest | None |
-| `--validation_steps` | Execute validation every N steps (code default `2000`) | 100 |
-| `--validation_epochs` | Execute validation every N epochs (code default `5`) | 500 |
+| `--validation_steps` | Execute validation every N steps | 100 |
+| `--validation_epochs` | Execute validation every N epochs | 500 |
 | `--validation_prompts` | Prompts used during validation | `"A man in a blue blazer..."` |
 | `--validation_image_paths` | Reference image paths for validation | Image path list |
 | `--validation_audio_paths` | Audio paths for validation | Audio path list |
@@ -302,18 +302,23 @@ You can configure validation parameters to periodically generate test videos dur
 | `--validation_steps` | Execute validation every N steps | 100 |
 | `--validation_epochs` | Execute validation every N epochs | 500 |
 | `--validation_prompts` | Prompt for validation video generation. Use multiple space-separated prompt strings | Space-separated prompt strings |
+| `--validation_image_paths` | Reference image paths for validation | Image path list |
+| `--validation_audio_paths` | Audio paths for validation | Audio path list |
 
 **Example**:
 
 ```bash
+  --validation_image_paths "asset/8.png" \
+  --validation_audio_paths "asset/talk.wav" \
   --validation_steps=100 \
   --validation_epochs=500 \
-  --validation_prompts="A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"Hi.\""
+  --validation_prompts="A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 ```
 
 **Notes**:
 - Validation videos will be saved to the `output_dir` directory
-- For multi-prompt validation, use: `--validation_prompts "prompt1" "prompt2" "prompt3"`
+- Image paths, audio paths, and prompts must correspond one-to-one
+- For multi-group validation, use: `--validation_image_paths "img1.png" "img2.png" --validation_audio_paths "audio1.wav" "audio2.wav" --validation_prompts "prompt1" "prompt2"`
 
 ### 3.5 Training with FSDP
 

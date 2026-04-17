@@ -274,18 +274,18 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--output_dir` | 输出目录 | `output_dir_longcat_avatar_lora` |
 | `--gradient_checkpointing` | 启用激活检查点 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW 权重衰减（代码默认值 `1e-2`） | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon 值（代码默认值 `1e-08`） | 1e-10 |
+| `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
+| `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
 | `--vae_mini_batch` | VAE 编码的 mini-batch 大小 | 1 |
-| `--max_grad_norm` | 梯度裁剪阈值（代码默认值 `1.0`） | 0.05 |
+| `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
 | `--random_hw_adapt` | 自动将视频缩放到 `[512, video_sample_size]` 范围内的随机大小 | - |
 | `--training_with_video_token_length` | 按 token 长度训练，而非固定分辨率 | - |
 | `--enable_bucket` | 启用 bucket 训练：不进行中心裁剪，而是按分辨率分组训练完整视频 | - |
 | `--uniform_sampling` | 均匀时间步采样 | - |
 | `--low_vram` | 启用低显存优化 | - |
 | `--resume_from_checkpoint` | 从检查点路径恢复训练，使用 `"latest"` 自动选择最新检查点 | None |
-| `--validation_steps` | 每 N 步执行一次验证（代码默认值 `2000`） | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证（代码默认值 `5`） | 500 |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
 | `--validation_prompts` | 验证视频生成的提示词 | `"A man in a blue blazer..."` |
 | `--validation_image_paths` | 验证用的参考图像路径列表 | 图像路径列表 |
 | `--validation_audio_paths` | 验证用的音频路径列表 | 音频路径列表 |
@@ -299,8 +299,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
-| `--validation_steps` | 每 N 步执行一次验证（代码默认值 `2000`） | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证（代码默认值 `5`） | 500 |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
 | `--validation_prompts` | 验证视频生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
 | `--validation_image_paths` | 验证用的参考图像路径列表 | 图像路径列表 |
 | `--validation_audio_paths` | 验证用的音频路径列表 | 音频路径列表 |
@@ -308,14 +308,17 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 **示例**：
 
 ```bash
+  --validation_image_paths "asset/8.png" \
+  --validation_audio_paths "asset/talk.wav" \
   --validation_steps=100 \
   --validation_epochs=500 \
-  --validation_prompts="A man in a blue blazer and glasses speaks in a formal indoor setting, framed by wooden furniture and a filled bookshelf. Quiet room acoustics underscore his measured tone as he delivers his remarks. At one point, he says, \"Hi.\""
+  --validation_prompts="A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 ```
 
 **注意事项**：
 - 验证视频会保存到 `output_dir` 目录中
-- 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
+- 图像路径、音频路径和提示词必须一一对应
+- 多组验证格式：`--validation_image_paths "img1.png" "img2.png" --validation_audio_paths "audio1.wav" "audio2.wav" --validation_prompts "prompt1" "prompt2"`
 
 ### 3.5 使用 FSDP 训练
 

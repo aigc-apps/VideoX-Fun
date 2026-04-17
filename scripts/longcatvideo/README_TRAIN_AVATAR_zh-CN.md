@@ -243,7 +243,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | 预训练基础模型路径 | `models/Diffusion_Transformer/LongCat-Video` |
 | `--pretrained_avatar_model_name_or_path` | 预训练 Avatar 模型路径 | `models/Diffusion_Transformer/LongCat-Video-Avatar` |
 | `--train_data_dir` | 训练数据集目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据集元数据文件 | `datasets/internal_datasets/metadata_control.json` |
+| `--train_data_meta` | 训练数据集元数据文件 | `datasets/internal_datasets/metadata.json` |
 | `--video_sample_size` | 视频采样尺寸（最大分辨率） | `640` |
 | `--token_sample_size` | Token 采样尺寸 | `640` |
 | `--video_sample_stride` | 视频采样步幅 | `2` |
@@ -278,19 +278,21 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 500 |
 | `--validation_image_paths` | 验证用的参考图像路径列表，可用空格分隔多个路径 | 多个空格分隔的图像路径 |
 | `--validation_audio_paths` | 验证用的音频路径列表，可用空格分隔多个路径 | 多个空格分隔的音频路径 |
+| `--validation_prompts` | 验证视频生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
 
 **示例**：
 
 ```bash
-  --validation_image_paths="asset/8.png" \
-  --validation_audio_paths="asset/talk.wav" \
+  --validation_image_paths "asset/8.png" \
+  --validation_audio_paths "asset/talk.wav" \
   --validation_steps=100 \
-  --validation_epochs=500
+  --validation_epochs=500 \
+  --validation_prompts="A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 ```
 
 **注意事项**：
 - 验证视频会保存到 `output_dir/sample` 目录中
-- 图像和音频路径数量必须一一对应
+- 图像路径、音频路径和提示词必须一一对应
 
 ### 3.5 使用 FSDP 训练
 

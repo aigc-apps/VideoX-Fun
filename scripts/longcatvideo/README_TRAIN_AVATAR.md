@@ -248,7 +248,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | Path to pretrained base model | `models/Diffusion_Transformer/LongCat-Video` |
 | `--pretrained_avatar_model_name_or_path` | Path to pretrained avatar model | `models/Diffusion_Transformer/LongCat-Video-Avatar` |
 | `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata_control.json` |
+| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
 | `--train_batch_size` | Samples per batch | 1 |
 | `--video_sample_size` | Maximum video resolution for training | 640 |
 | `--token_sample_size` | Token length sampling size | 640 |
@@ -296,19 +296,21 @@ You can configure validation parameters to periodically generate test videos dur
 | `--validation_epochs` | Execute validation every N epochs | 500 |
 | `--validation_image_paths` | Reference image paths for validation, use multiple space-separated paths | Multiple space-separated image paths |
 | `--validation_audio_paths` | Audio paths for validation, use multiple space-separated paths | Multiple space-separated audio paths |
+| `--validation_prompts` | Prompt for validation video generation, use multiple space-separated prompts | Multiple space-separated prompts |
 
 **Example**:
 
 ```bash
-  --validation_image_paths="asset/8.png" \
-  --validation_audio_paths="asset/talk.wav" \
+  --validation_image_paths "asset/8.png" \
+  --validation_audio_paths "asset/talk.wav" \
   --validation_steps=100 \
-  --validation_epochs=500
+  --validation_epochs=500 \
+  --validation_prompts="A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 ```
 
 **Notes**:
 - Validation videos will be saved to the `output_dir/sample` directory
-- The number of image and audio paths must correspond one-to-one
+- Image paths, audio paths, and prompts must correspond one-to-one
 
 ### 3.5 Training with FSDP
 
