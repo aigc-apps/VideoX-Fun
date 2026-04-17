@@ -13,6 +13,10 @@ from .fuser import (get_sequence_parallel_rank,
                     xFuserLongContextAttention)
 from .hunyuanvideo_xfuser import HunyuanVideoMultiGPUsAttnProcessor2_0
 from .infinitalk_xfuser import usp_attn_infinitetalk_forward
+from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
+                                  usp_attn_longcatvideo_forward,
+                                  usp_cross_attn_longcatvideo_forward,
+                                  usp_rope_longcatvideo_forward)
 from .ltx2_xfuser import (LTX2MultiGPUsAttnProcessor,
                           LTX2PerturbedMultiGPUsAttnProcessor)
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
