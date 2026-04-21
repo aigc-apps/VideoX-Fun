@@ -16,9 +16,8 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                               get_closest_ratio)
-from ...videox_fun.data.dataset_image_video import process_pose_params
+from ...videox_fun.data import (ASPECT_RATIO_512, get_closest_ratio,
+                                process_pose_params)
 from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                                   WanT5EncoderModel, WanTransformer3DModel)
 from ...videox_fun.models.cache_utils import get_teacache_coefficients

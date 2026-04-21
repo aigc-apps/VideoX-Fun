@@ -16,7 +16,7 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoTokenizer, CLIPModel,
                                WanT5EncoderModel, Wan2_2Transformer3DModel)
-from videox_fun.data.dataset_image_video import process_pose_file
+from videox_fun.data import process_pose_file
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import Wan2_2FunControlPipeline, WanPipeline
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
