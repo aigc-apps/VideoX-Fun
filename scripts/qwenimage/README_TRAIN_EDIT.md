@@ -244,7 +244,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_steps` | Run validation every N steps | 100 |
 | `--validation_epochs` | Run validation every N epochs | 500 |
 | `--validation_prompts` | Prompts used during validation | `"1girl, black_hair, ..."` |
-| `--validation_image_paths` | Source image paths used during validation (Edit model specific) | `"asset/8.jpg"` |
+| `--validation_image_paths` | Source image paths used during validation (Edit model specific) | `"asset/8.png"` |
 
 **random_hw_adapt Detailed Explanation**:
 - When `random_hw_adapt` is enabled and `image_sample_size=1024`, the resolution range of training images is `512x512` to `1024x1024`
@@ -264,7 +264,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --validation_steps=100 \
   --validation_epochs=500 \
   --validation_prompts="1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body" \
-  --validation_image_paths="asset/8.jpg"
+  --validation_image_paths="asset/8.png"
 ```
 
 **Parameters Description**:
@@ -274,7 +274,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_steps` | Run validation every N steps. If dataset is large and you want to save validation time, you can set a larger value (e.g., 100 or 500) | 100 |
 | `--validation_epochs` | Run validation every N epochs | 500 |
 | `--validation_prompts` | Prompts for validation image generation. Multiple prompts can be set, separated by spaces | Multiple space-separated prompts |
-| `--validation_image_paths` | Source image paths used during validation (Edit model specific) | `asset/8.jpg` |
+| `--validation_image_paths` | Source image paths used during validation (Edit model specific) | `asset/8.png` |
 
 **Notes**:
 - Validation images will be saved to the `output_dir` directory

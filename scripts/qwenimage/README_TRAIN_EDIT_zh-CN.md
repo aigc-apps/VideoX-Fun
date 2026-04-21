@@ -244,7 +244,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_steps` | 每 N 步执行一次验证 | 100 |
 | `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
 | `--validation_prompts` | 验证时使用的提示词 | `"1girl, black_hair, ..."` |
-| `--validation_image_paths` | 验证时使用的源图像路径（Edit 模型专用） | `"asset/8.jpg"` |
+| `--validation_image_paths` | 验证时使用的源图像路径（Edit 模型专用） | `"asset/8.png"` |
 
 **random_hw_adapt 详细说明**：
 - 当启用 `random_hw_adapt` 且 `image_sample_size=1024` 时，训练图像的分辨率范围是 `512x512` 到 `1024x1024`
@@ -264,7 +264,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --validation_steps=100 \
   --validation_epochs=500 \
   --validation_prompts="1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body" \
-  --validation_image_paths="asset/8.jpg"
+  --validation_image_paths="asset/8.png"
 ```
 
 **参数说明**：
@@ -274,7 +274,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_steps` | 每 N 步执行一次验证。如果数据集较大，想节省验证时间，可以设置更大的值（如100或500） | 100 |
 | `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
 | `--validation_prompts` | 验证图像生成的提示词。可以设置多个提示词，用空格分隔 | 多个空格分隔的提示词 |
-| `--validation_image_paths` | 验证时使用的源图像路径（Edit 模型专用） | `asset/8.jpg` |
+| `--validation_image_paths` | 验证时使用的源图像路径（Edit 模型专用） | `asset/8.png` |
 
 **注意事项**：
 - 验证图像会保存到 `output_dir` 目录中
