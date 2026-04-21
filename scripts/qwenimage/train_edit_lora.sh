@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
+export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image-Edit"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
