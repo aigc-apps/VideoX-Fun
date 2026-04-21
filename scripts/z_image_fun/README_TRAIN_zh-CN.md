@@ -267,6 +267,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
+  --add_inpaint_info \
   --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
   --trainable_modules "control"
 ```
@@ -361,6 +362,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
+  --add_inpaint_info \
   --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
   --trainable_modules "control"
 ```
@@ -404,6 +406,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image_fun/train_control.py 
   --max_grad_norm=0.05 \
   --enable_bucket \
   --uniform_sampling \
+  --add_inpaint_info \
   --transformer_path="models/Personalized_Model/Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors" \
   --trainable_modules "control"
 ```
