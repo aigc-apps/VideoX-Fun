@@ -38,5 +38,7 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
   --rank=64 \
   --network_alpha=64 \
   --target_name="q,k,v,ffn.0,ffn.2" \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
   --use_peft_lora \
   --train_components="transformer,transformer_2"
