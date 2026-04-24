@@ -71,9 +71,9 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, VideoAnimateDataset,
-                             get_closest_ratio, get_random_mask,
-                             process_pose_file, process_pose_params)
-from videox_fun.data.dataset_video import VideoSpeechControlDataset
+                             VideoSpeechControlDataset, get_closest_ratio,
+                             get_random_mask, process_pose_file,
+                             process_pose_params)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                CLIPModel, Wan2_2Transformer3DModel,
                                Wan2_2Transformer3DModel_Animate,

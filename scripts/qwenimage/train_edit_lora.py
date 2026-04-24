@@ -67,9 +67,9 @@ for project_root in project_roots:
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
-                             ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, get_closest_ratio, get_random_mask)
-from videox_fun.data.dataset_image import ImageEditDataset
+                             ImageEditDataset, ImageVideoDataset,
+                             ImageVideoSampler, RandomSampler,
+                             get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLQwenImage, AutoencoderKLWan,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, Qwen2VLProcessor,

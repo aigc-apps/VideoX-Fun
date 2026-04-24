@@ -73,8 +73,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, get_closest_ratio, get_random_mask)
-from videox_fun.data.dataset_video import VideoSpeechDataset
+                             RandomSampler, VideoSpeechDataset,
+                             get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLLongCatVideo, AutoTokenizer,
                                CLIPModel, LongCatVideoAudioEncoder,
                                LongCatVideoAvatarTransformer3DModel,
