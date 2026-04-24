@@ -25,7 +25,7 @@ from torch.utils.data.dataset import Dataset
 
 from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, padding_image,
-                    process_pose_file, resize_frame,
+                    process_pose_file, process_pose_params, resize_frame,
                     resize_image_with_target_area)
 
 

@@ -18,8 +18,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from safetensors.torch import load_file
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                               get_closest_ratio)
+from ...videox_fun.data import ASPECT_RATIO_512, get_closest_ratio
 from ...videox_fun.models import (AutoencoderKL, AutoTokenizer,
                                   Qwen2VLProcessor, Qwen3Config,
                                   Qwen3ForCausalLM,

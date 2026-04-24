@@ -39,8 +39,6 @@ class Wav2Vec2Model(TransformersWav2Vec2Model):
         output_hidden_states=None,
         return_dict=None,
     ):
-        self.config.output_attentions = True
-
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -96,7 +94,7 @@ class InfiniteTalkAudioEncoder(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         
         # Load pretrained model
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(pretrained_model_path)
-        self.model = Wav2Vec2Model.from_pretrained(pretrained_model_path)
+        self.model = Wav2Vec2Model.from_pretrained(pretrained_model_path, output_attentions=True)
         
         # Freeze feature extractor
         self.model.feature_extractor._freeze_parameters()

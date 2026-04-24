@@ -1,9 +1,10 @@
-import json
 import argparse
+import json
 import multiprocessing as mp
-from pathlib import Path
-from PIL import Image
 from functools import partial
+from pathlib import Path
+
+from PIL import Image
 
 # Supported file extensions
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.gif'}

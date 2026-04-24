@@ -25,8 +25,7 @@ else:
     from diffusers.models.modeling_utils import \
         load_model_dict_into_meta
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                               get_closest_ratio)
+from ...videox_fun.data import ASPECT_RATIO_512, get_closest_ratio
 from ...videox_fun.models import (AutoencoderKLQwenImage, Qwen2_5_VLConfig,
                                   Qwen2_5_VLForConditionalGeneration,
                                   Qwen2Tokenizer, Qwen2VLProcessor,

@@ -35,8 +35,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import torch.utils.checkpoint
-import torchvision.transforms.functional as TF
 import transformers
 from accelerate import Accelerator, FullyShardedDataParallelPlugin
 from accelerate.logging import get_logger
@@ -53,9 +51,6 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
-    ShardedStateDictConfig)
 from torch.utils.data import Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -70,19 +65,13 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from qwen_vl_utils import process_vision_info
-
-from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                            ASPECT_RATIO_RANDOM_CROP_512,
-                                            ASPECT_RATIO_RANDOM_CROP_PROB,
-                                            AspectRatioBatchImageVideoSampler,
-                                            RandomSampler, get_closest_ratio)
-from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
-                                                 ImageVideoDataset,
-                                                 ImageVideoSampler,
-                                                 TextDataset, get_random_mask,
-                                                 process_pose_file,
-                                                 process_pose_params)
+from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
+                             ASPECT_RATIO_RANDOM_CROP_PROB,
+                             AspectRatioBatchImageVideoSampler,
+                             ImageVideoControlDataset, ImageVideoDataset,
+                             ImageVideoSampler, RandomSampler, TextDataset,
+                             get_closest_ratio, get_random_mask,
+                             process_pose_file, process_pose_params)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,

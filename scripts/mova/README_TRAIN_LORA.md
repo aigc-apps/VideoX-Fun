@@ -202,9 +202,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=360 \
-  --video_sample_size=360 \
-  --token_sample_size=360 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
   --video_sample_n_frames=193 \
   --train_batch_size=1 \
@@ -230,7 +230,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --rank=64 \
   --network_alpha=64 \
   --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="high" \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
   --use_peft_lora \
   --train_components="transformer,transformer_2"
 ```
@@ -353,9 +354,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=360 \
-  --video_sample_size=360 \
-  --token_sample_size=360 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
   --video_sample_n_frames=193 \
   --train_batch_size=1 \
@@ -363,7 +364,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --checkpointing_steps=100 \
   --learning_rate=1e-04 \
   --seed=42 \
   --output_dir="output_dir_mova_lora" \
@@ -381,7 +382,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --rank=64 \
   --network_alpha=64 \
   --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="high" \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
   --use_peft_lora \
   --train_components="transformer,transformer_2"
 ```
@@ -403,9 +405,9 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=360 \
-  --video_sample_size=360 \
-  --token_sample_size=360 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
   --video_sample_n_frames=193 \
   --train_batch_size=1 \
@@ -413,7 +415,7 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --checkpointing_steps=100 \
   --learning_rate=1e-04 \
   --seed=42 \
   --output_dir="output_dir_mova_lora" \
@@ -431,7 +433,8 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
   --rank=64 \
   --network_alpha=64 \
   --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="high" \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
   --use_peft_lora \
   --train_components="transformer,transformer_2"
 ```
@@ -463,9 +466,9 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=360 \
-  --video_sample_size=360 \
-  --token_sample_size=360 \
+  --image_sample_size=480 \
+  --video_sample_size=480 \
+  --token_sample_size=480 \
   --video_sample_stride=1 \
   --video_sample_n_frames=193 \
   --train_batch_size=1 \
@@ -491,7 +494,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --rank=64 \
   --network_alpha=64 \
   --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="high" \
+  --boundary_type="low" \
+  --boundary_ratio=0.9 \
   --use_peft_lora \
   --train_components="transformer,transformer_2"
 ```

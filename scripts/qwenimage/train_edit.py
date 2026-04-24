@@ -65,22 +65,24 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                            ASPECT_RATIO_RANDOM_CROP_512,
-                                            ASPECT_RATIO_RANDOM_CROP_PROB,
-                                            AspectRatioBatchImageVideoSampler,
-                                            RandomSampler, get_closest_ratio)
-from videox_fun.data.dataset_image_video import (ImageVideoSampler,
-                                                 get_random_mask)
-from videox_fun.data.dataset_image import ImageEditDataset
-from videox_fun.models import (AutoencoderKLQwenImage, Qwen2VLProcessor,
+from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
+                             ASPECT_RATIO_RANDOM_CROP_PROB,
+                             AspectRatioBatchImageVideoSampler,
+                             ImageEditDataset, ImageVideoSampler,
+                             RandomSampler, get_closest_ratio, get_random_mask)
+from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
-from videox_fun.pipeline import QwenImageEditPipeline, QwenImageEditPlusPipeline
-from videox_fun.pipeline.pipeline_qwenimage_edit import PREFERRED_QWENIMAGE_RESOLUTIONS, calculate_dimensions
-from videox_fun.pipeline.pipeline_qwenimage_edit_plus import CONDITION_IMAGE_SIZE, VAE_IMAGE_SIZE
+                               Qwen2Tokenizer, Qwen2VLProcessor,
+                               QwenImageTransformer2DModel)
+from videox_fun.pipeline import (QwenImageEditPipeline,
+                                 QwenImageEditPlusPipeline)
+from videox_fun.pipeline.pipeline_qwenimage_edit import (
+    PREFERRED_QWENIMAGE_RESOLUTIONS, calculate_dimensions)
+from videox_fun.pipeline.pipeline_qwenimage_edit_plus import (
+    CONDITION_IMAGE_SIZE, VAE_IMAGE_SIZE)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid, get_image
+from videox_fun.utils.utils import (get_image, get_image_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -1251,6 +1253,7 @@ def main():
 
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)

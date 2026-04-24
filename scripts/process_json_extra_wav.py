@@ -1,12 +1,14 @@
-import json
 import argparse
+import json
 import multiprocessing as mp
 import os
 from pathlib import Path
+
 try:
     from moviepy.editor import VideoFileClip
 except ImportError:
     from moviepy import VideoFileClip
+
 from functools import partial
 
 

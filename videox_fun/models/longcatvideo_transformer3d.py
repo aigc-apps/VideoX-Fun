@@ -18,6 +18,11 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version, logging
 from einops import rearrange, repeat
 
+from ..dist import (get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, get_sp_group,
+                    usp_attn_longcatvideo_forward,
+                    usp_cross_attn_longcatvideo_forward,
+                    usp_rope_longcatvideo_forward, xFuserLongContextAttention)
 from .attention_utils import attention, flash_attention_naive
 
 
@@ -222,7 +227,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.head_dim = head_dim
         assert self.head_dim % 8 == 0, 'Dim must be a multiply of 8 for 3D RoPE.'
         self.cp_split_hw = cp_split_hw
-        # We take the assumption that the longest side of grid will not larger than 512, i.e, 512 * 8 = 4098 input pixels
+        # Assume the longest side of grid will not exceed 512, i.e., 512 * 8 = 4096 input pixels
         self.base = 10000
         self.freqs_dict = {}
 
@@ -262,10 +267,11 @@ class RotaryPositionalEmbedding(nn.Module):
         """3D RoPE.
 
         Args:
-            query: [B, head, seq, head_dim]
-            key: [B, head, seq, head_dim]
+            query: Query tensor [B, head, seq, head_dim].
+            key: Key tensor [B, head, seq, head_dim].
+
         Returns:
-            query and key with the same shape as input.
+            Query and key with the same shape as input.
         """
 
         if grid_size not in self.freqs_dict:
@@ -326,13 +332,22 @@ class Attention(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False) -> torch.Tensor:
-        """
+        """Forward pass for attention.
+
+        Args:
+            x: Input tensor [B, N, C].
+            shape: Latent shape tuple (N_t, N_h, N_w).
+            num_cond_latents: Number of condition latents.
+            return_kv: Whether to return key-value cache.
+
+        Returns:
+            Output tensor after attention.
         """
         B, N, C = x.shape
         qkv = self.qkv(x)
 
         qkv_shape = (B, N, 3, self.num_heads, self.head_dim)
-        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4)) # [3, B, H, N, D]
+        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4))  # [3, B, H, N, D]
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -341,25 +356,25 @@ class Attention(nn.Module):
 
         q, k = self.rope_3d(q, k, shape)
 
-        # cond mode
+        # Cond mode
         if num_cond_latents is not None and num_cond_latents > 0:
             num_cond_latents_thw = num_cond_latents * (N // shape[0])
-            # process the condition tokens
+            # Process the condition tokens
             q_cond = q[:, :, :num_cond_latents_thw].contiguous()
             k_cond = k[:, :, :num_cond_latents_thw].contiguous()
             v_cond = v[:, :, :num_cond_latents_thw].contiguous()
             x_cond = self._process_attn(q_cond, k_cond, v_cond, shape)
-            # process the noise tokens
+            # Process the noise tokens
             q_noise = q[:, :, num_cond_latents_thw:].contiguous()
             x_noise = self._process_attn(q_noise, k, v, shape)
-            # merge x_cond and x_noise
+            # Merge x_cond and x_noise
             x = torch.cat([x_cond, x_noise], dim=2).contiguous()
         else:
             x = self._process_attn(q, k, v, shape)
 
         x_output_shape = (B, N, C)
-        x = x.transpose(1, 2) # [B, H, N, D] --> [B, N, H, D]
-        x = x.reshape(x_output_shape) # [B, N, H, D] --> [B, N, C]
+        x = x.transpose(1, 2)  # [B, H, N, D] -> [B, N, H, D]
+        x = x.reshape(x_output_shape)  # [B, N, H, D] -> [B, N, C]
         x = self.proj(x)
 
         if return_kv:
@@ -368,13 +383,22 @@ class Attention(nn.Module):
             return x
 
     def forward_with_kv_cache(self, x: torch.Tensor, shape=None, num_cond_latents=None, kv_cache=None) -> torch.Tensor:
-        """
+        """Forward pass with KV cache.
+
+        Args:
+            x: Input tensor [B, N, C].
+            shape: Latent shape tuple (N_t, N_h, N_w).
+            num_cond_latents: Number of condition latents.
+            kv_cache: Key-value cache tuple.
+
+        Returns:
+            Output tensor after attention.
         """
         B, N, C = x.shape
         qkv = self.qkv(x)
-        
+
         qkv_shape = (B, N, 3, self.num_heads, self.head_dim)
-        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4)) # [3, B, H, N, D]
+        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4))  # [3, B, H, N, D]
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -395,8 +419,8 @@ class Attention(nn.Module):
         x = self._process_attn(q, k_full, v_full, shape)
         
         x_output_shape = (B, N, C)
-        x = x.transpose(1, 2) # [B, H, N, D] --> [B, N, H, D]
-        x = x.reshape(x_output_shape) # [B, N, H, D] --> [B, N, C]
+        x = x.transpose(1, 2)  # [B, H, N, D] -> [B, N, H, D]
+        x = x.reshape(x_output_shape)  # [B, N, H, D] -> [B, N, C]
         x = self.proj(x)
 
         return x
@@ -453,9 +477,17 @@ class MultiHeadCrossAttention(nn.Module):
         return x
 
     def forward(self, x, cond, kv_seqlen, num_cond_latents=None, shape=None):
-        """
-            x: [B, N, C]
-            cond: [B, M, C]
+        """Forward pass for cross attention.
+
+        Args:
+            x: Input tensor [B, N, C].
+            cond: Condition tensor [B, M, C].
+            kv_seqlen: Key-value sequence lengths.
+            num_cond_latents: Number of condition latents.
+            shape: Latent shape tuple.
+
+        Returns:
+            Output tensor after cross attention.
         """
         if num_cond_latents is None or num_cond_latents == 0:
             return self._process_cross_attn(x, cond, kv_seqlen)
@@ -519,7 +551,7 @@ class LongCatSingleStreamBlock(nn.Module):
 
         self.hidden_size = hidden_size
 
-        # scale and gate modulation
+        # Scale and gate modulation
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(adaln_tembed_dim, 6 * hidden_size, bias=True)
@@ -549,26 +581,34 @@ class LongCatSingleStreamBlock(nn.Module):
         self.ffn = FeedForwardSwiGLU(dim=hidden_size, hidden_dim=int(hidden_size * mlp_ratio))
 
     def forward(self, x, y, t, y_seqlen, latent_shape, num_cond_latents=None, return_kv=False, kv_cache=None, skip_crs_attn=False):
-        """
-            x: [B, N, C]
-            y: [1, N_valid_tokens, C]
-            t: [B, T, C_t]
-            y_seqlen: [B]; type of a list
-            latent_shape: latent shape of a single item
+        """Forward pass for single stream block.
+
+        Args:
+            x: Input tensor [B, N, C].
+            y: Encoder hidden states [1, N_valid_tokens, C].
+            t: Per-token timestep embedding [B, N, C_t].
+            y_seqlen: Sequence lengths [B], type of list.
+            latent_shape: Latent shape of a single item.
+            num_cond_latents: Number of condition latents.
+            return_kv: Whether to return key-value cache.
+            kv_cache: Key-value cache tuple.
+            skip_crs_attn: Whether to skip cross attention.
+
+        Returns:
+            Output tensor after block processing.
         """
         x_dtype = x.dtype
 
         B, N, C = x.shape
-        T, _, _ = latent_shape # S != T*H*W in case of CP split on H*W.
+        T, _, _ = latent_shape  # S != T*H*W in case of CP split on H*W.
 
-        # compute modulation params in fp32
-        with amp.autocast(device_type="cuda",  dtype=torch.float32):
+        # Compute modulation params in fp32
+        with amp.autocast(device_type="cuda", dtype=torch.float32):
             shift_msa, scale_msa, gate_msa, \
             shift_mlp, scale_mlp, gate_mlp = \
-                self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1) # [B, T, 1, C]
-
-        # self attn with modulation
-        x_m = modulate_fp32(self.mod_norm_attn, x.view(B, T, -1, C), shift_msa, scale_msa).view(B, N, C)
+                self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1)  # [B, N, 1, C]
+            # Apply modulation directly without view
+            x_m = modulate_fp32(self.mod_norm_attn, x, shift_msa.squeeze(2), scale_msa.squeeze(2))
 
         if kv_cache is not None:
             kv_cache = (kv_cache[0].to(x.device), kv_cache[1].to(x.device))
@@ -582,20 +622,20 @@ class LongCatSingleStreamBlock(nn.Module):
             x_s = attn_outputs
 
         with amp.autocast(device_type="cuda", dtype=torch.float32):
-            x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+            x = x + gate_msa.squeeze(2) * x_s  # [B, N, C]
         x = x.to(x_dtype)
 
-        # cross attn
+        # Cross attention
         if not skip_crs_attn:
             if kv_cache is not None:
                 num_cond_latents = None
             x = x + self.cross_attn(self.pre_crs_attn_norm(x), y, y_seqlen, num_cond_latents=num_cond_latents, shape=latent_shape)
 
-        # ffn with modulation
-        x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
+        # FFN with modulation
+        x_m = modulate_fp32(self.mod_norm_ffn, x, shift_mlp.squeeze(2), scale_mlp.squeeze(2))
         x_s = self.ffn(x_m)
         with amp.autocast(device_type="cuda", dtype=torch.float32):
-            x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+            x = x + gate_mlp.squeeze(2) * x_s  # [B, N, C]
         x = x.to(x_dtype)
 
         if return_kv:
@@ -621,14 +661,13 @@ class FinalLayer_FP32(nn.Module):
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(adaln_tembed_dim, 2 * hidden_size, bias=True))
 
     def forward(self, x, t, latent_shape):
-        # timestep shape: [B, T, C]
+        # t: [B, N, C] (per-token timestep embedding)
         assert t.dtype == torch.float32
         B, N, C = x.shape
-        T, _, _ = latent_shape
 
         with amp.autocast(device_type="cuda", dtype=torch.float32):
-            shift, scale = self.adaLN_modulation(t).unsqueeze(2).chunk(2, dim=-1) # [B, T, 1, C]
-            x = modulate_fp32(self.norm_final, x.view(B, T, -1, C), shift, scale).view(B, N, C)
+            shift, scale = self.adaLN_modulation(t).unsqueeze(2).chunk(2, dim=-1)  # [B, N, 1, C]
+            x = modulate_fp32(self.norm_final, x, shift.squeeze(2), scale.squeeze(2))
             x = self.linear(x)
         return x
 
@@ -702,6 +741,9 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
         self.gradient_checkpointing = False
         self.text_tokens_zero_pad = text_tokens_zero_pad
 
+        self.all_gather = None
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
 
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
@@ -724,6 +766,20 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
             )
         self._gradient_checkpointing_func = _gradient_checkpointing_func
 
+    def enable_multi_gpus_inference(self,):
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # For normal model.
+        for block in self.blocks:
+            block.attn.forward = types.MethodType(
+                usp_attn_longcatvideo_forward, block.attn)
+            block.attn.rope_3d.forward = types.MethodType(
+                usp_rope_longcatvideo_forward, block.attn.rope_3d)
+            block.cross_attn.forward = types.MethodType(
+                usp_cross_attn_longcatvideo_forward, block.cross_attn)
+        
     def enable_bsa(self,):
         for block in self.blocks:
             block.attn.enable_bsa = True
@@ -758,21 +814,25 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
         timestep = timestep.to(dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype)
 
-        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
+        assert self.patch_size[0] == 1, "Currently, 3D x_embedder should not compress the temporal dimension."
 
         # Expand the shape of timestep from [B] to [B, T]
         if len(timestep.shape) == 1:
-            timestep = timestep.unsqueeze(1).expand(-1, N_t).clone() # [B, T]
+            timestep = timestep.unsqueeze(1).expand(-1, N_t).clone()  # [B, T]
         timestep[:, :num_cond_latents] = 0
 
-        # Hidden_States Process
+        # Hidden states process
         hidden_states = self.x_embedder(hidden_states)  # [B, N, C]
 
-        # Timestep Process
+        # Timestep process
         with amp.autocast(device_type="cuda", dtype=torch.float32):
             t = self.t_embedder(timestep.float().flatten(), dtype=torch.float32).reshape(B, N_t, -1)  # [B, T, C_t]
+        
+        # Expand t from per-frame to per-token for unified SP handling
+        # Each frame's timestep is repeated for all its spatial tokens
+        t = t.unsqueeze(2).expand(-1, -1, N_h * N_w, -1).reshape(B, -1, t.shape[-1])  # [B, N_global, C_t]
 
-        # Encoder_Hidden_States Process
+        # Encoder hidden states process
         encoder_hidden_states = self.y_embedder(encoder_hidden_states)  # [B, 1, N_token, C]
 
         if self.text_tokens_zero_pad and encoder_attention_mask is not None:
@@ -781,13 +841,17 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
 
         if encoder_attention_mask is not None:
             encoder_attention_mask = encoder_attention_mask.squeeze(1).squeeze(1)
-            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1]) # [1, N_valid_tokens, C]
-            y_seqlens = encoder_attention_mask.sum(dim=1).tolist() # [B]
+            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1])  # [1, N_valid_tokens, C]
+            y_seqlens = encoder_attention_mask.sum(dim=1).tolist()  # [B]
         else:
             y_seqlens = [encoder_hidden_states.shape[2]] * encoder_hidden_states.shape[0]
             encoder_hidden_states = encoder_hidden_states.squeeze(1).view(1, -1, hidden_states.shape[-1])
 
-        # Blocks
+        if self.sp_world_size > 1:
+            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=1)[self.sp_world_rank]
+            t = torch.chunk(t, self.sp_world_size, dim=1)[self.sp_world_rank]  # [B, N_local, C_t]
+
+        # Transformer blocks
         kv_cache_dict_ret = {}
         for i, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -812,6 +876,9 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
 
         hidden_states = self.final_layer(hidden_states, t, (N_t, N_h, N_w))  # [B, N, C=T_p*H_p*W_p*C_out]
 
+        if self.sp_world_size > 1:
+            hidden_states = self.all_gather(hidden_states, dim=1)
+
         hidden_states = self.unpatchify(hidden_states, N_t, N_h, N_w)  # [B, C_out, H, W]
 
         # Cast to float32 for better accuracy
@@ -824,12 +891,16 @@ class LongCatVideoTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelM
     
 
     def unpatchify(self, x, N_t, N_h, N_w):
-        """
-        Args:
-            x (torch.Tensor): of shape [B, N, C]
+        """Unpatchify the tensor.
 
-        Return:
-            x (torch.Tensor): of shape [B, C_out, T, H, W]
+        Args:
+            x: Input tensor of shape [B, N, C].
+            N_t: Number of temporal tokens.
+            N_h: Number of height tokens.
+            N_w: Number of width tokens.
+
+        Returns:
+            Output tensor of shape [B, C_out, T, H, W].
         """
         T_p, H_p, W_p = self.patch_size
         x = rearrange(

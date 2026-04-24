@@ -1,8 +1,8 @@
-# MOVA LoRA 训练指南
+# LongCat-Video-Avatar LoRA 训练指南
 
-本文档提供 MOVA（音视频生成模型）LoRA（Low-Rank Adaptation）训练的完整工作流，包括环境配置、数据准备、分布式训练和推理测试。
+本文档提供 LongCat-Video-Avatar（音频驱动的长视频说话人脸生成模型）LoRA（Low-Rank Adaptation）训练的完整工作流，包括环境配置、数据准备、分布式训练和推理测试。
 
-> **注意**：MOVA 是一个音视频生成视频模型，可以同时生成视频和对应的音频。训练数据需要同时包含视频和音频文件。
+> **注意**：LongCat-Video-Avatar 是一个音频驱动的长视频说话人脸生成模型，需要参考图像和音频文件来生成说话视频。训练数据需要同时包含视频和音频。
 
 ---
 
@@ -91,7 +91,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 ### 2.3 metadata.json 格式
 
-> ⚠️ **重要**：MOVA 是音视频生成模型，与普通视频训练不同，**必须在 metadata.json 中提供 `audio_path` 字段**。
+> ⚠️ **重要**：LongCat-Video-Avatar 是音频驱动的长视频说话人脸生成模型，与普通视频训练不同，**必须在 metadata.json 中提供 `audio_path` 字段**。
 
 **相对路径格式**（示例）：
 ```json
@@ -131,7 +131,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 
 **关键字段说明**：
 - `file_path`：视频文件路径（相对或绝对）
-- `audio_path`：音频文件路径（**MOVA 特有且必须提供**，与普通视频训练的主要区别）
+- `audio_path`：音频文件路径（**必须提供**，与普通视频训练的主要区别）
   - 音频文件通常为 `.wav` 格式
   - 路径应与 `file_path` 对应，如 `train/video001.mp4` 对应 `wav/audio001.wav`
 - `text`：视频描述（英文提示词）
@@ -140,12 +140,12 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
   - 可使用 `scripts/process_json_add_width_and_height.py` 为没有宽高字段的 JSON 文件添加宽高字段，支持图片和视频
   - 使用方法：`python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Audios-Demo/metadata.json --output_file datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json`
 
-**MOVA 与普通视频训练的数据集对比**：
+**LongCat-Video-Avatar 与普通视频训练的数据集对比**：
 
 | 模型类型 | 必需字段 | 音频字段 |
 |---------|---------|---------|
 | 普通视频（WAN、CogVideoX 等） | `file_path`, `text`, `type` | ❌ 不需要 |
-| **MOVA（音视频生成）** | `file_path`, `audio_path`, `text`, `type` | ✅ **必须提供** |
+| **LongCat-Video-Avatar（音频驱动生成）** | `file_path`, `audio_path`, `text`, `type` | ✅ **必须提供** |
 
 ### 2.4 相对路径与绝对路径使用
 
@@ -178,7 +178,12 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 ```bash
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
-hf download OpenMOSS-Team/MOVA-360p --local-dir models/Diffusion_Transformer/MOVA-360p
+
+# 下载 LongCat-Video 基础模型
+modelscope download --model meituan-longcat/LongCat-Video --local_dir models/Diffusion_Transformer/LongCat-Video
+
+# 下载 LongCat-Video-Avatar 模型
+modelscope download --model meituan-longcat/LongCat-Video-Avatar --local_dir models/Diffusion_Transformer/LongCat-Video-Avatar
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
@@ -190,32 +195,33 @@ hf download OpenMOSS-Team/MOVA-360p --local-dir models/Diffusion_Transformer/MOV
 DeepSpeed-Zero-2 与 FSDP 的区别在于模型权重是否分片。**如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/mova/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/longcatvideo/train_avatar_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=480 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=193 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=100 \
+  --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_mova_lora" \
+  --output_dir="output_dir_longcat_avatar_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -226,14 +232,11 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --low_vram \
   --rank=64 \
-  --network_alpha=64 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="low" \
-  --boundary_ratio=0.9 \
+  --network_alpha=32 \
+  --low_vram \
   --use_peft_lora \
-  --train_components="transformer,transformer_2"
+  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
 ```
 
 ### 3.3 LoRA 训练参数
@@ -243,33 +246,32 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--rank` | LoRA 更新矩阵维度 | 64 |
-| `--network_alpha` | LoRA 更新矩阵缩放系数 | 64 |
-| `--target_name` | 应用 LoRA 的组件/模块（逗号分隔） | `q,k,v,ffn.0,ffn.2` |
+| `--network_alpha` | LoRA 更新矩阵缩放系数 | 32 |
+| `--target_name` | 应用 LoRA 的组件/模块（逗号分隔） | `qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3` |
 | `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更省显存） | - |
-| `--boundary_type` | 指定对哪个 DiT 训练 LoRA：`low`=仅低噪声 DiT，`high`=仅高噪声 DiT，`full`=两个 DiT | `high` |
-| `--train_components` | 指定训练哪些组件的 LoRA。逗号分隔列表：`transformer`, `transformer_2`, `transformer_audio`, `dual_tower_bridge`, 或 `all` | `transformer,transformer_2` |
 
 **常用训练参数**：
 
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/MOVA-360p` |
+| `--pretrained_model_name_or_path` | 预训练基础模型路径 | `models/Diffusion_Transformer/LongCat-Video` |
+| `--pretrained_avatar_model_name_or_path` | 预训练 Avatar 模型路径 | `models/Diffusion_Transformer/LongCat-Video-Avatar` |
 | `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
 | `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
 | `--train_batch_size` | 每批训练的样本数 | 1 |
-| `--image_sample_size` | 最大训练分辨率，自动 bucket | 360 |
-| `--video_sample_size` | 视频最大训练分辨率 | 360 |
-| `--token_sample_size` | Token 长度采样大小 | 360 |
-| `--video_sample_stride` | 帧采样步长 | 1 |
-| `--video_sample_n_frames` | 采样帧数 | 193 |
+| `--image_sample_size` | 最大训练分辨率，自动 bucket | 640 |
+| `--video_sample_size` | 视频最大训练分辨率 | 640 |
+| `--token_sample_size` | Token 长度采样大小 | 640 |
+| `--video_sample_stride` | 帧采样步长 | 2 |
+| `--video_sample_n_frames` | 采样帧数 | 81 |
 | `--video_repeat` | 每个视频在每个 epoch 重复次数 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效于更大 batch） | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练轮数 | 100 |
-| `--checkpointing_steps` | 每 N 步保存检查点 | 100 |
+| `--checkpointing_steps` | 每 N 步保存检查点 | 50 |
 | `--learning_rate` | 初始学习率（LoRA 通常比全量训练使用更高的学习率） | 1e-04 |
 | `--seed` | 随机种子 | 42 |
-| `--output_dir` | 输出目录 | `output_dir_mova_lora` |
+| `--output_dir` | 输出目录 | `output_dir_longcat_avatar_lora` |
 | `--gradient_checkpointing` | 启用激活检查点 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
 | `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
@@ -282,27 +284,11 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--uniform_sampling` | 均匀时间步采样 | - |
 | `--low_vram` | 启用低显存优化 | - |
 | `--resume_from_checkpoint` | 从检查点路径恢复训练，使用 `"latest"` 自动选择最新检查点 | None |
-| `--validation_steps` | 每 N 步执行一次验证 | 500 |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
 | `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
-| `--validation_prompts` | 验证视频生成的提示词 | `"Medium shot of a girl..."` |
-| `--validation_paths` | 验证 I2V 模式的输入图片路径 | `"asset/8.png"` |
-
-**部分参数详细说明**：
-
-- `enable_bucket`：启用 bucket 训练。启用后，模型不会在中心裁剪视频，而是根据分辨率将视频分组到 bucket 后进行训练。
-- `random_frame_crop`：用于视频帧的随机裁剪，以模拟不同帧数的视频。
-- `random_hw_adapt`：启用视频自动高宽缩放。启用后，训练视频的高宽将设置为 `video_sample_size` 作为最大值，`512` 作为最小值。
-  - 例如，当启用 `random_hw_adapt`，`video_sample_n_frames=49`，`video_sample_size=768` 时，训练输入视频的分辨率为 `512x512x49`、`768x768x49`。
-- `training_with_video_token_length`：按 token 长度训练模型。训练视频的高宽将设置为 `video_sample_size` 作为最大值，`256` 作为最小值。
-  - 例如，当启用 `training_with_video_token_length`，`video_sample_n_frames=49`，`token_sample_size=512`，`video_sample_size=768` 时，训练输入视频的分辨率为 `256x256x49`、`512x512x49`、`768x768x21`。
-  - 512x512 分辨率、49 帧的视频 token 长度为 13,312。我们需要设置 `token_sample_size = 512`。
-    - 在 512x512 分辨率下，视频帧数为 49 (~= 512 * 512 * 49 / 512 / 512)。
-    - 在 768x768 分辨率下，视频帧数为 21 (~= 512 * 512 * 49 / 768 / 768)。
-    - 在 1024x1024 分辨率下，视频帧数为 9 (~= 512 * 512 * 49 / 1024 / 1024)。
-    - 这些分辨率及其对应长度的组合使模型能够生成不同尺寸的视频。
-- `boundary_type`：指定对哪个 DiT 训练 LoRA：`low` = 仅低噪声 DiT，`high` = 仅高噪声 DiT，`full` = 两个 DiT。
-- `boundary_ratio`：高低噪声 DiT 切换的边界比例。低于此比例的时间步使用低噪声 DiT（默认：0.9）。
-- `i2v_ratio`：训练中 I2V 样本的比例。0.0 = 纯 T2V，1.0 = 纯 I2V，0.5 = 50% T2V + 50% I2V（默认）。
+| `--validation_prompts` | 验证视频生成的提示词 | `"A man in a blue blazer..."` |
+| `--validation_image_paths` | 验证用的参考图像路径列表 | 图像路径列表 |
+| `--validation_audio_paths` | 验证用的音频路径列表 | 音频路径列表 |
 
 
 ### 3.4 训练验证
@@ -313,31 +299,34 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
-| `--validation_steps` | 每 N 步执行一次验证 | 500 |
+| `--validation_steps` | 每 N 步执行一次验证 | 100 |
 | `--validation_epochs` | 每 N 个epoch执行一次验证 | 500 |
 | `--validation_prompts` | 验证视频生成的提示词，可用空格分隔多个提示词 | 多个空格分隔的提示词 |
-| `--validation_paths` | 验证 I2V 模式的输入图片路径 | `asset/single_person.jpg` |
+| `--validation_image_paths` | 验证用的参考图像路径列表 | 图像路径列表 |
+| `--validation_audio_paths` | 验证用的音频路径列表 | 音频路径列表 |
 
 **示例**：
 
 ```bash
-  --validation_steps=500 \
+  --validation_image_paths "asset/8.png" \
+  --validation_audio_paths "asset/talk.wav" \
+  --validation_steps=100 \
   --validation_epochs=500 \
-  --validation_paths "asset/8.png" \
-  --validation_prompts="Medium shot of a girl by the ocean. She starts with a bright smile, then gently nods her head while speaking. Her mouth moves naturally to say: \"Hi, nice to meet you.\" She maintains eye contact throughout. The background shows calm waves. Smooth motion, cinematic quality, realistic facial expressions."
+  --validation_prompts="A young woman with long flowing purple hair stands by the seaside on a sunny day, singing. Wearing a white sleeveless dress with a navy blue bow at the collar, her hair gently sways in the ocean breeze. The sparkling sea, blue sky with white clouds, and pink wildflowers along the shore create a beautiful and vibrant scene."
 ```
 
 **注意事项**：
 - 验证视频会保存到 `output_dir` 目录中
-- 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
-- MOVA 的验证支持 I2V 模式，需要提供 `--validation_paths` 参数
+- 图像路径、音频路径和提示词必须一一对应
+- 多组验证格式：`--validation_image_paths "img1.png" "img2.png" --validation_audio_paths "audio1.wav" "audio2.wav" --validation_prompts "prompt1" "prompt2"`
 
 ### 3.5 使用 FSDP 训练
 
 **如果多卡使用 DeepSpeed-Zero-2 显存不够**，可切换为 FSDP。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
@@ -346,29 +335,26 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-    --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock,AudioWanAttentionBlock,ConditionalCrossAttentionBlock \
-    --fsdp_sharding_strategy "FULL_SHARD" \
-    --fsdp_state_dict_type=SHARDED_STATE_DICT \
-    --fsdp_backward_prefetch "BACKWARD_PRE" \
-    --fsdp_cpu_ram_efficient_loading False \
-    scripts/mova/train_lora.py \
+    --fsdp_transformer_layer_cls_to_wrap=LongCatAvatarSingleStreamBlock --fsdp_sharding_strategy "FULL_SHARD" \
+    --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
+    --fsdp_cpu_ram_efficient_loading False scripts/longcatvideo/train_avatar_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=480 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=193 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=100 \
+  --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_mova_lora" \
+  --output_dir="output_dir_longcat_avatar_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -379,14 +365,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --low_vram \
   --rank=64 \
-  --network_alpha=64 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="low" \
-  --boundary_ratio=0.9 \
+  --network_alpha=32 \
+  --low_vram \
   --use_peft_lora \
-  --train_components="transformer,transformer_2"
+  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
 ```
 
 ### 3.6 不使用 DeepSpeed 或 FSDP 训练
@@ -394,7 +377,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 **不推荐此方式，因为缺少显存优化后端，容易显存溢出**。仅供参考。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
@@ -402,24 +386,24 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
+accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=480 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=193 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=100 \
+  --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_mova_lora" \
+  --output_dir="output_dir_longcat_avatar_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -430,14 +414,11 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --low_vram \
   --rank=64 \
-  --network_alpha=64 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="low" \
-  --boundary_ratio=0.9 \
+  --network_alpha=32 \
+  --low_vram \
   --use_peft_lora \
-  --train_components="transformer,transformer_2"
+  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
 ```
 
 ### 3.7 多机分布式训练
@@ -450,9 +431,10 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train_lora.py \
 
 **机器 0（Master）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -463,24 +445,24 @@ export RANK=0                        # 当前机器 rank（0 或 1）
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/mova/train_lora.py \
+accelerate launch --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/longcatvideo/train_avatar_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --pretrained_avatar_model_name_or_path=$MODEL_NAME_AVATAR \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=480 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=193 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
   --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=100 \
+  --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_mova_lora" \
+  --output_dir="output_dir_longcat_avatar_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -491,21 +473,19 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
-  --low_vram \
   --rank=64 \
-  --network_alpha=64 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --boundary_type="low" \
-  --boundary_ratio=0.9 \
+  --network_alpha=32 \
+  --low_vram \
   --use_peft_lora \
-  --train_components="transformer,transformer_2"
+  --target_name="qkv,q_linear,kv_linear,ffn.w1,ffn.w2,ffn.w3"
 ```
 
 **机器 1（Worker）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
+export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2
@@ -531,8 +511,6 @@ NCCL_DEBUG=INFO
 
 - **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
 
----
-
 ## 四、推理测试
 
 ### 4.1 推理参数
@@ -541,37 +519,31 @@ NCCL_DEBUG=INFO
 
 | 参数 | 说明 | 示例值 |
 |------|------|-------|
-| `GPU_memory_mode` | GPU 显存模式，见下表选项 | `sequential_cpu_offload` |
+| `GPU_memory_mode` | GPU 显存模式，见下表选项 | `model_group_offload` |
 | `ulysses_degree` | Head 维度并行度，单 GPU 为 1 | 1 |
 | `ring_degree` | Sequence 维度并行度，单 GPU 为 1 | 1 |
 | `fsdp_dit` | 多 GPU 推理时对 Transformer 使用 FSDP 节省显存 | `False` |
-| `fsdp_text_encoder` | 多 GPU 推理时对文本编码器使用 FSDP | `True` |
-| `compile_dit` | 编译 Transformer 加速推理（固定分辨率有效，与 sequential_cpu_offload 不兼容） | `False` |
-| `model_name` | 模型路径 | `models/Diffusion_Transformer/MOVA-360p` |
+| `fsdp_text_encoder` | 多 GPU 推理时对文本编码器使用 FSDP | `False` |
+| `compile_dit` | 编译 Transformer 加速推理（固定分辨率有效） | `False` |
+| `model_name` | 基础模型路径 | `models/Diffusion_Transformer/LongCat-Video` |
+| `model_name_avatar` | Avatar 模型路径 | `models/Diffusion_Transformer/LongCat-Video-Avatar` |
 | `sampler_name` | 采样器类型：`Flow`、`Flow_Unipc`、`Flow_DPM++` | `Flow` |
-| `boundary_ratio` | 高低噪声 DiT 切换比例 | 0.9 |
-| `transformer_path` | 训练后的低噪声 Transformer 权重路径 | `None` |
-| `transformer_high_path` | 训练后的高噪声 Transformer 权重路径 | `None` |
-| `transformer_audio_path` | 训练后的音频 Transformer 权重路径 | `None` |
-| `bridge_path` | 训练后的双塔桥接权重路径 | `None` |
-| `vae_path` | 训练后的视频 VAE 权重路径 | `None` |
-| `audio_vae_path` | 训练后的音频 VAE 权重路径 | `None` |
-| `lora_path` | 低噪声模型 LoRA 权重路径 | `output_dir_mova_lora/pytorch_lora_weights.safetensors` |
-| `lora_high_path` | 高噪声模型 LoRA 权重路径 | `None` |
-| `validation_image` | I2V 模式的输入图片 | `asset/8.png` |
-| `sample_size` | 生成视频分辨率 `[height, width]` | `[640, 352]` |
+| `transformer_path` | 训练后的 Transformer 权重路径 | `None` |
+| `vae_path` | 训练后的 VAE 权重路径 | `None` |
+| `lora_path` | LoRA 权重路径 | `output_dir_longcat_avatar_lora/pytorch_lora_weights.safetensors` |
+| `sample_size` | 生成视频分辨率 `[height, width]` | `[832, 480]` |
 | `video_length` | 生成帧数 | 81 |
-| `fps` | 每秒帧数 | 24 |
-| `weight_dtype` | 模型权重精度，无 bf16 的显卡使用 `torch.float16`（如 v100、2080ti） | `torch.bfloat16` |
-| `prompt` | 正向提示词，描述要生成的内容 | `"Medium shot of a girl..."` |
-| `negative_prompt` | 负向提示词，描述要避免的内容 | `"色调艳丽，过曝..."` |
-| `guidance_scale` | 引导强度 | 5.0 |
+| `fps` | 每秒帧数 | 16 |
+| `weight_dtype` | 模型权重精度，无 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
+| `validation_image_start` | 参考图像路径 | `"asset/8.png"` |
+| `audio_path` | 输入音频路径 | `"asset/talk.wav"` |
+| `prompt` | 生成提示词 | `"A young woman with long flowing purple hair..."` |
+| `negative_prompt` | 负向提示词 | 见代码 |
+| `guidance_scale` | 提示词引导强度 | 4.5 |
 | `seed` | 随机种子，保证可重复性 | 43 |
-| `num_inference_steps` | 推理步数 | 50 |
-| `lora_weight` | 低噪声模型 LoRA 权重强度 | 0.55 |
-| `lora_high_weight` | 高噪声模型 LoRA 权重强度 | 0.55 |
-| `save_path` | 生成视频保存路径 | `samples/mova-videos-i2v` |
-| `audio_sample_rate` | 音频采样率（从 vocoder 配置读取） | 24000 |
+| `num_inference_steps` | 推理步数 | 25 |
+| `lora_weight` | LoRA 权重强度 | 0.55 |
+| `save_path` | 生成视频保存路径 | `samples/longcat-avatar-videos-t2v` |
 
 **GPU 显存模式说明**：
 
@@ -589,27 +561,25 @@ NCCL_DEBUG=INFO
 运行单卡推理：
 
 ```bash
-python examples/mova/predict_i2v.py
+python examples/longcatvideo/predict_s2v_avatar.py
 ```
 
-根据需求编辑 `examples/mova/predict_i2v.py`。LoRA 推理请重点关注以下参数：
+根据需求编辑 `examples/longcatvideo/predict_s2v_avatar.py`。LoRA 推理请重点关注以下参数：
 
 ```python
 # 根据显卡显存选择
-GPU_memory_mode = "sequential_cpu_offload"
+GPU_memory_mode = "model_group_offload"
 # 你的实际模型路径
-model_name = "models/Diffusion_Transformer/MOVA-360p"
-  
-# I2V 输入图片
-validation_image = "asset/8.png"
-# LoRA 权重路径，如 "output_dir_mova_lora/checkpoint-xxx/lora_weights.safetensors"
+model_name = "models/Diffusion_Transformer/LongCat-Video"  
+model_name_avatar = "models/Diffusion_Transformer/LongCat-Video-Avatar"
+# LoRA 权重路径，如 "output_dir_longcat_avatar_lora/checkpoint-xxx/lora_weights.safetensors"
 lora_path = None
-lora_high_path = None
 # LoRA 权重强度
-lora_weight = 0.55
-lora_high_weight = 0.55
+lora_weight = 0.55  
 # 根据要生成的内容编写
-prompt = "Medium shot of a girl by the ocean. She starts with a bright smile, then gently nods her head while speaking. Her mouth moves naturally to say: \"Hi, nice to meet you.\" She maintains eye contact throughout. The background shows calm waves. Smooth motion, cinematic quality, realistic facial expressions."  
+validation_image_start = "asset/8.png"
+audio_path = "asset/talk.wav"
+prompt = "A young woman with long flowing purple hair speaks directly to the camera in a softly lit room. Her animated facial expressions and natural head movements align with the audio, creating an engaging and lifelike presentation."  
 # ...
 ```
 
@@ -625,7 +595,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 `examples/mova/predict_i2v.py`：
+编辑 `examples/longcatvideo/predict_s2v_avatar.py`：
 
 ```python
 # 确保 ulysses_degree × ring_degree = 使用的 GPU 数
@@ -650,10 +620,8 @@ ring_degree = 1     # Sequence 维度并行
 #### 运行多 GPU 推理
 
 ```bash
-torchrun --nproc-per-node=2 examples/mova/predict_i2v.py
+torchrun --nproc-per-node=2 examples/longcatvideo/predict_s2v_avatar.py
 ```
-
----
 
 ## 五、更多资源
 

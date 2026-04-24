@@ -812,71 +812,71 @@ class InfiniteTalkPipeline(DiffusionPipeline):
                             cond_flag=True,
                         )
                     
-                    # CFG with APG support
-                    if math.isclose(guidance_scale, 1.0):
-                        # Only audio guidance
-                        noise_pred_drop_audio = self.transformer(
-                            x=latents,
-                            t=timestep,
-                            context=context_input,
-                            seq_len=seq_len,
-                            clip_fea=clip_fea,
-                            y=y,
-                            audio=audio_emb_input * 0,  # zero audio
-                            ref_target_masks=ref_target_masks,
-                            cond_flag=False,
-                        )
-                        
-                        if use_apg:
-                            diff_uncond_audio = noise_pred_cond - noise_pred_drop_audio
-                            noise_pred = noise_pred_cond + (audio_guide_scale - 1) * adaptive_projected_guidance(
-                                diff_uncond_audio, noise_pred_cond,
-                                momentum_buffer=audio_momentumbuffer,
-                                norm_threshold=apg_norm_threshold
+                        # CFG with APG support
+                        if math.isclose(guidance_scale, 1.0):
+                            # Only audio guidance
+                            noise_pred_drop_audio = self.transformer(
+                                x=latents,
+                                t=timestep,
+                                context=context_input,
+                                seq_len=seq_len,
+                                clip_fea=clip_fea,
+                                y=y,
+                                audio=audio_emb_input * 0,  # zero audio
+                                ref_target_masks=ref_target_masks,
+                                cond_flag=False,
                             )
+                            
+                            if use_apg:
+                                diff_uncond_audio = noise_pred_cond - noise_pred_drop_audio
+                                noise_pred = noise_pred_cond + (audio_guide_scale - 1) * adaptive_projected_guidance(
+                                    diff_uncond_audio, noise_pred_cond,
+                                    momentum_buffer=audio_momentumbuffer,
+                                    norm_threshold=apg_norm_threshold
+                                )
+                            else:
+                                noise_pred = noise_pred_drop_audio + audio_guide_scale * (noise_pred_cond - noise_pred_drop_audio)
                         else:
-                            noise_pred = noise_pred_drop_audio + audio_guide_scale * (noise_pred_cond - noise_pred_drop_audio)
-                    else:
-                        # Full CFG with text and audio
-                        noise_pred_drop_text = self.transformer(
-                            x=latents,
-                            t=timestep,
-                            context=context_neg,
-                            seq_len=seq_len,
-                            clip_fea=clip_fea,
-                            y=y,
-                            audio=audio_emb_input,
-                            ref_target_masks=ref_target_masks,
-                            cond_flag=False,
-                        )
-                        noise_pred_uncond = self.transformer(
-                            x=latents,
-                            t=timestep,
-                            context=context_neg,
-                            seq_len=seq_len,
-                            clip_fea=clip_fea,
-                            y=y,
-                            audio=audio_emb_input * 0,  # zero audio
-                            ref_target_masks=ref_target_masks,
-                            cond_flag=False,
-                        )
-                        
-                        if use_apg:
-                            diff_uncond_text = noise_pred_cond - noise_pred_drop_text
-                            diff_uncond_audio = noise_pred_drop_text - noise_pred_uncond
-                            noise_pred = noise_pred_cond + (guidance_scale - 1) * adaptive_projected_guidance(
-                                diff_uncond_text, noise_pred_cond,
-                                momentum_buffer=text_momentumbuffer,
-                                norm_threshold=apg_norm_threshold
-                            ) + (audio_guide_scale - 1) * adaptive_projected_guidance(
-                                diff_uncond_audio, noise_pred_cond,
-                                momentum_buffer=audio_momentumbuffer,
-                                norm_threshold=apg_norm_threshold
+                            # Full CFG with text and audio
+                            noise_pred_drop_text = self.transformer(
+                                x=latents,
+                                t=timestep,
+                                context=context_neg,
+                                seq_len=seq_len,
+                                clip_fea=clip_fea,
+                                y=y,
+                                audio=audio_emb_input,
+                                ref_target_masks=ref_target_masks,
+                                cond_flag=False,
                             )
-                        else:
-                            noise_pred = noise_pred_uncond + guidance_scale * (
-                                noise_pred_cond - noise_pred_drop_text) + \
-                                audio_guide_scale * (noise_pred_drop_text - noise_pred_uncond)
+                            noise_pred_uncond = self.transformer(
+                                x=latents,
+                                t=timestep,
+                                context=context_neg,
+                                seq_len=seq_len,
+                                clip_fea=clip_fea,
+                                y=y,
+                                audio=audio_emb_input * 0,  # zero audio
+                                ref_target_masks=ref_target_masks,
+                                cond_flag=False,
+                            )
+                            
+                            if use_apg:
+                                diff_uncond_text = noise_pred_cond - noise_pred_drop_text
+                                diff_uncond_audio = noise_pred_drop_text - noise_pred_uncond
+                                noise_pred = noise_pred_cond + (guidance_scale - 1) * adaptive_projected_guidance(
+                                    diff_uncond_text, noise_pred_cond,
+                                    momentum_buffer=text_momentumbuffer,
+                                    norm_threshold=apg_norm_threshold
+                                ) + (audio_guide_scale - 1) * adaptive_projected_guidance(
+                                    diff_uncond_audio, noise_pred_cond,
+                                    momentum_buffer=audio_momentumbuffer,
+                                    norm_threshold=apg_norm_threshold
+                                )
+                            else:
+                                noise_pred = noise_pred_uncond + guidance_scale * (
+                                    noise_pred_cond - noise_pred_drop_text) + \
+                                    audio_guide_scale * (noise_pred_drop_text - noise_pred_uncond)
 
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]

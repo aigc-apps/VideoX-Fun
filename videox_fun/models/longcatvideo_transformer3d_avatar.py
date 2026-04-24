@@ -1,4 +1,5 @@
 # Modified from https://github.com/meituan-longcat/LongCat-Video/blob/main/longcat_video/modules/avatar/longcat_video_dit_avatar.py
+import types
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -13,14 +14,17 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import is_torch_version
 from einops import rearrange, repeat
 
+from ..dist import (get_sequence_parallel_rank,
+                    get_sequence_parallel_world_size, get_sp_group,
+                    usp_attn_longcatvideo_avatar_forward,
+                    usp_cross_attn_longcatvideo_forward,
+                    usp_rope_longcatvideo_forward)
 from .attention_utils import attention
 from .longcatvideo_transformer3d import (CaptionEmbedder, FeedForwardSwiGLU,
                                          FinalLayer_FP32, LayerNorm_FP32,
                                          MultiHeadCrossAttention, PatchEmbed3D,
-                                         RMSNorm_FP32,
-                                         RotaryPositionalEmbedding,
-                                         TimestepEmbedder, broadcat,
-                                         modulate_fp32, rotate_half)
+                                         RMSNorm_FP32, TimestepEmbedder,
+                                         broadcat, modulate_fp32, rotate_half)
 
 
 def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
@@ -36,10 +40,11 @@ class RotaryPositionalEmbedding1D(nn.Module):
     def __init__(self,
                  head_dim
                  ):
-        """Rotary positional embedding for 1D
+        """Rotary positional embedding for 1D.
+
         Args:
-            dim: Dimension of embedding
-            base: Base value for exponential
+            dim: Dimension of embedding.
+            base: Base value for exponential.
         """
         super().__init__()
         self.head_dim = head_dim
@@ -59,10 +64,11 @@ class RotaryPositionalEmbedding1D(nn.Module):
         """1D RoPE.
 
         Args:
-            query (torch.tensor): [B, head, seq, head_dim]
-            pos_indices (torch.tensor): [seq,]
+            query: Query tensor [B, head, seq, head_dim].
+            pos_indices: Position indices [seq].
+
         Returns:
-            query with the same shape as input.
+            Query with the same shape as input.
         """
         freqs_cis = self.precompute_freqs_cis_1d(pos_indices)
 
@@ -78,8 +84,8 @@ class RotaryPositionalEmbedding1D(nn.Module):
 
 # https://github.com/facebookresearch/fairseq/blob/main/fairseq/modules/rotary_positional_embedding.py
 class RotaryPositionalEmbedding(nn.Module):
-    """
-    Rotary Positional Embedding for 3D spatial-temporal data
+    """Rotary Positional Embedding for 3D spatial-temporal data.
+
     Reference: https://blog.eleuther.ai/rotary-embeddings/
     Paper: https://arxiv.org/pdf/2104.09864.pdf
     """
@@ -88,16 +94,17 @@ class RotaryPositionalEmbedding(nn.Module):
         head_dim,
         cp_split_hw=None
     ):
-        """
+        """Initialize RotaryPositionalEmbedding.
+
         Args:
-            head_dim: Dimension of each attention head (must be divisible by 8 for 3D RoPE)
-            cp_split_hw: Context parallel split for height and width dimensions
+            head_dim: Dimension of each attention head (must be divisible by 8 for 3D RoPE).
+            cp_split_hw: Context parallel split for height and width dimensions.
         """
         super().__init__()
         self.head_dim = head_dim
         assert self.head_dim % 8 == 0, 'Dim must be a multiply of 8 for 3D RoPE.'
         self.cp_split_hw = cp_split_hw
-        # We take the assumption that the longest side of grid will not larger than 512, i.e, 512 * 8 = 4098 input pixels
+        # Assume the longest side of grid will not exceed 512, i.e., 512 * 8 = 4096 input pixels
         self.base = 10000
         self.freqs_dict = {}
 
@@ -109,16 +116,15 @@ class RotaryPositionalEmbedding(nn.Module):
             })
 
     def precompute_freqs_cis_3d(self, grid_size, frame_index=None, num_ref_latents=None):
-        """
-        Precompute frequency embeddings for 3D grid (time, height, width)
-        
+        """Precompute frequency embeddings for 3D grid (time, height, width).
+
         Args:
-            grid_size: Tuple of (num_frames, height, width)
-            frame_index: Optional reference frame index for video continuation
-            num_ref_latents: Optional number of reference latents
-            
+            grid_size: Tuple of (num_frames, height, width).
+            frame_index: Optional reference frame index for video continuation.
+            num_ref_latents: Optional number of reference latents.
+
         Returns:
-            freqs: Precomputed frequency tensor of shape (T*H*W, D)
+            Precomputed frequency tensor of shape (T*H*W, D).
         """
         num_frames, height, width = grid_size     
         dim_t = self.head_dim - 4 * (self.head_dim // 6)
@@ -149,18 +155,17 @@ class RotaryPositionalEmbedding(nn.Module):
         return freqs
 
     def forward(self, q, k, grid_size, frame_index=None, num_ref_latents=None):
-        """
-        Apply 3D RoPE to query and key tensors
-        
+        """Apply 3D RoPE to query and key tensors.
+
         Args:
-            q: Query tensor [B, head, seq, head_dim]
-            k: Key tensor [B, head, seq, head_dim]
-            grid_size: Tuple of (num_frames, height, width)
-            frame_index: Optional reference frame index
-            num_ref_latents: Optional number of reference latents
-            
+            q: Query tensor [B, head, seq, head_dim].
+            k: Key tensor [B, head, seq, head_dim].
+            grid_size: Tuple of (num_frames, height, width).
+            frame_index: Optional reference frame index.
+            num_ref_latents: Optional number of reference latents.
+
         Returns:
-            Tuple of (q, k) with rotary positional embeddings applied
+            Tuple of (q, k) with rotary positional embeddings applied.
         """
         key_name = '.'.join([str(i) for i in grid_size]) + f"-{str(frame_index)}-{str(num_ref_latents)}"
         if key_name not in self.freqs_dict:
@@ -221,7 +226,20 @@ class Attention(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False, num_ref_latents=None, ref_img_index=None, mask_frame_range=None, ref_target_masks=None) -> torch.Tensor:
-        """
+        """Forward pass for attention.
+
+        Args:
+            x: Input tensor [B, N, C].
+            shape: Latent shape tuple (N_t, N_h, N_w).
+            num_cond_latents: Number of condition latents.
+            return_kv: Whether to return key-value cache.
+            num_ref_latents: Number of reference latents.
+            ref_img_index: Reference image index.
+            mask_frame_range: Mask frame range.
+            ref_target_masks: Reference target masks.
+
+        Returns:
+            Output tensor after attention.
         """
         B, N, C = x.shape
         qkv = self.qkv(x)
@@ -237,26 +255,26 @@ class Attention(nn.Module):
         q, k = self.rope_3d(q, k, shape, ref_img_index, num_ref_latents)
 
         N_t, N_h, N_w = shape
-        # cond mode
+        # Cond mode
         if num_cond_latents is not None and num_cond_latents == 1:
-            # image to video
+            # Image to video
             num_cond_latents_thw = num_cond_latents * (N // N_t)
-            # process the condition tokens
+            # Process the condition tokens
             q_cond = q[:, :, :num_cond_latents_thw].contiguous()
             k_cond = k[:, :, :num_cond_latents_thw].contiguous()
             v_cond = v[:, :, :num_cond_latents_thw].contiguous()
             x_cond = self._process_attn(q_cond, k_cond, v_cond, shape)
-            # process the noise tokens
+            # Process the noise tokens
             q_noise = q[:, :, num_cond_latents_thw:].contiguous()
             x_noise = self._process_attn(q_noise, k, v, shape)
-            # merge x_cond and x_noise
+            # Merge x_cond and x_noise
             x = torch.cat([x_cond, x_noise], dim=2).contiguous()
         elif num_cond_latents is not None and num_cond_latents > 1:
-            # video continuation
+            # Video continuation
             assert num_ref_latents is not None and ref_img_index is not None, f"No specified insertion position for reference frame"
             num_ref_latents_thw = (N // N_t)
             num_cond_latents_thw = num_cond_latents * (N // N_t)
-            # process the condition tokens
+            # Process the condition tokens
             q_ref = q[:, :, :num_ref_latents_thw].contiguous()
             k_ref = k[:, :, :num_ref_latents_thw].contiguous()
             v_ref = v[:, :, :num_ref_latents_thw].contiguous()
@@ -268,19 +286,19 @@ class Attention(nn.Module):
             if num_cond_latents == N_t:
                 x = torch.cat([x_ref, x_cond], dim=2).contiguous()
             else:
-                # process the noise tokens
+                # Process the noise tokens
                 q_noise = q[:, :, num_cond_latents_thw:].contiguous()
-                
+
                 start_noise, end_noise, num_noisy_frames = 0, 0, N_t - num_cond_latents
                 if mask_frame_range is not None and mask_frame_range > 0:
                     start_noise = ref_img_index - mask_frame_range - num_cond_latents + num_ref_latents
                     end_noise   = ref_img_index + mask_frame_range - num_cond_latents + num_ref_latents + 1
 
                 if start_noise >= 0 and end_noise > start_noise and end_noise <= num_noisy_frames:
-                    # remove attention with the reference image in the target range, preventing repeated actions.
+                    # Remove attention with the reference image in the target range, preventing repeated actions.
                     _enable_bsa = self.enable_bsa
-                    self.enable_bsa = False # close bsa to prevent the temporal dimension from being divisible by bsa chunks
-                    
+                    self.enable_bsa = False  # Close bsa to prevent the temporal dimension from being divisible by bsa chunks
+
                     start_pos = start_noise * (N // N_t)
                     end_pos   = end_noise * (N // N_t)
                     q_noise_front = q_noise[:, :, :start_pos].contiguous()
@@ -288,29 +306,29 @@ class Attention(nn.Module):
                     q_noise_back = q_noise[:, :, end_pos:].contiguous()
                     k_non_ref = k[:, :, num_ref_latents_thw:].contiguous()
                     v_non_ref = v[:, :, num_ref_latents_thw:].contiguous()
-                    x_noise_front = self._process_attn(q_noise_front, k, v, shape) # q_front has attention with ref + cond + noisy
-                    x_noise_back = self._process_attn(q_noise_back, k, v, shape) # q_back has attention with ref + cond + noisy
-                    x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape) # q_mask has attention with cond+noisy
+                    x_noise_front = self._process_attn(q_noise_front, k, v, shape)  # q_front has attention with ref + cond + noisy
+                    x_noise_back = self._process_attn(q_noise_back, k, v, shape)  # q_back has attention with ref + cond + noisy
+                    x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape)  # q_mask has attention with cond+noisy
                     x_noise = torch.cat([x_noise_front, x_noise_maskref, x_noise_back], dim=2).contiguous()
-                    self.enable_bsa = _enable_bsa # recover bsa state
+                    self.enable_bsa = _enable_bsa  # Recover bsa state
                 else:
                     x_noise = self._process_attn(q_noise, k, v, shape)
-                # merge x_cond and x_noise
+                # Merge x_cond and x_noise
                 x = torch.cat([x_ref, x_cond, x_noise], dim=2).contiguous()
 
         else:
-            # text to video
+            # Text to video
             x = self._process_attn(q, k, v, shape)
 
         x_output_shape = (B, N, C)
-        x = x.transpose(1, 2) 
+        x = x.transpose(1, 2)
         x = x.reshape(x_output_shape)
         x = self.proj(x)
 
-        # calculate attention mask for the given area in reference image
+        # Calculate attention mask for the given area in reference image
         x_ref_attn_map = None
         if ref_target_masks is not None:
-            assert num_cond_latents is not None and num_cond_latents > 0, f"currently, multitalk only supports image to video or video continuation"
+            assert num_cond_latents is not None and num_cond_latents > 0, f"Currently, multitalk only supports image to video or video continuation"
             x_ref_attn_map = get_attn_map_with_target(q.permute(0, 2, 1, 3)[:, num_cond_latents_thw:].type_as(x), k.permute(0, 2, 1, 3).type_as(x), shape, ref_target_masks=ref_target_masks, cp_split_hw=self.cp_split_hw)
 
         if return_kv:
@@ -319,13 +337,26 @@ class Attention(nn.Module):
             return x, x_ref_attn_map
 
     def forward_with_kv_cache(self, x: torch.Tensor, shape=None, num_cond_latents=None, kv_cache=None, num_ref_latents=None, ref_img_index=None, mask_frame_range=None, ref_target_masks=None) -> torch.Tensor:
-        """
+        """Forward pass with KV cache.
+
+        Args:
+            x: Input tensor [B, N, C].
+            shape: Latent shape tuple (N_t, N_h, N_w).
+            num_cond_latents: Number of condition latents.
+            kv_cache: Key-value cache tuple.
+            num_ref_latents: Number of reference latents.
+            ref_img_index: Reference image index.
+            mask_frame_range: Mask frame range.
+            ref_target_masks: Reference target masks.
+
+        Returns:
+            Output tensor after attention.
         """
         B, N, C = x.shape
         qkv = self.qkv(x)
-        
+
         qkv_shape = (B, N, 3, self.num_heads, self.head_dim)
-        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4)) 
+        qkv = qkv.view(qkv_shape).permute((2, 0, 3, 1, 4))
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -349,10 +380,10 @@ class Attention(nn.Module):
             end_noise   = ref_img_index + mask_frame_range - num_cond_latents + num_ref_latents + 1 
         
         if start_noise >= 0 and end_noise > start_noise and end_noise <= num_noisy_frames:
-            # remove attention with the reference image in the target range, preventing repeated actions.
+            # Remove attention with the reference image in the target range, preventing repeated actions.
             _enable_bsa = self.enable_bsa
-            self.enable_bsa = False # close bsa to prevent the temporal dimension from being divisible by bsa chunks
-            
+            self.enable_bsa = False  # Close bsa to prevent the temporal dimension from being divisible by bsa chunks
+
             num_ref_latents_thw = (N // N_t)
             start_pos = start_noise * (N // N_t)
             end_pos   = end_noise * (N // N_t)
@@ -361,23 +392,23 @@ class Attention(nn.Module):
             q_noise_back = q[:, :, end_pos:].contiguous()
             k_non_ref = k_full[:, :, num_ref_latents_thw:].contiguous()
             v_non_ref = v_full[:, :, num_ref_latents_thw:].contiguous()
-            x_noise_front = self._process_attn(q_noise_front, k_full, v_full, shape) # q_front --> ref+cond+noisy
-            x_noise_back = self._process_attn(q_noise_back, k_full, v_full, shape) # q_back --> ref+cond+noisy
-            x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape) # q_mask --> cond+noisy
+            x_noise_front = self._process_attn(q_noise_front, k_full, v_full, shape)  # q_front --> ref+cond+noisy
+            x_noise_back = self._process_attn(q_noise_back, k_full, v_full, shape)  # q_back --> ref+cond+noisy
+            x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape)  # q_mask --> cond+noisy
             x = torch.cat([x_noise_front, x_noise_maskref, x_noise_back], dim=2).contiguous()
-            self.enable_bsa = _enable_bsa # recover bsa state
+            self.enable_bsa = _enable_bsa  # Recover bsa state
         else:
             x = self._process_attn(q, k_full, v_full, shape)
         
         x_output_shape = (B, N, C)
         x = x.transpose(1, 2)
-        x = x.reshape(x_output_shape) 
+        x = x.reshape(x_output_shape)
         x = self.proj(x)
 
-        # calculate attention mask for the given area in reference image
+        # Calculate attention mask for the given area in reference image
         x_ref_attn_map = None
         if ref_target_masks is not None:
-            assert num_cond_latents is not None and num_cond_latents > 0, f"currently, multitalk only supports image to video or video continuation"
+            assert num_cond_latents is not None and num_cond_latents > 0, f"Currently, multitalk only supports image to video or video continuation"
             x_ref_attn_map = get_attn_map_with_target(q.permute(0, 2, 1, 3).type_as(x), k_full.permute(0, 2, 1, 3).type_as(x), shape, ref_target_masks=ref_target_masks, cp_split_hw=self.cp_split_hw)
 
         return x, x_ref_attn_map
@@ -423,7 +454,7 @@ class SingleStreamAttention(nn.Module):
         self.kv_linear = nn.Linear(encoder_hidden_states_dim, dim * 2, bias=qkv_bias)
         self.k_norm = RMSNorm_FP32(self.head_dim, eps=eps) if qk_norm else nn.Identity()
 
-        # multitalk related params
+        # Multitalk related params
         self.class_interval = class_interval
         self.class_range = class_range
         self.rope_h1  = (0, self.class_interval)
@@ -437,14 +468,14 @@ class SingleStreamAttention(nn.Module):
         out_dtype = x.dtype
         x = rearrange(x, "B (N_t S) C -> (B N_t) S C", N_t=N_t)
 
-        # get q for hidden_state
+        # Get q for hidden_state
         B, N, C = x.shape
         q = self.q_linear(x)
         q_shape = (B, N, self.num_heads, self.head_dim)
-        q = q.view(q_shape).permute((0, 2, 1, 3)) # [B, H, N, D]
+        q = q.view(q_shape).permute((0, 2, 1, 3))  # [B, H, N, D]
         q = self.q_norm(q)
 
-        # multitalk with rope1d pe
+        # Multitalk with rope1d pe
         if x_ref_attn_map is not None:
             max_values = x_ref_attn_map.max(1).values[:, None, None] 
             min_values = x_ref_attn_map.min(1).values[:, None, None] 
@@ -464,8 +495,8 @@ class SingleStreamAttention(nn.Module):
             q = rearrange(q, "(B N_t) H S C -> B H (N_t S) C", N_t=N_t)
             q = self.rope_1d(q, normalized_pos)
             q = rearrange(q, "B H (N_t S) C -> (B N_t) H S C", N_t=N_t)
-        
-        # get kv from encoder_hidden_states
+
+        # Get kv from encoder_hidden_states
         _, N_a, _ = cond.shape
         encoder_kv = self.kv_linear(cond)
         encoder_kv_shape = (B, N_a, 2, self.num_heads, self.head_dim)
@@ -474,7 +505,7 @@ class SingleStreamAttention(nn.Module):
         encoder_k, encoder_v = encoder_kv.unbind(0)
         encoder_k = self.k_norm(encoder_k)
 
-        # multitalk with rope1d pe
+        # Multitalk with rope1d pe
         if x_ref_attn_map is not None:
             per_frame = torch.zeros(N_a, dtype=encoder_k.dtype).to(encoder_k.device)
             per_frame[:per_frame.size(0)//2] = (self.rope_h1[0] + self.rope_h1[1]) / 2
@@ -492,14 +523,14 @@ class SingleStreamAttention(nn.Module):
         x = attention(q, encoder_k, encoder_v, attention_type="FLASH_ATTENTION")
         x = rearrange(x, "B S H D -> B H S D")
 
-        # linear transform
+        # Linear transform
         x_output_shape = (B, N, C)
-        x = x.transpose(1, 2) 
+        x = x.transpose(1, 2)
         x = x.reshape(x_output_shape)
         x = self.proj(x)
         x = self.proj_drop(x)
 
-        # reshape x to origin shape
+        # Reshape x to origin shape
         x = rearrange(x, "(B N_t) S C -> B (N_t S) C", N_t=N_t)
 
         return x.type(out_dtype)
@@ -507,24 +538,24 @@ class SingleStreamAttention(nn.Module):
     def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None):
 
         B, N, C = x.shape
-        if (num_cond_latents is None or num_cond_latents == 0): 
-            # text to video
+        if (num_cond_latents is None or num_cond_latents == 0):
+            # Text to video
             output = self._process_cross_attn(x, cond, shape[0], x_ref_attn_map)
             return None, output
         elif num_cond_latents is not None and num_cond_latents > 0:
-            # image to video or video continuation
+            # Image to video or video continuation
             assert shape is not None, "SHOULD pass in the shape"
             num_cond_latents_thw = num_cond_latents * (N // shape[0])
             x_noise = x[:, num_cond_latents_thw:]
             cond = rearrange(cond, "(B N_t) M C -> B N_t M C", B=B)
-            cond = cond[:, num_cond_latents:] 
+            cond = cond[:, num_cond_latents:]
             cond = rearrange(cond, "B N_t M C -> (B N_t) M C")
             frames_num = shape[0] - num_cond_latents
             if human_num is not None and human_num == 2:
-                # multitalk mode
+                # Multitalk mode
                 output_noise = self._process_cross_attn(x_noise, cond, frames_num, x_ref_attn_map)
             else:
-                # singletalk mode
+                # Singletalk mode
                 output_noise = self._process_cross_attn(x_noise, cond, frames_num)
             output_cond = torch.zeros((B, num_cond_latents_thw, C), dtype=output_noise.dtype, device=output_noise.device)
             return output_cond, output_noise
@@ -556,7 +587,7 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         self.context_tokens = context_tokens
         self.output_dim = output_dim
 
-        # define multiple linear layers
+        # Define multiple linear layers
         self.proj1 = nn.Linear(self.input_dim, intermediate_dim)
         self.proj1_vf = nn.Linear(self.input_dim_vf, intermediate_dim)
         self.proj2 = nn.Linear(intermediate_dim, intermediate_dim)
@@ -569,46 +600,46 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         video_length = audio_embeds.shape[1] + audio_embeds_vf.shape[1]
         B, _, _, S, C = audio_embeds.shape
 
-        # process audio of first frame
+        # Process audio of first frame
         audio_embeds = rearrange(audio_embeds, "bz f w b c -> (bz f) w b c")
         batch_size, window_size, blocks, channels = audio_embeds.shape
         audio_embeds = audio_embeds.view(batch_size, window_size * blocks * channels)
 
-        # process audio of latter frame
+        # Process audio of latter frame
         audio_embeds_vf = rearrange(audio_embeds_vf, "bz f w b c -> (bz f) w b c")
         batch_size_vf, window_size_vf, blocks_vf, channels_vf = audio_embeds_vf.shape
         audio_embeds_vf = audio_embeds_vf.view(batch_size_vf, window_size_vf * blocks_vf * channels_vf)
 
-        # first projection
+        # First projection
         B1, _ = audio_embeds.shape
-        audio_embeds = torch.relu(self.proj1(audio_embeds)) 
+        audio_embeds = torch.relu(self.proj1(audio_embeds))
         if not self.enable_compile:
             self.flops += B1 * self.input_dim * self.intermediate_dim * 2
 
         B1_vf, _ = audio_embeds_vf.shape
         audio_embeds_vf = torch.relu(self.proj1_vf(audio_embeds_vf))
         if not self.enable_compile:
-            self.flops += B1_vf * self.input_dim_vf * self.intermediate_dim * 2 
+            self.flops += B1_vf * self.input_dim_vf * self.intermediate_dim * 2
 
         audio_embeds = rearrange(audio_embeds, "(bz f) c -> bz f c", bz=B)
         audio_embeds_vf = rearrange(audio_embeds_vf, "(bz f) c -> bz f c", bz=B)
-        audio_embeds_c = torch.concat([audio_embeds, audio_embeds_vf], dim=1) 
+        audio_embeds_c = torch.concat([audio_embeds, audio_embeds_vf], dim=1)
         batch_size_c, N_t, C_a = audio_embeds_c.shape
         audio_embeds_c = audio_embeds_c.view(batch_size_c*N_t, C_a)
 
-        # second projection
+        # Second projection
         B2, _ = audio_embeds_c.shape
         audio_embeds_c = torch.relu(self.proj2(audio_embeds_c))
         if not self.enable_compile:
-            self.flops += B2 * self.intermediate_dim * self.intermediate_dim * 2 
+            self.flops += B2 * self.intermediate_dim * self.intermediate_dim * 2
 
-        # third projection
+        # Third projection
         B3, _ = audio_embeds_c.shape
         context_tokens = self.proj3(audio_embeds_c).reshape(batch_size_c*N_t, self.context_tokens, self.output_dim)
         if not self.enable_compile:
-            self.flops += B3 * self.intermediate_dim * (self.context_tokens * self.output_dim) * 2 
+            self.flops += B3 * self.intermediate_dim * (self.context_tokens * self.output_dim) * 2
 
-        # normalization and reshape
+        # Normalization and reshape
         context_tokens = self.norm(context_tokens)
         context_tokens = rearrange(context_tokens, "(bz f) m c -> bz f m c", f=video_length)
 
@@ -638,7 +669,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
 
         self.hidden_size = hidden_size
 
-        # scale and gate modulation
+        # Scale and gate modulation
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(adaln_tembed_dim, 6 * hidden_size, bias=True)
@@ -689,45 +720,64 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
 
         self.ffn = FeedForwardSwiGLU(dim=hidden_size, hidden_dim=int(hidden_size * mlp_ratio))
 
+        # Multi-GPU sequence parallel attributes
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
+        self.all_gather = None
+
     def forward(
-        self, 
-        x, 
-        y, 
-        t, 
-        y_seqlen, 
-        latent_shape, 
-        num_cond_latents=None, 
-        return_kv=False, 
-        kv_cache=None, 
+        self,
+        x,
+        y,
+        t,
+        y_seqlen,
+        latent_shape,
+        num_cond_latents=None,
+        return_kv=False,
+        kv_cache=None,
         skip_crs_attn=False,
-        # avatar related params
+        # Avatar related params
         num_ref_latents=None,
-        audio_hidden_states=None, 
+        audio_hidden_states=None,
         ref_img_index=None,
         mask_frame_range=None,
         token_ref_target_masks=None,
         human_num=None,
     ):
-        """
-            x: [B, N, C]
-            y: [1, N_valid_tokens, C]
-            t: [B, T, C_t]
-            y_seqlen: [B]; type of a list
-            latent_shape: latent shape of a single item
+        """Forward pass for LongCatAvatarSingleStreamBlock.
+
+        Args:
+            x: Input tensor [B, N, C].
+            y: Encoder hidden states [1, N_valid_tokens, C].
+            t: Per-token timestep embedding [B, N, C_t].
+            y_seqlen: Sequence lengths [B], type of list.
+            latent_shape: Latent shape of a single item.
+            num_cond_latents: Number of condition latents.
+            return_kv: Whether to return key-value cache.
+            kv_cache: Key-value cache tuple.
+            skip_crs_attn: Whether to skip cross attention.
+            num_ref_latents: Number of reference latents.
+            audio_hidden_states: Audio hidden states.
+            ref_img_index: Reference image index.
+            mask_frame_range: Mask frame range.
+            token_ref_target_masks: Token reference target masks.
+            human_num: Number of humans.
+
+        Returns:
+            Output tensor after block processing.
         """
         x_dtype = x.dtype
 
         B, N, C = x.shape
-        T, _, _ = latent_shape # S != T*H*W in case of CP split on H*W.
+        T, _, _ = latent_shape  # S != T*H*W in case of CP split on H*W.
 
-        # compute modulation params in fp32
+        # Compute modulation params in fp32
         with amp.autocast(device_type="cuda", dtype=torch.float32):
             shift_msa, scale_msa, gate_msa, \
             shift_mlp, scale_mlp, gate_mlp = \
-                self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1) # [B, T, 1, C]
-
-        # self attn with modulation
-        x_m = modulate_fp32(self.mod_norm_attn, x.view(B, T, -1, C), shift_msa, scale_msa).view(B, N, C)
+                self.adaLN_modulation(t).unsqueeze(2).chunk(6, dim=-1)  # [B, N, 1, C]
+            # Apply modulation directly without view
+            x_m = modulate_fp32(self.mod_norm_attn, x, shift_msa.squeeze(2), scale_msa.squeeze(2))
 
         if kv_cache is not None:
             kv_cache = (kv_cache[0].to(x.device), kv_cache[1].to(x.device))
@@ -743,40 +793,97 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
             x_s, x_ref_attn_map = attn_outputs
 
         with amp.autocast(device_type="cuda", dtype=torch.float32):
-            x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+            x = x + gate_msa.squeeze(2) * x_s  # [B, N, C]
         x = x.to(x_dtype)
 
-        # text cross attn
+        # Text cross attention
         if not skip_crs_attn:
             if kv_cache is not None:
                 num_cond_latents = None
             x = x + self.cross_attn(self.pre_crs_attn_norm(x), y, y_seqlen, num_cond_latents=num_cond_latents, shape=latent_shape)
         
-        # audio cross attn
+        # Audio cross attention
         if not skip_crs_attn:
             if kv_cache is not None:
                 num_cond_latents = 0
 
-            with amp.autocast(device_type="cuda", dtype=torch.float32):  
-                audio_shift_mca, audio_scale_mca, audio_gate_mca = \
-                        self.audio_adaLN_modulation(t[:, num_cond_latents:]).unsqueeze(2).chunk(3, dim=-1) # [B, T, 1, C]
+            # SP support: all_gather x for global audio cross attention
+            if self.sp_world_size > 1 and self.all_gather is not None:
+                x_full = self.all_gather(x.contiguous(), dim=1)
+                audio_output_cond_full, audio_output_noise_full = self.audio_cross_attn(
+                    self.pre_video_crs_attn_norm(x_full), 
+                    self.pre_audio_crs_attn_norm(audio_hidden_states),
+                    shape=latent_shape, 
+                    num_cond_latents=num_cond_latents, 
+                    x_ref_attn_map=x_ref_attn_map, 
+                    human_num=human_num
+                )
+                
+                # Fix: Delay chunking, compute modulation with global t first
+                # All-gather global t
+                t_full = self.all_gather(t.contiguous(), dim=1)
+                
+                # Calculate global cond tokens count
+                N_global = x_full.size(1)
+                tokens_per_frame = N_global // latent_shape[0]
+                num_cond_global = num_cond_latents * tokens_per_frame if num_cond_latents else 0
+                
+                # Use t corresponding to global noise tokens
+                if num_cond_global > 0:
+                    t_for_audio = t_full[:, num_cond_global:]
+                else:
+                    t_for_audio = t_full
+                
+                # Compute modulation on global tensors
+                with amp.autocast(device_type="cuda", dtype=torch.float32):
+                    audio_shift_mca, audio_scale_mca, audio_gate_mca = \
+                            self.audio_adaLN_modulation(t_for_audio).unsqueeze(2).chunk(3, dim=-1)  # [B, N_noise_global, 1, C]
+                
+                with amp.autocast(device_type="cuda", dtype=torch.float32):
+                    audio_output_noise_full = modulate_fp32(self.mod_norm_attn, audio_output_noise_full, audio_shift_mca.squeeze(2), audio_scale_mca.squeeze(2))
+                    audio_add_x_full = audio_gate_mca.squeeze(2) * audio_output_noise_full  # [B, N_noise_global, C]
+                    if audio_output_cond_full is not None:
+                        audio_add_x_full = torch.cat([audio_output_cond_full, audio_add_x_full], dim=1).contiguous()
+                
+                # Finally chunk back to local rank
+                x = x + torch.chunk(audio_add_x_full, self.sp_world_size, dim=1)[self.sp_world_rank]
+                x = x.to(x_dtype)
+            else:
+                audio_output_cond, audio_output_noise = self.audio_cross_attn(
+                    self.pre_video_crs_attn_norm(x), 
+                    self.pre_audio_crs_attn_norm(audio_hidden_states),
+                    shape=latent_shape, 
+                    num_cond_latents=num_cond_latents, 
+                    x_ref_attn_map=x_ref_attn_map, 
+                    human_num=human_num
+                )
+                # For non-SP mode, use t aligned with num_cond_latents
+                if num_cond_latents is not None and num_cond_latents > 0:
+                    N_local = x.size(1)
+                    N_global = N_local  # Single GPU
+                    tokens_per_frame = N_global // latent_shape[0]
+                    num_cond_global = num_cond_latents * tokens_per_frame
+                    t_for_audio = t[:, num_cond_global:]
+                else:
+                    t_for_audio = t
 
-            audio_output_cond, audio_output_noise = self.audio_cross_attn(self.pre_video_crs_attn_norm(x), self.pre_audio_crs_attn_norm(audio_hidden_states), \
-                                                                            shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num)
+                with amp.autocast(device_type="cuda", dtype=torch.float32):
+                    audio_shift_mca, audio_scale_mca, audio_gate_mca = \
+                            self.audio_adaLN_modulation(t_for_audio).unsqueeze(2).chunk(3, dim=-1)  # [B, N_noise, 1, C]
 
-            with amp.autocast(device_type="cuda", dtype=torch.float32):  
-                audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_noise.view(B, T-num_cond_latents, -1, C), audio_shift_mca, audio_scale_mca).view(B, -1, C)
-                audio_add_x = (audio_gate_mca * audio_output_noise.view(B, T-num_cond_latents, -1, C)).view(B, -1, C) # [B, N, C]
-                if audio_output_cond is not None:
-                    audio_add_x = torch.cat([audio_output_cond, audio_add_x], dim=1).contiguous()
-            x = x + audio_add_x
-            x = x.to(x_dtype)
+                with amp.autocast(device_type="cuda", dtype=torch.float32):
+                    audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_noise, audio_shift_mca.squeeze(2), audio_scale_mca.squeeze(2))
+                    audio_add_x = audio_gate_mca.squeeze(2) * audio_output_noise  # [B, N, C]
+                    if audio_output_cond is not None:
+                        audio_add_x = torch.cat([audio_output_cond, audio_add_x], dim=1).contiguous()
+                x = x + audio_add_x
+                x = x.to(x_dtype)
 
-        # ffn with modulation
-        x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
+        # FFN with modulation
+        x_m = modulate_fp32(self.mod_norm_ffn, x, shift_mlp.squeeze(2), scale_mlp.squeeze(2))
         x_s = self.ffn(x_m)
         with amp.autocast(device_type="cuda", dtype=torch.float32):
-            x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+            x = x + gate_mlp.squeeze(2) * x_s  # [B, N, C]
         x = x.to(x_dtype)
 
         if return_kv:
@@ -801,9 +908,9 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         mlp_ratio: int = 4,
         adaln_tembed_dim: int = 512,
         frequency_embedding_size: int = 256,
-        # default params
+        # Default params
         patch_size: Tuple[int] = (1, 2, 2),
-        # attention config
+        # Attention config
         enable_flashattn3: bool = False,
         enable_flashattn2: bool = False,
         enable_xformers: bool = False,
@@ -811,7 +918,7 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         bsa_params: dict = None,
         cp_split_hw: Optional[List[int]] = None,
         text_tokens_zero_pad: bool = False,
-        # avatar config
+        # Avatar config
         audio_window: int = 5,
         intermediate_dim: int = 512,
         output_dim: int = 768,
@@ -877,6 +984,10 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         self.gradient_checkpointing = False
         self.text_tokens_zero_pad = text_tokens_zero_pad
 
+        self.all_gather = None
+        self.sp_world_size = 1
+        self.sp_world_rank = 0
+
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
             self.gradient_checkpointing = kwargs["value"]
@@ -898,29 +1009,49 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
             )
         self._gradient_checkpointing_func = _gradient_checkpointing_func
 
+    def enable_multi_gpus_inference(self,):
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # Set SP attributes for all blocks
+        for block in self.blocks:
+            block.sp_world_size = self.sp_world_size
+            block.sp_world_rank = self.sp_world_rank
+            block.all_gather = self.all_gather
+
+        # For normal model
+        for block in self.blocks:
+            block.attn.forward = types.MethodType(
+                usp_attn_longcatvideo_avatar_forward, block.attn)
+            block.attn.rope_3d.forward = types.MethodType(
+                usp_rope_longcatvideo_forward, block.attn.rope_3d)
+            block.cross_attn.forward = types.MethodType(
+                usp_cross_attn_longcatvideo_forward, block.cross_attn)
+
     def enable_bsa(self,):
         for block in self.blocks:
             block.attn.enable_bsa = True
-    
+
     def disable_bsa(self,):
         for block in self.blocks:
-            block.attn.enable_bsa = False    
+            block.attn.enable_bsa = False
 
     def forward(
-        self, 
-        hidden_states, 
-        timestep, 
-        encoder_hidden_states, 
-        encoder_attention_mask=None, 
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        encoder_attention_mask=None,
         num_cond_latents=0,
-        return_kv=False, 
+        return_kv=False,
         kv_cache_dict={},
-        skip_crs_attn=False, 
+        skip_crs_attn=False,
         offload_kv_cache=False,
-        # avatar related params
+        # Avatar related params
         audio_embs=None,
         num_ref_latents=None,
-        ref_img_index=None, 
+        ref_img_index=None,
         mask_frame_range=None,
         ref_target_masks=None
     ):
@@ -936,21 +1067,25 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         timestep = timestep.to(dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype)
 
-        assert self.patch_size[0]==1, "Currently, 3D x_embedder should not compress the temporal dimension."
+        assert self.patch_size[0] == 1, "Currently, 3D x_embedder should not compress the temporal dimension."
 
         # Expand the shape of timestep from [B] to [B, T]
         if len(timestep.shape) == 1:
-            timestep = timestep.unsqueeze(1).expand(-1, N_t) # [B, T]
+            timestep = timestep.unsqueeze(1).expand(-1, N_t)  # [B, T]
         timestep[:, :num_cond_latents] = 0
 
-        # Hidden_States Process
+        # Hidden states process
         hidden_states = self.x_embedder(hidden_states)  # [B, N, C]
 
-        # Timestep Process
+        # Timestep process
         with amp.autocast(device_type="cuda", dtype=torch.float32):
             t = self.t_embedder(timestep.float().flatten(), dtype=torch.float32).reshape(B, N_t, -1)  # [B, T, C_t]
+        
+        # Expand t from per-frame to per-token for unified SP handling
+        # Each frame's timestep is repeated for all its spatial tokens
+        t = t.unsqueeze(2).expand(-1, -1, N_h * N_w, -1).reshape(B, -1, t.shape[-1])  # [B, N_global, C_t]
 
-        # Encoder_Hidden_States Process
+        # Encoder hidden states process
         encoder_hidden_states = self.y_embedder(encoder_hidden_states)  # [B, 1, N_token, C]
 
         if self.text_tokens_zero_pad and encoder_attention_mask is not None:
@@ -959,17 +1094,17 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
 
         if encoder_attention_mask is not None:
             encoder_attention_mask = encoder_attention_mask.squeeze(1).squeeze(1)
-            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1]) # [1, N_valid_tokens, C]
-            y_seqlens = encoder_attention_mask.sum(dim=1).tolist() # [B]
+            encoder_hidden_states = encoder_hidden_states.squeeze(1).masked_select(encoder_attention_mask.unsqueeze(-1) != 0).view(1, -1, hidden_states.shape[-1])  # [1, N_valid_tokens, C]
+            y_seqlens = encoder_attention_mask.sum(dim=1).tolist()  # [B]
         else:
             y_seqlens = [encoder_hidden_states.shape[2]] * encoder_hidden_states.shape[0]
             encoder_hidden_states = encoder_hidden_states.squeeze(1).view(1, -1, hidden_states.shape[-1])
 
-        # Audio token Process
+        # Audio token process
         audio_cond = audio_embs.to(device=hidden_states.device, dtype=hidden_states.dtype)
-        first_frame_audio_emb_s = audio_cond[:, :1, ...] # [B, 1, W, S, C_a]
+        first_frame_audio_emb_s = audio_cond[:, :1, ...]  # [B, 1, W, S, C_a]
 
-        latter_frame_audio_emb = audio_cond[:, 1:, ...] # [B, T-1, W, S, C_a]
+        latter_frame_audio_emb = audio_cond[:, 1:, ...]  # [B, T-1, W, S, C_a]
         latter_frame_audio_emb = rearrange(latter_frame_audio_emb, "b (n_t n) w s c -> b n_t n w s c", n=self.vae_scale)
         middle_index = self.audio_window // 2
         latter_first_frame_audio_emb = latter_frame_audio_emb[:, :, :1, :middle_index+1, ...]
@@ -980,34 +1115,38 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
 
         latter_middle_frame_audio_emb = latter_frame_audio_emb[:, :, 1:-1, middle_index:middle_index+1, ...]
         latter_middle_frame_audio_emb = rearrange(latter_middle_frame_audio_emb, "b n_t n w s c -> b n_t (n w) s c")
-        latter_frame_audio_emb_s = torch.concat([latter_first_frame_audio_emb, latter_middle_frame_audio_emb, latter_last_frame_audio_emb], dim=2) # [B, (T-1)//vae_scale, W-1+vae_scale, S, C_a]
-        audio_hidden_states = self.audio_proj(first_frame_audio_emb_s, latter_frame_audio_emb_s) # B T 32 768
-        
+        latter_frame_audio_emb_s = torch.concat([latter_first_frame_audio_emb, latter_middle_frame_audio_emb, latter_last_frame_audio_emb], dim=2)  # [B, (T-1)//vae_scale, W-1+vae_scale, S, C_a]
+        audio_hidden_states = self.audio_proj(first_frame_audio_emb_s, latter_frame_audio_emb_s)  # B T 32 768
+
         if num_ref_latents is not None and num_ref_latents > 0:
-            audio_start_ref = audio_hidden_states[:, [0], :, :] # padding
+            audio_start_ref = audio_hidden_states[:, [0], :, :]  # Padding
             audio_hidden_states = torch.cat([audio_start_ref, audio_hidden_states], dim=1).contiguous()
         audio_hidden_states = audio_hidden_states[:, -N_t:]
 
         human_num = None
         if ref_target_masks is not None:
-            # multitalk
+            # Multitalk
             human_num = len(audio_hidden_states)
-            audio_hidden_states = torch.concat(audio_hidden_states.split(1), dim=2) # B T 32 768 --> # 1 T B*32 768
+            audio_hidden_states = torch.concat(audio_hidden_states.split(1), dim=2)  # B T 32 768 --> # 1 T B*32 768
             audio_hidden_states = audio_hidden_states.squeeze(0)
         else:
             audio_hidden_states = rearrange(audio_hidden_states, "b t n c -> (b t) n c")
-        
+
         # Convert ref_target_masks to token_ref_target_masks
         token_ref_target_masks = None
         if ref_target_masks is not None:
-            ref_target_masks = ref_target_masks.unsqueeze(0).to(torch.float32) # [1, B, H, W]; cast for interpolation
-            token_ref_target_masks = nn.functional.interpolate(ref_target_masks, size=(N_h, N_w), mode='nearest') # [1, B, N_h, N_w]
-            token_ref_target_masks = token_ref_target_masks.squeeze(0) # [B, N_h, N_w]
+            ref_target_masks = ref_target_masks.unsqueeze(0).to(torch.float32)  # [1, B, H, W]; cast for interpolation
+            token_ref_target_masks = nn.functional.interpolate(ref_target_masks, size=(N_h, N_w), mode='nearest')  # [1, B, N_h, N_w]
+            token_ref_target_masks = token_ref_target_masks.squeeze(0)  # [B, N_h, N_w]
             token_ref_target_masks = (token_ref_target_masks > 0)
-            token_ref_target_masks = token_ref_target_masks.view(token_ref_target_masks.shape[0], -1) # [B, N_h, N_w] --> [B, N_h * N_w]
+            token_ref_target_masks = token_ref_target_masks.view(token_ref_target_masks.shape[0], -1)  # [B, N_h, N_w] --> [B, N_h * N_w]
             token_ref_target_masks = token_ref_target_masks.to(dtype)
 
-        # Blocks
+        if self.sp_world_size > 1:
+            hidden_states = torch.chunk(hidden_states, self.sp_world_size, dim=1)[self.sp_world_rank]
+            t = torch.chunk(t, self.sp_world_size, dim=1)[self.sp_world_rank]  # [B, N_local, C_t]
+
+        # Transformer blocks
         kv_cache_dict_ret = {}
         for i, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -1032,6 +1171,9 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
 
         hidden_states = self.final_layer(hidden_states, t, (N_t, N_h, N_w))  # [B, N, C=T_p*H_p*W_p*C_out]
 
+        if self.sp_world_size > 1:
+            hidden_states = self.all_gather(hidden_states, dim=1)
+
         hidden_states = self.unpatchify(hidden_states, N_t, N_h, N_w)  # [B, C_out, H, W]
 
         # Cast to float32 for better accuracy
@@ -1044,12 +1186,16 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
     
 
     def unpatchify(self, x, N_t, N_h, N_w):
-        """
-        Args:
-            x (torch.Tensor): of shape [B, N, C]
+        """Unpatchify the tensor.
 
-        Return:
-            x (torch.Tensor): of shape [B, C_out, T, H, W]
+        Args:
+            x: Input tensor of shape [B, N, C].
+            N_t: Number of temporal tokens.
+            N_h: Number of height tokens.
+            N_w: Number of width tokens.
+
+        Returns:
+            Output tensor of shape [B, C_out, T, H, W].
         """
         T_p, H_p, W_p = self.patch_size
         x = rearrange(

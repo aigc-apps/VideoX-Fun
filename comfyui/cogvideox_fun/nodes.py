@@ -15,8 +15,7 @@ from diffusers import EulerDiscreteScheduler
 from einops import rearrange
 from PIL import Image
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                               get_closest_ratio)
+from ...videox_fun.data import ASPECT_RATIO_512, get_closest_ratio
 from ...videox_fun.models import (AutoencoderKLCogVideoX,
                                   CogVideoXTransformer3DModel, T5EncoderModel,
                                   T5Tokenizer)

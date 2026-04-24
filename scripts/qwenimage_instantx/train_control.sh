@@ -1,6 +1,6 @@
 # This is an InstantX ControlNet architecture. 
 # Note that it differs from the Fun Control architecture.
-export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image-2512"
+export MODEL_NAME="models/Diffusion_Transformer/Qwen-Image"
 export CN_MODEL_NAME="models/Diffusion_Transformer/Qwen-Image-ControlNet-Union"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
