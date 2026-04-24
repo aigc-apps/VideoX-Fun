@@ -1,6 +1,6 @@
-# Z-Image Turbo Control Full Parameter Training Guide
+# Z-Image Control Full Parameter Training Guide
 
-This document provides a complete workflow for training Z-Image Turbo Control models, including environment setup, data preparation, distributed training, and inference testing.
+This document provides a complete workflow for training Z-Image Control models, including environment setup, data preparation, distributed training, and inference testing.
 
 In Z-Image training, you can choose to use DeepSpeed or FSDP to save a significant amount of GPU memory.
 

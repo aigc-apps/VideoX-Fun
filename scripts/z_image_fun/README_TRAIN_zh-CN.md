@@ -1,6 +1,6 @@
-# Z-Image Turbo Control 全量参数训练指南
+# Z-Image Control 全量参数训练指南
 
-本文档提供 Z-Image Turbo Control 模型训练的完整流程,包括环境配置、数据准备、分布式训练和推理测试。
+本文档提供 Z-Image Control 模型训练的完整流程,包括环境配置、数据准备、分布式训练和推理测试。
 
 在 Z-Image 训练中,可以选择使用 DeepSpeed 或 FSDP 来节省大量显存。
 
