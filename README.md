@@ -112,7 +112,7 @@ The detailed of Linux:
 We need about 60GB available on disk (for saving weights), please check!
 
 #### b. Weights
-We'd better place the [weights](#model-zoo) along the specified path:
+We recommend placing the [weights](#model-zoo) along the specified path:
 
 **Via ComfyUI**:
 Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
