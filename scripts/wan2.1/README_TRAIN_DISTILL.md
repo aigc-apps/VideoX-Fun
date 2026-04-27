@@ -1,8 +1,8 @@
-# Wan2.1 TurboDiffusion Distillation Training Guide
+# Wan2.1 Distillation Training Guide
 
-This document provides a complete workflow for distilling Wan2.1 into TurboWan2.1, including environment setup, data preparation, distributed training, and inference testing.
+This document provides a complete workflow for distilling Wan2.1 including environment setup, data preparation, distributed training, and inference testing.
 
-> **Note**: Wan2.1 is a video generation model that supports text-to-video (T2V) and image-to-video (I2V). TurboDiffusion is a knowledge distillation method that can reduce inference steps from 25-50 to 4-8 steps while maintaining video generation quality.
+> **Note**: Wan2.1 is a video generation model that supports text-to-video (T2V) and image-to-video (I2V). This training code can reduce inference steps from 25-50 to 4-8 steps while maintaining video generation quality.
 
 ---
 
@@ -722,4 +722,3 @@ torchrun --nproc-per-node=2 examples/wan2.1/predict_t2v.py
 ## 5. Additional Resources
 
 - **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun
-- **TurboDiffusion Paper**: https://arxiv.org/abs/2411.19823
