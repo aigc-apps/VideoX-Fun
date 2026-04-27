@@ -165,11 +165,13 @@ mkdir -p models/Diffusion_Transformer
 modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-1.3B
 ```
 
-### 3.2 Quick Start (Without DeepSpeed/FSDP)
+### 3.2 Quick Start (DeepSpeed-Zero-2)
 
 After downloading the data as per **2.1 Quick Test Dataset** and the weights as per **3.1 Download Pretrained Model**, you can directly copy and run the quick start command.
 
-Wan distill without DeepSpeed and FSDP is more suitable for 1.3B Wan, as using it with 14B Wan may result in insufficient GPU memory.
+DeepSpeed-Zero-2 and FSDP are recommended for training. Here we use DeepSpeed-Zero-2 as an example.
+
+The difference between DeepSpeed-Zero-2 and FSDP is whether the model weights are sharded. **If you experience insufficient GPU memory when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP for training.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
@@ -180,7 +182,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/turbodiffusion/train_distill.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/turbodiffusion/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -308,61 +310,47 @@ accelerate launch --mixed_precision="bf16" scripts/turbodiffusion/train_distill.
 - `train_mode` is used to specify the training mode, which can be either normal or i2v. Since Wan uses the inpaint model to achieve image-to-video generation, the default is set to inpaint mode. If you only wish to achieve text-to-video generation, you can remove this line, and it will default to the text-to-video mode.
 - `resume_from_checkpoint` is used to set the training should be resumed from a previous checkpoint. Use a path or `"latest"` to automatically select the last available checkpoint.
 
-### 3.4 Training with DeepSpeed Zero-2
+### 3.4 Training Validation
 
-Wan with Deepspeed Zero-2 is suitable for training 1.3B Wan and 14B Wan at low resolutions, but training 14B Wan at high resolutions may still result in insufficient GPU memory.
+You can configure validation parameters to periodically generate test videos during training, allowing you to monitor training progress and model quality.
+
+**Validation Parameter Descriptions**:
+
+| Parameter | Description | Recommended Value |
+|------|------|--------|
+| `--validation_steps` | Run validation every N steps | 2000 |
+| `--validation_epochs` | Run validation every N epochs | 5 |
+| `--validation_prompts` | Prompts for video generation validation | English prompts |
+| `--validation_paths` | Validation image paths for I2V mode (i2v mode only) | `"asset/1.png"` |
+
+**Normal Mode Example** (T2V Validation):
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/turbodiffusion/train_distill.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
-  --video_sample_stride=2 \
-  --video_sample_n_frames=81 \
-  --train_batch_size=1 \
-  --video_repeat=1 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
-  --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
-  --seed=42 \
-  --output_dir="output_dir_distill" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --random_hw_adapt \
-  --training_with_video_token_length \
-  --enable_bucket \
-  --uniform_sampling \
-  --train_mode="normal" \
-  --trainable_modules "." \
-  --low_vram
+  --validation_steps=2000 \
+  --validation_epochs=5 \
+  --validation_prompts="A dog shaking head. The video is of high quality, and the view is very clear."
 ```
+
+**I2V Mode Example** (I2V Validation):
+
+```bash
+  --validation_paths "asset/1.png" \
+  --validation_steps=2000 \
+  --validation_epochs=5 \
+  --validation_prompts="A dog shaking head. The video is of high quality, and the view is very clear."
+```
+
+**Notes**:
+- Validation videos will be saved to the `output_dir` directory
+- Multiple prompts validation format: `--validation_prompts "prompt1" "prompt2" "prompt3"`
+- `i2v` mode must provide `--validation_paths` parameter
+- Distill model validation will use the steps defined in `denoising_step_indices_list` for inference
 
 ### 3.5 Training with FSDP
 
-Wan with FSDP is suitable for 14B Wan at high resolutions.
+**If you experience insufficient GPU memory when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP for training.
 
-```bash
+```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
@@ -414,13 +402,13 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 DeepSpeed Zero-3 is not highly recommended at the moment. In this repository, using FSDP has fewer errors and is more stable.
 
-Wan with DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
+DeepSpeed Zero-3 is suitable for 14B Wan at high resolutions. After training, you can use the following command to get the final model:
 ```bash
 python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/checkpoint-{your-num-steps}-outputs --max_shard_size 80GB --safe_serialization
 ```
 
 Training shell command is as follows:
-```bash
+```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
@@ -470,7 +458,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 
 **This approach is not recommended because without memory-saving backends, it easily causes insufficient GPU memory**. This is only provided as a reference shell for training.
 
-```bash
+```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
@@ -644,11 +632,12 @@ NCCL_DEBUG=INFO
 
 | Mode | Description | Memory Usage |
 |------|------|---------|
-| `model_full_load` | Load entire model to GPU | Highest |
+| `model_full_load` | Full model loaded to GPU | Highest |
 | `model_full_load_and_qfloat8` | Full load + FP8 quantization | High |
 | `model_cpu_offload` | Offload model to CPU after use | Medium |
 | `model_cpu_offload_and_qfloat8` | CPU offload + FP8 quantization | Medium-Low |
-| `sequential_cpu_offload` | Sequential offload layer by layer (slowest) | Lowest |
+| `model_group_offload` | Layer groups switch between CPU/CUDA | Low |
+| `sequential_cpu_offload` | Layer-by-layer offload (slowest) | Lowest |
 
 ### 4.2 Text-to-Video (T2V) Inference
 

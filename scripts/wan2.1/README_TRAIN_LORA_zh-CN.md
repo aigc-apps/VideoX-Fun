@@ -627,7 +627,7 @@ python examples/wan2.1/predict_t2v.py
 
 ```python
 # 根据显卡显存选择
-GPU_memory_mode = "model_group_offload"
+GPU_memory_mode = "sequential_cpu_offload"
 # 根据实际模型路径
 model_name = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"  
 # 训练好的权重路径，如 "output_dir_wan2.1_lora/checkpoint-xxx/lora_weights.safetensors"
@@ -651,7 +651,7 @@ python examples/wan2.1/predict_i2v.py
 
 ```python
 # 根据显卡显存选择
-GPU_memory_mode = "model_group_offload"
+GPU_memory_mode = "sequential_cpu_offload"
 # 根据实际模型路径
 model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"  
 # LoRA 权重路径，如 "output_dir_wan2.1_lora/checkpoint-xxx/lora_weights.safetensors"

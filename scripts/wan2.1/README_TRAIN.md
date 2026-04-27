@@ -618,7 +618,7 @@ Edit `examples/wan2.1/predict_t2v.py` according to your needs. For initial infer
 
 ```python
 # Choose based on GPU memory
-GPU_memory_mode = "model_group_offload"
+GPU_memory_mode = "sequential_cpu_offload"
 # Based on actual model path
 model_name = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"  
 # Path to trained weights, e.g., "output_dir_wan2.1/checkpoint-xxx/diffusion_pytorch_model.safetensors"
@@ -640,7 +640,7 @@ Edit `examples/wan2.1/predict_i2v.py` according to your needs. For initial infer
 
 ```python
 # Choose based on GPU memory
-GPU_memory_mode = "model_group_offload"
+GPU_memory_mode = "sequential_cpu_offload"
 # Based on actual model path
 model_name = "models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"  
 # Path to trained weights, e.g., "output_dir_wan2.1/checkpoint-xxx/diffusion_pytorch_model.safetensors"
