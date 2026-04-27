@@ -417,7 +417,14 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         )
 
         if inputs_embeds is None:
-            inputs_embeds = self.model.embed_tokens(input_ids)
+            # Support both old and new transformer versions
+            if hasattr(self.model, 'embed_tokens'):
+                inputs_embeds = self.model.embed_tokens(input_ids)
+            elif hasattr(self.model, 'language_model'):
+                inputs_embeds = self.model.language_model.embed_tokens(input_ids)
+            else:
+                raise AttributeError("Cannot find embed_tokens in model structure")
+            
             if pixel_values is not None:
                 pixel_values = pixel_values.type(self.visual.get_dtype())
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
@@ -548,7 +555,7 @@ def create_model_and_processor(model_config, peft_lora_config, training_args, ca
     )
 
     processor = AutoProcessor.from_pretrained(
-        model_config.model_name_or_path, padding_side="right", cache_dir=cache_dir
+        model_config.model_name_or_path, padding_side="left", cache_dir=cache_dir
     )
 
     special_token_ids = None
@@ -703,7 +710,87 @@ class HPSv3RewardInferencer:
 
         if "model" in state_dict:
             state_dict = state_dict["model"]
-        model.load_state_dict(state_dict, strict=True)
+
+        # --- Start of Key Mapping Fix for Transformers Version Compatibility ---
+        # Detect model architecture to determine key mapping strategy
+        # transformers >= 4.52: model structure uses model.language_model.*
+        # transformers < 4.52: model structure uses model.layers.*, visual.*
+        
+        # Check if model uses new architecture by inspecting actual model structure
+        # Method 1: Check if model.model has 'language_model' as a direct child module
+        has_language_model_attr = hasattr(model.model, 'language_model')
+        # Method 2: Check if 'language_model' is in named modules
+        has_language_model_module = any(name == 'language_model' for name, _ in model.model.named_children())
+        uses_new_arch = has_language_model_attr or has_language_model_module
+        
+        # Detect checkpoint format by scanning all keys
+        has_legacy_visual = any(k.startswith("visual.") for k in state_dict.keys())
+        has_new_visual = any(k.startswith("model.visual.") for k in state_dict.keys())
+        has_new_language = any(k.startswith("model.language_model.") for k in state_dict.keys())
+        has_old_language = any(
+            k.startswith("model.layers.") and "language_model" not in k 
+            for k in state_dict.keys()
+        )
+        
+        # Log detection results for debugging
+        logger.debug(f"Model architecture: {'new' if uses_new_arch else 'old'} (has_language_model={has_language_model_attr}, has_language_module={has_language_model_module})")
+        logger.debug(f"Checkpoint format: legacy_visual={has_legacy_visual}, new_visual={has_new_visual}, new_language={has_new_language}, old_language={has_old_language}")
+        
+        needs_fix = False
+        mapping_direction = None  # 'old_to_new' or 'new_to_old'
+        
+        # Case 1: New transformers but old checkpoint format
+        if uses_new_arch and (has_legacy_visual or has_old_language):
+            needs_fix = True
+            mapping_direction = 'old_to_new'
+            logger.info("Detected old checkpoint format with new Transformers (>=4.52). Remapping old->new...")
+        
+        # Case 2: Old transformers but new checkpoint format (your case with 4.51.3)
+        elif not uses_new_arch and (has_new_language or has_new_visual):
+            needs_fix = True
+            mapping_direction = 'new_to_old'
+            logger.info("Detected new checkpoint format with old Transformers (<4.52). Remapping new->old...")
+        
+        if needs_fix:
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                new_k = k
+                
+                if mapping_direction == 'old_to_new':
+                    # Old format -> New format
+                    # 1. visual.xxx -> model.visual.xxx
+                    if k.startswith("visual."):
+                        new_k = "model." + k
+                    # 2. model.layers.xxx -> model.language_model.layers.xxx
+                    elif k.startswith("model.layers.") or k.startswith("model.norm.") or k.startswith("model.embed_tokens."):
+                        new_k = k.replace("model.", "model.language_model.", 1)
+                
+                elif mapping_direction == 'new_to_old':
+                    # New format -> Old format
+                    # 1. model.language_model.xxx -> model.xxx
+                    if k.startswith("model.language_model."):
+                        new_k = k.replace("model.language_model.", "model.", 1)
+                    # 2. model.visual.xxx -> visual.xxx
+                    elif k.startswith("model.visual."):
+                        new_k = k[len("model."):]
+                    else:
+                        new_k = k  # Keep unchanged
+                
+                new_state_dict[new_k] = v
+            
+            state_dict = new_state_dict
+            logger.info(f"Key remapping completed successfully ({mapping_direction}).")
+        # --- End of Key Mapping Fix ---
+
+        # Load state dict - use strict=False for compatibility
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        
+        # Log warnings if there are mismatches
+        if missing_keys:
+            logger.warning(f"Missing keys in state_dict ({len(missing_keys)}): {missing_keys[:5]}...")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in state_dict ({len(unexpected_keys)}): {unexpected_keys[:5]}...")
+        
         model.eval()
 
         self.model = model

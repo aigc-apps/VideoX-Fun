@@ -76,7 +76,7 @@ class AestheticPredictorV2_5Model(SiglipVisionModel):
         loss = None
         if labels is not None:
             loss_fct = nn.MSELoss()
-            loss = loss_fct()
+            loss = loss_fct(prediction.squeeze(-1), labels)
 
         if not return_dict:
             return (loss, prediction, image_embeds)
@@ -125,7 +125,22 @@ def convert_v2_5_from_siglip(
     else:
         state_dict = torch.load(predictor_name_or_path, map_location="cpu")
 
-    assert isinstance(state_dict, OrderedDict)
+    # Handle checkpoint with multiple fields (e.g., from training)
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        state_dict = state_dict["model_state_dict"]
+
+    if not isinstance(state_dict, OrderedDict):
+        state_dict = OrderedDict(state_dict)
+
+    # Remove _orig_mod. prefix if present (from torch.compile)
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if k.startswith("_orig_mod."):
+            new_key = k[len("_orig_mod."):]
+        else:
+            new_key = k
+        new_state_dict[new_key] = v
+    state_dict = new_state_dict
 
     model.layers.load_state_dict(state_dict)
     model.eval()
