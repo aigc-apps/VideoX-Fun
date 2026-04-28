@@ -264,6 +264,11 @@ if GPU_memory_mode == "sequential_cpu_offload":
         replace_parameters_by_name(transformer_2, ["modulation",], device=device)
         transformer_2.freqs = transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    if transformer_2 is not None:
+        register_auto_device_hook(pipeline.transformer_2)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
@@ -280,11 +285,6 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
         convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
         convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.to(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    if transformer_2 is not None:
-        register_auto_device_hook(pipeline.transformer_2)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 else:
     pipeline.to(device=device)
 
