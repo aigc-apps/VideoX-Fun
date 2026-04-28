@@ -175,8 +175,8 @@ The difference between DeepSpeed-Zero-2 and FSDP lies in whether model weights a
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -226,27 +226,27 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/HunyuanVideo` |
 | `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
 | `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
-| `--train_batch_size` | Number of samples per batch | 1 |
-| `--image_sample_size` | Maximum training resolution for images | 640 |
-| `--video_sample_size` | Maximum training resolution for videos | 640 |
-| `--token_sample_size` | Token sampling size | 640 |
-| `--video_sample_stride` | Video sampling stride | 2 |
-| `--video_sample_n_frames` | Number of video frames to sample | 81 |
+| `--train_batch_size` | Number of samples per batch | 16 |
+| `--image_sample_size` | Maximum training resolution for images | 512 |
+| `--video_sample_size` | Maximum training resolution for videos | 512 |
+| `--token_sample_size` | Token sampling size | 512 |
+| `--video_sample_stride` | Video sampling stride | 4 |
+| `--video_sample_n_frames` | Number of video frames to sample | 17 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (effectively increases batch size) | 1 |
-| `--dataloader_num_workers` | Number of DataLoader subprocesses | 8 |
+| `--dataloader_num_workers` | Number of DataLoader subprocesses | 0 |
 | `--num_train_epochs` | Number of training epochs | 100 |
-| `--checkpointing_steps` | Save checkpoint every N steps | 50 |
-| `--learning_rate` | Initial learning rate | 2e-05 |
-| `--lr_scheduler` | Learning rate scheduler | `constant_with_warmup` |
-| `--lr_warmup_steps` | Learning rate warmup steps | 100 |
+| `--checkpointing_steps` | Save checkpoint every N steps | 500 |
+| `--learning_rate` | Initial learning rate | 1e-4 |
+| `--lr_scheduler` | Learning rate scheduler | `constant` |
+| `--lr_warmup_steps` | Learning rate warmup steps | 500 |
 | `--seed` | Random seed | 42 |
 | `--output_dir` | Output directory | `output_dir_hunyuanvideo` |
 | `--gradient_checkpointing` | Enable activation recomputation | - |
 | `--mixed_precision` | Mixed precision: `fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW weight decay | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon value | 1e-10 |
-| `--vae_mini_batch` | Mini-batch size for VAE encoding | 1 |
-| `--max_grad_norm` | Gradient clipping threshold | 0.05 |
+| `--adam_weight_decay` | AdamW weight decay | 1e-2 |
+| `--adam_epsilon` | AdamW epsilon value | 1e-08 |
+| `--vae_mini_batch` | Mini-batch size for VAE encoding | 32 |
+| `--max_grad_norm` | Gradient clipping threshold | 1.0 |
 | `--enable_bucket` | Enable bucket training without cropping, groups by resolution | - |
 | `--random_hw_adapt` | Automatically scale images/videos to random sizes within `[min_size, max_size]` | - |
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
@@ -285,15 +285,15 @@ You can configure validation parameters to periodically generate test videos dur
 
 | Parameter | Description | Recommended Value |
 |------|------|--------|
-| `--validation_steps` | Run validation every N steps | 100 |
-| `--validation_epochs` | Run validation every N epochs | 100 |
+| `--validation_steps` | Run validation every N steps | 2000 |
+| `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validation video generation, space-separated for multiple prompts | Multiple space-separated prompts |
 
 **Example**:
 
 ```bash
-  --validation_steps=100 \
-  --validation_epochs=100 \
+  --validation_steps=2000 \
+  --validation_epochs=5 \
   --validation_prompts="A dog is shaking its head, high video quality, very clear view. High quality, masterpiece, best quality, high resolution, ultra-detailed, fantastic."
 ```
 
@@ -307,8 +307,8 @@ You can configure validation parameters to periodically generate test videos dur
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -355,8 +355,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -408,8 +408,8 @@ Assuming 2 machines, each with 8 GPUs:
 **Machine 0 (Master)**:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -458,8 +458,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 **Machine 1 (Worker)**:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2
@@ -495,7 +495,7 @@ NCCL_DEBUG=INFO
 
 | Parameter | Description | Example Value |
 |------|------|-------|
-| `GPU_memory_mode` | VRAM management mode, see table below for options | `model_group_offload` |
+| `GPU_memory_mode` | VRAM management mode, see table below for options | `sequential_cpu_offload` |
 | `ulysses_degree` | Head dimension parallelism, 1 for single GPU | 1 |
 | `ring_degree` | Sequence dimension parallelism, 1 for single GPU | 1 |
 | `fsdp_dit` | Use FSDP for Transformer during multi-GPU inference to save VRAM | `False` |
@@ -506,16 +506,16 @@ NCCL_DEBUG=INFO
 | `transformer_path` | Path to trained Transformer weights | `None` |
 | `vae_path` | Path to trained VAE weights | `None` |
 | `lora_path` | LoRA weights path | `None` |
-| `sample_size` | Generated video resolution `[height, width]` | `[480, 832]` or `[832, 480]` |
+| `sample_size` | Generated video resolution `[height, width]` | `[832, 480]` (T2V) or `[480, 832]` (I2V) |
 | `video_length` | Number of generated video frames | `81` |
 | `fps` | Frames per second | `16` |
 | `weight_dtype` | Model weight precision, use `torch.float16` if GPU doesn't support bf16 | `torch.bfloat16` |
 | `validation_image_start` | Reference image path for image-to-video (I2V mode) | `"asset/1.png"` |
 | `prompt` | Positive prompt describing content to generate | `"The dog is shaking head..."` |
 | `negative_prompt` | Negative prompt for content to avoid | `"Low resolution, low quality..."` |
-| `guidance_scale` | Guidance strength | 4.0 |
+| `guidance_scale` | Guidance strength | 1.0 |
 | `seed` | Random seed for reproducibility | 43 |
-| `num_inference_steps` | Number of inference steps | 25 |
+| `num_inference_steps` | Number of inference steps | 40 |
 | `lora_weight` | LoRA weight strength | 0.55 |
 | `save_path` | Path to save generated videos | `samples/hunyuanvideo-videos-i2v` or `samples/hunyuanvideo-videos-t2v` |
 

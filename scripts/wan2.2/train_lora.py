@@ -618,12 +618,6 @@ def parse_args():
         "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
     )
     parser.add_argument(
-        "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
-    )
-    parser.add_argument(
-        "--noise_share_in_frames_ratio", type=float, default=0.5, help="Noise share ratio.",
-    )
-    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(
@@ -723,7 +717,9 @@ def parse_args():
         type=str,
         default="low",
         help=(
-            'The format of training data. Support `"low"` and `"high"`'
+            'The training boundary type for dual-Transformer architecture. '
+            'Support `"low"` (train low-noise model), `"high"` (train high-noise model), '
+            'and `"full"` (single model training like TI2V-5B).'
         ),
     )
     parser.add_argument(
@@ -731,8 +727,8 @@ def parse_args():
         type=str,
         default="normal",
         help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
+            'The training mode. Support `"normal"` (T2V, default), '
+            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
         ),
     )
     parser.add_argument(

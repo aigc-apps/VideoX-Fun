@@ -193,8 +193,8 @@ DeepSpeed-Zero-2 与 FSDP 的区别在于模型权重是否分片。**如果多�
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # 如果没有 RDMA 的多节点训练，取消注释以下两行
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -301,8 +301,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap LongCatAvatarSingleStreamBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/longcatvideo/train_avatar.py \
@@ -346,8 +346,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar.py \
@@ -396,8 +396,8 @@ accelerate launch --mixed_precision="bf16" scripts/longcatvideo/train_avatar.py 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -446,8 +446,8 @@ accelerate launch --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_POR
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2

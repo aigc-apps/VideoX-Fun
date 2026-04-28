@@ -237,8 +237,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (recommended for LoRA) | 1e-04 |
-| `--lr_scheduler` | Learning rate scheduler | `constant_with_warmup` |
-| `--lr_warmup_steps` | Learning rate warmup steps | 100 |
+| `--lr_scheduler` | Learning rate scheduler | `constant` |
+| `--lr_warmup_steps` | Learning rate warmup steps | 500 |
 | `--seed` | Random seed (for reproducible training) | 42 |
 | `--output_dir` | Output directory | `output_dir_hunyuanvideo_lora` |
 | `--gradient_checkpointing` | Enable gradient checkpointing | - |
@@ -254,8 +254,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--low_vram` | Low VRAM mode | - |
 | `--train_mode` | Training mode: `normal` (standard) or `i2v` (image-to-video) | `normal` |
 | `--resume_from_checkpoint` | Resume training from checkpoint, use `"latest"` to auto-select | None |
-| `--rank` | LoRA update matrix dimension (higher rank = more expressive, more memory) | 64 |
-| `--network_alpha` | LoRA update matrix scaling factor (usually half of rank or same) | 32 |
+| `--rank` | LoRA update matrix dimension (higher rank = more expressive, more memory) | 128 |
+| `--network_alpha` | LoRA update matrix scaling factor (usually half of rank or same) | 64 |
 | `--target_name` | Components/modules to apply LoRA, comma-separated | `to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2` |
 | `--use_peft_lora` | Use PEFT module for LoRA (more memory-efficient) | - |
 | `--validation_steps` | Run validation every N steps | 100 |
@@ -516,9 +516,9 @@ NCCL_DEBUG=INFO
 | `validation_image_start` | Reference image path for I2V mode | `"asset/1.png"` |
 | `prompt` | Positive prompt, describes generated content | `"The dog is shaking head..."` |
 | `negative_prompt` | Negative prompt, content to avoid | `"Low resolution, low quality..."` |
-| `guidance_scale` | Guidance strength | 4.0 |
+| `guidance_scale` | Guidance strength (HunyuanVideo uses true_cfg_scale) | 1.0 |
 | `seed` | Random seed for reproducibility | 43 |
-| `num_inference_steps` | Number of inference steps | 25 |
+| `num_inference_steps` | Number of inference steps | 40 |
 | `lora_weight` | LoRA weight strength | 0.55 |
 | `save_path` | Generated video save path | `samples/hunyuanvideo-videos-i2v` or `samples/hunyuanvideo-videos-t2v` |
 

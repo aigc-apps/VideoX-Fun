@@ -1,8 +1,8 @@
-# Wan2.2 LoRA 微调训练指南
+# Wan2.2 Fun LoRA 微调训练指南
 
-本文档提供 Wan2.2 LoRA 微调训练的完整流程,包括环境配置、数据准备、多种分布式训练策略和推理测试。
+本文档提供 Wan2.2 Fun（视频修复）LoRA 微调训练的完整流程，包括环境配置、数据准备、多种分布式训练策略和推理测试。
 
-> **说明**：Wan2.2 是一个支持文生视频（T2V）、图生视频（I2V）和文本图生视频（TI2V）的视频生成模型。Wan2.2采用双Transformer架构（高噪声/低噪声模型），支持更高质量的视频生成。本指南涵盖 LoRA 微调训练流程，适用于自定义数据集的微调场景。
+> **说明**：Wan2.2 Fun 是一个基于 Wan2.2 架构的视频修复模型，支持视频修复任务。Wan2.2采用双Transformer架构（高噪声/低噪声模型），5B版本使用单Transformer架构。本指南涵盖 Wan2.2 Fun 的 LoRA 微调训练流程，支持 A14B 和 5B 两种模型变体。
 
 ---
 
@@ -23,9 +23,8 @@
   - [3.7 多机分布式训练](#37-多机分布式训练)
 - [四、推理测试](#四推理测试)
   - [4.1 推理参数解析](#41-推理参数解析)
-  - [4.2 文生视频（T2V）推理](#42-文生视频t2v推理)
-  - [4.3 图生视频（I2V）推理](#43-图生视频i2v推理)
-  - [4.4 多卡并行推理](#44-多卡并行推理)
+  - [4.2 视频修复推理](#42-视频修复推理)
+  - [4.3 多卡并行推理](#43-多卡并行推理)
 - [五、更多资源](#五更多资源)
 
 ---
@@ -161,13 +160,11 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 # 创建模型目录
 mkdir -p models/Diffusion_Transformer
 
-# 下载 Wan2.2 官方权重
-# T2V 模型（文生视频）
-modelscope download --model Wan-AI/Wan2.2-T2V-A14B --local_dir models/Diffusion_Transformer/Wan2.2-T2V-A14B
-# 或 I2V 模型（图生视频）
-# modelscope download --model Wan-AI/Wan2.2-I2V-A14B --local_dir models/Diffusion_Transformer/Wan2.2-I2V-A14B
-# 或 TI2V 模型（文本图生视频）
-# modelscope download --model Wan-AI/Wan2.2-TI2V-5B --local_dir models/Diffusion_Transformer/Wan2.2-TI2V-5B
+# 下载 Wan2.2 Fun 官方权重
+# A14B 模型（双Transformer架构）
+modelscope download --model PAI/Wan2.2-Fun-A14B-InP --local_dir models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP
+# 或 5B 模型（单Transformer架构）
+# modelscope download --model PAI/Wan2.2-Fun-5B-InP --local_dir models/Diffusion_Transformer/Wan2.2-Fun-5B-InP
 ```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
@@ -176,69 +173,31 @@ modelscope download --model Wan-AI/Wan2.2-T2V-A14B --local_dir models/Diffusion_
 
 推荐使用 DeepSpeed-Zero-2 与 FSDP 方案进行训练。这里以 DeepSpeed-Zero-2 为例配置 shell 文件。
 
-本文中 DeepSpeed-Zero-2 与 FSDP 的差别在于是否对模型权重进行分片，**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。
+**DeepSpeed-Zero-2 与 FSDP 对比**：
+- 两者都是分布式训练策略，帮助降低GPU显存占用
+- DeepSpeed-Zero-2：优化器状态和梯度在GPU间分片
+- FSDP（完全分片数据并行）：模型权重、优化器状态和梯度全部分片
+- **如果使用多卡且 DeepSpeed-Zero-2 显存不足**，切换使用 FSDP 以获得更好的显存效率
 
-**Wan2.2 T2V LoRA 训练示例**：
+> **关于 train_lora.sh**：本目录中的 `train_lora.sh` 脚本提供了一个**不带 DeepSpeed 或 FSDP** 的基础训练模板。适用于：
+> - 单GPU训练
+> - 快速测试和调试
+> - 根据特定需求进行自定义修改
+> 
+> 对于多GPU的生产环境训练，**请使用下方的 DeepSpeed-Zero-2 或 FSDP 命令**以获得更好的性能和显存效率。
+
+**Wan2.2 Fun LoRA 训练示例（DeepSpeed-Zero-2）**：
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
-  --video_sample_stride=2 \
-  --video_sample_n_frames=81 \
-  --train_batch_size=1 \
-  --video_repeat=1 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
-  --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --random_hw_adapt \
-  --training_with_video_token_length \
-  --enable_bucket \
-  --uniform_sampling \
-  --boundary_type="low" \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --use_peft_lora \
-  --train_mode="normal" \
-  --low_vram
-```
-
-**Wan2.2 I2V LoRA 训练示例**：
-
-```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-I2V-A14B"
-export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_lora.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2_fun/train_lora.py \
   --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -256,7 +215,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
+  --output_dir="output_dir_wan2.2_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -272,58 +231,11 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --network_alpha=32 \
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
-  --train_mode="i2v" \
+  --train_mode="inpaint" \
   --low_vram
 ```
 
-**Wan2.2 TI2V LoRA 训练示例**：
-
-```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
-export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
-# export NCCL_IB_DISABLE=1
-# export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
-
-accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=640 \
-  --video_sample_size=640 \
-  --token_sample_size=640 \
-  --video_sample_stride=2 \
-  --video_sample_n_frames=81 \
-  --train_batch_size=1 \
-  --video_repeat=1 \
-  --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=8 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=1e-04 \
-  --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
-  --gradient_checkpointing \
-  --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
-  --adam_epsilon=1e-10 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
-  --random_hw_adapt \
-  --training_with_video_token_length \
-  --enable_bucket \
-  --uniform_sampling \
-  --boundary_type="full" \
-  --rank=64 \
-  --network_alpha=32 \
-  --target_name="q,k,v,ffn.0,ffn.2" \
-  --use_peft_lora \
-  --train_mode="ti2v" \
-  --low_vram
-```
+> **说明**：本目录中的 `train_lora.sh` 脚本提供了不带 DeepSpeed 的基础训练模板。对于更好的多GPU训练性能和显存效率，请使用上方的 DeepSpeed-Zero-2 命令。
 
 ### 3.3 LoRA 专用参数解析
 
@@ -341,10 +253,10 @@ Wan2.2采用了创新的双Transformer架构：
 
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
-| `--config_path` | 配置文件路径 | `config/wan2.2/wan_civitai_t2v.yaml` |
-| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Wan2.2-T2V-A14B` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
+| `--config_path` | 配置文件路径 | `config/wan2.2/wan_civitai_i2v.yaml` |
+| `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Demo/` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
 | `--image_sample_size` | 图像最大训练分辨率 | 640 |
 | `--video_sample_size` | 视频最大训练分辨率 | 640 |
@@ -356,12 +268,12 @@ Wan2.2采用了创新的双Transformer架构：
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
 | `--learning_rate` | 初始学习率（LoRA 推荐值） | 1e-04 |
-| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
-| `--lr_warmup_steps` | 学习率预热步数 | 100 |
+| `--lr_scheduler` | 学习率调度器：`linear`、`cosine`、`cosine_with_restarts`、`polynomial`、`constant`、`constant_with_warmup` | `constant` |
+| `--lr_warmup_steps` | 学习率预热步数 | 500 |
 | `--seed` | 随机种子（可复现训练） | 42 |
-| `--output_dir` | 输出目录 | `output_dir_wan2.2_lora` |
-| `--gradient_checkpointing` | 激活重计算 | - |
-| `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
+| `--output_dir` | 输出目录 | `output_dir_wan2.2_fun_lora` |
+| `--gradient_checkpointing` | 激活重计算以节省显存 | - |
+| `--mixed_precision` | 混合精度：`no`、`fp16`、`bf16` | `bf16` |
 | `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
 | `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
 | `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
@@ -370,18 +282,28 @@ Wan2.2采用了创新的双Transformer架构：
 | `--random_hw_adapt` | 自动缩放图片/视频到 `[min_size, max_size]` 范围内的随机尺寸 | - |
 | `--training_with_video_token_length` | 根据 token 长度训练，支持任意分辨率 | - |
 | `--uniform_sampling` | 均匀采样 timestep（推荐启用） | - |
-| `--low_vram` | 低显存模式 | - |
+| `--low_vram` | 低显存模式，提高显存效率 | - |
 | `--boundary_type` | Wan2.2双Transformer边界类型：`low`（训练低噪声模型）、`high`（训练高噪声模型）、`full`（训练单模型如TI2V-5B） | `low` |
-| `--train_mode` | 训练模式：`normal`（普通T2V）、`i2v`（图生视频）或 `ti2v`（文本图生视频） | `normal` |
+| `--train_mode` | 训练模式：`normal`（普通T2V）、`inpaint`（视频修复） | `inpaint` |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
 | `--rank` | LoRA 更新矩阵的维度（rank 越大表达能力越强，但显存占用越高） | 64 |
 | `--network_alpha` | LoRA 更新矩阵的缩放系数（通常设置为 rank 的一半或相同） | 32 |
-| `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔 | `q,k,v,ffn.0,ffn.2` |
+| `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔（如 `q,k,v,ffn.0,ffn.2`） | `q,k,v,ffn.0,ffn.2` |
+| `--lora_skip_name` | LoRA训练中跳过的组件，用逗号分隔 | None |
 | `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更节省显存） | - |
-| `--validation_steps` | 每 N 步执行一次验证 | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证 | 100 |
+| `--validation_steps` | 每 N 步执行一次验证 | 2000 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 5 |
 | `--validation_prompts` | 验证视频生成的提示词 | `"一只棕色的狗摇着头..."` |
-| `--validation_paths` | 验证 I2V/TI2V 的参考图像路径（仅 i2v/ti2v 模式） | `"asset/1.png"` |
+| `--validation_paths` | 验证 I2V 的参考图像路径（仅 inpaint 模式） | `"asset/1.png"` |
+| `--use_deepspeed` | 启用 DeepSpeed 分布式训练 | - |
+| `--use_fsdp` | 启用 FSDP 分布式训练 | - |
+| `--use_8bit_adam` | 使用 8-bit Adam 优化器节省显存 | - |
+| `--use_came` | 使用 CAME 优化器 | - |
+| `--multi_stream` | 使用 CUDA 多流提升性能 | - |
+| `--snr_loss` | 使用 SNR 损失函数 | - |
+| `--weighting_scheme` | Timestep 加权方案：`sigma_sqrt`、`logit_normal`、`mode`、`cosmap`、`none` | `none` |
+| `--motion_sub_loss` | 启用运动子损失以提升时序一致性 | - |
+| `--motion_sub_loss_ratio` | 运动子损失比例 | 0.25 |
 
 **Sample Size 配置指南**：
 - `video_sample_size` 表示视频的分辨率大小；当 `random_hw_adapt` 为 True 时，表示视频和图像分辨率的最小值。
@@ -407,31 +329,14 @@ Wan2.2采用了创新的双Transformer架构：
 
 **验证参数说明**：
 
-| 参数 | 说明 | 推荐值 |
+| 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--validation_steps` | 每 N 步执行一次验证 | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证 | 100 |
-| `--validation_prompts` | 验证视频生成的提示词 | 英文提示词 |
-| `--validation_paths` | 验证 I2V 的参考图像路径（仅 i2v/inpaint 模式） | `"asset/1.png"` |
+| `--validation_steps` | 每 N 步执行一次验证 | 2000 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 5 |
+| `--validation_prompts` | 验证视频生成的提示词 | None |
+| `--validation_paths` | 验证 I2V 的参考图像路径（仅 inpaint 模式） | None |
 
-**normal 模式示例**（T2V 验证）：
-
-```bash
-  --validation_steps=100 \
-  --validation_epochs=100 \
-  --validation_prompts="A brown dog shaking its head, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."
-```
-
-**ti2v 模式示例**（TI2V 验证）：
-
-```bash
-  --validation_paths "asset/1.png" \
-  --validation_steps=100 \
-  --validation_epochs=100 \
-  --validation_prompts="A brown dog shaking its head, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."
-```
-
-**i2v 模式示例**（I2V 验证）：
+**验证示例**（inpaint 模式）：
 
 ```bash
   --validation_paths "asset/1.png" \
@@ -443,24 +348,25 @@ Wan2.2采用了创新的双Transformer架构：
 **注意事项**：
 - 验证视频会保存到 `output_dir` 目录中
 - 多提示词验证格式：`--validation_prompts "prompt1" "prompt2" "prompt3"`
-- `i2v` 或 `ti2v` 模式必须提供 `--validation_paths` 参数
-- Wan2.2的验证会根据`boundary_type`自动选择使用单Transformer或双Transformer
+- Wan2.2 Fun 的验证会根据 `boundary_type` 自动选择使用单Transformer或双Transformer
+- 当 `train_mode="inpaint"` 时，验证使用修复模式，参考图像作为起始帧
+- 对于 T2V 验证（不带参考图像），设置 `train_mode="normal"` 并省略 `--validation_paths`
 
 ### 3.5 使用 FSDP 训练
 
 **如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2_fun/train_lora.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -477,7 +383,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
+  --output_dir="output_dir_wan2.2_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -494,8 +400,10 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
   --low_vram \
-  --train_mode="normal"
+  --train_mode="inpaint"
 ```
+
+> **说明**：在本仓库中，FSDP 比 DeepSpeed-Zero-3 更稳定且出错更少。当 DeepSpeed-Zero-2 在多GPU情况下遇到显存问题时，请使用 FSDP。
 
 ### 3.6 其他后端
 
@@ -509,17 +417,17 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 ```
 
 训练 shell 命令如下：
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.2_fun/train_lora.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -536,7 +444,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
+  --output_dir="output_dir_wan2.2_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -553,24 +461,24 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
   --low_vram \
-  --train_mode="normal"
+  --train_mode="inpaint"
 ```
 
 #### 3.6.2 不使用 DeepSpeed 与 FSDP 训练
 
 **该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练Shell用于参考训练。
 
-```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_lora.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -587,7 +495,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
+  --output_dir="output_dir_wan2.2_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -604,8 +512,10 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
   --low_vram \
-  --train_mode="normal"
+  --train_mode="inpaint"
 ```
+
+> **说明**：这与 `train_lora.sh` 脚本类似，但使用了正确的数据集路径。`train_lora.sh` 脚本可以用作单GPU训练的起点。
 
 ### 3.7 多机分布式训练
 
@@ -617,7 +527,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
 
 **机器 0（Master）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
@@ -628,10 +538,10 @@ export RANK=0                        # 当前机器 rank（0 或 1）
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_lora.py \
-  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2_fun/train_lora.py \
+  --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -648,7 +558,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir_wan2.2_lora" \
+  --output_dir="output_dir_wan2.2_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -665,12 +575,12 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --target_name="q,k,v,ffn.0,ffn.2" \
   --use_peft_lora \
   --low_vram \
-  --train_mode="normal"
+  --train_mode="inpaint"
 ```
 
 **机器 1（Worker）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
@@ -681,7 +591,7 @@ export RANK=1  # 注意这里是 1
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
-NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
 # 使用与机器 0 相同的 accelerate launch 命令
 ```
@@ -725,7 +635,9 @@ NCCL_DEBUG=INFO
 | `video_length` | 生成视频帧数 | `81` |
 | `fps` | 每秒帧数 | `16` |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
-| `validation_image_start` | 图生视频的参考图像路径（I2V/TI2V 模式） | `"asset/1.png"` |
+| `validation_image_start` | 图生视频的参考图像路径（I2V 模式） | `"asset/1.png"` |
+| `validation_image_end` | 结束帧的参考图像路径（可选） | `None` |
+| `validation_mask` | 修复的掩码路径（inpaint 模式） | `None` |
 | `prompt` | 正向提示词，描述生成内容 | `"一只棕色的狗摇着头..."` |
 | `negative_prompt` | 负向提示词，避免生成的内容 | `"低分辨率，低画质..."` |
 | `guidance_scale` | 引导强度 | 6.0 |
@@ -746,57 +658,93 @@ NCCL_DEBUG=INFO
 | `model_group_offload` | 层组在 CPU/CUDA 间切换 | 低 |
 | `sequential_cpu_offload` | 逐层卸载（速度最慢） | 最低 |
 
-### 4.2 文生视频（T2V）推理
+### 4.2 视频修复推理
+
+#### 4.2.1 推理脚本选择
+
+Wan2.2 Fun 提供多种推理脚本，请根据您的模型版本和任务类型选择：
+
+| 脚本 | 模型版本 | 架构 | 主要用途 |
+|------|---------|------|---------|
+| `predict_i2v.py` | A14B | 双Transformer | 图生视频/视频修复（I2V/Inpaint） |
+| `predict_t2v.py` | A14B | 双Transformer | 文生视频（T2V） |
+| `predict_i2v_5b.py` | 5B | 单Transformer | 图生视频/视频修复（I2V/Inpaint） |
+| `predict_t2v_5b.py` | 5B | 单Transformer | 文生视频（T2V） |
+
+> **说明**：
+> - A14B 模型使用双Transformer架构（低噪声+高噪声模型），需要配置 `transformer_path` 和 `transformer_high_path`
+> - 5B 模型使用单Transformer架构，只需配置 `transformer_path`，`transformer_high_path` 保持为 `None`
+
+#### 4.2.2 A14B模型推理（双Transformer）
 
 单卡推理运行如下命令：
 
 ```bash
-python examples/wan2.2/predict_t2v.py
+python examples/wan2.2_fun/predict_i2v.py
 ```
 
-根据需求修改编辑 `examples/wan2.2/predict_t2v.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
+根据需求修改 `examples/wan2.2_fun/predict_i2v.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
 
 ```python
 # 根据显卡显存选择
 GPU_memory_mode = "sequential_cpu_offload"
 # 根据实际模型路径
-model_name = "models/Diffusion_Transformer/Wan2.2-T2V-A14B"  
-# 训练好的低噪声权重路径，如 "output_dir_wan2.2_lora/checkpoint-xxx/diffusion_pytorch_model.safetensors"
-transformer_path = None  
-# 训练好的高噪声权重路径（如果训练了双Transformer）
-transformer_high_path = None  
-# 根据生成内容编写
-prompt = "A brown dog shaking its head, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."  
-# ...
-```
-
-### 4.3 图生视频（I2V）推理
-
-单卡推理运行如下命令：
-
-```bash
-python examples/wan2.2/predict_i2v.py
-```
-
-根据需求修改编辑 `examples/wan2.2/predict_i2v.py`，初次推理重点关注如下参数，如果对其他参数感兴趣，请查看上方的推理参数解析。
-
-```python
-# 根据显卡显存选择
-GPU_memory_mode = "sequential_cpu_offload"
-# 根据实际模型路径
-model_name = "models/Diffusion_Transformer/Wan2.2-I2V-A14B"  
-# 训练好的低噪声权重路径，如 "output_dir_wan2.2_lora/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+model_name = "models/Diffusion_Transformer/Wan2.2-Fun-A14B-InP"  
+# 训练好的低噪声权重路径
 transformer_path = None  
 # 训练好的高噪声权重路径
 transformer_high_path = None  
-# 图生视频的起始图像
+# 训练好的权重路径，如 "output_dir_wan2.2_fun_lora/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+lora_path = None
+lora_high_path = None
+# 修复的起始图像
 validation_image_start = "asset/1.png"
+# 修复的掩码（可选，如果不提供将自动生成）
+validation_mask = None
 # 根据生成内容编写
 prompt = "A brown dog shaking its head, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."  
 # ...
 ```
 
-### 4.4 多卡并行推理
+> **说明**：Wan2.2 Fun 主要用于视频修复任务。使用 `predict_i2v.py` 进行 I2V 和修复工作流。当提供或生成掩码时，模型将自动处理修复任务。
+
+#### 4.2.3 5B模型推理（单Transformer）
+
+单卡推理运行如下命令：
+
+```bash
+python examples/wan2.2_fun/predict_i2v_5b.py
+```
+
+根据需求修改 `examples/wan2.2_fun/predict_i2v_5b.py`，重点关注如下参数：
+
+```python
+# 根据显卡显存选择
+GPU_memory_mode = "sequential_cpu_offload"
+# 5B模型路径
+model_name = "models/Diffusion_Transformer/Wan2.2-Fun-5B-InP/"  
+# 训练好的权重路径（5B为单Transformer，只需设置transformer_path）
+transformer_path = None  
+# 5B模型不使用高噪声Transformer，保持为None
+transformer_high_path = None  
+# 训练好的权重路径，如 "output_dir_wan2.2_fun_lora/checkpoint-xxx/diffusion_pytorch_model.safetensors"
+lora_path = None
+# 5B模型不使用高噪声LoRA，保持为None
+lora_high_path = None
+# 修复的起始图像
+validation_image_start = "asset/1.png"
+validation_image_end = None
+# 根据生成内容编写
+prompt = "A brown dog licking its tongue, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."  
+# ...
+```
+
+> **说明**：
+> - 5B 模型采用单Transformer架构，配置更简单，显存占用更低
+> - 训练时如果使用 `boundary_type="full"`，推理时只需加载 `transformer_path`，无需设置 `transformer_high_path`
+> - LoRA 训练时也只需设置 `lora_path`，`lora_high_path` 保持为 `None`
+
+### 4.3 多卡并行推理
 
 **适合场景**：高分辨率生成、加速推理
 
@@ -808,7 +756,7 @@ pip install xfuser==0.4.2 yunchang==0.6.2
 
 #### 配置并行策略
 
-编辑 `examples/wan2.2/predict_t2v.py`、`examples/wan2.2/predict_i2v.py` 或 `examples/wan2.2/predict_ti2v.py`：
+编辑 `examples/wan2.2_fun/predict_i2v.py`：
 
 ```python
 # 确保 ulysses_degree × ring_degree = 使用的 GPU 数
@@ -833,7 +781,7 @@ ring_degree = 1     # Sequence 维度并行
 #### 运行多卡推理
 
 ```bash
-torchrun --nproc-per-node=2 examples/wan2.2/predict_t2v.py
+torchrun --nproc-per-node=2 examples/wan2.2_fun/predict_i2v.py
 ```
 
 ---

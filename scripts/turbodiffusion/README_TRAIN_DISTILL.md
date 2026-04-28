@@ -174,9 +174,9 @@ DeepSpeed-Zero-2 and FSDP are recommended for training. Here we use DeepSpeed-Ze
 The difference between DeepSpeed-Zero-2 and FSDP is whether the model weights are sharded. **If you experience insufficient GPU memory when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP for training.
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -351,9 +351,9 @@ You can configure validation parameters to periodically generate test videos dur
 **If you experience insufficient GPU memory when using multiple GPUs with DeepSpeed-Zero-2**, you can switch to FSDP for training.
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -409,9 +409,9 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 
 Training shell command is as follows:
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -459,9 +459,9 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 **This approach is not recommended because without memory-saving backends, it easily causes insufficient GPU memory**. This is only provided as a reference shell for training.
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -514,9 +514,9 @@ Assuming 2 machines, each with 8 GPUs:
 
 **Machine 0 (Master)**:
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -566,9 +566,9 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 
 **Machine 1 (Worker)**:
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2

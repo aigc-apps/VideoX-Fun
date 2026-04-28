@@ -174,9 +174,9 @@ modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_
 本文中DeepSpeed-Zero-2与FSDP的差别在于是否对模型权重进行分片，**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -351,9 +351,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 **如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -409,9 +409,9 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 
 训练 shell 命令如下：
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -459,9 +459,9 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 **该方案并不被推荐，因为没有显存节约后端，容易造成显存不足**。这里仅提供训练 Shell 用于参考训练。
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -514,9 +514,9 @@ accelerate launch --mixed_precision="bf16" scripts/turbodiffusion/train_distill.
 
 **机器 0（主节点）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 主节点 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 机器总数
@@ -566,9 +566,9 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 
 **机器 1（工作节点）**：
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与主节点相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2

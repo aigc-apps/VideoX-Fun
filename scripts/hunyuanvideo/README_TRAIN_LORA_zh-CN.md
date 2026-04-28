@@ -237,8 +237,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
 | `--learning_rate` | 初始学习率（LoRA 推荐值） | 1e-04 |
-| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
-| `--lr_warmup_steps` | 学习率预热步数 | 100 |
+| `--lr_scheduler` | 学习率调度器 | `constant` |
+| `--lr_warmup_steps` | 学习率预热步数 | 500 |
 | `--seed` | 随机种子（可复现训练） | 42 |
 | `--output_dir` | 输出目录 | `output_dir_hunyuanvideo_lora` |
 | `--gradient_checkpointing` | 激活重计算 | - |
@@ -254,8 +254,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--low_vram` | 低显存模式 | - |
 | `--train_mode` | 训练模式：`normal`（普通）或 `i2v`（图生视频） | `normal` |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | None |
-| `--rank` | LoRA 更新矩阵的维度（rank 越大表达能力越强，但显存占用越高） | 64 |
-| `--network_alpha` | LoRA 更新矩阵的缩放系数（通常设置为 rank 的一半或相同） | 32 |
+| `--rank` | LoRA 更新矩阵的维度（rank 越大表达能力越强，但显存占用越高） | 128 |
+| `--network_alpha` | LoRA 更新矩阵的缩放系数（通常设置为 rank 的一半或相同） | 64 |
 | `--target_name` | 应用 LoRA 的组件/模块，用逗号分隔 | `to_q,to_k,to_v,ff.0,ff.2,ff_context.0,ff_context.2` |
 | `--use_peft_lora` | 使用 PEFT 模块添加 LoRA（更节省显存） | - |
 | `--validation_steps` | 每 N 步执行一次验证 | 100 |
@@ -297,7 +297,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
   --validation_steps=100 \
   --validation_epochs=100 \
-  --validation_prompts="一位年轻女子站在阳光明媚的海岸线上，白裙在轻拂的海风中微微飘动。"
+  --validation_prompts="A young woman standing on a sunny coastline, her white dress gently swaying in the sea breeze."
 ```
 
 **注意事项**：
@@ -515,10 +515,10 @@ NCCL_DEBUG=INFO
 | `weight_dtype` | 模型权重精度，不支持 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
 | `validation_image_start` | 图生视频的参考图像路径（I2V 模式） | `"asset/1.png"` |
 | `prompt` | 正向提示词，描述生成内容 | `"The dog is shaking head..."` |
-| `negative_prompt` | 负向提示词，避免生成的内容 | `"低分辨率，低画质..."` |
-| `guidance_scale` | 引导强度 | 4.0 |
+| `negative_prompt` | 负向提示词，避免生成的内容 | `"Low resolution, low quality..."` |
+| `guidance_scale` | 引导强度（HunyuanVideo使用true_cfg_scale） | 1.0 |
 | `seed` | 随机种子，用于复现结果 | 43 |
-| `num_inference_steps` | 推理步数 | 25 |
+| `num_inference_steps` | 推理步数 | 40 |
 | `lora_weight` | LoRA 权重强度 | 0.55 |
 | `save_path` | 生成视频保存路径 | `samples/hunyuanvideo-videos-i2v` 或 `samples/hunyuanvideo-videos-t2v` |
 

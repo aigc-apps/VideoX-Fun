@@ -175,8 +175,8 @@ hf download hunyuanvideo-community/HunyuanVideo --local-dir models/Diffusion_Tra
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -226,27 +226,27 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/HunyuanVideo` |
 | `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
 | `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
-| `--train_batch_size` | 每批次样本数 | 1 |
-| `--image_sample_size` | 图像最大训练分辨率 | 640 |
-| `--video_sample_size` | 视频最大训练分辨率 | 640 |
-| `--token_sample_size` | Token 采样尺寸 | 640 |
-| `--video_sample_stride` | 视频采样步幅 | 2 |
-| `--video_sample_n_frames` | 视频采样帧数 | 81 |
+| `--train_batch_size` | 每批次样本数 | 16 |
+| `--image_sample_size` | 图像最大训练分辨率 | 512 |
+| `--video_sample_size` | 视频最大训练分辨率 | 512 |
+| `--token_sample_size` | Token 采样尺寸 | 512 |
+| `--video_sample_stride` | 视频采样步幅 | 4 |
+| `--video_sample_n_frames` | 视频采样帧数 | 17 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效增大 batch） | 1 |
-| `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
+| `--dataloader_num_workers` | DataLoader 子进程数 | 0 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
-| `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
-| `--learning_rate` | 初始学习率 | 2e-05 |
-| `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
-| `--lr_warmup_steps` | 学习率预热步数 | 100 |
+| `--checkpointing_steps` | 每 N 步保存 checkpoint | 500 |
+| `--learning_rate` | 初始学习率 | 1e-4 |
+| `--lr_scheduler` | 学习率调度器 | `constant` |
+| `--lr_warmup_steps` | 学习率预热步数 | 500 |
 | `--seed` | 随机种子 | 42 |
 | `--output_dir` | 输出目录 | `output_dir_hunyuanvideo` |
 | `--gradient_checkpointing` | 激活重计算 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
-| `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
-| `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
+| `--adam_weight_decay` | AdamW 权重衰减 | 1e-2 |
+| `--adam_epsilon` | AdamW epsilon 值 | 1e-08 |
+| `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 32 |
+| `--max_grad_norm` | 梯度裁剪阈值 | 1.0 |
 | `--enable_bucket` | 启用分桶训练，不裁剪图片/视频，按分辨率分组训练 | - |
 | `--random_hw_adapt` | 自动缩放图片/视频到 `[min_size, max_size]` 范围内的随机尺寸 | - |
 | `--training_with_video_token_length` | 根据 token 长度训练，支持任意分辨率 | - |
@@ -285,16 +285,16 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
-| `--validation_steps` | 每 N 步执行一次验证 | 100 |
-| `--validation_epochs` | 每 N 个epoch执行一次验证 | 100 |
+| `--validation_steps` | 每 N 步执行一次验证 | 2000 |
+| `--validation_epochs` | 每 N 个epoch执行一次验证 | 5 |
 | `--validation_prompts` | 验证视频生成的提示词,可用空格分隔多个提示词 | 多个空格分隔的提示词 |
 
 **示例**：
 
 ```bash
-  --validation_steps=100 \
-  --validation_epochs=100 \
-  --validation_prompts="一只狗在摇头，视频质量很高，视野很清晰。高质量，杰作，最佳质量，高分辨率，超细节，极好的。"
+  --validation_steps=2000 \
+  --validation_epochs=5 \
+  --validation_prompts="A dog is shaking head. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
 ```
 
 **注意事项**：
@@ -307,8 +307,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -355,8 +355,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -408,8 +408,8 @@ accelerate launch --mixed_precision="bf16" scripts/hunyuanvideo/train.py \
 **机器 0（Master）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 机器总数
@@ -458,8 +458,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 **机器 1（Worker）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/HunyuanVideo"
-export DATASET_NAME="datasets/internaldatasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2
@@ -495,7 +495,7 @@ NCCL_DEBUG=INFO
 
 | 参数 | 说明 | 示例值 |
 |------|------|-------|
-| `GPU_memory_mode` | 显存管理模式，可选值见下表 | `model_group_offload` |
+| `GPU_memory_mode` | 显存管理模式，可选值见下表 | `sequential_cpu_offload` |
 | `ulysses_degree` | Head 维度并行度，单卡时为 1 | 1 |
 | `ring_degree` | Sequence 维度并行度，单卡时为 1 | 1 |
 | `fsdp_dit` | 多卡推理时对 Transformer 使用 FSDP 节省显存 | `False` |
@@ -506,16 +506,16 @@ NCCL_DEBUG=INFO
 | `transformer_path` | 加载训练好的 Transformer 权重路径 | `None` |
 | `vae_path` | 加载训练好的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `None` |
-| `sample_size` | 生成视频分辨率 `[高度, 宽度]` | `[480, 832]` 或 `[832, 480]` |
+| `sample_size` | 生成视频分辨率 `[高度, 宽度]` | `[832, 480]`（T2V）或 `[480, 832]`（I2V） |
 | `video_length` | 生成视频帧数 | `81` |
 | `fps` | 每秒帧数 | `16` |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的显卡使用 `torch.float16` | `torch.bfloat16` |
 | `validation_image_start` | 图生视频的参考图像路径（I2V 模式） | `"asset/1.png"` |
 | `prompt` | 正向提示词，描述生成内容 | `"The dog is shaking head..."` |
-| `negative_prompt` | 负向提示词，避免生成的内容 | `"低分辨率，低画质..."` |
-| `guidance_scale` | 引导强度 | 4.0 |
+| `negative_prompt` | 负向提示词，避免生成的内容 | `"Low resolution, low quality..."` |
+| `guidance_scale` | 引导强度 | 1.0 |
 | `seed` | 随机种子，用于复现结果 | 43 |
-| `num_inference_steps` | 推理步数 | 25 |
+| `num_inference_steps` | 推理步数 | 40 |
 | `lora_weight` | LoRA 权重强度 | 0.55 |
 | `save_path` | 生成视频保存路径 | `samples/hunyuanvideo-videos-i2v` 或 `samples/hunyuanvideo-videos-t2v` |
 

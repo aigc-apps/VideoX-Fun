@@ -184,7 +184,7 @@ The difference between DeepSpeed-Zero-2 and FSDP lies in whether to shard model 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -389,7 +389,6 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--real_guidance_scale` | Real guidance scale for scoring | 6.0 |
 | `--fake_guidance_scale` | Fake guidance scale for scoring | 0.0 |
 | `--gen_update_interval` | Generator update interval | 5 |
-| `--negative_prompt` | Negative prompt for distillation | Chinese negative prompt |
 | `--train_sampling_steps` | Training sampling steps | 1000 |
 
 **Sample Size Configuration Guide**:
@@ -469,8 +468,8 @@ You can configure validation parameters to periodically generate test videos dur
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -528,8 +527,8 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 Training shell command is as follows:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -579,8 +578,8 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -636,7 +635,7 @@ Assuming 2 machines, each with 8 GPUs:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -689,7 +688,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2

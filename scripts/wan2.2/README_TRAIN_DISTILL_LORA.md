@@ -194,7 +194,7 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -357,7 +357,6 @@ In addition to distillation training, LoRA training adds the following specific 
 | `--real_guidance_scale` | Real guidance scale for scoring | 6.0 |
 | `--fake_guidance_scale` | Fake guidance scale for scoring | 0.0 |
 | `--gen_update_interval` | Generator update interval | 5 |
-| `--negative_prompt` | Negative prompt for distillation | Chinese negative prompt |
 | `--train_sampling_steps` | Training sampling steps | 1000 |
 
 **Sample Size Configuration Guide**:
@@ -396,7 +395,7 @@ You can configure validation parameters to regularly generate test videos during
 ```bash
   --validation_steps=2000 \
   --validation_epochs=5 \
-  --validation_prompts="一只棕色的狗摇着头,坐在舒适房间里的浅色沙发上。在狗的后面,架子上有一幅镶框的画,周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
+  --validation_prompts="A brown dog shaking its head, sitting on a light-colored sofa in a cozy room. Behind the dog, there's a framed painting on a shelf, surrounded by pink flowers. The soft, warm lighting in the room creates a comfortable atmosphere."
 ```
 
 **i2v/inpaint Mode Example** (I2V Validation):
@@ -420,7 +419,7 @@ If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2, you can 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -482,7 +481,7 @@ The training shell command is as follows:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -530,7 +529,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -587,7 +586,7 @@ Assuming 2 machines, each with 8 GPUs:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -641,7 +640,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2

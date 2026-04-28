@@ -726,7 +726,9 @@ def parse_args():
         type=str,
         default="low",
         help=(
-            'The format of training data. Support `"low"` and `"high"`'
+            'The training boundary type for dual-Transformer architecture. '
+            'Support `"low"` (train low-noise model), `"high"` (train high-noise model), '
+            'and `"full"` (single model training like TI2V-5B).'
         ),
     )
     parser.add_argument(
@@ -734,8 +736,8 @@ def parse_args():
         type=str,
         default="normal",
         help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
+            'The training mode. Support `"normal"` (T2V, default), '
+            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
         ),
     )
     parser.add_argument(

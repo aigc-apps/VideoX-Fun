@@ -238,8 +238,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (recommended for LoRA) | 1e-04 |
-| `--lr_scheduler` | Learning rate scheduler | `constant_with_warmup` |
-| `--lr_warmup_steps` | Learning rate warmup steps | 100 |
+| `--lr_scheduler` | Learning rate scheduler | `constant` |
+| `--lr_warmup_steps` | Learning rate warmup steps | 500 |
 | `--seed` | Random seed (for reproducibility) | 42 |
 | `--output_dir` | Output directory | `output_dir_cogvideox_fun_lora` |
 | `--gradient_checkpointing` | Enable gradient checkpointing | - |
@@ -254,12 +254,12 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--low_vram` | Low VRAM mode | - |
 | `--train_mode` | Training mode: `inpaint` (I2V/V2V) or `normal` (T2V) | `inpaint` |
 | `--resume_from_checkpoint` | Resume training from checkpoint path; use `"latest"` to auto-select the latest checkpoint | None |
-| `--rank` | Dimension of LoRA update matrices (higher rank = stronger expressiveness, but more VRAM) | 64 |
-| `--network_alpha` | Scaling factor for LoRA update matrices (usually set to half of rank or same) | 32 |
+| `--rank` | Dimension of LoRA update matrices (higher rank = stronger expressiveness, but more VRAM) | 128 |
+| `--network_alpha` | Scaling factor for LoRA update matrices (usually set to half of rank or same) | 64 |
 | `--target_name` | Components/modules to apply LoRA, separated by commas | `to_q,to_k,to_v,ff.0,ff.2` |
 | `--use_peft_lora` | Use PEFT module to add LoRA (more memory-efficient) | - |
-| `--validation_steps` | Run validation every N steps | 100 |
-| `--validation_epochs` | Run validation every N epochs | 100 |
+| `--validation_steps` | Run validation every N steps | 2000 |
+| `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validation video generation | `"A young woman..."` |
 
 **Sample Size Configuration Guide**:
@@ -292,8 +292,8 @@ You can configure validation parameters to regularly generate test videos during
 
 | Parameter | Description | Recommended Value |
 |-----------|-------------|-------------------|
-| `--validation_steps` | Run validation every N steps | 100 |
-| `--validation_epochs` | Run validation every N epochs | 100 |
+| `--validation_steps` | Run validation every N steps | 2000 |
+| `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validation video generation, can separate multiple prompts with spaces | Multiple space-separated prompts |
 
 **Example**:

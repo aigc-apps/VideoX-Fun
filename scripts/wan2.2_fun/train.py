@@ -688,7 +688,7 @@ def parse_args():
         default="normal",
         help=(
             'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
+            ' (default), `"inpaint"`.'
         ),
     )
     parser.add_argument(

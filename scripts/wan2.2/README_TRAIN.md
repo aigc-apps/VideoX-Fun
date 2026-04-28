@@ -452,8 +452,8 @@ You can configure validation parameters to periodically generate test videos dur
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -510,8 +510,8 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 Training shell command is as follows:
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -537,7 +537,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_wan2.1" \
+  --output_dir="output_dir_wan2.2" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -549,6 +549,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
+  --boundary_type="low" \
   --train_mode="normal" \
   --trainable_modules "."
 ```
@@ -558,16 +559,16 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 **This approach is not recommended as it lacks memory-saving backends and may easily cause out-of-memory errors**. Provided here for reference only.
 
 ```sh
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" scripts/wan2.2/train.py \
+  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -586,7 +587,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_wan2.1" \
+  --output_dir="output_dir_wan2.2" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -598,6 +599,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train.py \
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
+  --boundary_type="low" \
   --train_mode="normal" \
   --trainable_modules "."
 ```
@@ -612,7 +614,7 @@ Assuming 2 machines with 8 GPUs each:
 
 **Machine 0 (Master)**:
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
@@ -625,8 +627,8 @@ export RANK=0                        # Current machine rank (0 or 1)
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1/train.py \
-  --config_path="config/wan2.1/wan_civitai.yaml" \
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train.py \
+  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -645,7 +647,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_wan2.1" \
+  --output_dir="output_dir_wan2.2" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -657,13 +659,14 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --enable_bucket \
   --uniform_sampling \
   --low_vram \
+  --boundary_type="low" \
   --train_mode="normal" \
   --trainable_modules "."
 ```
 
 **Machine 1 (Worker)**:
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master

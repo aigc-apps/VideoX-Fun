@@ -155,7 +155,7 @@ If your data uses relative paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 ```
 
 **Absolute Paths**:
@@ -164,7 +164,7 @@ If your data uses absolute paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata_control.json"
+export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -201,8 +201,8 @@ The difference between DeepSpeed-Zero-2 and FSDP lies in whether the model weigh
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -254,7 +254,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | Path to pretrained model | `models/Diffusion_Transformer/Wan2.1-I2V-14B-480P` |
 | `--audio_encoder_path` | Audio encoder path (**InfiniteTalk-S2V specific**) | `models/Diffusion_Transformer/chinese-wav2vec2-base/` |
 | `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata_control.json` |
+| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
 | `--train_batch_size` | Samples per batch | 1 |
 | `--video_sample_size` | Maximum video resolution for training | 640 |
 | `--token_sample_size` | Token length sampling size | 640 |
@@ -323,8 +323,8 @@ You can configure validation parameters to periodically generate test videos dur
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -373,8 +373,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -428,8 +428,8 @@ Assuming 2 machines with 8 GPUs each:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -480,8 +480,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-I2V-14B-480P"
 export AUDIO_MODEL_NAME="models/Diffusion_Transformer/chinese-wav2vec2-base/"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2
