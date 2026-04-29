@@ -197,8 +197,8 @@ The difference between DeepSpeed-Zero-2 and FSDP lies in whether the model weigh
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -327,8 +327,8 @@ You can configure validation parameters to periodically generate test videos dur
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -379,8 +379,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -433,8 +433,8 @@ Assuming 2 machines with 8 GPUs each:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -484,8 +484,8 @@ accelerate launch --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_POR
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/LongCat-Video"
 export MODEL_NAME_AVATAR="models/Diffusion_Transformer/LongCat-Video-Avatar"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2

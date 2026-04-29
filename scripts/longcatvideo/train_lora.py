@@ -548,12 +548,6 @@ def parse_args():
         "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
     )
     parser.add_argument(
-        "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
-    )
-    parser.add_argument(
-        "--noise_share_in_frames_ratio", type=float, default=0.5, help="Noise share ratio.",
-    )
-    parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
     )
     parser.add_argument(

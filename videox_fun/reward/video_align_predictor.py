@@ -557,7 +557,14 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if inputs_embeds is None:
-            inputs_embeds = self.model.embed_tokens(input_ids)
+            # Support both old and new transformer versions
+            if hasattr(self.model, 'embed_tokens'):
+                inputs_embeds = self.model.embed_tokens(input_ids)
+            elif hasattr(self.model, 'language_model'):
+                inputs_embeds = self.model.language_model.embed_tokens(input_ids)
+            else:
+                raise AttributeError("Cannot find embed_tokens in model structure")
+            
             if pixel_values is not None:
                 pixel_values = pixel_values.type(self.visual.get_dtype())
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
@@ -627,31 +634,144 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         return {"logits": pooled_logits}
 
 
-# ========================= Model Utils =========================
-
-def _insert_adapter_name_into_state_dict(
-    state_dict: dict[str, torch.Tensor], adapter_name: str, parameter_prefix: str
-) -> dict[str, torch.Tensor]:
-    """Utility function to remap the state_dict keys to fit the PEFT model by inserting the adapter name."""
-    peft_model_state_dict = {}
-    for key, val in state_dict.items():
-        if parameter_prefix in key:
-            suffix = key.split(parameter_prefix)[1]
-            if "." in suffix:
-                suffix_to_replace = ".".join(suffix.split(".")[1:])
-                key = key.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}")
-            else:
-                key = f"{key}.{adapter_name}"
-            peft_model_state_dict[key] = val
+def _insert_adapter_name_into_state_dict(state_dict, adapter_name="default", parameter_prefix="lora_"):
+    """Insert adapter name into LoRA state dict keys."""
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if ("lora_A" in k or "lora_B" in k) and f".{adapter_name}." not in k:
+            new_k = k.replace(".lora_A.", f".lora_A.{adapter_name}.").replace(".lora_B.", f".lora_B.{adapter_name}.")
+            new_state_dict[new_k] = v
         else:
-            peft_model_state_dict[key] = val
-    return peft_model_state_dict
+            new_state_dict[k] = v
+    return new_state_dict
 
 
+def _remap_checkpoint_keys(state_dict, model=None):
+    """Remap checkpoint keys to match current Transformers architecture.
+    
+    Supports bidirectional mapping:
+    - Old format (transformers < 4.52): visual.*, model.layers.*
+    - New format (transformers >= 4.52): model.visual.*, model.language_model.*
+    
+    Args:
+        state_dict: The checkpoint state dict
+        model: Optional model instance to detect architecture. If None, auto-detect from keys.
+    """
+    # Detect model architecture if model is provided
+    if model is not None:
+        # Check if model uses new architecture (has language_model attribute)
+        has_language_model_attr = hasattr(model.model, 'language_model')
+        has_language_model_module = any(name == 'language_model' for name, _ in model.model.named_children())
+        uses_new_arch = has_language_model_attr or has_language_model_module
+    else:
+        # Auto-detect from state_dict keys (assume new format if contains language_model)
+        uses_new_arch = any('language_model' in k for k in state_dict.keys())
+    
+    # Detect checkpoint format
+    has_legacy_visual = any(k.startswith("base_model.model.visual.") for k in state_dict.keys()) or \
+                        any(k.startswith("visual.") for k in state_dict.keys())
+    has_new_visual = any(k.startswith("base_model.model.model.visual.") for k in state_dict.keys())
+    has_new_language = any(k.startswith("base_model.model.model.language_model.") for k in state_dict.keys()) or \
+                       any(k.startswith("model.language_model.") for k in state_dict.keys())
+    has_old_language = any(
+        (k.startswith("base_model.model.model.layers.") and "language_model" not in k) or
+        (k.startswith("model.layers.") and "language_model" not in k)
+        for k in state_dict.keys()
+    )
+    
+    # Log detection results
+    logger.debug(f"Model architecture: {'new' if uses_new_arch else 'old'}")
+    logger.debug(f"Checkpoint format: legacy_visual={has_legacy_visual}, new_visual={has_new_visual}, "
+                 f"new_language={has_new_language}, old_language={has_old_language}")
+    
+    # Determine mapping direction
+    needs_fix = False
+    mapping_direction = None
+    
+    if uses_new_arch and (has_legacy_visual or has_old_language):
+        needs_fix = True
+        mapping_direction = 'old_to_new'
+        logger.info("Detected old checkpoint format with new Transformers (>=4.52). Remapping old->new...")
+    elif not uses_new_arch and (has_new_language or has_new_visual):
+        needs_fix = True
+        mapping_direction = 'new_to_old'
+        logger.info("Detected new checkpoint format with old Transformers (<4.52). Remapping new->old...")
+    
+    if not needs_fix:
+        logger.info("Checkpoint format matches model architecture. No remapping needed.")
+        return state_dict
+    
+    # Perform key remapping
+    mapped_state_dict = {}
+    remapped_count = 0
+    
+    for k, v in state_dict.items():
+        new_k = k
+        
+        if mapping_direction == 'old_to_new':
+            # Old format -> New format
+            # Handle both "visual." and "base_model.model.visual." prefixes
+            if k.startswith("base_model.model.visual."):
+                new_k = k.replace("base_model.model.visual.", "base_model.model.model.visual.", 1)
+                remapped_count += 1
+            elif k.startswith("visual."):
+                new_k = k.replace("visual.", "model.visual.", 1)
+                remapped_count += 1
+            elif k.startswith("base_model.model.model.layers."):
+                new_k = k.replace("base_model.model.model.layers.", "base_model.model.model.language_model.layers.", 1)
+                remapped_count += 1
+            elif k.startswith("base_model.model.model.embed_tokens"):
+                new_k = k.replace("base_model.model.model.embed_tokens", "base_model.model.model.language_model.embed_tokens", 1)
+                remapped_count += 1
+            elif k.startswith("base_model.model.model.norm"):
+                new_k = k.replace("base_model.model.model.norm", "base_model.model.model.language_model.norm", 1)
+                remapped_count += 1
+            elif k.startswith("model.layers."):
+                new_k = k.replace("model.layers.", "model.language_model.layers.", 1)
+                remapped_count += 1
+            elif k.startswith("model.embed_tokens"):
+                new_k = k.replace("model.embed_tokens", "model.language_model.embed_tokens", 1)
+                remapped_count += 1
+            elif k.startswith("model.norm"):
+                new_k = k.replace("model.norm", "model.language_model.norm", 1)
+                remapped_count += 1
+        
+        elif mapping_direction == 'new_to_old':
+            # New format -> Old format
+            if k.startswith("base_model.model.model.language_model."):
+                new_k = k.replace("base_model.model.model.language_model.", "base_model.model.model.", 1)
+                remapped_count += 1
+            elif k.startswith("base_model.model.model.visual."):
+                new_k = k.replace("base_model.model.model.visual.", "base_model.model.visual.", 1)
+                remapped_count += 1
+            elif k.startswith("model.language_model."):
+                new_k = k.replace("model.language_model.", "model.", 1)
+                remapped_count += 1
+            elif k.startswith("model.visual."):
+                new_k = k.replace("model.visual.", "visual.", 1)
+                remapped_count += 1
+        
+        mapped_state_dict[new_k] = v
+    
+    logger.info(f"Key remapping completed ({mapping_direction}). {remapped_count} keys were modified.")
+    return mapped_state_dict
 
-def load_model_from_checkpoint(
-    model, checkpoint_dir, checkpoint_step
-):
+
+def _merge_state_dicts(model_state_dict, non_lora_dict, lora_dict):
+    """Merge non-LoRA and LoRA state dicts into model state dict."""
+    for k, v in non_lora_dict.items():
+        if k in model_state_dict:
+            model_state_dict[k] = v
+    
+    for k, v in lora_dict.items():
+        if k in model_state_dict:
+            model_state_dict[k] = v
+    
+    return model_state_dict
+
+
+def load_model_from_checkpoint(model, checkpoint_dir, checkpoint_step):
+    """Load model from checkpoint directory."""
     checkpoint_paths = glob.glob(os.path.join(checkpoint_dir, "checkpoint-*"))
     checkpoint_paths.sort(key=lambda x: int(x.split("-")[-1]), reverse=True)
 
@@ -672,19 +792,36 @@ def load_model_from_checkpoint(
     full_ckpt = os.path.join(checkpoint_path, "model.pth")
     lora_ckpt = os.path.join(checkpoint_path, "adapter_model.safetensors")
     non_lora_ckpt = os.path.join(checkpoint_path, "non_lora_state_dict.pth")
-    if os.path.exists(full_ckpt):
+    use_lora_path = os.path.exists(lora_ckpt) and os.path.exists(non_lora_ckpt)
+    
+    if not use_lora_path and os.path.exists(full_ckpt):
+        print(f"===> No LoRA files found. Loading full model from: {full_ckpt}")
         model_state_dict = torch.load(full_ckpt, map_location="cpu")
-        model.load_state_dict(model_state_dict)
-    else:
+        
+        # Use model-aware remapping for better compatibility
+        mapped_state_dict = _remap_checkpoint_keys(model_state_dict, model=model)
+        
+        model.load_state_dict(mapped_state_dict, strict=True)
+            
+    elif use_lora_path:
+        print(f"===> Loading LoRA components from: {checkpoint_path}")
+        
         lora_state_dict = safetensors.torch.load_file(lora_ckpt)
         non_lora_state_dict = torch.load(non_lora_ckpt, map_location="cpu")
 
-        lora_state_dict = _insert_adapter_name_into_state_dict(lora_state_dict, adapter_name="default", parameter_prefix="lora_")
+        # Use model-aware remapping for better compatibility
+        non_lora_state_dict = _remap_checkpoint_keys(non_lora_state_dict, model=model)
+        
+        lora_state_dict = _insert_adapter_name_into_state_dict(lora_state_dict, adapter_name="default")
         
         model_state_dict = model.state_dict()
-        model_state_dict.update(non_lora_state_dict)
-        model_state_dict.update(lora_state_dict)
-        model.load_state_dict(model_state_dict)
+        model_state_dict = _merge_state_dicts(model_state_dict, non_lora_state_dict, lora_state_dict)
+        
+        model.load_state_dict(model_state_dict, strict=True)
+        print("===> Model loaded successfully with strict=True.")
+            
+    else:
+        raise FileNotFoundError(f"No valid checkpoint files found in {checkpoint_path}")
 
     return model, checkpoint_step
 
@@ -719,7 +856,7 @@ def create_model_and_processor(model_config, peft_lora_config, training_args, de
     )
 
     processor = AutoProcessor.from_pretrained(
-        model_config.model_name_or_path, padding_side="right", cache_dir=cache_dir
+        model_config.model_name_or_path, padding_side="left", cache_dir=cache_dir
     )
 
     special_token_ids = None
