@@ -96,7 +96,7 @@ color_correction_strength = 1.0
 use_apg                 = False
 apg_momentum            = 0.5
 apg_norm_threshold      = 1.0
-audio_encode_mode       = "once"
+audio_encode_mode       = "stream"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -208,6 +208,7 @@ with torch.no_grad():
 
     # Prepare ref_image latent for FlashHead (no clip_image needed)
     ref_image = get_image_latent(ref_image, sample_size=sample_size)
+    ref_image = ref_image * 2.0 - 1.0
     
     sample = pipeline(
         segment_frame_length = segment_frame_length,
