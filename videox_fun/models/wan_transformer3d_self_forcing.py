@@ -1,6 +1,6 @@
+# Modified from https://github.com/guandeh17/Self-Forcing/blob/main/wan/modules/causal_model.py
 # Modified from https://github.com/Wan-Video/Wan2.1/blob/main/wan/modules/model.py
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-
 import glob
 import json
 import math

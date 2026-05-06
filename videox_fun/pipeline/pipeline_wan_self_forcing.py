@@ -1,3 +1,4 @@
+# Modified from https://github.com/guandeh17/Self-Forcing/blob/main/pipeline/causal_diffusion_inference.py
 import inspect
 import math
 from dataclasses import dataclass
