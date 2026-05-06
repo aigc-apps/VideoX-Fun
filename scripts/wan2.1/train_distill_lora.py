@@ -53,7 +53,7 @@ from PIL import Image
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
     ShardedStateDictConfig)
-from torch.utils.data import Dataset, RandomSampler
+from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -69,7 +69,7 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler, BatchSampler,
+                             AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, TextDataset, get_closest_ratio,
                              get_random_mask)

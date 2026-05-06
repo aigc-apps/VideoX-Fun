@@ -53,7 +53,7 @@ from PIL import Image
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
     ShardedStateDictConfig)
-from torch.utils.data import Dataset, RandomSampler
+from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -69,7 +69,7 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler, BatchSampler,
+                             AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, TextDataset, get_closest_ratio,
                              get_random_mask)
@@ -740,7 +740,9 @@ def parse_args():
         type=str,
         default="low",
         help=(
-            'The format of training data. Support `"low"` and `"high"`'
+            'The training boundary type for dual-Transformer architecture. '
+            'Support `"low"` (train low-noise model), `"high"` (train high-noise model), '
+            'and `"full"` (single model training like TI2V-5B).'
         ),
     )
     parser.add_argument(
@@ -748,8 +750,8 @@ def parse_args():
         type=str,
         default="normal",
         help=(
-            'The format of training data. Support `"normal"`'
-            ' (default), `"i2v"`.'
+            'The training mode. Support `"normal"` (T2V, default), '
+            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
         ),
     )
     parser.add_argument(

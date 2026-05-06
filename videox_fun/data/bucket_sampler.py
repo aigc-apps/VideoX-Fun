@@ -260,9 +260,9 @@ class AspectRatioBatchSampler(BatchSampler):
                         video_dir = os.path.join(self.video_folder, f"{videoid}.mp4")
                     cap = cv2.VideoCapture(video_dir)
 
-                    # 获取视频尺寸
-                    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # 浮点数转换为整数
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 浮点数转换为整数
+                    # Get video dimensions
+                    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # Convert float to integer
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Convert float to integer
                     
                     ratio = height / width # self.dataset[idx]
                 else:
@@ -332,11 +332,19 @@ class AspectRatioBatchImageVideoSampler(BatchSampler):
 
                     width, height = image_dict.get("width", None), image_dict.get("height", None)
                     if width is None or height is None:
-                        image_id, name = image_dict['file_path'], image_dict['text']
-                        if self.train_folder is None:
-                            image_dir = image_id
+                        image_id = image_dict['file_path']
+                        # Handle multiview: file_path can be list or str
+                        if isinstance(image_id, list):
+                            image_dir = image_id[0]
                         else:
-                            image_dir = os.path.join(self.train_folder, image_id)
+                            image_dir = image_id
+                        
+                        if self.train_folder is None:
+                            pass  # image_dir is already absolute path
+                        elif isinstance(self.train_folder, list):
+                            pass  # train_folder is list, use image_dir directly
+                        else:
+                            image_dir = os.path.join(self.train_folder, image_dir)
 
                         width, height = get_image_size_without_loading(image_dir)
 
@@ -364,16 +372,24 @@ class AspectRatioBatchImageVideoSampler(BatchSampler):
                     width, height = video_dict.get("width", None), video_dict.get("height", None)
 
                     if width is None or height is None:
-                        video_id, name = video_dict['file_path'], video_dict['text']
-                        if self.train_folder is None:
-                            video_dir = video_id
+                        video_id = video_dict['file_path']
+                        # Handle multiview: file_path can be list or str
+                        if isinstance(video_id, list):
+                            video_dir = video_id[0]  # Use first view for aspect ratio
                         else:
-                            video_dir = os.path.join(self.train_folder, video_id)
+                            video_dir = video_id
+                        
+                        if self.train_folder is None:
+                            pass  # video_dir is already absolute path
+                        elif isinstance(self.train_folder, list):
+                            pass  # train_folder is list, use video_dir directly
+                        else:
+                            video_dir = os.path.join(self.train_folder, video_dir)
                         cap = cv2.VideoCapture(video_dir)
 
-                        # 获取视频尺寸
-                        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # 浮点数转换为整数
-                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 浮点数转换为整数
+                        # Get video dimensions
+                        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # Convert float to integer
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Convert float to integer
                         
                         ratio = height / width # self.dataset[idx]
                     else:
