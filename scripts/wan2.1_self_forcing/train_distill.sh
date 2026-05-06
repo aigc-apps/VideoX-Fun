@@ -14,6 +14,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
+  --fix_sample_size 480 832 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
