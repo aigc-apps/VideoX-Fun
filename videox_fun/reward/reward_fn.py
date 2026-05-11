@@ -208,6 +208,7 @@ class PickScoreReward(BaseReward):
     def __init__(
         self,
         model_path="yuvalkirstain/PickScore_v1",
+        processor_name_or_path="laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         device="cpu",
         dtype=torch.float16,
         max_reward=1,
@@ -226,7 +227,7 @@ class PickScoreReward(BaseReward):
             transforms.CenterCrop(224),
             transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]),
         ])
-        self.processor = AutoProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", torch_dtype=self.dtype)
+        self.processor = AutoProcessor.from_pretrained(processor_name_or_path, torch_dtype=self.dtype)
         self.model = AutoModel.from_pretrained(model_path, torch_dtype=self.dtype).eval().to(device)
         self.model.requires_grad_(False)
         self.model.eval()
@@ -274,6 +275,7 @@ class MPSReward(BaseReward):
     def __init__(
         self,
         model_path=None,
+        processor_name_or_path="laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         device="cpu",
         dtype=torch.float16,
         max_reward=1,
@@ -290,7 +292,7 @@ class MPSReward(BaseReward):
         self.max_reward = max_reward
         self.loss_scale = loss_scale
 
-        processor_name_or_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        processor_name_or_path = processor_name_or_path
         self.transform = transforms.Compose([
             transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]),
@@ -371,8 +373,8 @@ class HPSv3Reward(BaseReward):
     """
     def __init__(
         self,
-        config_path=None,
         checkpoint_path=None,
+        model_name_or_path=None,
         device="cpu",
         dtype=torch.float16,
         max_reward=1,
@@ -380,7 +382,6 @@ class HPSv3Reward(BaseReward):
     ):
         from .hpsv3_predictor import HPSv3RewardInferencer
 
-        self.config_path = config_path
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.dtype = dtype
@@ -390,6 +391,7 @@ class HPSv3Reward(BaseReward):
         self.inferencer = HPSv3RewardInferencer(
             checkpoint_path=self.checkpoint_path,
             device=self.device,
+            model_name_or_path=model_name_or_path,
         )
 
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -430,6 +432,7 @@ class VideoAlignReward(BaseReward):
     def __init__(
         self,
         model_path=None,
+        model_name_or_path=None,
         device="cpu",
         dtype=torch.float16,
         max_reward=1,
@@ -447,7 +450,12 @@ class VideoAlignReward(BaseReward):
         self.dtype = dtype
         self.max_reward = max_reward
         self.loss_scale = loss_scale
-        self.reward_dim = reward_dim  # "VQ", "MQ", "TA", or "Overall"
+        # Which dimension to extract as the scalar reward.
+        #   - "VQ"     : Visual Quality (clearness, resolution, brightness, color)
+        #   - "MQ"     : Motion Quality (consistency, smoothness, completeness)
+        #   - "TA"     : Text-to-Video Alignment (prompt-content & motion match)
+        #   - "Overall": Overall Performance = VQ + MQ + TA (sum of the three)
+        self.reward_dim = reward_dim  
         self.fps = fps
         self.num_frames = num_frames
         self.use_norm = use_norm
@@ -457,6 +465,7 @@ class VideoAlignReward(BaseReward):
             load_from_pretrained=self.model_path,
             device=self.device,
             dtype=self.dtype,
+            model_name_or_path=model_name_or_path,
         )
 
     def _save_frames_to_temp_video(self, frames: torch.Tensor, fps: float = 8.0) -> str:

@@ -672,7 +672,7 @@ class HPSv3RewardInferencer:
         >>> print(rewards[0][0].item())  # Mean reward for first image
     """
     
-    def __init__(self, checkpoint_path=None, device='cuda', dtype=torch.bfloat16):
+    def __init__(self, checkpoint_path=None, device='cuda', dtype=torch.bfloat16, model_name_or_path=None):
         if checkpoint_path is None:
             checkpoint_path = huggingface_hub.hf_hub_download(
                 "MizzenAI/HPSv3", 'HPSv3.safetensors', repo_type='model'
@@ -680,6 +680,10 @@ class HPSv3RewardInferencer:
 
         # Get default config
         data_config, training_args, model_config, peft_lora_config = get_default_config()
+        
+        # Override base model path if provided
+        if model_name_or_path is not None:
+            model_config.model_name_or_path = model_name_or_path
         
         # Override dtype
         if dtype == torch.bfloat16:

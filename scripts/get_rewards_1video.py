@@ -13,24 +13,54 @@
 #          --reward_fn AestheticReward \
 #          --reward_fn_kwargs '{"version": "v2.5"}' \
 #          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override encoder and predictor paths
+#      # --reward_fn_kwargs '{"version": "v2.5", "encoder_path": "models/Personalized_Model/CLIP-ViT-H-14-laion2B-s32B-b79K-ViT-H-14-laion2B-s32B-b79K", "predictor_path": "models/Personalized_Model/predictor"}'
 #
-#   2) HPSv3Reward
+#   2) HPSReward
 #      python scripts/get_rewards_1video.py \
-#          --reward_fn HPSv3Reward \
-#          --reward_fn_kwargs '{"checkpoint_path": "models/Diffusion_Transformer/HPSv3/HPSv3.safetensors"}' \
+#          --reward_fn HPSReward \
+#          --reward_fn_kwargs '{"version": "v2.1"}' \
 #          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override model checkpoint path
+#      # --reward_fn_kwargs '{"version": "v2.1", "model_path": "models/Personalized_Model/HPS_v2.1_compressed.pt"}'
 #
-#   3) MPSReward
+#   3) PickScoreReward
+#      python scripts/get_rewards_1video.py \
+#          --reward_fn PickScoreReward \
+#          --reward_fn_kwargs '{}' \
+#          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override model and processor paths
+#      # --reward_fn_kwargs '{"model_path": "models/Personalized_Model/PickScore_v1", "processor_name_or_path": "models/Personalized_Model/CLIP-ViT-H-14-laion2B-s32B-b79K-processor"}'
+#
+#   4) MPSReward
 #      python scripts/get_rewards_1video.py \
 #          --reward_fn MPSReward \
 #          --reward_fn_kwargs '{}' \
 #          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override model and processor paths simultaneously
+#      # --reward_fn_kwargs '{"model_path": "models/Personalized_Model/MPS_overall.pth", "processor_name_or_path": "models/Personalized_Model/CLIP-ViT-H-14-laion2B-s32B-b79K-processor"}'
 #
-#   4) VideoAlignReward
+#   5) HPSv3Reward
+#      python scripts/get_rewards_1video.py \
+#          --reward_fn HPSv3Reward \
+#          --reward_fn_kwargs '{"checkpoint_path": "models/Personalized_Model/HPSv3/HPSv3.safetensors"}' \
+#          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override base model and checkpoint paths simultaneously
+#      # --reward_fn_kwargs '{"checkpoint_path": "models/Personalized_Model/HPSv3/HPSv3.safetensors", "model_name_or_path": "models/Personalized_Model/Qwen2-VL-7B-Instruct"}'
+#
+#   6) VideoAlignReward
 #      python scripts/get_rewards_1video.py \
 #          --reward_fn VideoAlignReward \
-#          --reward_fn_kwargs '{"model_path": "models/Diffusion_Transformer/VideoReward/", "fps": 16, "reward_dim": "Overall"}' \
+#          --reward_fn_kwargs '{"model_path": "models/Personalized_Model/VideoReward/", "fps": 16, "reward_dim": "Overall"}' \
 #          --video_path asset/1.mp4 --prompts "1girl"
+#      # Optional: override checkpoint dir and base model path simultaneously
+#      # --reward_fn_kwargs '{"model_path": "models/Personalized_Model/VideoReward/", "model_name_or_path": "models/Personalized_Model/Qwen2-VL-2B-Instruct", "fps": 16, "reward_dim": "Overall"}'
+#      #
+#      # reward_dim options:
+#      #   - "VQ"     : Visual Quality (clearness, resolution, brightness, color)
+#      #   - "MQ"     : Motion Quality (consistency, smoothness, completeness)
+#      #   - "TA"     : Text-to-Video Alignment (prompt-content & motion match)
+#      #   - "Overall": Overall Performance = VQ + MQ + TA (sum of the three)
 #
 # Notes:
 #   * --num_sampled_frames defaults to -1, meaning ALL frames are fed to the
@@ -100,7 +130,7 @@ def parse_args():
     parser.add_argument(
         "--dtype",
         type=str,
-        default="float16",
+        default="bfloat16",
         choices=["float16", "bfloat16", "float32"],
         help="Torch dtype for the reward model and input tensors.",
     )
@@ -189,7 +219,6 @@ def main():
     reward_model_cls = getattr(reward_fn, args.reward_fn)
     print(f"Loading reward model: {args.reward_fn} with kwargs {reward_fn_kwargs}")
     reward_model = reward_model_cls(**reward_fn_kwargs)
-    reward_model.eval()
 
     # Process one video at a time to minimize VRAM usage
     batch_size = 1
@@ -218,16 +247,6 @@ def main():
     avg_loss = total_loss / len(pairs)
     avg_reward = total_reward / len(pairs)
 
-    print("\n" + "=" * 60)
-    print(f"Reward Model : {args.reward_fn}")
-    print(f"Num Videos   : {len(pairs)}")
-    print(f"Num Frames   : {args.num_sampled_frames}")
-    print(f"Device       : {args.device}")
-    print(f"Dtype        : {args.dtype}")
-    print("-" * 60)
-    print(f"Average Loss   : {avg_loss:.6f}")
-    print(f"Average Reward : {avg_reward:.6f}")
-    print("-" * 60)
     print("Per-sample rewards:")
     for idx, (vp, prompt) in enumerate(pairs):
         print(f"  [{idx}] Reward: {all_per_sample_rewards[idx].item():.6f} | Video: {vp} | Prompt: {prompt}")

@@ -928,11 +928,13 @@ def load_configs_from_json(config_path):
 
 
 class VideoVLMRewardInference:
-    def __init__(self, load_from_pretrained, load_from_pretrained_step=-1, device='cuda', dtype=torch.bfloat16):
+    def __init__(self, load_from_pretrained, load_from_pretrained_step=-1, device='cuda', dtype=torch.bfloat16, model_name_or_path=None):
         config_path = os.path.join(load_from_pretrained, "model_config.json")
         data_config, _, model_config, peft_lora_config, inference_config = load_configs_from_json(config_path)
         data_config = DataConfig(**data_config)
         model_config = ModelConfig(**model_config)
+        if model_name_or_path is not None:
+            model_config.model_name_or_path = model_name_or_path
         peft_lora_config = PEFTLoraConfig(**peft_lora_config)
 
         training_args = TrainingConfig(
