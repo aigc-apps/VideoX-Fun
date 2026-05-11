@@ -450,12 +450,11 @@ class VideoAlignReward(BaseReward):
         self.dtype = dtype
         self.max_reward = max_reward
         self.loss_scale = loss_scale
-        # Which dimension to extract as the scalar reward.
+        self.reward_dim = reward_dim  # Which dimension to extract as the scalar reward.
         #   - "VQ"     : Visual Quality (clearness, resolution, brightness, color)
         #   - "MQ"     : Motion Quality (consistency, smoothness, completeness)
         #   - "TA"     : Text-to-Video Alignment (prompt-content & motion match)
         #   - "Overall": Overall Performance = VQ + MQ + TA (sum of the three)
-        self.reward_dim = reward_dim  
         self.fps = fps
         self.num_frames = num_frames
         self.use_norm = use_norm
