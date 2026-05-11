@@ -266,7 +266,7 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--video_sample_stride` | Video sampling stride | 2 |
 | `--video_sample_n_frames` | Number of video frames to sample | 81 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (effectively increases batch size) | 1 |
-| `--dataloader_num_workers` | Number of DataLoader subprocesses | 8 |
+| `--dataloader_num_workers` | Number of DataLoader worker processes | 8 |
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (recommended for LoRA) | 1e-04 |
@@ -285,7 +285,7 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
 | `--uniform_sampling` | Uniform timestep sampling (recommended) | - |
 | `--low_vram` | Low VRAM mode for memory efficiency | - |
-| `--boundary_type` | Wan2.2 dual-Transformer boundary type: `low` (train low noise model), `high` (train high noise model), `full` (train single model like TI2V-5B) | `low` |
+| `--boundary_type` | Wan2.2 dual-Transformer boundary type: `low` (train low-noise model), `high` (train high-noise model), `full` (train single model like TI2V-5B) | `low` |
 | `--train_mode` | Training mode: `control` (pure Control), `control_ref` (Control + reference image), `control_camera_ref` (Control + camera + reference image) | `control_ref` |
 | `--control_ref_image` | Reference image source: `first_frame` (first frame), `random` (random frame) | `random` |
 | `--add_full_ref_image_in_self_attention` | Inject full reference image information into self-attention | - |
@@ -300,8 +300,8 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validating video generation | `"A brown dog shaking head..."` |
 | `--validation_paths` | Control video paths for Control validation | `"asset/pose.mp4"` |
-| `--use_deepspeed` | Enable DeepSpeed for distributed training | - |
-| `--use_fsdp` | Enable FSDP for distributed training | - |
+| `--use_deepspeed` | Enable DeepSpeed distributed training | - |
+| `--use_fsdp` | Enable FSDP distributed training | - |
 | `--use_8bit_adam` | Use 8-bit Adam optimizer to save memory | - |
 | `--use_came` | Use CAME optimizer | - |
 | `--multi_stream` | Use CUDA multi-stream for performance | - |

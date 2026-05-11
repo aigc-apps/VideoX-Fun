@@ -7,29 +7,39 @@ This document provides a complete workflow for Wan2.2 VACE Fun (Video Generation
 ---
 
 ## Table of Contents
-- [Environment Setup](#environment-setup)
-- [Data Preparation](#data-preparation)
-  - [Quick Test Dataset](#quick-test-dataset)
-  - [Dataset Structure](#dataset-structure)
-  - [metadata.json Format](#metadatajson-format)
-  - [Relative vs Absolute Path Usage](#relative-vs-absolute-path-usage)
-- [VACE Module Training](#vace-module-training)
-  - [Download Pre-trained Model](#download-pre-trained-model)
-  - [Quick Start (DeepSpeed-Zero-2)](#quick-start-deepspeed-zero-2)
-  - [VACE-specific Parameter Reference](#vace-specific-parameter-reference)
-  - [Training Validation](#training-validation)
-  - [Training with FSDP](#training-with-fsdp)
-  - [Other Backends](#other-backends)
-  - [Multi-node Distributed Training](#multi-node-distributed-training)
-- [Inference Testing](#inference-testing)
-  - [Inference Parameter Reference](#inference-parameter-reference)
-  - [VACE Video Generation Inference](#vace-video-generation-inference)
-  - [Multi-GPU Parallel Inference](#multi-gpu-parallel-inference)
-- [More Resources](#more-resources)
+- [1. Environment Setup](#1-environment-setup)
+- [2. Data Preparation](#2-data-preparation)
+  - [2.1 Quick Test Dataset](#21-quick-test-dataset)
+  - [2.2 Dataset Structure](#22-dataset-structure)
+  - [2.3 metadata.json Format](#23-metadatajson-format)
+  - [2.4 Relative vs Absolute Path Usage](#24-relative-vs-absolute-path-usage)
+- [3. VACE Module Training](#3-vace-module-training)
+  - [3.1 Download Pre-trained Model](#31-download-pre-trained-model)
+  - [3.2 Quick Start (DeepSpeed-Zero-2)](#32-quick-start-deepspeed-zero-2)
+  - [3.3 VACE-specific Parameter Reference](#33-vace-specific-parameter-reference)
+  - [3.4 Training Validation](#34-training-validation)
+  - [3.5 Training with FSDP](#35-training-with-fsdp)
+  - [3.6 Other Backends](#36-other-backends)
+    - [3.6.1 Training with DeepSpeed-Zero-3](#361-training-with-deepspeed-zero-3)
+    - [3.6.2 Training without DeepSpeed or FSDP](#362-training-without-deepspeed-or-fsdp)
+  - [3.7 Multi-node Distributed Training](#37-multi-node-distributed-training)
+    - [3.7.1 Environment Configuration](#371-environment-configuration)
+    - [3.7.2 Multi-node Training Notes](#372-multi-node-training-notes)
+- [4. Inference Testing](#4-inference-testing)
+  - [4.1 Inference Parameter Reference](#41-inference-parameter-reference)
+  - [4.2 VACE Video Generation Inference](#42-vace-video-generation-inference)
+    - [4.2.1 Inference Script Selection](#421-inference-script-selection)
+    - [4.2.2 I2V Inference (Image-to-Video)](#422-i2v-inference-image-to-video)
+    - [4.2.3 S2V Inference (Subject Reference Video Generation)](#423-s2v-inference-subject-reference-video-generation)
+    - [4.2.4 V2V Control Inference (Controllable Video Generation)](#424-v2v-control-inference-controllable-video-generation)
+    - [4.2.5 V2V Control + Ref Inference (Control + Reference Image)](#425-v2v-control--ref-inference-control--reference-image)
+    - [4.2.6 V2V Mask Inference (Video Inpainting)](#426-v2v-mask-inference-video-inpainting)
+  - [4.3 Multi-GPU Parallel Inference](#43-multi-gpu-parallel-inference)
+- [5. More Resources](#5-more-resources)
 
 ---
 
-## Environment Setup
+## 1. Environment Setup
 
 **Option 1: Using requirements.txt**
 
@@ -62,9 +72,9 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ---
 
-## Data Preparation
+## 2. Data Preparation
 
-### Quick Test Dataset
+### 2.1 Quick Test Dataset
 
 We provide a test dataset with control signals and subject reference images containing some training data.
 
@@ -78,7 +88,7 @@ After downloading, the dataset contains the following metadata files:
 - `metadata_add_width_height.json`: With width/height info (recommended for V2V Control training)
 - `metadata_add_width_height_add_objects.json`: With width/height + subject reference images (recommended for S2V training)
 
-### Dataset Structure
+### 2.2 Dataset Structure
 
 VACE training datasets require original videos with corresponding control signal videos (e.g., canny edge videos, pose videos, depth videos, etc.). For S2V (Subject Reference Video Generation) training, subject reference images are also needed.
 
@@ -109,7 +119,7 @@ VACE training datasets require original videos with corresponding control signal
 > - `object/` directory stores subject reference images (optional). Each video has a subdirectory containing its subject reference images
 > - Control signal directory name is customizable, as long as `control_file_path` in `metadata.json` correctly points to it
 
-### metadata.json Format
+### 2.3 metadata.json Format
 
 **Basic format** (control videos only):
 ```json
@@ -187,7 +197,7 @@ VACE training datasets require original videos with corresponding control signal
   - Use `scripts/process_json_add_width_and_height.py` to extract width and height for JSON files without these fields, supporting both images and videos.
   - Usage: `python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Controls-Demo/metadata.json --output_file datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json`.
 
-### Relative vs Absolute Path Usage
+### 2.4 Relative vs Absolute Path Usage
 
 **Relative paths**:
 
@@ -211,9 +221,9 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 
 ---
 
-## VACE Module Training
+## 3. VACE Module Training
 
-### Download Pre-trained Model
+### 3.1 Download Pre-trained Model
 
 ```bash
 # Create model directory
@@ -223,7 +233,7 @@ mkdir -p models/Diffusion_Transformer
 modelscope download --model PAI/Wan2.2-VACE-Fun-A14B --local_dir models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B
 ```
 
-### Quick Start (DeepSpeed-Zero-2)
+### 3.2 Quick Start (DeepSpeed-Zero-2)
 
 If you have downloaded data from **Quick Test Dataset** and weights from **Download Pre-trained Model**, you can directly copy the quick start command to launch training.
 
@@ -277,7 +287,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --low_vram
 ```
 
-### VACE-specific Parameter Reference
+### 3.3 VACE-specific Parameter Reference
 
 **Wan2.2 Dual-Transformer Architecture**:
 
@@ -318,8 +328,8 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--adam_epsilon` | AdamW epsilon value | 1e-10 |
 | `--vae_mini_batch` | VAE encoding mini batch size | 1 |
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |
-| `--enable_bucket` | Enable bucket training | - |
-| `--random_hw_adapt` | Auto-scale images/videos to random sizes | - |
+| `--enable_bucket` | Enable bucket training, no cropping of images/videos, train by resolution grouping | - |
+| `--random_hw_adapt` | Auto-scale images/videos to random sizes within `[min_size, max_size]` range | - |
 | `--training_with_video_token_length` | Train by token length for arbitrary resolution | - |
 | `--uniform_sampling` | Uniform timestep sampling (recommended) | - |
 | `--low_vram` | Low VRAM mode for better memory efficiency | - |
@@ -332,15 +342,8 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | `--validation_epochs` | Validate every N epochs | 5 |
 | `--validation_prompts` | Validation prompts | `"A brown dog shaking its head..."` |
 | `--validation_paths` | Validation control video paths | `"asset/pose.mp4"` |
-| `--use_deepspeed` | Enable DeepSpeed distributed training | - |
-| `--use_fsdp` | Enable FSDP distributed training | - |
 | `--use_8bit_adam` | Use 8-bit Adam optimizer to save memory | - |
 | `--use_came` | Use CAME optimizer | - |
-| `--multi_stream` | Use CUDA multi-stream for performance | - |
-| `--snr_loss` | Use SNR loss function | - |
-| `--weighting_scheme` | Timestep weighting: `sigma_sqrt`, `logit_normal`, `mode`, `cosmap`, `none` | `none` |
-| `--motion_sub_loss` | Enable motion sub-loss for temporal consistency | - |
-| `--motion_sub_loss_ratio` | Motion sub-loss ratio | 0.25 |
 
 **Sample Size Configuration Guide**:
 - `video_sample_size` represents the video resolution; when `random_hw_adapt` is True, it represents the minimum resolution for both video and images.
@@ -360,7 +363,7 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
   - At 1024x1024 resolution, video frames = 9 (~= 512 * 512 * 49 / 1024 / 1024).
   - These resolution-frame combinations enable generating videos of different sizes.
 
-### Training Validation
+### 3.4 Training Validation
 
 You can configure validation parameters to periodically generate test videos during training to monitor training progress and model quality.
 
@@ -388,7 +391,7 @@ You can configure validation parameters to periodically generate test videos dur
 - Wan2.2 VACE Fun validation automatically selects single or dual Transformer based on `boundary_type`
 - `validation_paths` should correspond one-to-one with `validation_prompts`, pointing to control video files
 
-### Training with FSDP
+### 3.5 Training with FSDP
 
 **If DeepSpeed-Zero-2 runs out of memory on multi-GPU setups**, switch to FSDP for training.
 
@@ -401,7 +404,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width
 # export NCCL_P2P_DISABLE=1
 export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2_vace_fun/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=VaceWanAttentionBlock,BaseWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.2_vace_fun/train.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -440,9 +443,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 > **Note**: In this repository, FSDP is more stable and has fewer errors than DeepSpeed-Zero-3. When DeepSpeed-Zero-2 encounters memory issues on multi-GPU, please use FSDP.
 
-### Other Backends
+### 3.6 Other Backends
 
-#### Training with DeepSpeed-Zero-3
+#### 3.6.1 Training with DeepSpeed-Zero-3
 
 DeepSpeed Zero-3 is currently not strongly recommended. In this repository, FSDP has fewer errors and is more stable.
 
@@ -498,7 +501,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --low_vram
 ```
 
-#### Training without DeepSpeed or FSDP
+#### 3.6.2 Training without DeepSpeed or FSDP
 
 **This approach is not recommended as it lacks memory-saving backends and can easily cause out-of-memory issues**. The training shell below is provided for reference only.
 
@@ -550,11 +553,11 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_vace_fun/train.py \
 
 > **Note**: This is similar to the `train.sh` script but uses the correct dataset path. The `train.sh` script can be used as a starting point for single-GPU training.
 
-### Multi-node Distributed Training
+### 3.7 Multi-node Distributed Training
 
 **Suitable for**: Ultra-large datasets, faster training speed
 
-#### Environment Configuration
+#### 3.7.1 Environment Configuration
 
 Assuming 2 machines, each with 8 GPUs:
 
@@ -628,7 +631,7 @@ export NCCL_DEBUG=INFO
 # Use the same accelerate launch command as Machine 0
 ```
 
-#### Multi-node Training Notes
+#### 3.7.2 Multi-node Training Notes
 
 - **Network Requirements**:
    - RDMA/InfiniBand recommended (high performance)
@@ -642,9 +645,9 @@ export NCCL_DEBUG=INFO
 
 ---
 
-## Inference Testing
+## 4. Inference Testing
 
-### Inference Parameter Reference
+### 4.1 Inference Parameter Reference
 
 **Key Parameters**:
 
@@ -690,9 +693,9 @@ export NCCL_DEBUG=INFO
 | `model_group_offload` | Layer groups switch between CPU/CUDA | Low |
 | `sequential_cpu_offload` | Layer-by-layer offload (slowest) | Lowest |
 
-### VACE Video Generation Inference
+### 4.2 VACE Video Generation Inference
 
-#### Inference Script Selection
+#### 4.2.1 Inference Script Selection
 
 Wan2.2 VACE Fun provides multiple inference scripts. Choose based on your task:
 
@@ -708,7 +711,7 @@ Wan2.2 VACE Fun provides multiple inference scripts. Choose based on your task:
 > - A14B models use dual-Transformer architecture (low-noise + high-noise models), requiring both `transformer_path` and `transformer_high_path`
 > - `predict_v2v_control_ref.py` supports Control + Reference Image for better generation quality
 
-#### I2V Inference (Image-to-Video)
+#### 4.2.2 I2V Inference (Image-to-Video)
 
 Run single-GPU inference:
 
@@ -738,7 +741,7 @@ prompt = "A brown dog licks its tongue, sitting on a light-colored sofa in a coz
 
 > **Note**: Wan2.2 VACE Fun I2V inference requires a `start_image`. The model generates video based on the input image.
 
-#### S2V Inference (Subject Reference Video Generation)
+#### 4.2.3 S2V Inference (Subject Reference Video Generation)
 
 ```bash
 python examples/wan2.2_vace_fun/predict_s2v.py
@@ -766,7 +769,7 @@ prompt = "The sea breeze composes, waves beat time. She holds a bright yellow ca
 
 > **Note**: S2V inference uses `subject_ref_images` to provide subject reference images. The model generates videos that maintain subject consistency. `vace_context_scale` controls the strength of subject reference.
 
-#### V2V Control Inference (Controllable Video Generation)
+#### 4.2.4 V2V Control Inference (Controllable Video Generation)
 
 Run single-GPU inference:
 
@@ -796,7 +799,7 @@ prompt = "A young woman stands on a sunny coastline, wearing a refreshing white 
 # ...
 ```
 
-#### V2V Control + Ref Inference (Control + Reference Image)
+#### 4.2.5 V2V Control + Ref Inference (Control + Reference Image)
 
 ```bash
 python examples/wan2.2_vace_fun/predict_v2v_control_ref.py
@@ -826,7 +829,7 @@ prompt = "A young woman stands on a sunny coastline, wearing a refreshing white 
 
 > **Note**: V2V Control + Ref leverages both control signal videos and reference images for more precise controllable video generation.
 
-#### V2V Mask Inference (Video Inpainting)
+#### 4.2.6 V2V Mask Inference (Video Inpainting)
 
 ```bash
 python examples/wan2.2_vace_fun/predict_v2v_mask.py
@@ -858,7 +861,7 @@ prompt = "A brown rabbit licks its tongue, sitting on a light-colored sofa in a 
 
 > **Note**: V2V Mask inference uses `inpaint_video` and `inpaint_video_mask` for video local inpainting. White regions in the mask video indicate areas to be inpainted.
 
-### Multi-GPU Parallel Inference
+### 4.3 Multi-GPU Parallel Inference
 
 **Suitable for**: High-resolution generation, faster inference
 
@@ -900,6 +903,6 @@ torchrun --nproc-per-node=2 examples/wan2.2_vace_fun/predict_v2v_control_ref.py
 
 ---
 
-## More Resources
+## 5. More Resources
 
 - **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun

@@ -201,7 +201,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
-  --train_batch_size=4 \
+  --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
@@ -209,7 +209,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --checkpointing_steps=50 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=50 \
+  --lr_warmup_steps=100 \
   --seed=43 \
   --output_dir="output_dir_cog_control" \
   --gradient_checkpointing \
@@ -332,7 +332,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
-  --train_batch_size=4 \
+  --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
@@ -340,7 +340,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --checkpointing_steps=50 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=50 \
+  --lr_warmup_steps=100 \
   --seed=43 \
   --output_dir="output_dir_cog_control" \
   --gradient_checkpointing \
@@ -377,7 +377,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.p
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
-  --train_batch_size=4 \
+  --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
@@ -385,7 +385,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_control.p
   --checkpointing_steps=50 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=50 \
+  --lr_warmup_steps=100 \
   --seed=43 \
   --output_dir="output_dir_cog_control" \
   --gradient_checkpointing \
@@ -432,7 +432,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
-  --train_batch_size=4 \
+  --train_batch_size=1 \
   --video_repeat=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
@@ -440,7 +440,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --checkpointing_steps=50 \
   --learning_rate=2e-05 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=50 \
+  --lr_warmup_steps=100 \
   --seed=43 \
   --output_dir="output_dir_cog_control" \
   --gradient_checkpointing \

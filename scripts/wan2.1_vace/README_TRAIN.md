@@ -129,7 +129,7 @@ VACE training datasets require both original videos and corresponding control si
 ]
 ```
 
-**Format with width/height** (corresponds to `metadata_add_width_height.json`):
+**Format with width/height** (recommended, corresponds to `metadata_add_width_height.json`):
 ```json
 [
   {
@@ -183,31 +183,31 @@ VACE training datasets require both original videos and corresponding control si
 - `type`: Data type, fixed as `"video"`
 - `control_file_path`: Control signal video path (relative or absolute, **required for VACE training**)
 - `object_file_path`: Subject reference image path list (optional, for S2V subject reference training). Each element is a path to a subject reference image; the order is randomly shuffled during training
-- `width` / `height`: Video resolution (**recommended to provide**, used for bucket training; if omitted, they will be read automatically during training, which may slow down training when data is on slow storage like OSS)
-  - Use `scripts/process_json_add_width_and_height.py` to extract width and height for JSON files without these fields. It supports both images and videos.
-  - Usage: `python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Controls-Demo/metadata.json --output_file datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json`
+- `width` / `height`: Video dimensions (**recommended to provide**, used for bucket training. If not provided, they will be read automatically during training, which may affect training speed when data is stored on slower systems like OSS).
+  - Use `scripts/process_json_add_width_and_height.py` to extract width and height for JSON files without these fields, supporting both images and videos.
+  - Usage: `python scripts/process_json_add_width_and_height.py --input_file datasets/X-Fun-Videos-Controls-Demo/metadata.json --output_file datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json`.
 
 ### 2.4 Relative vs Absolute Path Usage
 
-**Relative Path**:
+**Relative paths**:
 
-If your data uses relative paths, set in the training script:
+If data paths are relative, set in the training script:
 
 ```bash
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 ```
 
-**Absolute Path**:
+**Absolute paths**:
 
-If your data uses absolute paths, set in the training script:
+If data paths are absolute, set in the training script:
 
 ```bash
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-> 💡 **Recommendation**: Use relative paths for small local datasets; use absolute paths for external storage (NAS, OSS) or shared multi-machine storage.
+> 💡 **Recommendation**: Use relative paths for small local datasets; use absolute paths for external storage (NAS, OSS) or shared storage across multiple machines.
 
 ---
 
@@ -228,9 +228,9 @@ modelscope download --model Wan-AI/Wan2.1-VACE-1.3B --local_dir models/Diffusion
 
 ### 3.2 Quick Start (DeepSpeed-Zero-2)
 
-After downloading the dataset as in **2.1** and the pretrained model as in **3.1**, you can directly copy and run the quick start command.
+If you have downloaded data from **Quick Test Dataset** and weights from **Download Pretrained Model**, you can directly copy the quick start command to launch training.
 
-We recommend using DeepSpeed-Zero-2 or FSDP for training. Here we use DeepSpeed-Zero-2 as an example.
+We recommend training with DeepSpeed-Zero-2 and FSDP. Here is an example shell configuration using DeepSpeed-Zero-2.
 
 **Wan2.1 VACE Training Example (DeepSpeed-Zero-2)**:
 
@@ -312,7 +312,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--adam_epsilon` | AdamW epsilon | 1e-10 |
 | `--vae_mini_batch` | Mini-batch size for VAE encoding | 1 |
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |
-| `--enable_bucket` | Enable bucket training without cropping | - |
+| `--enable_bucket` | Enable bucket training, no cropping of images/videos, train by resolution grouping | - |
 | `--random_hw_adapt` | Randomly scale images/videos to random sizes in `[min_size, max_size]` | - |
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
 | `--uniform_sampling` | Uniform timestep sampling (recommended) | - |
@@ -324,16 +324,9 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_steps` | Run validation every N steps | 2000 |
 | `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validation video generation | `"A brown dog shaking its head..."` |
-| `--validation_paths` | Control video path for validation | `"asset/pose.mp4"` |
-| `--use_deepspeed` | Enable DeepSpeed distributed training | - |
-| `--use_fsdp` | Enable FSDP distributed training | - |
+| `--validation_paths` | Control video paths for validation | `"asset/pose.mp4"` |
 | `--use_8bit_adam` | Use 8-bit Adam optimizer to save memory | - |
 | `--use_came` | Use CAME optimizer | - |
-| `--multi_stream` | Use CUDA multi-stream for better performance | - |
-| `--snr_loss` | Use SNR loss | - |
-| `--weighting_scheme` | Timestep weighting scheme | `none` |
-| `--motion_sub_loss` | Enable motion sub-loss for better temporal consistency | - |
-| `--motion_sub_loss_ratio` | Motion sub-loss ratio | 0.25 |
 
 **Sample Size Configuration Guide**:
 - `video_sample_size` represents video resolution; when `random_hw_adapt` is True, it is the minimum resolution.
@@ -348,9 +341,10 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 **Token Length Training Explanation**:
 - When `training_with_video_token_length` is enabled, the model trains based on token length.
 - For example: a 512x512 video with 49 frames has a token length of 13,312, requiring `token_sample_size = 512`.
-  - At 512x512, video frames = 49 (~= 512 * 512 * 49 / 512 / 512)
-  - At 768x768, video frames = 21 (~= 512 * 512 * 49 / 768 / 768)
-  - At 1024x1024, video frames = 9 (~= 512 * 512 * 49 / 1024 / 1024)
+  - At 512x512 resolution, video frames = 49 (~= 512 * 512 * 49 / 512 / 512).
+  - At 768x768 resolution, video frames = 21 (~= 512 * 512 * 49 / 768 / 768).
+  - At 1024x1024 resolution, video frames = 9 (~= 512 * 512 * 49 / 1024 / 1024).
+  - These resolution-frame combinations enable generating videos of different sizes.
 
 ### 3.4 Training Validation
 
@@ -363,9 +357,9 @@ You can configure validation parameters to periodically generate test videos dur
 | `--validation_steps` | Run validation every N steps | 2000 |
 | `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_prompts` | Prompts for validation video generation | None |
-| `--validation_paths` | Control video path for validation | None |
+| `--validation_paths` | Control video paths for validation | None |
 
-**Validation Example** (VACE mode):
+**Validation Example**:
 
 ```bash
   --validation_paths "asset/pose.mp4" \
@@ -376,7 +370,7 @@ You can configure validation parameters to periodically generate test videos dur
 
 **Notes**:
 - Validation videos are saved to the `output_dir/sample` directory
-- Multiple prompts: `--validation_prompts "prompt1" "prompt2" "prompt3"`
+- Multi-prompt format: `--validation_prompts "prompt1" "prompt2" "prompt3"`
 - `validation_paths` should correspond one-to-one with `validation_prompts`, pointing to control video files
 - VACE validation uses `WanVacePipeline` with `guidance_scale=4.5` and `num_inference_steps=25`
 
@@ -393,7 +387,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width
 # export NCCL_P2P_DISABLE=1
 export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_vace/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=VaceWanAttentionBlock,BaseWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_vace/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -626,7 +620,7 @@ export NCCL_DEBUG=INFO
     export NCCL_P2P_DISABLE=1
     ```
 
-- **Data Synchronization**: All machines must access the same data paths (NFS/shared storage)
+- **Data Sync**: All machines must access the same data path (NFS/shared storage)
 
 ---
 
@@ -702,7 +696,7 @@ Single-GPU inference:
 python examples/wan2.1_vace/predict_i2v.py
 ```
 
-Edit `examples/wan2.1_vace/predict_i2v.py`. For initial inference, focus on these parameters:
+Edit `examples/wan2.1_vace/predict_i2v.py`. For first-time inference, focus on the following parameters. For other parameters, see the Inference Parameter Reference above.
 
 ```python
 # Choose based on GPU memory
@@ -713,7 +707,7 @@ model_name = "models/Diffusion_Transformer/Wan2.1-VACE-1.3B"
 transformer_path = None
 # Starting image path
 start_image = "asset/1.png"
-# Write based on desired content
+# Write according to generation content
 prompt = "A young woman standing on a sunny coastline, wearing a dark blue vest and a crisp white shirt..."
 # ...
 ```
@@ -735,12 +729,12 @@ model_name = "models/Diffusion_Transformer/Wan2.1-VACE-1.3B"
 transformer_path = None
 # Subject reference image list
 subject_ref_images = ["asset/ref_1.png", "asset/ref_2.png"]
-# Write based on desired content
+# Write according to generation content
 prompt = "Warm sunlight spreads over the grass, a little girl with pigtails and a green bow..."
 # ...
 ```
 
-> **Note**: S2V task uses `subject_ref_images` as subject references. The model generates a video containing the specified subject.
+> **Note**: S2V task uses `subject_ref_images` to provide subject reference images. The model generates a video containing the specified subject.
 
 #### 4.2.4 V2V Control Inference (Controllable Video)
 
@@ -757,7 +751,7 @@ model_name = "models/Diffusion_Transformer/Wan2.1-VACE-1.3B"
 transformer_path = None
 # Control signal video (e.g., pose video)
 control_video = "asset/pose.mp4"
-# Write based on desired content
+# Write according to generation content
 prompt = "A young woman standing on a sunny coastline..."
 # ...
 ```

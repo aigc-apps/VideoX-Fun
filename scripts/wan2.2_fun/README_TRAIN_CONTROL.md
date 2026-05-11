@@ -254,54 +254,54 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
-| `--config_path` | Config file path | `config/wan2.2/wan_civitai_i2v.yaml` |
+| `--config_path` | Configuration file path | `config/wan2.2/wan_civitai_i2v.yaml` |
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Wan2.2-Fun-A14B-Control` |
 | `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Controls-Demo/` |
 | `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json` |
-| `--train_batch_size` | Batch size per step | 1 |
+| `--train_batch_size` | Number of samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution for images | 640 |
 | `--video_sample_size` | Maximum training resolution for videos | 640 |
-| `--token_sample_size` | Token sample size | 640 |
+| `--token_sample_size` | Token sampling size | 640 |
 | `--video_sample_stride` | Video sampling stride | 2 |
 | `--video_sample_n_frames` | Number of video frames to sample | 81 |
-| `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
-| `--dataloader_num_workers` | Number of DataLoader workers | 8 |
+| `--gradient_accumulation_steps` | Gradient accumulation steps (effectively increases batch size) | 1 |
+| `--dataloader_num_workers` | Number of DataLoader worker processes | 8 |
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (recommended for full parameter training) | 2e-05 |
-| `--lr_scheduler` | LR scheduler: `linear`, `cosine`, `cosine_with_restarts`, `polynomial`, `constant`, `constant_with_warmup` | `constant_with_warmup` |
+| `--lr_scheduler` | Learning rate scheduler: `linear`, `cosine`, `cosine_with_restarts`, `polynomial`, `constant`, `constant_with_warmup` | `constant_with_warmup` |
 | `--lr_warmup_steps` | Learning rate warmup steps | 100 |
-| `--seed` | Random seed | 42 |
+| `--seed` | Random seed (for reproducible training) | 42 |
 | `--output_dir` | Output directory | `output_dir_wan2.2_fun_control` |
-| `--gradient_checkpointing` | Enable gradient checkpointing to save memory | - |
+| `--gradient_checkpointing` | Activation recomputation to save memory | - |
 | `--mixed_precision` | Mixed precision: `no`, `fp16`, `bf16` | `bf16` |
 | `--adam_weight_decay` | AdamW weight decay | 3e-2 |
-| `--adam_epsilon` | AdamW epsilon | 1e-10 |
+| `--adam_epsilon` | AdamW epsilon value | 1e-10 |
 | `--vae_mini_batch` | Mini-batch size for VAE encoding | 1 |
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |
-| `--enable_bucket` | Enable bucket training without cropping | - |
-| `--random_hw_adapt` | Randomly scale images/videos to random sizes in `[min_size, max_size]` | - |
+| `--enable_bucket` | Enable bucket training, no cropping, group by resolution | - |
+| `--random_hw_adapt` | Auto-scale images/videos to random sizes within `[min_size, max_size]` | - |
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
 | `--uniform_sampling` | Uniform timestep sampling (recommended) | - |
-| `--low_vram` | Low VRAM mode for better memory efficiency | - |
-| `--boundary_type` | Wan2.2 boundary type: `low`, `high`, `full` | `low` |
-| `--train_mode` | Training mode: `control`, `control_ref`, `control_camera_ref` | `control_ref` |
-| `--control_ref_image` | Reference image source: `first_frame`, `random` | `random` |
-| `--add_full_ref_image_in_self_attention` | Inject full reference image info into self-attention | - |
-| `--add_inpaint_info` | Inject inpainting info into self-attention | - |
+| `--low_vram` | Low VRAM mode for memory efficiency | - |
+| `--boundary_type` | Wan2.2 dual-Transformer boundary type: `low` (train low-noise model), `high` (train high-noise model), `full` (train single model like TI2V-5B) | `low` |
+| `--train_mode` | Training mode: `control` (pure Control), `control_ref` (Control + reference image), `control_camera_ref` (Control + camera + reference image) | `control_ref` |
+| `--control_ref_image` | Reference image source: `first_frame` (first frame), `random` (random frame) | `random` |
+| `--add_full_ref_image_in_self_attention` | Inject full reference image information into self-attention | - |
+| `--add_inpaint_info` | Inject inpaint information into self-attention | - |
 | `--trainable_modules` | Trainable modules (`"."` means all modules) | `"."` |
-| `--resume_from_checkpoint` | Resume training path, use `"latest"` for auto-select | None |
+| `--resume_from_checkpoint` | Resume training path, use `"latest"` to auto-select latest checkpoint | None |
 | `--validation_steps` | Run validation every N steps | 2000 |
 | `--validation_epochs` | Run validation every N epochs | 5 |
-| `--validation_prompts` | Prompts for validation video generation | `"A brown dog shaking its head..."` |
-| `--validation_paths` | Control video path for validation | `"asset/pose.mp4"` |
+| `--validation_prompts` | Prompts for validating video generation | `"A brown dog shaking head..."` |
+| `--validation_paths` | Control video paths for Control validation | `"asset/pose.mp4"` |
 | `--use_deepspeed` | Enable DeepSpeed distributed training | - |
 | `--use_fsdp` | Enable FSDP distributed training | - |
 | `--use_8bit_adam` | Use 8-bit Adam optimizer to save memory | - |
 | `--use_came` | Use CAME optimizer | - |
-| `--multi_stream` | Use CUDA multi-stream for better performance | - |
-| `--snr_loss` | Use SNR loss | - |
-| `--weighting_scheme` | Timestep weighting scheme | `none` |
+| `--multi_stream` | Use CUDA multi-stream for performance | - |
+| `--snr_loss` | Use SNR loss function | - |
+| `--weighting_scheme` | Timestep weighting scheme: `sigma_sqrt`, `logit_normal`, `mode`, `cosmap`, `none` | `none` |
 | `--motion_sub_loss` | Enable motion sub-loss for better temporal consistency | - |
 | `--motion_sub_loss_ratio` | Motion sub-loss ratio | 0.25 |
 

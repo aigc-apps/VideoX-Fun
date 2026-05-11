@@ -325,15 +325,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--validation_epochs` | 每 N 个epoch执行一次验证 | 5 |
 | `--validation_prompts` | 验证视频生成的提示词 | `"一只棕色的狗摇着头..."` |
 | `--validation_paths` | 验证 Control 的控制视频路径 | `"asset/pose.mp4"` |
-| `--use_deepspeed` | 启用 DeepSpeed 分布式训练 | - |
-| `--use_fsdp` | 启用 FSDP 分布式训练 | - |
 | `--use_8bit_adam` | 使用 8-bit Adam 优化器节省显存 | - |
 | `--use_came` | 使用 CAME 优化器 | - |
-| `--multi_stream` | 使用 CUDA 多流提升性能 | - |
-| `--snr_loss` | 使用 SNR 损失函数 | - |
-| `--weighting_scheme` | Timestep 加权方案：`sigma_sqrt`、`logit_normal`、`mode`、`cosmap`、`none` | `none` |
-| `--motion_sub_loss` | 启用运动子损失以提升时序一致性 | - |
-| `--motion_sub_loss_ratio` | 运动子损失比例 | 0.25 |
 
 **Sample Size 配置指南**：
 - `video_sample_size` 表示视频的分辨率大小；当 `random_hw_adapt` 为 True 时，表示视频和图像分辨率的最小值。
@@ -394,7 +387,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width
 # export NCCL_P2P_DISABLE=1
 export NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_vace/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=VaceWanAttentionBlock,BaseWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_vace/train.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
