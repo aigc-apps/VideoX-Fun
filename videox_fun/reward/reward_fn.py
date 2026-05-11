@@ -69,7 +69,10 @@ class AestheticReward(BaseReward):
             ])
         elif self.version == "v2.5":
             assert "siglip-so400m-patch14-384" in encoder_path.lower()
-            self.model, _ = convert_v2_5_from_siglip(encoder_model_name=self.encoder_path)
+            self.model, _ = convert_v2_5_from_siglip(
+                predictor_name_or_path=self.predictor_path,
+                encoder_model_name=self.encoder_path,
+            )
             # https://huggingface.co/google/siglip-so400m-patch14-384/blob/main/preprocessor_config.json
             self.transform = transforms.Compose([
                 transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BICUBIC),
@@ -432,9 +435,10 @@ class VideoAlignReward(BaseReward):
         max_reward=1,
         loss_scale=1,
         reward_dim="Overall",
-        fps=24,
+        fps=16,
         num_frames=None,
         use_norm=True,
+        return_all_dims=False,
     ):
         from .video_align_predictor import VideoVLMRewardInference
 
@@ -447,6 +451,7 @@ class VideoAlignReward(BaseReward):
         self.fps = fps
         self.num_frames = num_frames
         self.use_norm = use_norm
+        self.return_all_dims = return_all_dims  # Return all dimensions instead of single reward_dim
 
         self.inferencer = VideoVLMRewardInference(
             load_from_pretrained=self.model_path,
@@ -455,7 +460,7 @@ class VideoAlignReward(BaseReward):
         )
 
     def _save_frames_to_temp_video(self, frames: torch.Tensor, fps: float = 8.0) -> str:
-        """Save tensor frames to a temporary video file in memory (tmpfs).
+        """Save tensor frames to a temporary video file with lossless encoding.
         
         Args:
             frames: Tensor of shape [T, C, H, W] with values in [0, 1]
@@ -476,20 +481,24 @@ class VideoAlignReward(BaseReward):
             temp_dir = tempfile.gettempdir()
         
         # Generate unique filename based on frame content hash
-        frame_hash = hash((frames.shape, frames.sum().item(), frames[0].sum().item(), frames[-1].sum().item()))
+        import hashlib
+        # Use multiple frames' bytes for robust hashing
+        frame_data = frames.float().cpu().numpy().tobytes()
+        frame_hash = hashlib.md5(frame_data[:10000] + frame_data[-10000:]).hexdigest()[:16]
         temp_video_path = os.path.join(temp_dir, f"videovlm_reward_temp_{os.getpid()}_{frame_hash}.mp4")
         
         # Convert frames to numpy: [T, C, H, W] -> [T, H, W, C]
         frames_np = (frames.float().cpu().numpy().transpose(0, 2, 3, 1) * 255).astype('uint8')
         
-        # Write video using PyAV with high quality settings
+        # Write video using PyAV with LOSSLESS encoding to avoid fluctuation
         t, h, w, c = frames_np.shape
         container = av.open(temp_video_path, mode='w')
+        # Use libx264 with CRF=0 for truly lossless encoding
         stream = container.add_stream('libx264', rate=fps)
         stream.width = w
         stream.height = h
-        stream.pix_fmt = 'yuv444p'  # Higher fidelity than yuv420p
-        stream.options = {'crf': '10', 'preset': 'fast'}  # Low CRF = high quality
+        stream.pix_fmt = 'yuv444p'
+        stream.options = {'crf': '0', 'preset': 'ultrafast'}  # CRF=0 is lossless
         
         for frame_data in frames_np:
             frame = av.VideoFrame.from_ndarray(frame_data, format='rgb24')
@@ -503,7 +512,13 @@ class VideoAlignReward(BaseReward):
         return temp_video_path
 
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
-        rewards = self.get_reward(batch_frames, batch_prompt)
+        if self.return_all_dims:
+            rewards_dict = self.get_reward_all_dims(batch_frames, batch_prompt)
+            # Use Overall for loss computation
+            rewards = rewards_dict['Overall']
+        else:
+            rewards = self.get_reward(batch_frames, batch_prompt)
+        
         if self.max_reward is None:
             loss_per_sample = (-1 * rewards) * self.loss_scale
         else:
@@ -545,6 +560,49 @@ class VideoAlignReward(BaseReward):
         
         return rewards
 
+    @torch.no_grad()
+    def get_reward_all_dims(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> dict:
+        """Get rewards for all dimensions (VQ, MQ, TA, Overall).
+        
+        Returns:
+            dict: Dictionary with keys 'VQ', 'MQ', 'TA', 'Overall', each containing a tensor of rewards.
+        """
+        assert len(batch_frames) == len(batch_prompt)        
+        temp_video_paths = []
+        all_rewards = {'VQ': [], 'MQ': [], 'TA': [], 'Overall': []}
+        
+        try:
+            for frames in batch_frames:
+                # Save frames to temp video
+                frames = rearrange(frames, "c t h w -> t c h w")
+                temp_video_path = self._save_frames_to_temp_video(frames, fps=self.fps)
+                temp_video_paths.append(temp_video_path)
+
+            # Get rewards from VideoVLMRewardInference
+            rewards_output = self.inferencer.reward(
+                video_paths=temp_video_paths,
+                prompts=batch_prompt,
+                num_frames=self.num_frames,
+                use_norm=self.use_norm,
+            )
+
+            for reward_dict in rewards_output:
+                for dim in ['VQ', 'MQ', 'TA', 'Overall']:
+                    reward_value = reward_dict[dim]
+                    all_rewards[dim].append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
+            
+            # Stack all dimensions
+            result = {}
+            for dim in ['VQ', 'MQ', 'TA', 'Overall']:
+                result[dim] = torch.stack(all_rewards[dim], dim=0)
+        
+        finally:
+            # Clean up temporary video files
+            for temp_path in temp_video_paths:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+        
+        return result
 
 if __name__ == "__main__":
     import numpy as np

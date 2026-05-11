@@ -1,3 +1,22 @@
+# ---------------------------------------------------------------------------
+# This script extracts audio tracks from video files listed in a JSON metadata
+# file, saves them as .wav files, and adds the generated 'audio_path' field back
+# into the JSON.
+#
+# Typical usage:
+#   python scripts/process_json_extra_wav.py \
+#       --input_file datasets/X-Fun-Videos-Audios-Demo/metadata_origin.json \
+#       --output_file datasets/X-Fun-Videos-Audios-Demo/metadata.json \
+#       --output_audio_dir datasets/X-Fun-Videos-Audios-Demo/wav \
+#       --base_dir datasets/X-Fun-Videos-Audios-Demo \
+#       --num_processes 8
+#
+# Notes:
+#   * Only processes entries whose 'file_path' points to a video file.
+#   * Audio is extracted as 16 kHz mono WAV (pcm_s16le).
+#   * If a sample's 'file_path' is relative, --base_dir is prepended.
+#   * Uses multiprocessing (default = CPU core count) for speed.
+# ---------------------------------------------------------------------------
 import argparse
 import json
 import multiprocessing as mp
