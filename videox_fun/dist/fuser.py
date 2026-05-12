@@ -32,6 +32,7 @@ except Exception as ex:
     get_world_group = None
     init_distributed_environment = None
     initialize_model_parallel = None
+    model_parallel_is_initialized = None
 
 def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance_degree=1):
     if ulysses_degree > 1 or ring_degree > 1 or classifier_free_guidance_degree > 1:

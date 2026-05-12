@@ -147,7 +147,8 @@ def match_and_blend_colors(videos, original_color_reference, strength=0.5):
     return videos
 
 
-def official_flashhead_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
+def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
+    """Official FlashHead timestep schedule with shift transform."""
     if num_inference_steps == 4:
         timesteps = [1000, 750, 500, 250]
     else:
@@ -351,6 +352,7 @@ class FlashHeadPipeline(DiffusionPipeline):
         apg_momentum: float = 0.5,
         apg_norm_threshold: float = 1.0,
         progress: bool = True,
+        stochastic_sampling: bool = True,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -484,8 +486,10 @@ class FlashHeadPipeline(DiffusionPipeline):
         # Iterative generation loop
         while True:
             # 6. Prepare timesteps
-            if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
-                timesteps = official_flashhead_timesteps(num_inference_steps, shift, device)
+            if stochastic_sampling:
+                timesteps = stochastic_sampling_timesteps(num_inference_steps, shift, device)
+            elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+                timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, None, mu=1)
             elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
                 self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
                 timesteps = self.scheduler.timesteps
@@ -607,7 +611,7 @@ class FlashHeadPipeline(DiffusionPipeline):
             self.transformer.num_inference_steps = num_inference_steps
             
             with self.progress_bar(total=num_inference_steps) as progress_bar:
-                denoise_timesteps = timesteps[:-1] if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler) else timesteps
+                denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
                 for i, t in enumerate(tqdm(denoise_timesteps) if progress else denoise_timesteps):
                     self.transformer.current_steps = i
 
@@ -639,9 +643,8 @@ class FlashHeadPipeline(DiffusionPipeline):
                         )
                     
                     # Official FlashHead Pro runs without classifier-free guidance.
-                    if audio_guide_scale == 1.0 and not use_apg:
-                        noise_pred = noise_pred_cond
-                    else:
+                    # Only need drop-audio inference when guidance scale != 1.0 or using APG
+                    if audio_guide_scale != 1.0 or use_apg:
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
                             noise_pred_drop_audio = self.transformer(
                                 x=latents,
@@ -660,9 +663,11 @@ class FlashHeadPipeline(DiffusionPipeline):
                             )
                         else:
                             noise_pred = noise_pred_drop_audio + audio_guide_scale * (noise_pred_cond - noise_pred_drop_audio)
+                    else:
+                        noise_pred = noise_pred_cond
 
                     # compute the previous noisy sample x_t -> x_t-1
-                    if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+                    if stochastic_sampling:
                         t_i = (timesteps[i] / self.scheduler.config.num_train_timesteps).to(weight_dtype)
                         t_i_1 = (timesteps[i + 1] / self.scheduler.config.num_train_timesteps).to(weight_dtype)
                         x_0 = latents - noise_pred * t_i

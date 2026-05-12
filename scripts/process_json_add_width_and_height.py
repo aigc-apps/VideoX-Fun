@@ -1,3 +1,21 @@
+# ---------------------------------------------------------------------------
+# This script extracts width and height from image/video files listed in a JSON
+# metadata file and writes the dimensions back into the JSON under 'width' and
+# 'height' fields.
+#
+# Typical usage:
+#   python scripts/process_json_add_width_and_height.py \
+#       --input_file datasets/X-Fun-Images-Demo/metadata.json \
+#       --output_file datasets/X-Fun-Images-Demo/metadata_add_width_height.json \
+#       --base_dir datasets/X-Fun-Images-Demo \
+#       --num_processes 8
+#
+# Notes:
+#   * Supports images (.jpg, .jpeg, .png, .bmp, .webp, .tiff, .gif) via PIL and
+#     videos (.mp4, .avi, .mov, .mkv, .flv, .wmv, .webm) via OpenCV.
+#   * If a sample's 'file_path' is relative, --base_dir is prepended.
+#   * Uses multiprocessing (default = CPU core count) for speed.
+# ---------------------------------------------------------------------------
 import argparse
 import json
 import multiprocessing as mp

@@ -64,6 +64,7 @@ model_name_audio    = "models/Diffusion_Transformer/wav2vec2-base-960h"
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 shift               = 5.0
+stochastic_sampling = True
 
 # Load pretrained model if need
 transformer_path    = None
@@ -208,7 +209,6 @@ with torch.no_grad():
 
     # Prepare ref_image latent for FlashHead (no clip_image needed)
     ref_image = get_image_latent(ref_image, sample_size=sample_size)
-    ref_image = ref_image * 2.0 - 1.0
     
     sample = pipeline(
         segment_frame_length = segment_frame_length,
@@ -228,6 +228,7 @@ with torch.no_grad():
         use_apg = use_apg,
         apg_momentum = apg_momentum,
         apg_norm_threshold = apg_norm_threshold,
+        stochastic_sampling = stochastic_sampling,
     ).videos
 
 if lora_path is not None:
