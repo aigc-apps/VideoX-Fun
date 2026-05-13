@@ -41,4 +41,5 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --uniform_sampling \
   --train_mode="normal" \
   --trainable_modules "." \
+  --use_teacher_forcing \
   --low_vram
