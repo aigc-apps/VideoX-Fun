@@ -1214,7 +1214,7 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    if args.train_mode != "normal":
+    if args.train_mode != "normal" or args.use_teacher_forcing:
         train_dataset = ImageVideoDataset(
             args.train_data_meta, args.train_data_dir,
             video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
@@ -1242,7 +1242,7 @@ def main():
 
         return length_to_frame_num
 
-    if args.enable_bucket and args.train_mode != "normal":
+    if args.enable_bucket:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         batch_sampler_generator = torch.Generator().manual_seed(args.seed)
         batch_sampler = AspectRatioBatchImageVideoSampler(
@@ -1689,7 +1689,7 @@ def main():
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                if args.train_mode != "normal":
+                if args.train_mode != "normal" or args.use_teacher_forcing:
                     # Convert images to latent space
                     pixel_values = batch["pixel_values"].to(weight_dtype)
 
@@ -1713,20 +1713,20 @@ def main():
                                 batch['neg_encoder_attention_mask'] = torch.tile(batch['neg_encoder_attention_mask'], (2, 1))
                             else:
                                 batch['text'] = batch['text'] * 2
-                
-                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
-                    mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
-                    mask = batch["mask"].to(weight_dtype)
-                    # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
-                        if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
-                            mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
-                            mask = torch.tile(mask, (4, 1, 1, 1, 1))
-                        elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
-                            mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
-                            mask = torch.tile(mask, (2, 1, 1, 1, 1))
+                    if args.train_mode != "normal":
+                        clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
+                        mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
+                        mask = batch["mask"].to(weight_dtype)
+                        # Increase the batch size when the length of the latent sequence of the current sample is small
+                        if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
+                            if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                                clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
+                                mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
+                                mask = torch.tile(mask, (4, 1, 1, 1, 1))
+                            elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                                clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
+                                mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
+                                mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
                     if args.random_frame_crop:
                         def _create_special_list(length):
@@ -1783,7 +1783,8 @@ def main():
                     if args.low_vram:
                         torch.cuda.empty_cache()
                         vae.to(accelerator.device)
-                        clip_image_encoder.to(accelerator.device)
+                        if args.train_mode != "normal":
+                            clip_image_encoder.to(accelerator.device)
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
                         if not args.enable_text_encoder_in_dataloader:
                             text_encoder.to("cpu")
@@ -1800,39 +1801,47 @@ def main():
                                 pixel_values_bs = pixel_values_bs.sample()
                                 new_pixel_values.append(pixel_values_bs)
                             return torch.cat(new_pixel_values, dim = 0)
-
-                        # Encode inpaint latents.
-                        mask_latents = _batch_encode_vae(mask_pixel_values)
-                        if vae_stream_2 is not None:
-                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
-
-                        # Encode clean latents for teacher forcing
-                        clean_latents = None
                         if args.use_teacher_forcing:
-                            clean_latents = _batch_encode_vae(pixel_values) 
+                            clean_latents = _batch_encode_vae(pixel_values)
+                        else:
+                            clean_latents = None
 
-                        mask = rearrange(mask, "b f c h w -> b c f h w")
-                        mask = torch.concat(
-                            [
-                                torch.repeat_interleave(mask[:, :, 0:1], repeats=4, dim=2), 
-                                mask[:, :, 1:]
-                            ], dim=2
-                        )
-                        mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
-                        mask = mask.transpose(1, 2)
-                        mask = resize_mask(1 - mask, mask_latents)
+                        if args.train_mode != "normal":
+                            # Encode inpaint latents.
+                            mask_latents = _batch_encode_vae(mask_pixel_values)
+                            if vae_stream_2 is not None:
+                                torch.cuda.current_stream().wait_stream(vae_stream_2) 
 
-                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+                            # Encode clean latents for teacher forcing
+                            clean_latents = None
+                            if args.use_teacher_forcing:
+                                clean_latents = _batch_encode_vae(pixel_values) 
 
-                        clip_context = []
-                        for clip_pixel_value in clip_pixel_values:
-                            clip_image = Image.fromarray(np.uint8(clip_pixel_value.float().cpu().numpy()))
-                            clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(clip_image_encoder.device, weight_dtype)
-                            _clip_context = clip_image_encoder([clip_image[:, None, :, :]])
-                            clip_context.append(_clip_context)
-                        clip_context = torch.cat(clip_context)
+                            mask = rearrange(mask, "b f c h w -> b c f h w")
+                            mask = torch.concat(
+                                [
+                                    torch.repeat_interleave(mask[:, :, 0:1], repeats=4, dim=2), 
+                                    mask[:, :, 1:]
+                                ], dim=2
+                            )
+                            mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
+                            mask = mask.transpose(1, 2)
+                            mask = resize_mask(1 - mask, mask_latents)
 
-                    target_shape = mask_latents.size()
+                            inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+
+                            clip_context = []
+                            for clip_pixel_value in clip_pixel_values:
+                                clip_image = Image.fromarray(np.uint8(clip_pixel_value.float().cpu().numpy()))
+                                clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(clip_image_encoder.device, weight_dtype)
+                                _clip_context = clip_image_encoder([clip_image[:, None, :, :]])
+                                clip_context.append(_clip_context)
+                            clip_context = torch.cat(clip_context)
+
+                    if args.use_teacher_forcing:
+                        target_shape = clean_latents.size()
+                    else:
+                        target_shape = mask_latents.size()
                 else:
                     text = batch['text']
                     if args.fix_sample_size is not None:
@@ -1874,21 +1883,7 @@ def main():
                         int(local_sample_size[0] // vae.spatial_compression_ratio),
                         int(local_sample_size[1] // vae.spatial_compression_ratio), 
                     )
-
-                    # Encode clean latents for teacher forcing in T2V mode
                     clean_latents = None
-                    if args.use_teacher_forcing:
-                        with torch.no_grad():
-                            pixel_values = batch["pixel_values"].to(weight_dtype)
-                            pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                            bs = args.vae_mini_batch
-                            new_pixel_values = []
-                            for i in range(0, pixel_values.shape[0], bs):
-                                pixel_values_bs = pixel_values[i : i + bs]
-                                pixel_values_bs = vae.encode(pixel_values_bs)[0]
-                                pixel_values_bs = pixel_values_bs.sample()
-                                new_pixel_values.append(pixel_values_bs)
-                            clean_latents = torch.cat(new_pixel_values, dim = 0)
 
                 if args.low_vram:
                     vae.to('cpu')
@@ -2008,26 +2003,11 @@ def main():
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
                 if step % args.gen_update_interval == 0:
-                    # Self-Forcing training: create block mask for causal training
-                    patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-                    
-                    # frame_seqlen: tokens per frame AFTER VAE compression and patching
-                    # VAE compresses 8x, then patches are extracted with patch_size
-                    frame_seqlen = (height * width) // (patch_h * patch_w)
-                    
-                    # Create block mask if not exists or parameters changed
-                    accelerator.unwrap_model(generator_transformer3d).create_block_mask_for_training(
-                        num_frames=num_frames,
-                        frame_seqlen=frame_seqlen,
-                        num_frame_per_block=args.num_frame_per_block,
-                        independent_first_frame=args.independent_first_frame,
-                        device=accelerator.device
-                    )
-
                     if args.use_kv_cache_training:
                         # === KV cache block-by-block training (original Self-Forcing) ===
                         
                         # Calculate frame_seq_length
+                        patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
                         
                         # Determine block structure
@@ -2081,27 +2061,14 @@ def main():
                         # Decide whether to use teacher forcing for this video (once per video, not per block)
                         use_teacher_forcing_step = (
                             args.use_teacher_forcing and 
-                            torch.rand(1, generator=torch_rng).item() < args.teacher_forcing_prob
+                            torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
                         )
-                        
-                        # Prepare clean_x and aug_t for teacher forcing
-                        clean_x = None
-                        aug_t = None
-                        if use_teacher_forcing_step and clean_latents is not None:
-                            aug_t = torch.zeros(bsz, device=accelerator.device, dtype=torch.int64)
                         
                         for block_idx, current_num_frames in enumerate(all_num_frames):
                             # Extract noise for current block
                             start_idx = current_start_frame - num_input_frames
                             end_idx = start_idx + current_num_frames
                             noisy_input = generator_noise[:, :, start_idx:end_idx]
-                            
-                            # Extract clean latents for current block if using teacher forcing
-                            if use_teacher_forcing_step and clean_latents is not None:
-                                clean_x_block = clean_latents[:, :, start_idx:end_idx]
-                                clean_x = [clean_x_block[i] for i in range(bsz)]
-                            else:
-                                clean_x = None
                             
                             # Denoise loop for current block
                             num_denoising_steps = len(denoising_step_list)
@@ -2123,7 +2090,7 @@ def main():
                                     noisy_input_list = [noisy_input[i] for i in range(bsz)]
                                     
                                     # Use full seq_len (consistent with inference code)
-                                    full_seq_len = frame_seqlen * num_frames
+                                    full_seq_len = frame_seq_length * num_frames
                                     
                                     generator_pred_block = generator_transformer3d(
                                         x=noisy_input_list,
@@ -2136,8 +2103,6 @@ def main():
                                         cache_start=None,
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                         clip_fea=clip_context if args.train_mode != "normal" else None,
-                                        clean_x=clean_x,
-                                        aug_t=aug_t,
                                     )
                                     
                                     # Stack list output to tensor: [B, C, F, H, W]
@@ -2168,25 +2133,28 @@ def main():
                             # Record output
                             output_pred[:, :, current_start_frame:current_start_frame + current_num_frames] = generator_pred_block
                             
-                            # Update KV cache with context noise
+                            # Update KV cache with clean context (teacher forcing) or noisy context
                             if block_idx < len(all_num_frames) - 1:
                                 context_timestep = torch.ones([bsz, current_num_frames], device=accelerator.device, dtype=torch.int64) * args.context_noise
                                 
-                                # Add context noise
-                                generator_pred_block_noisy = add_noise(
-                                    generator_pred_block,
-                                    torch.randn(generator_pred_block.shape, dtype=generator_pred_block.dtype, device=generator_pred_block.device, generator=torch_rng),
-                                    context_timestep[:, 0]
-                                )
+                                # Use clean latents for teacher forcing, otherwise add noise
+                                if use_teacher_forcing_step and clean_latents is not None:
+                                    context_input = clean_latents[:, :, start_idx:end_idx]
+                                else:
+                                    context_input = add_noise(
+                                        generator_pred_block,
+                                        torch.randn(generator_pred_block.shape, dtype=generator_pred_block.dtype, device=generator_pred_block.device, generator=torch_rng),
+                                        context_timestep[:, 0]
+                                    )
                                 
-                                generator_pred_block_noisy_list = [generator_pred_block_noisy[i] for i in range(bsz)]
+                                context_input_list = [context_input[i] for i in range(bsz)]
                                 
                                 # Use full seq_len (consistent with inference code)
-                                full_seq_len = frame_seqlen * num_frames
+                                full_seq_len = frame_seq_length * num_frames
                                 
                                 with torch.no_grad():
                                     generator_transformer3d(
-                                        x=generator_pred_block_noisy_list,
+                                        x=context_input_list,
                                         context=prompt_embeds,
                                         t=context_timestep,
                                         seq_len=full_seq_len,
@@ -2202,30 +2170,52 @@ def main():
                         
                         # Final output
                         generator_pred = output_pred
-                        seq_len = frame_seqlen * num_frames  # For fake/real score computation
-                        
+                        seq_len = frame_seq_length * num_frames  # For fake/real score computation
+                    
                     else:
-                        # === Original block mask training ===
+                        # === Block mask training (flex attention, no KV cache) ===
+                        # Block mask training: use flex attention to process entire video at once
+                        
+                        patch_h_bm, patch_w_bm = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                        frame_seqlen_bm = (height * width) // (patch_h_bm * patch_w_bm)
+                        
                         # Standard backward simulation training
                         generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
 
                         # Precompute seq_len once (same for all steps)
-                        seq_len = frame_seqlen * num_frames
+                        seq_len = frame_seqlen_bm * num_frames
 
                         # Decide whether to use teacher forcing for this step
                         use_teacher_forcing_step = (
                             args.use_teacher_forcing and 
-                            torch.rand(1, generator=torch_rng).item() < args.teacher_forcing_prob
+                            torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
                         )
                         
-                        # Prepare clean_x and aug_t for teacher forcing
-                        clean_x = None
-                        aug_t = None
+                        # Create appropriate block mask based on teacher forcing decision
                         if use_teacher_forcing_step and clean_latents is not None:
+                            # Teacher forcing: clean + noisy sequence mask
+                            accelerator.unwrap_model(generator_transformer3d).create_teacher_forcing_mask(
+                                device=accelerator.device,
+                                num_frames=num_frames,
+                                frame_seqlen=frame_seqlen_bm,
+                                num_frame_per_block=args.num_frame_per_block,
+                            )
+                            # Prepare clean_x and aug_t for teacher forcing
                             clean_x = [clean_latents[i] for i in range(clean_latents.size(0))]
                             aug_t = torch.zeros(bsz, device=accelerator.device, dtype=torch.int64)
+                        else:
+                            # Standard causal mask
+                            accelerator.unwrap_model(generator_transformer3d).create_block_mask_for_training(
+                                num_frames=num_frames,
+                                frame_seqlen=frame_seqlen_bm,
+                                num_frame_per_block=args.num_frame_per_block,
+                                independent_first_frame=args.independent_first_frame,
+                                device=accelerator.device
+                            )
+                            clean_x = None
+                            aug_t = None
 
                         for index, current_timestep in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
@@ -2240,15 +2230,19 @@ def main():
                                 context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
                                 
                                 with context_manager:
+                                    # Convert to list format for transformer
+                                    generator_noise_list = [generator_noise[i] for i in range(bsz)]
+                                    clean_x_list = [clean_latents[i] for i in range(bsz)] if clean_x is not None else None
+                                    
                                     # Use block_mask for causal training (一次性处理整个视频)
                                     generator_pred = generator_transformer3d(
-                                        x=generator_noise,
+                                        x=generator_noise_list,
                                         context=prompt_embeds,
                                         t=timestep,
                                         seq_len=seq_len,
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                         clip_fea=clip_context if args.train_mode != "normal" else None,
-                                        clean_x=clean_x,
+                                        clean_x=clean_x_list,
                                         aug_t=aug_t,
                                     )
                                     generator_pred = convert_flow_pred_to_x0(
@@ -2435,6 +2429,12 @@ def main():
                     num_input_frames = 0
                     output_pred = torch.zeros_like(fake_score_critic_noise)
                     
+                    # Decide whether to use teacher forcing for this video
+                    use_teacher_forcing_step = (
+                        args.use_teacher_forcing and 
+                        torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
+                    )
+                    
                     for block_idx, current_num_frames in enumerate(all_num_frames):
                         start_idx = current_start_frame - num_input_frames
                         end_idx = start_idx + current_num_frames
@@ -2458,7 +2458,7 @@ def main():
                                 noisy_input_list = [noisy_input[i] for i in range(bsz)]
                                 
                                 # Use full seq_len (consistent with inference code)
-                                full_seq_len = frame_seqlen * num_frames
+                                full_seq_len = frame_seq_length * num_frames
                                 
                                 fake_score_denoised_pred_block = generator_transformer3d(
                                     x=noisy_input_list,
@@ -2498,23 +2498,28 @@ def main():
                         
                         output_pred[:, :, current_start_frame:current_start_frame + current_num_frames] = fake_score_denoised_pred_block
                         
-                        # Update KV cache
+                        # Update KV cache with clean context (teacher forcing) or noisy context
                         if block_idx < len(all_num_frames) - 1:
                             context_timestep = torch.ones([bsz, current_num_frames], device=accelerator.device, dtype=torch.int64) * args.context_noise
                             
-                            fake_score_denoised_pred_noisy = add_noise(
-                                fake_score_denoised_pred_block,
-                                torch.randn(fake_score_denoised_pred_block.shape, dtype=fake_score_denoised_pred_block.dtype, device=fake_score_denoised_pred_block.device, generator=torch_rng),
-                                context_timestep[:, 0]
-                            )
-                            fake_score_denoised_pred_noisy_list = [fake_score_denoised_pred_noisy[i] for i in range(bsz)]
+                            # Use clean latents for teacher forcing, otherwise add noise
+                            if use_teacher_forcing_step and clean_latents is not None:
+                                context_input = clean_latents[:, :, start_idx:end_idx]
+                            else:
+                                context_input = add_noise(
+                                    fake_score_denoised_pred_block,
+                                    torch.randn(fake_score_denoised_pred_block.shape, dtype=fake_score_denoised_pred_block.dtype, device=fake_score_denoised_pred_block.device, generator=torch_rng),
+                                    context_timestep[:, 0]
+                                )
+                            
+                            context_input_list = [context_input[i] for i in range(bsz)]
                             
                             # Use full seq_len (consistent with inference code)
-                            full_seq_len = frame_seqlen * num_frames
+                            full_seq_len = frame_seq_length * num_frames
                             
                             with torch.no_grad():
                                 generator_transformer3d(
-                                    x=fake_score_denoised_pred_noisy_list,
+                                    x=context_input_list,
                                     context=prompt_embeds,
                                     t=context_timestep,
                                     seq_len=full_seq_len,
@@ -2532,14 +2537,45 @@ def main():
                     seq_len = frame_seq_length * num_frames
                     
                 else:
-                    # Original block mask mode
                     with torch.no_grad():
+                        # Block mask mode: use flex attention to process entire video at once
+                        
+                        patch_h_bm, patch_w_bm = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                        frame_seqlen_bm = (height * width) // (patch_h_bm * patch_w_bm)
+                        seq_len = frame_seqlen_bm * num_frames
+                        
                         fake_score_critic_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
 
-                        patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-                        seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+                        # Decide whether to use teacher forcing for this step
+                        use_teacher_forcing_step = (
+                            args.use_teacher_forcing and 
+                            torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
+                        )
+                        
+                        # Create appropriate block mask based on teacher forcing decision
+                        if use_teacher_forcing_step and clean_latents is not None:
+                            # Teacher forcing: clean + noisy sequence mask
+                            accelerator.unwrap_model(generator_transformer3d).create_teacher_forcing_mask(
+                                device=accelerator.device,
+                                num_frames=num_frames,
+                                frame_seqlen=frame_seqlen_bm,
+                                num_frame_per_block=args.num_frame_per_block,
+                            )
+                            clean_x = [clean_latents[i] for i in range(clean_latents.size(0))]
+                            aug_t = torch.zeros(bsz, device=accelerator.device, dtype=torch.int64)
+                        else:
+                            # Standard causal mask
+                            accelerator.unwrap_model(generator_transformer3d).create_block_mask_for_training(
+                                num_frames=num_frames,
+                                frame_seqlen=frame_seqlen_bm,
+                                num_frame_per_block=args.num_frame_per_block,
+                                independent_first_frame=args.independent_first_frame,
+                                device=accelerator.device
+                            )
+                            clean_x = None
+                            aug_t = None
 
                         for index, current_timestep in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
@@ -2550,16 +2586,21 @@ def main():
                                 dtype=torch.int64
                             )
                             
+                            
                             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                                # Convert to list format for transformer
+                                fake_score_critic_noise_list = [fake_score_critic_noise[i] for i in range(bsz)]
+                                clean_x_list = [clean_latents[i] for i in range(bsz)] if clean_x is not None else None
+                                
                                 fake_score_denoised_pred = generator_transformer3d(
-                                    x=fake_score_critic_noise,
+                                    x=fake_score_critic_noise_list,
                                     context=prompt_embeds,
                                     t=timestep,
                                     seq_len=seq_len,
                                     y=inpaint_latents if args.train_mode != "normal" else None,
                                     clip_fea=clip_context if args.train_mode != "normal" else None,
-                                    clean_x=None,
-                                    aug_t=None,
+                                    clean_x=clean_x_list,
+                                    aug_t=aug_t,
                                 )
                                 fake_score_denoised_pred = convert_flow_pred_to_x0(
                                     scheduler=noise_scheduler,
