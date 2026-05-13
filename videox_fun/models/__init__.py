@@ -25,7 +25,14 @@ try:
     from transformers import Qwen3VLForConditionalGeneration
 except:
     Qwen3VLForConditionalGeneration = None
-    print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
+    print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use Qwen3VLForConditionalGeneration, please upgrade your transformers package to the latest version.")
+
+try:
+    from transformers import Mistral3Model, Ministral3ForCausalLM
+except:
+    Mistral3Model = None
+    Ministral3ForCausalLM = None
+    print("Your transformers version is too old to load Mistral3Model and Ministral3ForCausalLM. If you wish to use ErnieImage, please upgrade your transformers package to the latest version.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
