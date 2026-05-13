@@ -45,6 +45,15 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "sequential_cpu_offload"
+# Multi GPUs config
+# Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
+# For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+# If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+ulysses_degree      = 1
+ring_degree         = 1
+# Use FSDP to save more GPU memory in multi gpus.
+fsdp_dit            = False
+fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
 compile_dit         = False
@@ -90,7 +99,7 @@ num_inference_steps = 4
 lora_weight         = 0.55
 save_path           = "samples/wan-videos-self-forcing-t2v"
 
-device = set_multi_gpus_devices(1, 1)
+device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
 
 # Load transformer with causal inference support if enabled
@@ -171,6 +180,18 @@ pipeline = WanSelfForcingPipeline(
     scheduler=scheduler,
 )
 
+if ulysses_degree > 1 or ring_degree > 1:
+    from functools import partial
+    transformer.enable_multi_gpus_inference()
+    if fsdp_dit:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.transformer = shard_fn(pipeline.transformer)
+        print("Add FSDP DIT")
+    if fsdp_text_encoder:
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
+        print("Add FSDP TEXT ENCODER")
+
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
@@ -241,4 +262,9 @@ def save_results():
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)
 
-save_results()
+if ulysses_degree * ring_degree > 1:
+    import torch.distributed as dist
+    if dist.get_rank() == 0:
+        save_results()
+else:
+    save_results()

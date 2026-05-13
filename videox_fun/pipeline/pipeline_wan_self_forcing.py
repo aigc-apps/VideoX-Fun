@@ -14,7 +14,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 
 from ..models import (AutoencoderKLWan, AutoTokenizer,
-                              WanT5EncoderModel, WanTransformer3DModel)
+                              WanT5EncoderModel, WanTransformer3DModel_SelfForcing)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -127,7 +127,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         tokenizer: AutoTokenizer,
         text_encoder: WanT5EncoderModel,
         vae: AutoencoderKLWan,
-        transformer: WanTransformer3DModel,
+        transformer: WanTransformer3DModel_SelfForcing,
         scheduler: FlowMatchEulerDiscreteScheduler,
     ):
         super().__init__()

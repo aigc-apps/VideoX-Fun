@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
+import torch._dynamo as dynamo
 import torch.cuda.amp as amp
 import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -23,14 +24,11 @@ from torch.nn.attention.flex_attention import (BlockMask, create_block_mask,
 
 from ..dist import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
-                    usp_attn_forward, xFuserLongContextAttention)
-from ..utils import cfg_skip
+                    usp_attn_self_forcing_forward, xFuserLongContextAttention)
 from .attention_utils import attention
-from .wan_camera_adapter import SimpleAdapter
 from .wan_transformer3d import (MLPProj, WanLayerNorm, WanRMSNorm,
                                 WanTransformer3DModel, rope_apply, rope_params,
                                 sinusoidal_embedding_1d)
-import torch._dynamo as dynamo
 
 if dynamo.config.cache_size_limit < 128:
     dynamo.config.cache_size_limit = 128
@@ -40,9 +38,6 @@ if dynamo.config.cache_size_limit < 128:
 # change to default for other models
 flex_attention = torch.compile(
     flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
-
-
-logger = logging.get_logger(__name__)
 
 
 @amp.autocast(enabled=False)
@@ -203,13 +198,20 @@ class CasualWanSelfAttention(nn.Module):
                 )
 
                 # Apply flex attention with block mask
-                x = flex_attention(
-                    query=padded_roped_query.transpose(2, 1),
-                    key=padded_roped_key.transpose(2, 1),
-                    value=padded_v.transpose(2, 1),
-                    block_mask=block_mask
-                )[:, :, :-padded_length].transpose(2, 1)
-
+                if padded_length != 0:
+                    x = flex_attention(
+                        query=padded_roped_query.transpose(2, 1),
+                        key=padded_roped_key.transpose(2, 1),
+                        value=padded_v.transpose(2, 1),
+                        block_mask=block_mask
+                    )[:, :, :-padded_length].transpose(2, 1)
+                else:
+                    x = flex_attention(
+                        query=padded_roped_query.transpose(2, 1),
+                        key=padded_roped_key.transpose(2, 1),
+                        value=padded_v.transpose(2, 1),
+                        block_mask=block_mask
+                    ).transpose(2, 1)
             else:
                 # Standard inference without teacher forcing
                 roped_query = rope_apply(q, grid_sizes, freqs).type_as(v)
@@ -282,6 +284,7 @@ class CasualWanSelfAttention(nn.Module):
                 local_start_index = local_end_index - num_new_tokens
                 kv_cache["k"][:, local_start_index:local_end_index] = roped_key
                 kv_cache["v"][:, local_start_index:local_end_index] = v
+            
             # Compute attention with local window
             x = attention(
                 roped_query,
@@ -708,6 +711,17 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         self.sp_world_rank = 0
         self.init_weights()
 
+    def enable_multi_gpus_inference(self):
+        """Enable multi-GPU inference with sequence parallelism for KV cache mode."""
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+        
+        # Replace self_attn forward method with USP version
+        for block in self.blocks:
+            block.self_attn.forward = types.MethodType(
+                usp_attn_self_forcing_forward, block.self_attn)
+
     def _set_gradient_checkpointing(self, *args, **kwargs):
         if "value" in kwargs:
             self.gradient_checkpointing = kwargs["value"]
@@ -789,7 +803,7 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
             H=None,
             Q_LEN=total_length + padded_length,
             KV_LEN=total_length + padded_length,
-            _compile=False,
+            _compile=True,
             device=device
         )
         
@@ -877,18 +891,19 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
             
             eye_mask = q_idx == kv_idx
             return eye_mask | clean_mask | noise_mask
-        
-        block_mask = create_block_mask(
+    
+        self.block_mask = create_block_mask(
             attention_mask,
             B=None,
             H=None,
             Q_LEN=total_length + padded_length,
             KV_LEN=total_length + padded_length,
-            _compile=False,
+            _compile=True,
             device=device
         )
-        
-        return block_mask
+
+        # Store parameters for future reference
+        self.num_frame_per_block = num_frame_per_block
 
     def forward(
         self,
@@ -945,33 +960,28 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
-        
-        # Handle teacher forcing: concatenate clean and noisy features
-        if clean_x is not None:
-            clean_x = [self.patch_embedding(u.unsqueeze(0)) for u in clean_x]
-            clean_x = [u.flatten(2).transpose(1, 2) for u in clean_x]
-        
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
-        logger.debug(f"[SelfForcing] seq_len: {seq_len}, seq_lens: {seq_lens}")
+        # Padding for multi-gpu inference
+        if self.sp_world_size > 1:
+            seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
         assert seq_lens.max() <= seq_len
-        x = torch.cat([
-            torch.cat([u, u.new_zeros(1, seq_lens[0] - u.size(1), u.size(2))],
-                      dim=1) for u in x
-        ])
-        
+        x = torch.cat(x)
+
         # Concatenate clean features for teacher forcing
         if clean_x is not None:
+            # Handle teacher forcing: concatenate clean and noisy features
+            clean_x = [self.patch_embedding(u.unsqueeze(0)) for u in clean_x]
+            clean_x = [u.flatten(2).transpose(1, 2) for u in clean_x]
             seq_lens_clean = torch.tensor([u.size(1) for u in clean_x], dtype=torch.long)
             assert seq_lens_clean.max() <= seq_len
-            clean_x = torch.cat([
-                torch.cat([u, u.new_zeros(1, seq_lens_clean[0] - u.size(1), u.size(2))], dim=1) for u in clean_x
-            ])
+            clean_x = torch.cat(clean_x)
             x = torch.cat([clean_x, x], dim=1)
 
         # Manage block mask for training (kv_cache is None during training).
         # We must recreate the mask when switching between normal training
         # (causal mask) and teacher forcing (clean+noisy mask), because the
         # two modes expect different sequence lengths.
+        num_frames_actual = None
         if kv_cache is None:
             num_frames_actual = grid_sizes[0, 0].item()
             frame_seqlen_actual = grid_sizes[0, 1].item() * grid_sizes[0, 2].item()
@@ -990,11 +1000,11 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
                 if is_teacher_forcing_mask:
                     if self.independent_first_frame:
                         raise NotImplementedError("Teacher forcing with independent first frame is not supported")
-                    self.block_mask = self.create_teacher_forcing_mask(
-                        device=device,
+                    self.create_teacher_forcing_mask(
                         num_frames=num_frames_actual,
                         frame_seqlen=frame_seqlen_actual,
-                        num_frame_per_block=self.num_frame_per_block
+                        num_frame_per_block=self.num_frame_per_block,
+                        device=device,
                     )
                 else:
                     self.create_block_mask_for_training(
@@ -1046,6 +1056,12 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
             context_clip = self.img_emb(clip_fea)  # Shape: [B, 257, dim]
             context = torch.concat([context_clip, context], dim=1)
 
+        # Context Parallel: split input across GPUs
+        if self.sp_world_size > 1:
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+            if t.dim() != 1:
+                e0 = torch.chunk(e0, self.sp_world_size, dim=1)[self.sp_world_rank]
+
         # Arguments
         kwargs = dict(
             e=e0,
@@ -1090,6 +1106,10 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         # Remove clean part for teacher forcing output
         if clean_x is not None:
             x = x[:, x.shape[1] // 2:]
+
+        # Context Parallel: gather results from all GPUs
+        if self.sp_world_size > 1:
+            x = self.all_gather(x, dim=1)
 
         # Head: project to output space
         x = self.head(x, e.unflatten(dim=0, sizes=t.shape).unsqueeze(2))

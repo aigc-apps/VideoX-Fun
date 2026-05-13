@@ -8,9 +8,9 @@ from .fsdp import shard_model
 from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     get_world_group, init_distributed_environment,
-                    initialize_model_parallel, sequence_parallel_all_gather,
-                    sequence_parallel_chunk, set_multi_gpus_devices,
-                    xFuserLongContextAttention)
+                    initialize_model_parallel, model_parallel_is_initialized,
+                    sequence_parallel_all_gather, sequence_parallel_chunk,
+                    set_multi_gpus_devices, xFuserLongContextAttention)
 from .hunyuanvideo_xfuser import HunyuanVideoMultiGPUsAttnProcessor2_0
 from .infinitalk_xfuser import usp_attn_infinitetalk_forward
 from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
@@ -20,7 +20,8 @@ from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
 from .ltx2_xfuser import (LTX2MultiGPUsAttnProcessor,
                           LTX2PerturbedMultiGPUsAttnProcessor)
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
-from .wan_xfuser import usp_attn_forward, usp_attn_s2v_forward
+from .wan_xfuser import (usp_attn_forward, usp_attn_s2v_forward,
+                         usp_attn_self_forcing_forward)
 from .z_image_xfuser import ZMultiGPUsSingleStreamAttnProcessor
 
 # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
