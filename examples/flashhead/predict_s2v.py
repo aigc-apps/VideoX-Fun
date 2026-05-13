@@ -64,6 +64,7 @@ model_name_audio    = "models/Diffusion_Transformer/wav2vec2-base-960h"
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
 shift               = 5.0
+stochastic_sampling = True
 
 # Load pretrained model if need
 transformer_path    = None
@@ -96,7 +97,7 @@ color_correction_strength = 1.0
 use_apg                 = False
 apg_momentum            = 0.5
 apg_norm_threshold      = 1.0
-audio_encode_mode       = "once"
+audio_encode_mode       = "stream"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -227,6 +228,7 @@ with torch.no_grad():
         use_apg = use_apg,
         apg_momentum = apg_momentum,
         apg_norm_threshold = apg_norm_threshold,
+        stochastic_sampling = stochastic_sampling,
     ).videos
 
 if lora_path is not None:
