@@ -13,8 +13,8 @@ from diffusers.utils import BaseOutput, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 
-from ..models import (AutoencoderKLWan, AutoTokenizer,
-                              WanT5EncoderModel, WanTransformer3DModel_SelfForcing)
+from ..models import (AutoencoderKLWan, AutoTokenizer, WanT5EncoderModel,
+                      WanTransformer3DModel_SelfForcing)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
