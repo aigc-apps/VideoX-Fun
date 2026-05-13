@@ -564,9 +564,6 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         else:
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         self._num_timesteps = len(timesteps)
-        if comfyui_progressbar:
-            from comfy.utils import ProgressBar
-            pbar = ProgressBar(num_inference_steps + 1)
 
         # 5. Prepare latents (noise) and output buffer separately
         latent_channels = self.transformer.config.in_channels
@@ -604,9 +601,6 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             device=device,
             dtype=weight_dtype
         )
-        
-        if comfyui_progressbar:
-            pbar.update(1)
 
         # 6. Calculate sequence length and frame_seq_length
         target_shape = (
@@ -639,6 +633,13 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             assert (num_latent_frames - 1) % num_frame_per_block == 0, \
                 f"num_latent_frames-1 ({num_latent_frames - 1}) must be divisible by num_frame_per_block ({num_frame_per_block})"
             num_blocks = (num_latent_frames - 1) // num_frame_per_block
+        
+        # Initialize ComfyUI progress bar after calculating num_blocks
+        if comfyui_progressbar:
+            from comfy.utils import ProgressBar
+            # Total steps = num_blocks * num_inference_steps + 1 (for latent preparation)
+            pbar = ProgressBar(num_blocks * num_inference_steps + 1)
+            pbar.update(1)
         
         # Self-Forcing causal state (reset per call)
         current_start_frame = start_frame_index
@@ -688,86 +689,91 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             if hasattr(self.scheduler, 'model_outputs'):
                 self.scheduler.model_outputs = []
             
-            for step_idx, t in enumerate(timesteps):
-                
-                # Per-frame timesteps for causal generation
-                timestep = torch.ones([batch_size, current_num_frames], device=device, dtype=torch.long) * t
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for step_idx, t in enumerate(timesteps):
+                    # Per-frame timesteps for causal generation
+                    timestep = torch.ones([batch_size, current_num_frames], device=device, dtype=torch.long) * t
 
-                if do_classifier_free_guidance:
-                    # Conditional path
-                    with torch.cuda.amp.autocast(dtype=weight_dtype):
-                        flow_pred_cond = self.transformer(
-                            x=noisy_input,
-                            context=prompt_embeds,
-                            t=timestep,
-                            seq_len=seq_len,
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=current_start_frame * frame_seq_length,
-                            cache_start=None,
-                        )
-                    
-                    # Unconditional path
-                    with torch.cuda.amp.autocast(dtype=weight_dtype):
-                        flow_pred_uncond = self.transformer(
-                            x=noisy_input,
-                            context=negative_prompt_embeds,
-                            t=timestep,
-                            seq_len=seq_len,
-                            kv_cache=self.kv_cache_neg,
-                            crossattn_cache=self.crossattn_cache_neg,
-                            current_start=current_start_frame * frame_seq_length,
-                            cache_start=None,
-                        )
-                    
-                    # CFG guidance
-                    # Transformer output shape check
-                    if flow_pred_cond.dim() == 5:
-                        # Already [B, C, F, H, W]
-                        flow_pred = flow_pred_uncond + guidance_scale * (flow_pred_cond - flow_pred_uncond)
-                    elif flow_pred_cond.dim() == 4:
-                        # [F, C, H, W], need to add batch dim
-                        flow_pred_cond = flow_pred_cond.unsqueeze(0).permute(0, 2, 1, 3, 4)
-                        flow_pred_uncond = flow_pred_uncond.unsqueeze(0).permute(0, 2, 1, 3, 4)
-                        flow_pred = flow_pred_uncond + guidance_scale * (flow_pred_cond - flow_pred_uncond)
+                    if comfyui_progressbar:
+                        pbar.update(1)
+
+                    if do_classifier_free_guidance:
+                        # Conditional path
+                        with torch.cuda.amp.autocast(dtype=weight_dtype):
+                            flow_pred_cond = self.transformer(
+                                x=noisy_input,
+                                context=prompt_embeds,
+                                t=timestep,
+                                seq_len=seq_len,
+                                kv_cache=self.kv_cache_pos,
+                                crossattn_cache=self.crossattn_cache_pos,
+                                current_start=current_start_frame * frame_seq_length,
+                                cache_start=None,
+                            )
+                        
+                        # Unconditional path
+                        with torch.cuda.amp.autocast(dtype=weight_dtype):
+                            flow_pred_uncond = self.transformer(
+                                x=noisy_input,
+                                context=negative_prompt_embeds,
+                                t=timestep,
+                                seq_len=seq_len,
+                                kv_cache=self.kv_cache_neg,
+                                crossattn_cache=self.crossattn_cache_neg,
+                                current_start=current_start_frame * frame_seq_length,
+                                cache_start=None,
+                            )
+                        
+                        # CFG guidance
+                        # Transformer output shape check
+                        if flow_pred_cond.dim() == 5:
+                            # Already [B, C, F, H, W]
+                            flow_pred = flow_pred_uncond + guidance_scale * (flow_pred_cond - flow_pred_uncond)
+                        elif flow_pred_cond.dim() == 4:
+                            # [F, C, H, W], need to add batch dim
+                            flow_pred_cond = flow_pred_cond.unsqueeze(0).permute(0, 2, 1, 3, 4)
+                            flow_pred_uncond = flow_pred_uncond.unsqueeze(0).permute(0, 2, 1, 3, 4)
+                            flow_pred = flow_pred_uncond + guidance_scale * (flow_pred_cond - flow_pred_uncond)
+                        else:
+                            raise ValueError(f"Unexpected flow_pred_cond dim: {flow_pred_cond.dim()}, shape: {flow_pred_cond.shape}")
                     else:
-                        raise ValueError(f"Unexpected flow_pred_cond dim: {flow_pred_cond.dim()}, shape: {flow_pred_cond.shape}")
-                else:
-                    # Forward pass with KV cache
-                    with torch.cuda.amp.autocast(dtype=weight_dtype):
-                        flow_pred = self.transformer(
-                            x=noisy_input,
-                            context=in_prompt_embeds,
-                            t=timestep,
-                            seq_len=seq_len,
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=current_start_frame * frame_seq_length,
-                            cache_start=None,
-                        )
+                        # Forward pass with KV cache
+                        with torch.cuda.amp.autocast(dtype=weight_dtype):
+                            flow_pred = self.transformer(
+                                x=noisy_input,
+                                context=in_prompt_embeds,
+                                t=timestep,
+                                seq_len=seq_len,
+                                kv_cache=self.kv_cache_pos,
+                                crossattn_cache=self.crossattn_cache_pos,
+                                current_start=current_start_frame * frame_seq_length,
+                                cache_start=None,
+                            )
 
-                    # Transformer output shape check
-                    if flow_pred.dim() == 4:
-                        # [F, C, H, W], need to add batch dim and permute
-                        flow_pred = flow_pred.unsqueeze(0).permute(0, 2, 1, 3, 4)
-                    # If already 5D [B, C, F, H, W], no need to permute
-                
-                # Get current sigma for x0 conversion
-                sigma_t = self.scheduler.sigmas[step_idx]
-                
-                # Convert to x0: x0 = x_t - sigma_t * flow_pred (matches original wan_wrapper.py line 192)
-                denoised_pred = noisy_input - sigma_t * flow_pred  # [B*F, C, H, W]
-                
-                if step_idx < len(timesteps) - 1:
-                    # Not the last step: add noise for next timestep
-                    next_t = timesteps[step_idx + 1]
+                        # Transformer output shape check
+                        if flow_pred.dim() == 4:
+                            # [F, C, H, W], need to add batch dim and permute
+                            flow_pred = flow_pred.unsqueeze(0).permute(0, 2, 1, 3, 4)
+                        # If already 5D [B, C, F, H, W], no need to permute
                     
-                    # Add noise using flow matching formula: x_{t+1} = (1-sigma_{t+1}) * x0 + sigma_{t+1} * noise
-                    next_sigma = self.scheduler.sigmas[step_idx + 1]
-                    local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
-                    noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
-                else:
-                    noisy_input = denoised_pred
+                    # Get current sigma for x0 conversion
+                    sigma_t = self.scheduler.sigmas[step_idx]
+                    
+                    # Convert to x0: x0 = x_t - sigma_t * flow_pred (matches original wan_wrapper.py line 192)
+                    denoised_pred = noisy_input - sigma_t * flow_pred  # [B*F, C, H, W]
+                    
+                    if step_idx < len(timesteps) - 1:
+                        # Not the last step: add noise for next timestep
+                        next_t = timesteps[step_idx + 1]
+                        
+                        # Add noise using flow matching formula: x_{t+1} = (1-sigma_{t+1}) * x0 + sigma_{t+1} * noise
+                        next_sigma = self.scheduler.sigmas[step_idx + 1]
+                        local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
+                        noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
+                    else:
+                        noisy_input = denoised_pred
+
+                    progress_bar.update()
 
             # Update output with denoised block
             output[:, :, cache_start_frame:cache_start_frame + current_num_frames] = denoised_pred
@@ -822,9 +828,6 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                     callback_kwargs[k] = locals()[k]
                 callback_outputs = callback_on_step_end(self, block_idx, t, callback_kwargs)
                 latents = callback_outputs.pop("latents", latents)
-
-            if comfyui_progressbar:
-                pbar.update(1)
 
         # 9. Decode output
         
