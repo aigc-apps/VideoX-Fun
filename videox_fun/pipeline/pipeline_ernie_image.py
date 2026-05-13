@@ -1,3 +1,4 @@
+# Modified from https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/ernie_image/pipeline_ernie_image.py
 # Copyright 2025 Baidu ERNIE-Image Team and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
