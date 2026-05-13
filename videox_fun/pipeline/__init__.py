@@ -1,6 +1,7 @@
 from .pipeline_cogvideox_fun import CogVideoXFunPipeline
 from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
+from .pipeline_ernie_image import ErnieImagePipeline
 from .pipeline_fantasytalking import FantasyTalkingPipeline
 from .pipeline_flashhead import FlashHeadPipeline
 from .pipeline_flux import FluxPipeline

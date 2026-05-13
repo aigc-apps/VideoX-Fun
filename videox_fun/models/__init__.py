@@ -29,6 +29,7 @@ except:
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
+from .ernie_image_transformer import ErnieImageTransformer2DModel
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
 from .flashhead_audio_encoder import FlashHeadAudioEncoder
