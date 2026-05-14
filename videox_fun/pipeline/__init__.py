@@ -1,6 +1,7 @@
 from .pipeline_cogvideox_fun import CogVideoXFunPipeline
 from .pipeline_cogvideox_fun_control import CogVideoXFunControlPipeline
 from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
+from .pipeline_ernie_image import ErnieImagePipeline
 from .pipeline_fantasytalking import FantasyTalkingPipeline
 from .pipeline_flashhead import FlashHeadPipeline
 from .pipeline_flux import FluxPipeline
@@ -31,6 +32,7 @@ from .pipeline_wan2_2_vace_fun import Wan2_2VaceFunPipeline
 from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
+from .pipeline_wan_self_forcing import WanSelfForcingPipeline
 from .pipeline_wan_vace import WanVacePipeline
 from .pipeline_z_image import ZImagePipeline
 from .pipeline_z_image_control import ZImageControlPipeline
