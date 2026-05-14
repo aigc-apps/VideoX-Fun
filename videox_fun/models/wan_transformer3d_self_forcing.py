@@ -111,7 +111,6 @@ class CasualWanSelfAttention(nn.Module):
         self.eps = eps
         self.local_attn_size = local_attn_size
         self.sink_size = sink_size
-        self.max_attention_size = 32760 if local_attn_size == -1 else local_attn_size * 1560
 
         # Layers
         self.q = nn.Linear(dim, dim)
@@ -286,10 +285,14 @@ class CasualWanSelfAttention(nn.Module):
                 kv_cache["v"][:, local_start_index:local_end_index] = v
             
             # Compute attention with local window
+            if self.local_attn_size == -1:
+                max_attention_size = local_end_index
+            else:
+                max_attention_size = self.local_attn_size * frame_seqlen
             x = attention(
                 roped_query,
-                kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index],
-                kv_cache["v"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+                kv_cache["k"][:, max(0, local_end_index - max_attention_size):local_end_index],
+                kv_cache["v"][:, max(0, local_end_index - max_attention_size):local_end_index]
             )
             kv_cache["global_end_index"].fill_(current_end)
             kv_cache["local_end_index"].fill_(local_end_index)

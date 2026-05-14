@@ -387,18 +387,18 @@ class WanSelfForcingPipeline(DiffusionPipeline):
     def interrupt(self):
         return self._interrupt
 
-    def _initialize_kv_cache(self, batch_size, dtype, device, frame_seq_length):
+    def _initialize_kv_cache(self, batch_size, dtype, device, frame_seq_length, num_latent_frames):
         """
         Initialize KV cache for causal self-attention.
         """
         kv_cache_pos = []
         kv_cache_neg = []
-        # Use the default KV cache size (32760 tokens for global attention)
+        # Compute KV cache size based on actual resolution and frame count
         local_attn_size = getattr(self.transformer.config, 'local_attn_size', -1)
         if local_attn_size != -1:
             kv_cache_size = local_attn_size * frame_seq_length
         else:
-            kv_cache_size = 32760
+            kv_cache_size = num_latent_frames * frame_seq_length
         
         num_heads = self.transformer.config.num_heads
         head_dim = self.transformer.config.dim // num_heads
@@ -647,7 +647,8 @@ class WanSelfForcingPipeline(DiffusionPipeline):
 
         # 8. Initialize KV cache and cross-attention cache
         # Reset caches if they exist (for multiple inference calls)
-        if self.kv_cache_pos is not None:
+        required_kv_size = num_latent_frames * frame_seq_length
+        if self.kv_cache_pos is not None and self.kv_cache_pos[0]["k"].shape[1] >= required_kv_size:
             for block_index in range(len(self.kv_cache_pos)):
                 self.kv_cache_pos[block_index]["global_end_index"] = torch.tensor(
                     [0], dtype=torch.long, device=device)
@@ -661,7 +662,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                 self.crossattn_cache_pos[block_index]["is_init"] = False
                 self.crossattn_cache_neg[block_index]["is_init"] = False
         else:
-            self._initialize_kv_cache(batch_size=batch_size, dtype=weight_dtype, device=device, frame_seq_length=frame_seq_length)
+            self._initialize_kv_cache(batch_size=batch_size, dtype=weight_dtype, device=device, frame_seq_length=frame_seq_length, num_latent_frames=num_latent_frames)
             self._initialize_crossattn_cache(batch_size=batch_size, dtype=weight_dtype, device=device)
 
         # Build all_num_frames list

@@ -235,7 +235,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                     if args.fix_sample_size is not None:
                         height, width = args.fix_sample_size
                     else:
-                        height, width = args.video_sample_size
+                        height, width = args.video_sample_size, args.video_sample_size
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
@@ -1326,6 +1326,17 @@ def main():
             
             # Magvae needs the number of frames to be 4n + 1.
             batch_video_length = (batch_video_length - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
+
+            # KV cache training requires latent frames divisible by num_frame_per_block
+            if args.use_kv_cache_training:
+                k = (batch_video_length - 1) // sample_n_frames_bucket_interval
+                if args.independent_first_frame:
+                    # latent_frames - 1 = k must be divisible by num_frame_per_block
+                    k = (k // args.num_frame_per_block) * args.num_frame_per_block
+                else:
+                    # latent_frames = k + 1 must be divisible by num_frame_per_block
+                    k = ((k + 1) // args.num_frame_per_block) * args.num_frame_per_block - 1
+                batch_video_length = k * sample_n_frames_bucket_interval + 1
 
             if batch_video_length <= 0:
                 batch_video_length = 1
