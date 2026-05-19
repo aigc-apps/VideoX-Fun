@@ -24,7 +24,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -39,7 +39,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram

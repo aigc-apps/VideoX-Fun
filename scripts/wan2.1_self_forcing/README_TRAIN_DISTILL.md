@@ -203,7 +203,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -218,9 +218,11 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram
 ```
 
@@ -277,6 +279,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--gen_update_interval` | Generator update interval | 5 |
 | `--negative_prompt` | Negative prompt for distillation | Chinese negative prompt |
 | `--train_sampling_steps` | Training sampling steps | 1000 |
+| `--ode_transformer_path` | Path to ODE-trained weights to load into generator transformer3d | `models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt` |
 
 **Self-Forcing-Specific Parameters**:
 
@@ -363,7 +366,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -378,9 +381,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram
 ```
 
@@ -423,7 +428,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -438,9 +443,11 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram
 ```
 
@@ -475,7 +482,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -490,9 +497,11 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram
 ```
 
@@ -537,7 +546,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=4e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -552,9 +561,11 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
   --train_mode="normal" \
   --trainable_modules "." \
-  --use_teacher_forcing \
+  --ode_transformer_path="models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt" \
   --low_vram
 ```
 

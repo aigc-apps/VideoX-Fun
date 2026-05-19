@@ -669,6 +669,12 @@ def parse_args():
         help=("If you want to load the weight from other transformers, input its path."),
     )
     parser.add_argument(
+        "--ode_transformer_path",
+        type=str,
+        default=None,
+        help=("If you want to load the ode-trained weight into generator transformer3d, input its path."),
+    )
+    parser.add_argument(
         "--vae_path",
         type=str,
         default=None,
@@ -725,7 +731,7 @@ def parse_args():
     parser.add_argument(
         "--real_guidance_scale",
         type=float,
-        default=6.0,
+        default=4.5,
         help="The cfg scale for real score.",
     )
     parser.add_argument(
@@ -981,11 +987,31 @@ def main():
         else:
             state_dict = torch.load(args.transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+        state_dict = state_dict["generator_ema"] if "generator_ema" in state_dict else state_dict
+        if any(k.startswith("model.") for k in state_dict.keys()):
+            state_dict = {k.replace("model.", "", 1) if k.startswith("model.") else k: v for k, v in state_dict.items()}
 
         m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
         m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
         m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+
+    if args.ode_transformer_path is not None:
+        print(f"From ode checkpoint: {args.ode_transformer_path}")
+        if args.ode_transformer_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(args.ode_transformer_path)
+        else:
+            state_dict = torch.load(args.ode_transformer_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+        state_dict = state_dict["generator_ema"] if "generator_ema" in state_dict else state_dict
+        state_dict = state_dict["generator"] if "generator" in state_dict else state_dict
+        if any(k.startswith("model.") for k in state_dict.keys()):
+            state_dict = {k.replace("model.", "", 1) if k.startswith("model.") else k: v for k, v in state_dict.items()}
+
+        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"ode_transformer_path loaded into generator_transformer3d. missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
     if args.vae_path is not None:
@@ -1242,7 +1268,7 @@ def main():
 
         return length_to_frame_num
 
-    if args.enable_bucket:
+    if (args.enable_bucket and args.train_mode != "normal") or args.use_teacher_forcing:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         batch_sampler_generator = torch.Generator().manual_seed(args.seed)
         batch_sampler = AspectRatioBatchImageVideoSampler(
@@ -1823,11 +1849,6 @@ def main():
                             if vae_stream_2 is not None:
                                 torch.cuda.current_stream().wait_stream(vae_stream_2) 
 
-                            # Encode clean latents for teacher forcing
-                            clean_latents = None
-                            if args.use_teacher_forcing:
-                                clean_latents = _batch_encode_vae(pixel_values) 
-
                             mask = rearrange(mask, "b f c h w -> b c f h w")
                             mask = torch.concat(
                                 [
@@ -2015,8 +2036,6 @@ def main():
                 bsz, channel, num_frames, height, width = target_shape
                 if step % args.gen_update_interval == 0:
                     if args.use_kv_cache_training:
-                        # === KV cache block-by-block training (original Self-Forcing) ===
-                        
                         # Calculate frame_seq_length
                         patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
@@ -2075,15 +2094,15 @@ def main():
                             torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
                         )
                         
+                        # Same exit step across all blocks (matches original Self-Forcing default)
+                        num_denoising_steps = len(denoising_step_list)
+                        final_step_index = generate_and_sync_list(num_denoising_steps, device=accelerator.device)[0]
+                        
                         for block_idx, current_num_frames in enumerate(all_num_frames):
                             # Extract noise for current block
                             start_idx = current_start_frame - num_input_frames
                             end_idx = start_idx + current_num_frames
                             noisy_input = generator_noise[:, :, start_idx:end_idx]
-                            
-                            # Denoise loop for current block
-                            num_denoising_steps = len(denoising_step_list)
-                            final_step_index = generate_and_sync_list(num_denoising_steps, device=noisy_input.device)[0]
                             
                             for index, current_timestep in enumerate(denoising_step_list):
                                 is_final_step = (index == final_step_index)
@@ -2144,19 +2163,15 @@ def main():
                             # Record output
                             output_pred[:, :, current_start_frame:current_start_frame + current_num_frames] = generator_pred_block
                             
-                            # Update KV cache with clean context (teacher forcing) or noisy context
+                            # Update KV cache with clean context (consistent with inference: feed denoised_pred directly)
                             if block_idx < len(all_num_frames) - 1:
                                 context_timestep = torch.ones([bsz, current_num_frames], device=accelerator.device, dtype=torch.int64) * args.context_noise
                                 
-                                # Use clean latents for teacher forcing, otherwise add noise
+                                # Use clean latents for teacher forcing, otherwise use denoised prediction directly
                                 if use_teacher_forcing_step and clean_latents is not None:
                                     context_input = clean_latents[:, :, start_idx:end_idx]
                                 else:
-                                    context_input = add_noise(
-                                        generator_pred_block,
-                                        torch.randn(generator_pred_block.shape, dtype=generator_pred_block.dtype, device=generator_pred_block.device, generator=torch_rng),
-                                        context_timestep[:, 0]
-                                    )
+                                    context_input = generator_pred_block
                                 
                                 context_input_list = [context_input[i] for i in range(bsz)]
                                 
@@ -2446,13 +2461,14 @@ def main():
                         torch.rand(1, generator=torch_rng, device=accelerator.device).item() < args.teacher_forcing_prob
                     )
                     
+                    # Same exit step across all blocks (matches original Self-Forcing default)
+                    num_denoising_steps = len(denoising_step_list)
+                    final_step_index = generate_and_sync_list(num_denoising_steps, device=accelerator.device)[0]
+                    
                     for block_idx, current_num_frames in enumerate(all_num_frames):
                         start_idx = current_start_frame - num_input_frames
                         end_idx = start_idx + current_num_frames
                         noisy_input = fake_score_critic_noise[:, :, start_idx:end_idx]
-                        
-                        num_denoising_steps = len(denoising_step_list)
-                        final_step_index = generate_and_sync_list(num_denoising_steps, device=noisy_input.device)[0]
                         
                         for index, current_timestep in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
@@ -2509,19 +2525,15 @@ def main():
                         
                         output_pred[:, :, current_start_frame:current_start_frame + current_num_frames] = fake_score_denoised_pred_block
                         
-                        # Update KV cache with clean context (teacher forcing) or noisy context
+                        # Update KV cache with clean context (consistent with inference: feed denoised_pred directly)
                         if block_idx < len(all_num_frames) - 1:
                             context_timestep = torch.ones([bsz, current_num_frames], device=accelerator.device, dtype=torch.int64) * args.context_noise
                             
-                            # Use clean latents for teacher forcing, otherwise add noise
+                            # Use clean latents for teacher forcing, otherwise use denoised prediction directly
                             if use_teacher_forcing_step and clean_latents is not None:
                                 context_input = clean_latents[:, :, start_idx:end_idx]
                             else:
-                                context_input = add_noise(
-                                    fake_score_denoised_pred_block,
-                                    torch.randn(fake_score_denoised_pred_block.shape, dtype=fake_score_denoised_pred_block.dtype, device=fake_score_denoised_pred_block.device, generator=torch_rng),
-                                    context_timestep[:, 0]
-                                )
+                                context_input = fake_score_denoised_pred_block
                             
                             context_input_list = [context_input[i] for i in range(bsz)]
                             
