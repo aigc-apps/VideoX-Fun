@@ -37,7 +37,7 @@ if dynamo.config.cache_size_limit < 128:
 # see https://github.com/pytorch/pytorch/issues/133254
 # change to default for other models
 flex_attention = torch.compile(
-    flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+    flex_attention, dynamic=False)
 
 
 @amp.autocast(enabled=False)
