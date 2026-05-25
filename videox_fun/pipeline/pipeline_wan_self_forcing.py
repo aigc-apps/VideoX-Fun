@@ -22,6 +22,17 @@ from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
+def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
+    """Official FlashHead timestep schedule with shift transform."""
+    if num_inference_steps == 4:
+        timesteps = [1000, 750, 500, 250]
+    else:
+        timesteps = np.linspace(num_timesteps, 1, num_inference_steps, dtype=np.float32).tolist()
+    timesteps = torch.tensor(timesteps + [0.0], dtype=torch.float32, device=device)
+    t = timesteps / num_timesteps
+    return shift * t / (1 + (shift - 1) * t) * num_timesteps
+
+
 EXAMPLE_DOC_STRING = """
     Examples:
         ```python
@@ -472,12 +483,13 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
-        shift: int = 5,
+        shift: float = 5.0,
         initial_latent: Optional[torch.FloatTensor] = None,
         start_frame_index: int = 0,
         num_frame_per_block: int = 1,
         independent_first_frame: bool = True,
         context_noise: int = 0,
+        stochastic_sampling: bool = True,
     ) -> Union[WanSelfForcingPipelineOutput, Tuple]:
         r"""
         Function invoked when calling the pipeline for Self-Forcing causal generation.
@@ -547,10 +559,9 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             in_prompt_embeds = prompt_embeds
 
         # 4. Prepare timesteps
-        self.scheduler.sigma_min = 0.0
-        self.scheduler.config.shift_terminal = 0.625
-
-        if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+        if stochastic_sampling:
+            timesteps = stochastic_sampling_timesteps(num_inference_steps, shift, device)
+        elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
             self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
@@ -690,10 +701,11 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             if hasattr(self.scheduler, 'model_outputs'):
                 self.scheduler.model_outputs = []
             
-            with self.progress_bar(total=num_inference_steps) as progress_bar:
-                for step_idx, t in enumerate(timesteps):
+            denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
+            with self.progress_bar(total=len(denoise_timesteps)) as progress_bar:
+                for step_idx, t in enumerate(denoise_timesteps):
                     # Per-frame timesteps for causal generation
-                    timestep = torch.ones([batch_size, current_num_frames], device=device, dtype=torch.long) * t
+                    timestep = torch.ones([batch_size, current_num_frames], device=device, dtype=weight_dtype) * t
 
                     if comfyui_progressbar:
                         pbar.update(1)
@@ -757,22 +769,28 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             flow_pred = flow_pred.unsqueeze(0).permute(0, 2, 1, 3, 4)
                         # If already 5D [B, C, F, H, W], no need to permute
                     
-                    # Get current sigma for x0 conversion
-                    sigma_t = self.scheduler.sigmas[step_idx]
-                    
-                    # Convert to x0: x0 = x_t - sigma_t * flow_pred (matches original wan_wrapper.py line 192)
-                    denoised_pred = noisy_input - sigma_t * flow_pred  # [B*F, C, H, W]
-                    
-                    if step_idx < len(timesteps) - 1:
-                        # Not the last step: add noise for next timestep
-                        next_t = timesteps[step_idx + 1]
-                        
-                        # Add noise using flow matching formula: x_{t+1} = (1-sigma_{t+1}) * x0 + sigma_{t+1} * noise
-                        next_sigma = self.scheduler.sigmas[step_idx + 1]
-                        local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
-                        noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
+                    # compute the previous noisy sample x_t -> x_t-1
+                    if stochastic_sampling:
+                        t_i = (timesteps[step_idx] / 1000).to(weight_dtype)
+                        t_i_1 = (timesteps[step_idx + 1] / 1000).to(weight_dtype)
+                        denoised_pred = noisy_input - flow_pred * t_i
+                        noisy_input = (1 - t_i_1) * denoised_pred + t_i_1 * torch.randn(
+                            denoised_pred.shape, dtype=denoised_pred.dtype, device=device, generator=generator
+                        )
                     else:
-                        noisy_input = denoised_pred
+                        # Get current sigma for x0 conversion
+                        sigma_t = self.scheduler.sigmas[step_idx]
+                        
+                        # Convert to x0: x0 = x_t - sigma_t * flow_pred
+                        denoised_pred = noisy_input - sigma_t * flow_pred
+                        
+                        if step_idx < len(denoise_timesteps) - 1:
+                            # Not the last step: add noise for next timestep
+                            next_sigma = self.scheduler.sigmas[step_idx + 1]
+                            local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
+                            noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
+                        else:
+                            noisy_input = denoised_pred
 
                     progress_bar.update()
 

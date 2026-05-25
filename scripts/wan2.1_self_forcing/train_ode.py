@@ -33,7 +33,6 @@ import torchvision.transforms.functional as TF
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
@@ -51,7 +50,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
-from transformers.utils import ContextManagers
 
 import datasets
 
@@ -60,18 +58,20 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.data import (
-    ImageVideoSafetensorsDataset, RandomSampler)
+from videox_fun.data import ImageVideoSafetensorsDataset, RandomSampler
 from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                                WanTransformer3DModel_SelfForcing)
 from videox_fun.pipeline import WanSelfForcingPipeline
 from videox_fun.utils.utils import save_videos_grid
 
-
 check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
+
+# ============================================================================
+# Utilities
+# ============================================================================
 
 def filter_kwargs(cls, kwargs):
     import inspect
@@ -80,10 +80,52 @@ def filter_kwargs(cls, kwargs):
     return {k: v for k, v in kwargs.items() if k in valid_params}
 
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
+def log_validation(transformer3d, args, config, accelerator, weight_dtype, global_step,
+                   fsdp_stage=0, zero_stage=0):
+    """Run validation. Loads tokenizer, text_encoder and vae lazily (only when called) and frees them after."""
+    text_encoder = None
+    vae = None
     try:
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
             logger.info("Running validation... ")
+
+            # --- Lazy load tokenizer, text_encoder and vae just for this validation pass ---
+            tokenizer = AutoTokenizer.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')),
+            )
+
+            logger.info("Loading text encoder for validation...")
+            if zero_stage == 3:
+                ctx = accelerate.state.AcceleratorState().deepspeed_plugin.zero3_init_context_manager(enable=False)
+            else:
+                from contextlib import nullcontext
+                ctx = nullcontext()
+            with ctx:
+                text_encoder = WanT5EncoderModel.from_pretrained(
+                    os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
+                    additional_kwargs=OmegaConf.to_container(config['text_encoder_kwargs']),
+                    low_cpu_mem_usage=True,
+                    torch_dtype=weight_dtype,
+                )
+            text_encoder = text_encoder.eval()
+            text_encoder.requires_grad_(False)
+
+            logger.info("Loading VAE for validation...")
+            vae = AutoencoderKLWan.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
+                additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
+            ).to(weight_dtype)
+            vae.eval()
+            vae.requires_grad_(False)
+
+            # Apply FSDP sharding to text_encoder if FSDP/DeepSpeed is enabled
+            if fsdp_stage != 0 or zero_stage != 0:
+                from functools import partial
+
+                from videox_fun.dist import shard_model
+                shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+                text_encoder = shard_fn(text_encoder)
+
             scheduler = FlowMatchEulerDiscreteScheduler(
                 **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
             )
@@ -126,10 +168,19 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     os.path.join(args.output_dir, f"sample/sample-{global_step}-rank{accelerator.process_index}-{i}.mp4")
                 )
 
+            # --- Free text_encoder, vae and pipeline to release GPU memory ---
             del pipeline
+            del text_encoder
+            del vae
+            text_encoder = None
+            vae = None
             gc.collect()
             torch.cuda.empty_cache()
     except Exception as e:
+        if text_encoder is not None:
+            del text_encoder
+        if vae is not None:
+            del vae
         gc.collect()
         torch.cuda.empty_cache()
         print(f"Eval error on rank {accelerator.process_index} with info {e}")
@@ -527,46 +578,15 @@ def main():
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
 
-    # Load scheduler, tokenizer and models.
+    # Load scheduler.
     scheduler_kwargs = OmegaConf.to_container(config['scheduler_kwargs'])
     scheduler_kwargs['shift'] = args.shift
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, scheduler_kwargs)
     )
 
-    # Get Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')),
-    )
-
-    def deepspeed_zero_init_disabled_context_manager():
-        """
-        returns either a context list that includes one that will disable zero.Init or an empty context list
-        """
-        deepspeed_plugin = AcceleratorState().deepspeed_plugin if accelerate.state.is_initialized() else None
-        if deepspeed_plugin is None:
-            return []
-
-        return [deepspeed_plugin.zero3_init_context_manager(enable=False)]
-
-    # Currently Accelerate doesn't know how to handle multiple models under Deepspeed ZeRO stage 3.
-    # For this to work properly all models must be run through `accelerate.prepare`. But accelerate
-    # will try to assign the same optimizer with the same weights to all models during
-    # `deepspeed.initialize`, which of course doesn't work.
-    #
-    # For now the following workaround will partially support Deepspeed ZeRO-3, by excluding the 2
-    # frozen models from being partitioned during `zero.Init` which gets called during
-    # `from_pretrained` So CLIPTextModel and AutoencoderKL will not enjoy the parameter sharding
-    # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
-    with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
-        # Get Text encoder
-        text_encoder = WanT5EncoderModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
-            additional_kwargs=OmegaConf.to_container(config['text_encoder_kwargs']),
-            low_cpu_mem_usage=True,
-            torch_dtype=weight_dtype,
-        )
-        text_encoder = text_encoder.eval()
+    # NOTE: tokenizer, text_encoder and vae are NOT loaded here. They are lazily loaded inside
+    # `log_validation` only when validation actually runs, then freed afterwards.
 
     # Get causal Transformer (generator)
     transformer3d = WanTransformer3DModel_SelfForcing.from_pretrained(
@@ -575,8 +595,7 @@ def main():
         low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
-    # Freeze text_encoder and set transformer3d to trainable
-    text_encoder.requires_grad_(False)
+    # Set transformer3d to non-trainable initially (trainable_modules will toggle below)
     transformer3d.requires_grad_(False)
 
     if args.transformer_path is not None:
@@ -777,13 +796,6 @@ def main():
     transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         transformer3d, optimizer, train_dataloader, lr_scheduler
     )
-
-    if fsdp_stage != 0 or zero_stage != 0:
-        from functools import partial
-
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
-        text_encoder = shard_fn(text_encoder)
 
     # Compute denoising_step_list from scheduler
     noise_scheduler.set_timesteps(args.train_sampling_steps, device=accelerator.device)
@@ -1018,8 +1030,9 @@ def main():
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
                     log_validation(
-                        None, text_encoder, tokenizer, transformer3d,
-                        args, config, accelerator, weight_dtype, global_step
+                        transformer3d,
+                        args, config, accelerator, weight_dtype, global_step,
+                        fsdp_stage=fsdp_stage, zero_stage=zero_stage,
                     )
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
@@ -1030,8 +1043,9 @@ def main():
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
             log_validation(
-                None, text_encoder, tokenizer, transformer3d,
-                args, config, accelerator, weight_dtype, global_step
+                transformer3d,
+                args, config, accelerator, weight_dtype, global_step,
+                fsdp_stage=fsdp_stage, zero_stage=zero_stage,
             )
 
     # Create the pipeline using the trained modules and save it.

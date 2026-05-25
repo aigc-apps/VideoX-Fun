@@ -68,6 +68,7 @@ sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5 
+stochastic_sampling = True
 
 # Load pretrained model if need
 transformer_path    = "models/Diffusion_Transformer/Self-Forcing/checkpoints/self_forcing_dmd.pt"
@@ -121,7 +122,9 @@ if transformer_path is not None:
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
 
+    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
     state_dict = state_dict["generator_ema"] if "generator_ema" in state_dict else state_dict
+    state_dict = state_dict["generator"] if "generator" in state_dict else state_dict
     if any(k.startswith("model.") for k in state_dict.keys()):
         state_dict = {k.replace("model.", "", 1) if k.startswith("model.") else k: v for k, v in state_dict.items()}
 
@@ -239,6 +242,7 @@ with torch.no_grad():
         num_frame_per_block     = num_frame_per_block,
         independent_first_frame = independent_first_frame,
         context_noise           = context_noise,
+        stochastic_sampling     = stochastic_sampling,
     ).videos
 
 if lora_path is not None:
