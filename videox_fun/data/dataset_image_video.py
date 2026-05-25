@@ -494,7 +494,8 @@ class ImageVideoControlDataset(Dataset):
                 shuffle(subject_id)
                 subject_images = []
                 for i in range(min(len(subject_id), 4)):
-                    subject_image = Image.open(subject_id[i])
+                    subject_image_path = subject_id[i] if self.data_root is None else os.path.join(self.data_root, subject_id[i])
+                    subject_image = Image.open(subject_image_path)
 
                     if self.padding_subject_info:
                         img = padding_image(subject_image, visual_width, visual_height)
@@ -547,7 +548,8 @@ class ImageVideoControlDataset(Dataset):
                 shuffle(subject_id)
                 subject_images = []
                 for i in range(min(len(subject_id), 4)):
-                    subject_image = Image.open(subject_id[i]).convert('RGB')
+                    subject_image_path = subject_id[i] if self.data_root is None else os.path.join(self.data_root, subject_id[i])
+                    subject_image = Image.open(subject_image_path).convert('RGB')
 
                     if self.padding_subject_info:
                         img = padding_image(subject_image, visual_width, visual_height)

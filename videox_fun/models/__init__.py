@@ -25,10 +25,18 @@ try:
     from transformers import Qwen3VLForConditionalGeneration
 except:
     Qwen3VLForConditionalGeneration = None
-    print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
+    print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use Qwen3VLForConditionalGeneration, please upgrade your transformers package to the latest version.")
+
+try:
+    from transformers import Mistral3Model, Ministral3ForCausalLM
+except:
+    Mistral3Model = None
+    Ministral3ForCausalLM = None
+    print("Your transformers version is too old to load Mistral3Model and Ministral3ForCausalLM. If you wish to use ErnieImage, please upgrade your transformers package to the latest version.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
+from .ernie_image_transformer import ErnieImageTransformer2DModel
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
 from .flashhead_audio_encoder import FlashHeadAudioEncoder
@@ -69,6 +77,7 @@ from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
+from .wan_transformer3d_self_forcing import WanTransformer3DModel_SelfForcing
 from .wan_transformer3d_vace import VaceWanTransformer3DModel
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
