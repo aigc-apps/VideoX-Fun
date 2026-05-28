@@ -771,11 +771,63 @@ def main():
         RandomSampler(train_dataset, generator=batch_sampler_generator), 
         batch_size=args.train_batch_size, drop_last=True
     )        
+
+    def ode_safetensors_collate_fn(examples):
+        """Collate safetensors-loaded ODE samples into a batch.
+
+        Each sample is a dict with keys:
+        - 'latents': [S, C, F, H, W]
+        - 'prompt_embeds': [L, D]
+        - 'prompt_attention_mask': [L]
+
+        The default torch collate fails when, across samples, the same key has
+        slightly different dtypes/lengths (e.g. attention_mask saved as bool/int
+        vs long, or prompt_embeds with different seq lengths). This custom
+        collate normalizes dtypes and pads variable-length text fields so
+        `torch.stack` always succeeds.
+        """
+        out = {}
+
+        # ---- latents: assume identical shape across samples (fixed by pipeline) ----
+        latents = [ex["latents"] for ex in examples]
+        target_latent_dtype = latents[0].dtype
+        latents = [t.to(target_latent_dtype) for t in latents]
+        out["latents"] = torch.stack(latents, dim=0)
+
+        # ---- prompt_embeds: pad along seq dim, unify dtype ----
+        embeds = [ex["prompt_embeds"] for ex in examples]
+        embed_dtype = embeds[0].dtype
+        max_len = max(e.shape[0] for e in embeds)
+        padded_embeds = []
+        for e in embeds:
+            e = e.to(embed_dtype)
+            if e.shape[0] < max_len:
+                pad = torch.zeros(
+                    max_len - e.shape[0], *e.shape[1:], dtype=embed_dtype
+                )
+                e = torch.cat([e, pad], dim=0)
+            padded_embeds.append(e)
+        out["prompt_embeds"] = torch.stack(padded_embeds, dim=0)
+
+        # ---- prompt_attention_mask: pad along seq dim, force long dtype ----
+        masks = [ex["prompt_attention_mask"].long() for ex in examples]
+        max_len = max(m.shape[0] for m in masks)
+        padded_masks = []
+        for m in masks:
+            if m.shape[0] < max_len:
+                pad = torch.zeros(max_len - m.shape[0], dtype=torch.long)
+                m = torch.cat([m, pad], dim=0)
+            padded_masks.append(m)
+        out["prompt_attention_mask"] = torch.stack(padded_masks, dim=0)
+
+        return out
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_sampler=batch_sampler, 
         persistent_workers=True if args.dataloader_num_workers != 0 else False,
         num_workers=args.dataloader_num_workers,
+        collate_fn=ode_safetensors_collate_fn,
     )
 
     # Scheduler and math around the number of training steps.
@@ -802,9 +854,19 @@ def main():
     denoising_step_list = noise_scheduler.timesteps[
         args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)
     ]
-    num_denoising_steps = len(denoising_step_list)
+    # Training denoising step list: append 0 (clean) for train-inference context alignment.
+    # index=4 frames use clean latent as input but are excluded from loss via mask=(timestep!=0).
+    # They serve as clean context for later blocks via causal attention.
+    train_denoising_step_list = denoising_step_list
+    if 0 not in denoising_step_list.tolist():
+        train_denoising_step_list = torch.cat([
+            denoising_step_list, torch.tensor([0], device=denoising_step_list.device)
+        ])
+    num_denoising_steps = len(train_denoising_step_list)
     if accelerator.is_main_process:
-        print(f"Denoising step list: {denoising_step_list.tolist()}")
+        print(f"Denoising step list (inference): {denoising_step_list.tolist()}")
+        print(f"Denoising step list (training):  {train_denoising_step_list.tolist()}")
+        print(f"num_denoising_steps (includes clean): {num_denoising_steps}")
         print(f"Dataset size: {len(train_dataset)}")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -926,7 +988,7 @@ def main():
                 noisy_input = torch.gather(ode_latent, dim=1, index=gather_index).squeeze(1)  # [B, C, F, H, W]
 
                 # Compute actual timestep values: [B, F]
-                timestep = denoising_step_list[index]  # [B, F]
+                timestep = train_denoising_step_list[index]  # [B, F]
 
                 # --- Forward through causal generator ---
                 # Create block mask for causal training
@@ -968,6 +1030,10 @@ def main():
                         (schedule_timesteps.unsqueeze(0) - timestep.reshape(-1).unsqueeze(1)).abs(), dim=1
                     )  # [B*F]
                     sigma = sigmas[step_indices].to(weight_dtype)
+                    # Fix: timestep=0 (clean context frames) should have sigma=0 exactly.
+                    # The scheduler's timesteps array doesn't include 0, so argmin gives a small
+                    # non-zero sigma. Explicitly set to 0 for clean context frames.
+                    sigma[timestep.reshape(-1) == 0] = 0.0
                     sigma = sigma.reshape(bsz, 1, num_frames, 1, 1)  # [B, 1, F, 1, 1]
 
                     pred_x0 = noisy_input - sigma * flow_pred
