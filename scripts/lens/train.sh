@@ -1,4 +1,3 @@
-export VIDEOX_ATTENTION_TYPE=FLASH_ATTENTION
 export MODEL_NAME="../CogVideoX-Fun-Github/models/Diffusion_Transformer/Lens"
 export DATASET_NAME="datasets/X-Fun-Images-Demo"
 export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
@@ -7,10 +6,7 @@ export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.j
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-    --fsdp_transformer_layer_cls_to_wrap LensTransformerBlock --fsdp_sharding_strategy "FULL_SHARD" \
-    --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/lens/train.py \
+accelerate launch --mixed_precision="bf16" scripts/lens/train.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
@@ -25,9 +21,6 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_lens" \
-  --validation_steps=100 \
-  --validation_epochs=500 \
-  --validation_prompts="1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
