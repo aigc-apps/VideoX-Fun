@@ -18,6 +18,7 @@ from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
                                   usp_attn_longcatvideo_forward,
                                   usp_cross_attn_longcatvideo_forward,
                                   usp_rope_longcatvideo_forward)
+from .lens_xfuser import usp_lens_joint_attention_forward
 from .ltx2_xfuser import (LTX2MultiGPUsAttnProcessor,
                           LTX2PerturbedMultiGPUsAttnProcessor)
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0

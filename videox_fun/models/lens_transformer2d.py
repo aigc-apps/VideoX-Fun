@@ -21,10 +21,6 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
 
-# ---------------------------------------------------------------------------
-# Embeddings & RoPE
-# ---------------------------------------------------------------------------
-
 
 def get_timestep_embedding(
     timesteps: torch.Tensor,
@@ -183,11 +179,6 @@ class LensEmbedRope(nn.Module):
         return freqs.clone().contiguous()
 
 
-# ---------------------------------------------------------------------------
-# Attention (joint image + text, plain SDPA)
-# ---------------------------------------------------------------------------
-
-
 class LensJointAttention(nn.Module):
     """Joint image+text attention with fused QKV and SDPA backend."""
 
@@ -280,11 +271,6 @@ class LensJointAttention(nn.Module):
         return img_out, txt_out
 
 
-# ---------------------------------------------------------------------------
-# Transformer block
-# ---------------------------------------------------------------------------
-
-
 class LensTransformerBlock(nn.Module):
     def __init__(
         self,
@@ -359,11 +345,6 @@ class LensTransformerBlock(nn.Module):
         encoder_hidden_states = encoder_hidden_states + txt_gate2 * self.txt_mlp(txt_modulated2)
 
         return encoder_hidden_states, hidden_states
-
-
-# ---------------------------------------------------------------------------
-# Top-level model
-# ---------------------------------------------------------------------------
 
 
 class LensTransformer2DModel(

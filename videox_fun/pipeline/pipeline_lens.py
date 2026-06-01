@@ -25,9 +25,6 @@ from ..models import AutoencoderKLFlux2, LensTransformer2DModel
 from ..models.lens_reasoner import LensPromptReasoner
 from ..models.lens_text_encoder import LensGptOssEncoder
 
-# ---------------------------------------------------------------------------
-# Resolution buckets (1024/1440 base x 9 aspect ratios, all divisible by 16)
-# ---------------------------------------------------------------------------
 
 RESOLUTION_BUCKETS: Dict[int, Dict[str, tuple]] = {
     1024: {
@@ -72,11 +69,6 @@ def resolve_resolution(base_resolution: int, aspect_ratio: str) -> tuple:
             f"Supported: {SUPPORTED_ASPECT_RATIOS}"
         )
     return table[aspect_ratio]
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
@@ -135,11 +127,6 @@ class LensPipelineOutput(BaseOutput):
     images: Union[List[Image.Image], np.ndarray, torch.Tensor]
 
 
-# ---------------------------------------------------------------------------
-# Pipeline
-# ---------------------------------------------------------------------------
-
-
 class LensPipeline(DiffusionPipeline):
     r"""Lens text-to-image pipeline (GPT-OSS multi-layer features + Flux2 VAE).
 
@@ -196,10 +183,6 @@ class LensPipeline(DiffusionPipeline):
         self.reasoner = LensPromptReasoner(
             text_encoder=self.text_encoder, tokenizer=self.tokenizer
         )
-
-    # ------------------------------------------------------------------
-    # Prompt encoding
-    # ------------------------------------------------------------------
 
     def _build_chat_inputs(
         self, prompts: Sequence[str], max_sequence_length: int, device: torch.device
@@ -323,10 +306,6 @@ class LensPipeline(DiffusionPipeline):
         mask = mask.repeat_interleave(n, dim=0)
         return features, mask
 
-    # ------------------------------------------------------------------
-    # Reasoner shim
-    # ------------------------------------------------------------------
-
     def refine_prompt(
         self, prompts: Sequence[str], enable_reasoner: bool = False
     ) -> List[str]:
@@ -358,10 +337,6 @@ class LensPipeline(DiffusionPipeline):
             return list(obj[0])
         return self.reasoner.refine(prompts, enable=enable_reasoner)
 
-    # ------------------------------------------------------------------
-    # Latent prep
-    # ------------------------------------------------------------------
-
     def prepare_latents(
         self,
         batch_size: int,
@@ -379,10 +354,6 @@ class LensPipeline(DiffusionPipeline):
         if latents is not None:
             return latents.to(device=device, dtype=dtype)
         return randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-
-    # ------------------------------------------------------------------
-    # Input checks
-    # ------------------------------------------------------------------
 
     def check_inputs(
         self,
@@ -410,10 +381,6 @@ class LensPipeline(DiffusionPipeline):
                         f"callback_on_step_end_tensor_inputs entry {k!r} is not "
                         f"in {self._callback_tensor_inputs}."
                     )
-
-    # ------------------------------------------------------------------
-    # Decode
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _patchify_latents(latents: torch.Tensor) -> torch.Tensor:
@@ -458,10 +425,6 @@ class LensPipeline(DiffusionPipeline):
         image = (image + 1.0) * (255.0 / 2.0)
         image = image.permute(0, 2, 3, 1).to(device="cpu", dtype=torch.uint8).numpy()
         return [Image.fromarray(im) for im in image]
-
-    # ------------------------------------------------------------------
-    # __call__
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def __call__(
@@ -611,10 +574,6 @@ class LensPipeline(DiffusionPipeline):
         if not return_dict:
             return (images,)
         return LensPipelineOutput(images=images)
-
-    # ------------------------------------------------------------------
-    # Misc helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _align_text_features(
