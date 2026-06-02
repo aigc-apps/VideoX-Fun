@@ -126,8 +126,10 @@ def log_validation(transformer3d, args, config, accelerator, weight_dtype, globa
                 shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
                 text_encoder = shard_fn(text_encoder)
 
+            scheduler_kwargs = OmegaConf.to_container(config['scheduler_kwargs'])
+            scheduler_kwargs['shift'] = args.shift
             scheduler = FlowMatchEulerDiscreteScheduler(
-                **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+                **filter_kwargs(FlowMatchEulerDiscreteScheduler, scheduler_kwargs)
             )
             pipeline = WanSelfForcingPipeline(
                 vae=vae,
@@ -158,9 +160,11 @@ def log_validation(transformer3d, args, config, accelerator, weight_dtype, globa
                     generator=generator,
                     guidance_scale=1.0,
                     num_inference_steps=len(args.denoising_step_indices_list),
+                    shift=args.shift,
                     num_frame_per_block=args.num_frame_per_block,
                     independent_first_frame=args.independent_first_frame,
                     context_noise=args.context_noise,
+                    stochastic_sampling=True,
                 ).videos
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 save_videos_grid(
@@ -188,7 +192,8 @@ def log_validation(transformer3d, args, config, accelerator, weight_dtype, globa
 
 def get_timestep_for_ode(
     min_timestep, max_timestep, batch_size, num_frames,
-    num_frame_per_block, independent_first_frame, device
+    num_frame_per_block, independent_first_frame, device,
+    generator=None,
 ):
     """
     Generate random timestep indices per frame/block.
@@ -198,7 +203,8 @@ def get_timestep_for_ode(
     timestep = torch.randint(
         min_timestep, max_timestep,
         [batch_size, num_frames],
-        device=device, dtype=torch.long
+        device=device, dtype=torch.long,
+        generator=generator,
     )
     if independent_first_frame:
         timestep_from_second = timestep[:, 1:]
@@ -213,6 +219,38 @@ def get_timestep_for_ode(
         timestep[:, :, 1:] = timestep[:, :, 0:1]
         timestep = timestep.reshape(timestep.shape[0], -1)
     return timestep
+
+
+def initialize_kv_cache_for_training(batch_size, num_frames, frame_seq_length,
+                                     num_layers, num_heads, head_dim, dtype, device):
+    """Initialize KV cache for block-by-block training (mirrors train_distill)."""
+    kv_cache_size = num_frames * frame_seq_length
+    kv_cache = []
+    for _ in range(num_layers):
+        kv_cache.append({
+            "k": torch.zeros([batch_size, kv_cache_size, num_heads, head_dim],
+                              dtype=dtype, device=device),
+            "v": torch.zeros([batch_size, kv_cache_size, num_heads, head_dim],
+                              dtype=dtype, device=device),
+            "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+            "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
+        })
+    return kv_cache
+
+
+def initialize_crossattn_cache_for_training(batch_size, text_len, num_layers,
+                                             num_heads, head_dim, dtype, device):
+    """Initialize cross-attention cache for block-by-block training."""
+    crossattn_cache = []
+    for _ in range(num_layers):
+        crossattn_cache.append({
+            "k": torch.zeros([batch_size, text_len, num_heads, head_dim],
+                              dtype=dtype, device=device),
+            "v": torch.zeros([batch_size, text_len, num_heads, head_dim],
+                              dtype=dtype, device=device),
+            "is_init": False,
+        })
+    return crossattn_cache
 
 
 # ============================================================================
@@ -476,6 +514,26 @@ def parse_args():
         type=float,
         default=8.0,
         help="Shift value for FlowMatchEulerDiscreteScheduler. Default: 8.0 (matches ODE data generation).",
+    )
+    parser.add_argument(
+        "--use_kv_cache_training",
+        action="store_true",
+        help=(
+            "If set, run block-by-block KV cache training that fully matches the "
+            "pipeline_wan_self_forcing inference behavior. Otherwise fall back to "
+            "the default one-shot causal-mask ODE regression (kept as baseline)."
+        ),
+    )
+    parser.add_argument(
+        "--prob_full_zero_start",
+        type=float,
+        default=0.0,
+        help=(
+            "Probability (per-sample) of forcing ALL frames in ALL blocks to use "
+            "timestep index=0 (pure-noise start). Bridges the train-inference gap "
+            "so the model also sees the real autoregressive rollout where every "
+            "block starts from fresh noise. 0.0 disables (default)."
+        ),
     )
 
     args = parser.parse_args()
@@ -972,81 +1030,226 @@ def main():
                 # Target: clean endpoint (last timestep)
                 target_latent = ode_latent[:, -1]  # [B, C, F, H, W]
                 num_frames = target_latent.shape[2]
+                C_dim, F_dim, H_dim, W_dim = (
+                    ode_latent.shape[2], ode_latent.shape[3],
+                    ode_latent.shape[4], ode_latent.shape[5],
+                )
 
-                # Random timestep index per frame/block
-                index = get_timestep_for_ode(
-                    0, num_denoising_steps, bsz, num_frames,
-                    args.num_frame_per_block, args.independent_first_frame,
-                    accelerator.device
-                )  # [B, F]
-
-                # Gather noisy input from ODE trajectory
-                # ode_latent: [B, S, C, F, H, W], index: [B, F] -> expand to gather
-                C_dim, F_dim, H_dim, W_dim = ode_latent.shape[2], ode_latent.shape[3], ode_latent.shape[4], ode_latent.shape[5]
-                gather_index = index.reshape(bsz, 1, 1, num_frames, 1, 1).expand(-1, -1, C_dim, -1, H_dim, W_dim)
-                # Transpose ode_latent to [B, S, C, F, H, W] for gathering along dim=1
-                noisy_input = torch.gather(ode_latent, dim=1, index=gather_index).squeeze(1)  # [B, C, F, H, W]
-
-                # Compute actual timestep values: [B, F]
-                timestep = train_denoising_step_list[index]  # [B, F]
-
-                # --- Forward through causal generator ---
-                # Create block mask for causal training
                 patch_h, patch_w = accelerator.unwrap_model(transformer3d).config.patch_size[1:]
                 frame_seqlen = (H_dim * W_dim) // (patch_h * patch_w)
                 seq_len = frame_seqlen * num_frames
 
-                accelerator.unwrap_model(transformer3d).create_block_mask_for_training(
-                    num_frames=num_frames,
-                    frame_seqlen=frame_seqlen,
-                    num_frame_per_block=args.num_frame_per_block,
-                    independent_first_frame=args.independent_first_frame,
-                    device=accelerator.device
-                )
-
-                # Convert to list format for transformer
-                noisy_input_list = [noisy_input[i] for i in range(bsz)]
-
             with accelerator.accumulate(transformer3d):
                 with torch.cuda.amp.autocast(dtype=weight_dtype):
-                    # Pass per-frame timestep [B, F] so each frame gets its own time embedding.
-                    # This matches the original Self-Forcing: different frames are at different
-                    # noise levels and require independent time modulation.
-                    flow_pred = transformer3d(
-                        x=noisy_input_list,
-                        context=prompt_embeds,
-                        t=timestep,
-                        seq_len=seq_len,
-                    )
+                    if args.use_kv_cache_training:
+                        # ============================================================
+                        # Block-by-block KV cache training (autoregressive, single-step x0)
+                        # Starting timestep is randomly sampled per block — same as the
+                        # non-KV-cache (baseline) branch. Each block performs ONE forward
+                        # to predict x0; KV cache is then refreshed with pred_block +
+                        # context_noise to keep the autoregressive rollout intact.
+                        # ============================================================
+                        # 1) Block split (mirrors pipeline_wan_self_forcing)
+                        if not args.independent_first_frame:
+                            assert num_frames % args.num_frame_per_block == 0
+                            num_blocks_split = num_frames // args.num_frame_per_block
+                            all_num_frames = [args.num_frame_per_block] * num_blocks_split
+                        else:
+                            assert (num_frames - 1) % args.num_frame_per_block == 0
+                            num_blocks_split = (num_frames - 1) // args.num_frame_per_block
+                            all_num_frames = [1] + [args.num_frame_per_block] * num_blocks_split
 
-                    # Convert flow prediction to x0 prediction (per-frame).
-                    # flow_pred: [B, C, F, H, W], xt: [B, C, F, H, W]
-                    # x0 = xt - sigma_t * flow_pred
-                    # Each frame has its own sigma from its own timestep.
-                    sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=torch.float64)
-                    schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
-                    # timestep: [B, F] -> flatten to [B*F] for per-frame sigma lookup
-                    step_indices = torch.argmin(
-                        (schedule_timesteps.unsqueeze(0) - timestep.reshape(-1).unsqueeze(1)).abs(), dim=1
-                    )  # [B*F]
-                    sigma = sigmas[step_indices].to(weight_dtype)
-                    # Fix: timestep=0 (clean context frames) should have sigma=0 exactly.
-                    # The scheduler's timesteps array doesn't include 0, so argmin gives a small
-                    # non-zero sigma. Explicitly set to 0 for clean context frames.
-                    sigma[timestep.reshape(-1) == 0] = 0.0
-                    sigma = sigma.reshape(bsz, 1, num_frames, 1, 1)  # [B, 1, F, 1, 1]
+                        # 2) Random timestep index per frame/block (same as baseline branch)
+                        index = get_timestep_for_ode(
+                            0, num_denoising_steps, bsz, num_frames,
+                            args.num_frame_per_block, args.independent_first_frame,
+                            accelerator.device,
+                            generator=torch_rng,
+                        )  # [B, F]
+                        # Optional: force per-sample full-zero start to cover the
+                        # real inference rollout (all blocks starting from pure noise).
+                        if args.prob_full_zero_start > 0.0:
+                            zero_mask = (
+                                torch.rand(bsz, device=accelerator.device, generator=torch_rng)
+                                < args.prob_full_zero_start
+                            )
+                            if zero_mask.any():
+                                index[zero_mask] = 0
+                        gather_index = index.reshape(bsz, 1, 1, num_frames, 1, 1).expand(
+                            -1, -1, C_dim, -1, H_dim, W_dim
+                        )
+                        noisy_input_full = torch.gather(ode_latent, dim=1, index=gather_index).squeeze(1)
+                        timestep_full = train_denoising_step_list[index]  # [B, F]
 
-                    pred_x0 = noisy_input - sigma * flow_pred
+                        # 3) Initialize KV / cross-attention cache
+                        cfg = accelerator.unwrap_model(transformer3d).config
+                        num_layers_t = cfg.num_layers
+                        num_heads_t = cfg.num_heads
+                        head_dim_t = cfg.dim // num_heads_t
+                        text_len = 512  # T5 sequence length
+                        kv_cache = initialize_kv_cache_for_training(
+                            batch_size=bsz,
+                            num_frames=num_frames,
+                            frame_seq_length=frame_seqlen,
+                            num_layers=num_layers_t,
+                            num_heads=num_heads_t,
+                            head_dim=head_dim_t,
+                            dtype=weight_dtype,
+                            device=accelerator.device,
+                        )
+                        crossattn_cache = initialize_crossattn_cache_for_training(
+                            batch_size=bsz,
+                            text_len=text_len,
+                            num_layers=num_layers_t,
+                            num_heads=num_heads_t,
+                            head_dim=head_dim_t,
+                            dtype=weight_dtype,
+                            device=accelerator.device,
+                        )
 
-                    # MSE loss (mask t=0 frames)
-                    # timestep: [B, F], mask frames where timestep != 0
-                    mask = (timestep != 0).unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # [B, 1, F, 1, 1]
-                    mask = mask.expand_as(target_latent).float()
+                        # 4) Sigma / timestep lookup tables (per-frame sigma)
+                        sigmas_full = noise_scheduler.sigmas.to(
+                            device=accelerator.device, dtype=torch.float64
+                        )
+                        schedule_timesteps_full = noise_scheduler.timesteps.to(accelerator.device)
 
-                    if mask.sum() > 0:
-                        loss = F.mse_loss(pred_x0 * mask, target_latent * mask, reduction="sum") / mask.sum()
+                        current_start_frame = 0
+                        total_pred = torch.zeros_like(target_latent)
+                        full_seq_len = frame_seqlen * num_frames
+
+                        # 5) Block-by-block rollout — single-step x0 prediction per block
+                        for block_idx, current_num_frames in enumerate(all_num_frames):
+                            start_idx = current_start_frame
+                            end_idx = current_start_frame + current_num_frames
+
+                            noisy_input = noisy_input_full[:, :, start_idx:end_idx]
+                            timestep_block = timestep_full[:, start_idx:end_idx].to(torch.int64)
+
+                            flow_pred = transformer3d(
+                                x=[noisy_input[i] for i in range(bsz)],
+                                context=prompt_embeds,
+                                t=timestep_block,
+                                seq_len=full_seq_len,
+                                kv_cache=kv_cache,
+                                crossattn_cache=crossattn_cache,
+                                current_start=current_start_frame * frame_seqlen,
+                                cache_start=None,
+                            )
+                            if isinstance(flow_pred, list):
+                                flow_pred = torch.stack(flow_pred, dim=0)
+
+                            # Per-frame sigma -> x0 = xt - sigma * flow_pred
+                            step_indices_block = torch.argmin(
+                                (schedule_timesteps_full.unsqueeze(0)
+                                 - timestep_block.reshape(-1).unsqueeze(1)).abs(), dim=1
+                            )
+                            sigma_block = sigmas_full[step_indices_block].to(weight_dtype)
+                            # timestep=0 (clean context) must use sigma=0 exactly.
+                            sigma_block[timestep_block.reshape(-1) == 0] = 0.0
+                            sigma_block = sigma_block.reshape(bsz, 1, current_num_frames, 1, 1)
+                            pred_block = noisy_input - sigma_block * flow_pred
+
+                            total_pred[:, :, start_idx:end_idx] = pred_block
+
+                            # 6) Update KV cache with student's pred_block + context_noise
+                            #    (matches pipeline_wan_self_forcing L802-L839)
+                            if block_idx < len(all_num_frames) - 1:
+                                ctx_t = torch.full(
+                                    [bsz, current_num_frames], args.context_noise,
+                                    device=accelerator.device, dtype=torch.int64,
+                                )
+                                with torch.no_grad():
+                                    transformer3d(
+                                        x=[pred_block[i] for i in range(bsz)],
+                                        context=prompt_embeds,
+                                        t=ctx_t,
+                                        seq_len=full_seq_len,
+                                        kv_cache=kv_cache,
+                                        crossattn_cache=crossattn_cache,
+                                        current_start=current_start_frame * frame_seqlen,
+                                        cache_start=None,
+                                    )
+
+                            current_start_frame += current_num_frames
+
+                        # 7) ODE-endpoint MSE loss (mask out clean timestep=0 frames)
+                        mask = (timestep_full != 0).unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+                        mask = mask.expand_as(target_latent).float()
+                        if mask.sum() > 0:
+                            loss = F.mse_loss(total_pred * mask, target_latent * mask, reduction="sum") / mask.sum()
+                        else:
+                            loss = F.mse_loss(total_pred, target_latent)
                     else:
-                        loss = F.mse_loss(pred_x0, target_latent)
+                        # --- Baseline (one-shot causal-mask) preparation ---
+                        # Random timestep index per frame/block
+                        index = get_timestep_for_ode(
+                            0, num_denoising_steps, bsz, num_frames,
+                            args.num_frame_per_block, args.independent_first_frame,
+                            accelerator.device,
+                            generator=torch_rng,
+                        )  # [B, F]
+                        # Optional: force per-sample full-zero start to cover the
+                        # real inference rollout (all blocks starting from pure noise).
+                        if args.prob_full_zero_start > 0.0:
+                            zero_mask = (
+                                torch.rand(bsz, device=accelerator.device, generator=torch_rng)
+                                < args.prob_full_zero_start
+                            )
+                            if zero_mask.any():
+                                index[zero_mask] = 0
+
+                        # Gather noisy input from ODE trajectory
+                        gather_index = index.reshape(bsz, 1, 1, num_frames, 1, 1).expand(
+                            -1, -1, C_dim, -1, H_dim, W_dim
+                        )
+                        noisy_input = torch.gather(ode_latent, dim=1, index=gather_index).squeeze(1)
+
+                        # Compute actual timestep values: [B, F]
+                        timestep = train_denoising_step_list[index]  # [B, F]
+
+                        # Build causal block mask
+                        accelerator.unwrap_model(transformer3d).create_block_mask_for_training(
+                            num_frames=num_frames,
+                            frame_seqlen=frame_seqlen,
+                            num_frame_per_block=args.num_frame_per_block,
+                            independent_first_frame=args.independent_first_frame,
+                            device=accelerator.device
+                        )
+
+                        # Convert to list format for transformer
+                        noisy_input_list = [noisy_input[i] for i in range(bsz)]
+
+                        # ============================================================
+                        # Baseline: one-shot causal-mask ODE regression
+                        # ============================================================
+                        flow_pred = transformer3d(
+                            x=noisy_input_list,
+                            context=prompt_embeds,
+                            t=timestep,
+                            seq_len=seq_len,
+                        )
+
+                        # Convert flow prediction to x0 prediction (per-frame).
+                        sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=torch.float64)
+                        schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+                        step_indices = torch.argmin(
+                            (schedule_timesteps.unsqueeze(0) - timestep.reshape(-1).unsqueeze(1)).abs(), dim=1
+                        )
+                        sigma = sigmas[step_indices].to(weight_dtype)
+                        # Fix: timestep=0 (clean context frames) should have sigma=0 exactly.
+                        sigma[timestep.reshape(-1) == 0] = 0.0
+                        sigma = sigma.reshape(bsz, 1, num_frames, 1, 1)
+
+                        pred_x0 = noisy_input - sigma * flow_pred
+
+                        # MSE loss (mask t=0 frames)
+                        mask = (timestep != 0).unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+                        mask = mask.expand_as(target_latent).float()
+
+                        if mask.sum() > 0:
+                            loss = F.mse_loss(pred_x0 * mask, target_latent * mask, reduction="sum") / mask.sum()
+                        else:
+                            loss = F.mse_loss(pred_x0, target_latent)
 
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
