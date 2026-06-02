@@ -14,6 +14,7 @@ from .pipeline_longcatvideo import LongCatVideoPipeline
 from .pipeline_longcatvideo_avatar import LongCatVideoAvatarPipeline
 from .pipeline_ltx2 import LTX2Pipeline
 from .pipeline_ltx2_i2v import LTX2I2VPipeline
+from .pipeline_ltx2_latent_upsample import LTX2LatentUpsamplePipeline
 from .pipeline_lens import LensPipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline

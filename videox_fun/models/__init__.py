@@ -65,6 +65,7 @@ from .longcatvideo_transformer3d_avatar import \
     LongCatVideoAvatarTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
 from .ltx2_connecter import LTX2TextConnectors
+from .ltx2_latent_upsampler import LTX2LatentUpsamplerModel
 from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
