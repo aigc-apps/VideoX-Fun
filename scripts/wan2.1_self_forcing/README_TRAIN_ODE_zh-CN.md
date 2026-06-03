@@ -225,7 +225,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_ode
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
-  --learning_rate=2e-05 \
+  --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -301,47 +301,84 @@ bash scripts/wan2.1_self_forcing/train_ode.sh
 
 ### 4.3 使用 DeepSpeed-Zero-2 / FSDP 训练
 
-多卡训练支持与蒸馏阶段相同的显存节约后端。将 4.1 中 `accelerate launch` 前缀替换为以下任意一种即可：
+多卡训练支持与蒸馏阶段相同的显存节约后端。
 
 **DeepSpeed-Zero-2**（推荐默认）：
 
 ```bash
-accelerate launch \
-  --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json \
-  --deepspeed_multinode_launcher standard \
-  scripts/wan2.1_self_forcing/train_ode.py \
-  ...  # 训练参数与 4.1 相同
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME=""
+export ODE_DATA_META="datasets/ode_pairs_output/outputs.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_self_forcing/train_ode.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$ODE_DATA_META \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=500 \
+  --learning_rate=2.0e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_self_forcing_ode_regression" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --max_grad_norm=0.05 \
+  --num_frame_per_block=3 \
+  --train_sampling_steps=1000 \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --shift=8.0 \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "."
 ```
 
 **FSDP**（DeepSpeed-Zero-2 显存不足时使用）：
 
 ```bash
-accelerate launch --mixed_precision="bf16" \
-  --use_fsdp \
-  --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-  --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
-  --fsdp_sharding_strategy "FULL_SHARD" \
-  --fsdp_state_dict_type=SHARDED_STATE_DICT \
-  --fsdp_backward_prefetch "BACKWARD_PRE" \
-  --fsdp_cpu_ram_efficient_loading False \
-  scripts/wan2.1_self_forcing/train_ode.py \
-  ...  # 训练参数与 4.1 相同
-```
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME=""
+export ODE_DATA_META="datasets/ode_pairs_output/outputs.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
 
-**DeepSpeed-Zero-3**（适用于超大模型，1.3B 通常不需要）：
-
-```bash
-accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true \
-  --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json \
-  --deepspeed_multinode_launcher standard \
-  scripts/wan2.1_self_forcing/train_ode.py \
-  ...  # 训练参数与 4.1 相同
-
-# 训练完成后将分片 checkpoint 转为单文件 bf16：
-python scripts/zero_to_bf16.py \
-  output_dir_wan2.1_self_forcing_ode_regression/checkpoint-{N} \
-  output_dir_wan2.1_self_forcing_ode_regression/checkpoint-{N}-outputs \
-  --max_shard_size 80GB --safe_serialization
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_self_forcing/train_ode.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$ODE_DATA_META \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=500 \
+  --learning_rate=2.0e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_self_forcing_ode_regression" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --max_grad_norm=0.05 \
+  --num_frame_per_block=3 \
+  --train_sampling_steps=1000 \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --shift=8.0 \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "."
 ```
 
 ### 4.4 多机分布式训练
@@ -351,24 +388,64 @@ python scripts/zero_to_bf16.py \
 **机器 0（Master）**：
 
 ```bash
-export MASTER_ADDR="192.168.1.100"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME=""
+export ODE_DATA_META="datasets/ode_pairs_output/outputs.json"
+export MASTER_ADDR="192.168.1.100"  # 主节点 IP
+export MASTER_PORT=10086
+export WORLD_SIZE=2                  # 机器总数
+export NUM_PROCESS=16                # 总进程数 = 机器数 × 8
+export RANK=0                        # 本机 rank（0 或 1）
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_self_forcing/train_ode.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$ODE_DATA_META \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=500 \
+  --learning_rate=2.0e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_self_forcing_ode_regression" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --max_grad_norm=0.05 \
+  --num_frame_per_block=3 \
+  --train_sampling_steps=1000 \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --shift=8.0 \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "."
+```
+
+**机器 1（Worker）**：
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+export DATASET_NAME=""
+export ODE_DATA_META="datasets/ode_pairs_output/outputs.json"
+export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2
 export NUM_PROCESS=16
-export RANK=0
+export RANK=1  # 注意此处为 1
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" \
-  --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT \
-  --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK \
-  --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json \
-  --deepspeed_multinode_launcher standard \
-  scripts/wan2.1_self_forcing/train_ode.py \
-  ...  # 训练参数与 4.1 相同
+# 与机器 0 使用完全相同的 accelerate launch 命令
 ```
-
-**机器 1（Worker）**：与 Master 完全相同，仅将 `export RANK=1`。
 
 **注意事项**：
 - 优先使用 RDMA / InfiniBand。无 RDMA 时需设置 `NCCL_IB_DISABLE=1` 与 `NCCL_P2P_DISABLE=1`。
