@@ -16,7 +16,6 @@ import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.models.attention import FeedForward
-from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
@@ -348,7 +347,7 @@ class LensTransformerBlock(nn.Module):
 
 
 class LensTransformer2DModel(
-    ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin, CacheMixin
+    ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin
 ):
     """The Lens text-to-image DiT.
 
