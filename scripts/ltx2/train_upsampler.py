@@ -157,7 +157,7 @@ def log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, globa
                 pixel_values = pixel_values.to(device=accelerator.device, dtype=weight_dtype)
 
                 # Encode high-res
-                gt_latents = vae.encode(pixel_values)[0].sample()
+                gt_latents = vae.encode(pixel_values)[0].mode()
 
                 # Create low-res input
                 scale = args.spatial_scale
@@ -168,7 +168,7 @@ def log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, globa
                 pv_low = F.interpolate(pv_flat, size=(low_h, low_w), mode='bilinear', align_corners=False)
                 pixel_values_low = pv_low.reshape(b, f, c, low_h, low_w).permute(0, 2, 1, 3, 4)
 
-                input_latents = vae.encode(pixel_values_low)[0].sample()
+                input_latents = vae.encode(pixel_values_low)[0].mode()
 
                 # Upsample
                 unwrapped_upsampler = accelerator.unwrap_model(latent_upsampler)
@@ -1031,7 +1031,7 @@ def main():
                     gt_latents_list = []
                     for i in range(0, bsz, bs):
                         pv_bs = pixel_values[i:i + bs]
-                        encoded = vae.encode(pv_bs)[0].sample()
+                        encoded = vae.encode(pv_bs)[0].mode()
                         gt_latents_list.append(encoded)
                     gt_latents = torch.cat(gt_latents_list, dim=0)
 
@@ -1039,7 +1039,7 @@ def main():
                     input_latents_list = []
                     for i in range(0, bsz, bs):
                         pv_bs = pixel_values_low[i:i + bs]
-                        encoded = vae.encode(pv_bs)[0].sample()
+                        encoded = vae.encode(pv_bs)[0].mode()
                         input_latents_list.append(encoded)
                     input_latents = torch.cat(input_latents_list, dim=0)
 
