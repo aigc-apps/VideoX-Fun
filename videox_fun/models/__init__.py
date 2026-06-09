@@ -28,11 +28,17 @@ except:
     print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use Qwen3VLForConditionalGeneration, please upgrade your transformers package to the latest version.")
 
 try:
-    from transformers import Mistral3Model, Ministral3ForCausalLM
+    from transformers import Ministral3ForCausalLM, Mistral3Model
 except:
     Mistral3Model = None
     Ministral3ForCausalLM = None
     print("Your transformers version is too old to load Mistral3Model and Ministral3ForCausalLM. If you wish to use ErnieImage, please upgrade your transformers package to the latest version.")
+
+try:
+    from .lens_text_encoder import LensGptOssEncoder
+except ImportError:
+    LensGptOssEncoder = None
+    print("LensGptOssEncoder not available. Lens requires transformers >= 5.8.0 for GptOssForCausalLM.")
 
 from .cogvideox_transformer3d import CogVideoXTransformer3DModel
 from .cogvideox_vae import AutoencoderKLCogVideoX
@@ -50,6 +56,8 @@ from .hunyuanvideo_transformer3d import HunyuanVideoTransformer3DModel
 from .hunyuanvideo_vae import AutoencoderKLHunyuanVideo
 from .infinitetalk_audio_encoder import InfiniteTalkAudioEncoder
 from .infinitetalk_transformer3d import InfiniteTalkTransformer3DModel
+from .lens_reasoner import LensPromptReasoner
+from .lens_transformer2d import LensTransformer2DModel
 from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
                                          Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
@@ -57,6 +65,7 @@ from .longcatvideo_transformer3d_avatar import \
     LongCatVideoAvatarTransformer3DModel
 from .longcatvideo_vae import AutoencoderKLLongCatVideo
 from .ltx2_connecter import LTX2TextConnectors
+from .ltx2_latent_upsampler import LTX2LatentUpsamplerModel
 from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio

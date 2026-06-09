@@ -618,7 +618,30 @@ class ImageVideoControlDataset(Dataset):
 
 
 class ImageVideoSafetensorsDataset(Dataset):
-    """Dataset for loading preprocessed latents in safetensors format."""
+    """Dataset for loading preprocessed latents in safetensors format.
+
+    Supports two JSON entry formats produced by ``train_preprocess.py``:
+
+    1. Single-file mode (default preprocess output)::
+
+           {"file_path": "/path/to/scene.safetensors"}
+
+       The whole state dict is loaded from a single ``.safetensors`` file.
+
+    2. Per-tensor mode (``--save_per_tensor`` preprocess output)::
+
+           {
+               "file_path": "/path/to/scene_dir",
+               "latents": "/path/to/scene_dir/latents.safetensors",
+               "prompt_embeds": "/path/to/scene_dir/prompt_embeds.safetensors",
+               ...
+           }
+
+       Each key whose value is a ``.safetensors`` path is loaded individually
+       and merged into the returned ``state_dict``. The inner safetensors file
+       stores the tensor under the same key name, so a plain ``dict.update``
+       is sufficient to assemble the final state dict.
+    """
     def __init__(
         self,
         ann_path,
@@ -634,16 +657,38 @@ class ImageVideoSafetensorsDataset(Dataset):
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
 
+    def _resolve_path(self, path):
+        if self.data_root is None:
+            return path
+        return os.path.join(self.data_root, path)
+
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        """Load a single safetensors file containing preprocessed latents."""
-        if self.data_root is None:
-            path = self.dataset[idx]["file_path"]
-        else:
-            path = os.path.join(self.data_root, self.dataset[idx]["file_path"])
-        state_dict = load_file(path)
+        """Load preprocessed latents, supporting both single-file and per-tensor formats."""
+        item = self.dataset[idx]
+        file_path = item.get("file_path")
+
+        # Single-file mode: ``file_path`` points to a ``.safetensors`` archive
+        # that already holds every preprocessed tensor.
+        # Fall through to per-tensor mode when the key is absent or the file does not exist.
+        if (
+            file_path is not None
+            and file_path.endswith(".safetensors")
+            and os.path.exists(self._resolve_path(file_path))
+        ):
+            return load_file(self._resolve_path(file_path))
+
+        # Per-tensor mode: iterate over every ``.safetensors`` entry in the
+        # JSON record and merge their contents into a single state dict.
+        state_dict = {}
+        for key, value in item.items():
+            if key == "file_path":
+                continue
+            if isinstance(value, str) and value.endswith(".safetensors"):
+                tensor_path = self._resolve_path(value)
+                state_dict.update(load_file(tensor_path))
         return state_dict
 
 

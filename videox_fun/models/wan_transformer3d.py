@@ -1284,9 +1284,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             state_dict[key] = _state_dict[key]
 
                 if model.state_dict()['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
-                    model.state_dict()['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
-                    model.state_dict()['patch_embedding.weight'][:, state_dict['patch_embedding.weight'].size()[1]:, :, :] = 0
-                    state_dict['patch_embedding.weight'] = model.state_dict()['patch_embedding.weight']
+                    tmp_state_dict = torch.zeros(model.state_dict()['patch_embedding.weight'].size(), dtype=torch_dtype, device=param_device)
+                    tmp_state_dict[:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
+                    state_dict['patch_embedding.weight'] = tmp_state_dict
 
                 filtered_state_dict = {}
                 for key in state_dict:

@@ -36,6 +36,16 @@ def process_media_sample(sample, base_dir=None):
         if not file_path_str:
             return sample
 
+        # --- MODIFICATION START ---
+        # If file_path is a list, take the first element
+        if isinstance(file_path_str, list):
+            if len(file_path_str) > 0:
+                file_path_str = file_path_str[0]
+            else:
+                # Empty list, cannot process
+                return sample
+        # --- MODIFICATION END ---
+
         # Handle path resolution
         file_path_obj = Path(file_path_str)
         

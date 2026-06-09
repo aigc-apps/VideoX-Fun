@@ -225,7 +225,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_ode
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
-  --learning_rate=2e-05 \
+  --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -288,6 +288,17 @@ bash scripts/wan2.1_self_forcing/train_ode.sh
 | `--independent_first_frame` | First frame is independent (`[1, N, N, ...]` block pattern) | - |
 | `--context_noise` | Context noise level (matches downstream Self-Forcing distillation config) | 0 |
 
+**Validation Parameters (Optional)**:
+
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `--validation_steps` | Run validation every N steps | 2000 |
+| `--validation_epochs` | Run validation every N epochs | 5 |
+| `--validation_prompts` | Prompts used for validation video generation | English prompt |
+| `--video_sample_size` | Validation sample size | 640 |
+| `--video_sample_n_frames` | Number of frames for validation videos | 81 |
+| `--fix_sample_size` | Fixed `[height, width]` used during validation | `480 832` |
+
 ### 4.3 Training with DeepSpeed-Zero-2 / FSDP
 
 For multi-GPU training, the same memory-saving backends as the distillation stage are supported.
@@ -313,7 +324,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
-  --learning_rate=2e-05 \
+  --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -352,7 +363,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
-  --learning_rate=2e-05 \
+  --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -400,7 +411,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
-  --learning_rate=2e-05 \
+  --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
