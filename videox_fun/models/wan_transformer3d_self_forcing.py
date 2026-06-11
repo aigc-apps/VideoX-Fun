@@ -1061,9 +1061,16 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
 
         # Context Parallel: split input across GPUs
         if self.sp_world_size > 1:
-            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
             if t.dim() != 1:
+                # Expand e0 from per-frame [B, F, 6, dim] to per-token
+                # [B, F*frame_seqlen, 6, dim] so it shares the same SP chunk
+                # granularity as x. Avoids mismatch when F % sp_size != 0.
+                F_curr = e0.shape[1]
+                assert x.shape[1] % F_curr == 0
+                frame_seqlen_e0 = x.shape[1] // F_curr
+                e0 = e0.repeat_interleave(frame_seqlen_e0, dim=1)
                 e0 = torch.chunk(e0, self.sp_world_size, dim=1)[self.sp_world_rank]
+            x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
 
         # Arguments
         kwargs = dict(
