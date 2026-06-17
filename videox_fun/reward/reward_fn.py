@@ -614,7 +614,10 @@ class VideoAlignReward(BaseReward):
 
 if __name__ == "__main__":
     import numpy as np
-    from decord import VideoReader
+    try:
+        from decord import VideoReader
+    except ImportError:
+        from videox_fun.data.utils import AVVideoReader as VideoReader
 
     video_path_list = ["your_video_path_1.mp4", "your_video_path_2.mp4"]
     prompt_list = ["your_prompt_1", "your_prompt_2"]

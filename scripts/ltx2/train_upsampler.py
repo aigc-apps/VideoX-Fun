@@ -124,7 +124,10 @@ def log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, globa
                 logger.info("No validation_paths provided, skipping validation.")
                 return
 
-            from decord import VideoReader
+            try:
+                from decord import VideoReader
+            except ImportError:
+                from videox_fun.data.utils import AVVideoReader as VideoReader
 
             for i, video_path in enumerate(args.validation_paths):
                 if not os.path.exists(video_path):

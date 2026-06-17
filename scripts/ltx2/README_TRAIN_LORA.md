@@ -154,8 +154,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 If your data uses relative paths, configure the training script as follows:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -164,7 +164,7 @@ If your data uses absolute paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -254,8 +254,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | Parameter | Description | Example Value |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | Path to pretrained model | `models/Diffusion_Transformer/LTX-2` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution, auto bucketing | 640 |
 | `--video_sample_size` | Maximum video resolution for training | 640 |
@@ -317,8 +317,8 @@ You can configure validation parameters to periodically generate test videos dur
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -365,8 +365,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

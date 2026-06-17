@@ -236,8 +236,8 @@ After downloading data according to **2.1 Quick Test Dataset** and weights accor
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -279,8 +279,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Z-Image-Turbo` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Images-Controls-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Batch size per device | 1 |
 | `--image_sample_size` | Maximum training resolution, automatic bucketing | 1328 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (equivalent to larger batch) | 1 |
@@ -331,8 +331,8 @@ If DeepSpeed-Zero-2 runs out of GPU memory, you can switch to FSDP for training:
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -375,8 +375,8 @@ Training without DeepSpeed or FSDP may result in insufficient GPU memory. Only r
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

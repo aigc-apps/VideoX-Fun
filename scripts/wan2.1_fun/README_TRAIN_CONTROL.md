@@ -145,8 +145,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Controls-Demo --local_dir ./datas
 If your data uses relative paths, configure in the training script:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata_control.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Path**:
@@ -155,7 +155,7 @@ If your data uses absolute paths, configure in the training script:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata_control.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -239,8 +239,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 |-----|------|-------|
 | `--config_path` | Model config file path | `config/wan2.1/wan_civitai.yaml` |
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Wan2.1-Fun-V1.1-14B-Control` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata_control.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Controls-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Batch size per GPU | 1 |
 | `--image_sample_size` | Maximum image training resolution | 640 |
 | `--video_sample_size` | Maximum video training resolution | 640 |

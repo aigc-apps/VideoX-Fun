@@ -137,8 +137,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 如果数据的路径为相对路径，则在训练脚本中设置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -147,7 +147,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
@@ -233,7 +233,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-I2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -282,7 +282,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -343,8 +343,8 @@ Wan2.2采用了创新的双Transformer架构：
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Wan2.2-T2V-A14B` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Demo/` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
 | `--image_sample_size` | 图像最大训练分辨率 | 640 |
 | `--video_sample_size` | 视频最大训练分辨率 | 640 |

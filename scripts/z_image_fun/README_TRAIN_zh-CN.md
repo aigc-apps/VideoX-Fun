@@ -236,8 +236,8 @@ hf download alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1 --local-dir model
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -279,8 +279,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Z-Image-Turbo` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Images-Controls-Demo/` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
 | `--image_sample_size` | 最大训练分辨率,代码会自动分桶 | 1328 |
 | `--gradient_accumulation_steps` | 梯度累积步数(等效增大 batch) | 1 |
@@ -331,8 +331,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -375,8 +375,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

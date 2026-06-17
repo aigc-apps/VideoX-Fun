@@ -137,8 +137,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 If your data uses relative paths, configure in the training script:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -147,7 +147,7 @@ If your data uses absolute paths, configure in the training script:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (such as NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -233,7 +233,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-I2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -282,7 +282,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -343,8 +343,8 @@ Wan2.2 adopts an innovative dual-Transformer architecture:
 | Parameter | Description | Example Value |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Wan2.2-T2V-A14B` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Batch size per GPU | 1 |
 | `--image_sample_size` | Maximum image training resolution | 640 |
 | `--video_sample_size` | Maximum video training resolution | 640 |

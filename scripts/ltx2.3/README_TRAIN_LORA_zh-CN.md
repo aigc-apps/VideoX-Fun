@@ -154,8 +154,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 如果你的数据使用的是相对路径，训练脚本中请这样配置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -164,7 +164,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存放在本地，请使用相对路径。如果数据集存放在外部存储（如 NAS、OSS）或多机共享，请使用绝对路径。
@@ -251,8 +251,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/LTX-2` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | 训练数据元数据文件 | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批训练的样本数 | 1 |
 | `--image_sample_size` | 最大训练分辨率，自动 bucket | 640 |
 | `--video_sample_size` | 视频最大训练分辨率 | 640 |
@@ -314,8 +314,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -362,8 +362,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/LTX-2"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

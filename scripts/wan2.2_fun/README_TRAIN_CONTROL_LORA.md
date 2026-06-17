@@ -147,8 +147,8 @@ In addition to the original videos, the Control training dataset also requires c
 If your data uses relative paths, set in the training script:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Path**:
@@ -157,7 +157,7 @@ If your data uses absolute paths, set in the training script:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Suggestion**: If the dataset is small and stored locally, relative paths are recommended. If the dataset is stored on external storage (such as NAS, OSS) or shared across multiple machines, absolute paths are recommended.

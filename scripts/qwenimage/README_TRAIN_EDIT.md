@@ -128,8 +128,8 @@ The metadata.json for Edit model is different from the normal version, requiring
 If your data uses relative paths, set in the training script:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Edit-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Edit-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -138,7 +138,7 @@ If your data uses absolute paths, set in the training script:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, relative paths are recommended; if the dataset is stored on external storage (such as NAS, OSS) or shared across multiple machines, absolute paths are recommended.
@@ -216,8 +216,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | Parameter | Description | Example Value |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | Pre-trained model path | `models/Diffusion_Transformer/Qwen-Image-Edit` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Images-Edit-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Images-Edit-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Number of samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution, code will automatically bucket | 1328 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (equivalent to increasing batch) | 1 |

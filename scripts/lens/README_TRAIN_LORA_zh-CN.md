@@ -129,8 +129,8 @@ modelscope download --dataset PAI/X-Fun-Images-Demo --local_dir ./datasets/X-Fun
 如果数据的路径为相对路径，则在训练脚本中设置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -139,7 +139,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
@@ -209,8 +209,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Lens` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Images-Demo/` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Images-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
 | `--image_sample_size` | 最大训练分辨率，代码会自动分桶 | 1328 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效增大 batch） | 1 |
@@ -270,8 +270,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Lens"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -310,8 +310,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/Lens"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

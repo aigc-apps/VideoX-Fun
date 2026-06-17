@@ -136,8 +136,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 如果您的数据使用相对路径，请在训练脚本中配置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -146,7 +146,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存储在本地，请使用相对路径。如果数据集存储在外部存储（如 NAS、OSS）或在多台机器间共享，请使用绝对路径。
@@ -227,8 +227,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 |-----|------|-------|
 | `--config_path` | 配置文件路径 | `config/wan2.1/wan_civitai.yaml` |
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Wan2.1-T2V-1.3B/` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Demo/` |
+| `--train_data_meta` | 训练数据元数据文件 | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每个 GPU 的批次大小 | 1 |
 | `--image_sample_size` | 最大图像训练分辨率 | 640 |
 | `--video_sample_size` | 最大视频训练分辨率 | 640 |

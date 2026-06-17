@@ -6,7 +6,10 @@ from contextlib import contextmanager
 from typing import List, Optional, Tuple
 
 import numpy as np
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from ...data.utils import AVVideoReader as VideoReader
 from PIL import Image
 
 

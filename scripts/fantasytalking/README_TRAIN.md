@@ -149,8 +149,8 @@ The `metadata.json` for FantasyTalking is slightly different from the normal JSO
 If your data uses relative paths, configure the training script as follows:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -159,7 +159,7 @@ If your data uses absolute paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/path/to/your/metadata.json"
+export DATASET_META_NAME="/path/to/your/metadata_add_width_height.json"
 ```
 
 > 💡 **Tip**: If your dataset is small and stored locally, use relative paths. If your dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -249,8 +249,8 @@ Here is a detailed explanation of the key parameters in the training script:
 | `config_path` | Model configuration file path | `config/wan2.1/wan_civitai.yaml` |
 | `pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Wan2.1-I2V-14B-720P` |
 | `pretrained_audio_model_name_or_path` | Audio encoder path | `None` (automatically uses $MODEL_NAME/audio_encoder) |
-| `train_data_dir` | Training dataset directory | `datasets/internal_datasets/` |
-| `train_data_meta` | Training dataset metadata file | `datasets/internal_datasets/metadata.json` |
+| `train_data_dir` | Training dataset directory | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `train_data_meta` | Training dataset metadata file | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `video_sample_size` | Video sample size (maximum resolution) | `512` |
 | `token_sample_size` | Token sample size | `512` |
 | `video_sample_stride` | Video sample stride | `1` |

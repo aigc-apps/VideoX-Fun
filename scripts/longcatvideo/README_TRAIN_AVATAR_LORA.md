@@ -154,8 +154,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 If your data uses relative paths, configure the training script as follows:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -164,7 +164,7 @@ If your data uses absolute paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -256,8 +256,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | Path to pretrained base model | `models/Diffusion_Transformer/LongCat-Video` |
 | `--pretrained_avatar_model_name_or_path` | Path to pretrained avatar model | `models/Diffusion_Transformer/LongCat-Video-Avatar` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution, auto bucketing | 640 |
 | `--video_sample_size` | Maximum video resolution for training | 640 |
