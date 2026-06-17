@@ -162,8 +162,8 @@ def log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, globa
                 # Encode high-res
                 gt_latents = vae.encode(pixel_values)[0].mode()
 
-                # Create low-res input
-                scale = args.spatial_scale
+                # Create low-res input (scale is fixed by upsampler architecture)
+                scale = float(accelerator.unwrap_model(latent_upsampler).config.rational_spatial_scale)
                 low_h, low_w = int(h_target / scale), int(w_target / scale)
                 # Downsample spatially: flatten batch and frames, interpolate, unflatten
                 b, c, f, h, w = pixel_values.shape
@@ -492,12 +492,6 @@ def parse_args():
         help=("If you want to load the weight from other vaes, input its path."),
     )
     parser.add_argument(
-        "--spatial_scale",
-        type=float,
-        default=2.0,
-        help="Spatial upsampling scale factor (must match model config).",
-    )
-    parser.add_argument(
         '--trainable_modules',
         nargs='+',
         default=["."],
@@ -666,6 +660,11 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
         m, u = latent_upsampler.load_state_dict(state_dict, strict=False)
         print(f"Upsampler missing keys: {len(m)}, unexpected keys: {len(u)}")
+
+    # Spatial scale is fixed by the upsampler architecture; read it directly from the model config.
+    spatial_scale = float(latent_upsampler.config.rational_spatial_scale)
+    if accelerator.is_main_process:
+        logger.info(f"Using spatial_scale={spatial_scale} from latent_upsampler.config.rational_spatial_scale.")
 
     # Set trainable parameters
     latent_upsampler.requires_grad_(False)
@@ -860,7 +859,7 @@ def main():
                 batch_video_length = 1
 
             # Compute low-res target size (aligned to spatial_compression_ratio)
-            scale = args.spatial_scale
+            scale = spatial_scale
             spatial_ratio = vae.config.spatial_compression_ratio
             closest_size_list = list(map(lambda x: int(x), closest_size))
             low_h = int(closest_size_list[0] / scale / spatial_ratio) * spatial_ratio

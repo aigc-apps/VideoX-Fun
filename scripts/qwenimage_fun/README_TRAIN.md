@@ -142,45 +142,25 @@ It is recommended to use tools like [DWPose](https://github.com/IDEA-Research/DW
 
 ### 2.4 Relative vs Absolute Path Usage
 
-**Option 1: Using Relative Paths (Recommended)**
+**Relative Paths**:
 
-When data paths are not fixed or you need to train on different machines, relative paths are recommended.
+If your data uses relative paths, set in the training script:
 
-Configure relative paths in `metadata.json`, then specify the dataset root directory via `--train_data_dir` in the training script:
-
-```json
-[
-  {
-    "file_path": "train/image001.jpg",
-    "control_file_path": "control/image001.jpg",
-    "text": "A group of young men in suits and sunglasses are walking down a city street.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata.json"
 ```
 
-During training, the script will automatically search for files corresponding to relative paths under `--train_data_dir`.
+**Absolute Paths**:
 
-**Option 2: Using Absolute Paths**
+If your data uses absolute paths, set in the training script:
 
-If the dataset path is fixed, you can directly configure absolute paths in `metadata.json`:
-
-```json
-[
-  {
-    "file_path": "/mnt/data/images/image001.jpg",
-    "control_file_path": "/mnt/data/controls/image001.jpg",
-    "text": "A group of young men in suits and sunglasses.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME=""
+export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-When using absolute paths, the `--train_data_dir` parameter serves only as a default path, and the absolute paths in the JSON will take priority.
+> 💡 **Recommendation**: If the dataset is small and stored locally, relative paths are recommended; if the dataset is stored on external storage (such as NAS, OSS) or shared across multiple machines, absolute paths are recommended.
 
 ---
 

@@ -144,45 +144,25 @@ Control 模式的 metadata.json 与普通 FLUX.2 的 json 略有不同，需要�
 
 ### 2.4 相对路径与绝对路径使用方案
 
-**方案 1：使用相对路径（推荐）**
+**相对路径**：
 
-当数据路径不固定，或需要在不同机器上训练时，推荐使用相对路径。
+如果数据的路径为相对路径，则在训练脚本中设置：
 
-在 `metadata.json` 中配置相对路径，然后在训练脚本中通过 `--train_data_dir` 指定数据集根目录：
-
-```json
-[
-  {
-    "file_path": "train/image001.jpg",
-    "control_file_path": "control/image001.jpg",
-    "text": "A group of young men in suits and sunglasses are walking down a city street.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata.json"
 ```
 
-训练时会自动在 `--train_data_dir` 下寻找相对路径对应的文件。
+**绝对路径**：
 
-**方案 2：使用绝对路径**
+如果数据的路径为绝对路径，则在训练脚本中设置：
 
-如果数据集路径固定，可以直接在 `metadata.json` 中配置绝对路径：
-
-```json
-[
-  {
-    "file_path": "/mnt/data/images/image001.jpg",
-    "control_file_path": "/mnt/data/controls/image001.jpg",
-    "text": "A group of young men in suits and sunglasses.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME=""
+export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-使用绝对路径时，`--train_data_dir` 参数仅作为默认路径，实际会优先使用 json 中的绝对路径。
+> 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
 
 ---
 
