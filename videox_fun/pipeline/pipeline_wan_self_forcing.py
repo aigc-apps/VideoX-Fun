@@ -778,19 +778,20 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             denoised_pred.shape, dtype=denoised_pred.dtype, device=device, generator=generator
                         )
                     else:
-                        # Get current sigma for x0 conversion
-                        sigma_t = self.scheduler.sigmas[step_idx]
-                        
-                        # Convert to x0: x0 = x_t - sigma_t * flow_pred
-                        denoised_pred = noisy_input - sigma_t * flow_pred
-                        
-                        if step_idx < len(denoise_timesteps) - 1:
-                            # Not the last step: add noise for next timestep
-                            next_sigma = self.scheduler.sigmas[step_idx + 1]
-                            local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
-                            noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
-                        else:
-                            noisy_input = denoised_pred
+                        # Delegate to the scheduler's own step() so each sampler
+                        # (Flow Euler, UniPC, DPM++) applies its correct
+                        # multi-step formula. The previous "predict-x0 + resample
+                        # fresh noise" hybrid did NOT match CF's UniPC reference
+                        # (CF's CausalDiffusionInferencePipeline calls
+                        # sample_scheduler.step(...)). For framewise AR rollouts
+                        # this mismatch caused subtle drift on top of CF's own
+                        # output for the same checkpoint.
+                        t = denoise_timesteps[step_idx]
+                        step_out = self.scheduler.step(
+                            flow_pred, t, noisy_input, return_dict=False
+                        )
+                        noisy_input = step_out[0]
+                        denoised_pred = noisy_input
 
                     progress_bar.update()
 
