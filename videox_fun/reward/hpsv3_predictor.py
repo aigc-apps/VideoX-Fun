@@ -918,6 +918,181 @@ class HPSv3RewardInferencer:
 
         return rewards
 
+    def prepare_batch_differentiable(self, image_tensors, prompts):
+        """Prepare batch with differentiable image preprocessing.
+
+        Produces the same output as prepare_batch(), but the pixel_values
+        tensor retains its computation graph so that gradients can flow back
+        to the input image_tensors.
+
+        Args:
+            image_tensors: List[torch.Tensor], each [C, H, W] in [0, 1].
+            prompts: List[str], text prompts corresponding to each image.
+        Returns:
+            Batch dict with differentiable pixel_values.
+        """
+        # --- Get processor vision config ---
+        img_proc = self.processor.image_processor
+        patch_size = img_proc.patch_size  # typically 14
+        temporal_patch_size = img_proc.temporal_patch_size  # typically 2
+        merge_size = img_proc.merge_size  # typically 2
+        image_mean = torch.tensor(img_proc.image_mean, dtype=torch.float32)
+        image_std = torch.tensor(img_proc.image_std, dtype=torch.float32)
+
+        max_pixels = self.data_config.max_pixels
+        min_pixels = self.data_config.min_pixels
+
+        # --- Step 1: Non-differentiable path for text tokens & metadata ---
+        with torch.no_grad():
+            ref_pil_images = []
+            ref_sizes = []
+            for img in image_tensors:
+                img_det = img.detach().float()
+                C, H, W = img_det.shape
+                resized_height, resized_width = smart_resize(
+                    H, W, factor=IMAGE_FACTOR,
+                    min_pixels=min_pixels, max_pixels=max_pixels,
+                )
+                ref_sizes.append((resized_height, resized_width))
+                # Resize detached tensor for reference PIL
+                img_resized = torch.nn.functional.interpolate(
+                    img_det.unsqueeze(0), size=[resized_height, resized_width],
+                    mode="bicubic", antialias=True, align_corners=False,
+                ).squeeze(0)  # [C, rH, rW]
+                # Convert to PIL for processor tokenization
+                frame_np = (img_resized.clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255).astype('uint8')
+                ref_pil_images.append(Image.fromarray(frame_np))
+
+            # Build message list for text tokenization
+            message_list = []
+            for text, pil_img in zip(prompts, ref_pil_images):
+                out_message = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "image": pil_img,
+                                "min_pixels": min_pixels,
+                                "max_pixels": max_pixels,
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    INSTRUCTION.format(text_prompt=text)
+                                    + prompt_with_special_token
+                                    if self.use_special_tokens
+                                    else prompt_without_special_token
+                                ),
+                            },
+                        ],
+                    }
+                ]
+                message_list.append(out_message)
+
+            image_inputs, _ = process_vision_info(message_list)
+
+            batch_ref = self.processor(
+                text=self.processor.apply_chat_template(message_list, tokenize=False, add_generation_prompt=True),
+                images=image_inputs,
+                padding=True,
+                return_tensors="pt",
+                videos_kwargs={"do_rescale": True},
+            )
+            batch_ref = self._prepare_inputs(batch_ref)
+
+        # --- Step 2: Differentiable image preprocessing ---
+        # Use the processor's image_grid_thw as the ground truth for resize
+        # dimensions.  The processor's grid determines the number of image
+        # tokens in input_ids; pixel_values MUST produce the same patch count
+        # or masked_scatter will fail (too few patches) / rotary pos emb will
+        # mismatch (too many patches).
+        processor_grid = batch_ref["image_grid_thw"]  # [B, 3]
+
+        all_patches = []
+        for idx, (img, (ref_h, ref_w)) in enumerate(zip(image_tensors, ref_sizes)):
+            # img: [C, H, W] in [0, 1]
+            img = img.float()
+
+            # Compute target dimensions from the processor's grid to ensure
+            # patch count == image token count in input_ids.
+            proc_grid_t = processor_grid[idx, 0].item()
+            proc_grid_h = processor_grid[idx, 1].item()
+            proc_grid_w = processor_grid[idx, 2].item()
+            target_h = proc_grid_h * patch_size
+            target_w = proc_grid_w * patch_size
+
+            # Differentiable resize to processor-aligned dimensions
+            img = torch.nn.functional.interpolate(
+                img.unsqueeze(0), size=[target_h, target_w],
+                mode="bicubic", antialias=True, align_corners=False,
+            ).squeeze(0)  # [C, rH, rW]
+
+            # Differentiable normalize: (x - mean) / std
+            mean = image_mean.to(img.device, img.dtype).view(3, 1, 1)
+            std = image_std.to(img.device, img.dtype).view(3, 1, 1)
+            img = (img - mean) / std  # [C, rH, rW]
+
+            # Temporal pad: repeat to temporal_patch_size frames
+            # [C, H, W] -> [temporal_patch_size, C, H, W]
+            img = img.unsqueeze(0).repeat(temporal_patch_size, 1, 1, 1)
+
+            # Patch reshape (matches processor's internal logic)
+            T, C, rH, rW = img.shape
+            grid_t = T // temporal_patch_size  # = 1 for images
+            grid_h = rH // patch_size
+            grid_w = rW // patch_size
+
+            patches = img.reshape(
+                grid_t, temporal_patch_size, C,
+                grid_h // merge_size, merge_size, patch_size,
+                grid_w // merge_size, merge_size, patch_size,
+            )
+            # Transpose to match processor: (0, 3, 6, 4, 7, 2, 1, 5, 8)
+            patches = patches.permute(0, 3, 6, 4, 7, 2, 1, 5, 8).contiguous()
+            patches = patches.reshape(
+                grid_t * grid_h * grid_w,
+                C * temporal_patch_size * patch_size * patch_size,
+            )
+            all_patches.append(patches)
+
+        # Concatenate patches from all images. .to() preserves grad_fn.
+        pixel_values = torch.cat(all_patches, dim=0).to(self.device)
+
+        # --- Step 3: Assemble batch with differentiable pixel_values ---
+        # Use the processor's image_grid_thw directly since pixel_values
+        # have been resized to match it exactly.  This also keeps
+        # position_ids and rope_deltas consistent with input_ids.
+        batch = {
+            "input_ids": batch_ref["input_ids"],
+            "attention_mask": batch_ref["attention_mask"],
+            "pixel_values": pixel_values,
+            "image_grid_thw": processor_grid,
+        }
+        # Preserve any extra keys from the processor (e.g. position_ids, rope_deltas)
+        for k, v in batch_ref.items():
+            if k not in batch:
+                batch[k] = v
+
+        return batch
+
+    def reward_differentiable(self, image_tensors, prompts):
+        """Differentiable reward computation - returns raw logits with grad_fn.
+
+        Unlike reward(), this does NOT use torch.inference_mode() or
+        torch.no_grad(). The returned tensor retains its computation graph
+        so gradients can flow back to the input image_tensors.
+
+        Args:
+            image_tensors: List[torch.Tensor], each [C, H, W] in [0, 1].
+            prompts: List[str], text prompts corresponding to each image.
+        Returns:
+            torch.Tensor: shape [B, output_dim] with grad_fn intact.
+        """
+        batch = self.prepare_batch_differentiable(image_tensors, prompts)
+        logits = self.model(return_dict=True, **batch)["logits"]
+        return logits
+
 
 # ========================= Main =========================
 if __name__ == "__main__":
