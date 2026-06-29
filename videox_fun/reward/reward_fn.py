@@ -523,11 +523,13 @@ class VideoAlignReward(BaseReward):
         self.dtype = dtype
         self.max_reward = max_reward
         self.loss_scale = loss_scale
-        self.reward_dim = reward_dim  # Which dimension to extract as the scalar reward.
+        self.reward_dim = reward_dim  # Which dimension(s) to extract as the scalar reward.
         #   - "VQ"     : Visual Quality (clearness, resolution, brightness, color)
         #   - "MQ"     : Motion Quality (consistency, smoothness, completeness)
         #   - "TA"     : Text-to-Video Alignment (prompt-content & motion match)
         #   - "Overall": Overall Performance = VQ + MQ + TA (sum of the three)
+        #   - Combinations like "VQ+MQ", "VQ+TA", "MQ+TA" are also supported,
+        #     which sum the specified dimensions.
         self.fps = fps
         self.num_frames = num_frames
         self.use_norm = use_norm
@@ -703,10 +705,17 @@ class VideoAlignReward(BaseReward):
         if self.use_norm:
             logits = self._norm_logits(logits)
 
-        # Select the reward dimension
+        # Select the reward dimension(s).
+        # Supports single dim ("VQ"), "Overall", or combinations like "VQ+MQ".
         dim_map = {"VQ": 0, "MQ": 1, "TA": 2}
         if self.reward_dim == "Overall":
             rewards = logits.sum(dim=-1)  # [B]
+        elif "+" in self.reward_dim:
+            dims = [d.strip() for d in self.reward_dim.split("+")]
+            indices = [dim_map[d] for d in dims if d in dim_map]
+            if len(indices) == 0:
+                raise ValueError(f"Unknown reward_dim combination: {self.reward_dim}")
+            rewards = logits[:, indices].sum(dim=-1)  # [B]
         elif self.reward_dim in dim_map:
             rewards = logits[:, dim_map[self.reward_dim]]  # [B]
         else:
@@ -749,8 +758,17 @@ class VideoAlignReward(BaseReward):
         else:
             rewards_output = self._get_rewards_direct(batch_frames, batch_prompt)
 
+        # Support single dim, "Overall", or combinations like "VQ+MQ"
+        if "+" in self.reward_dim:
+            dims = [d.strip() for d in self.reward_dim.split("+")]
+        else:
+            dims = [self.reward_dim]
+
         for reward_dict in rewards_output:
-            reward_value = reward_dict[self.reward_dim]
+            if "+" in self.reward_dim:
+                reward_value = sum(reward_dict[d] for d in dims)
+            else:
+                reward_value = reward_dict[self.reward_dim]
             total_rewards.append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
 
         rewards = torch.stack(total_rewards, dim=0)

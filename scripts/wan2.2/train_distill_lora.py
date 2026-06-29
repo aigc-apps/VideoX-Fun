@@ -779,6 +779,11 @@ def parse_args():
         help="The denoising step list.",
     )
     parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
+    )
+    parser.add_argument(
         "--lora_skip_name",
         type=str,
         default=None,
@@ -1215,6 +1220,7 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
+    spatial_compression_ratio = vae.config.spatial_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1313,7 +1319,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1323,10 +1329,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
+                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
 
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
@@ -1878,7 +1884,7 @@ def main():
                 else:
                     text = batch['text']
                     if args.fix_sample_size is not None:
-                        local_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                        local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
                         num_frames = args.video_sample_n_frames
                     else:
                         if args.random_hw_adapt and args.training_with_video_token_length:
@@ -1907,7 +1913,7 @@ def main():
                             else:
                                 aspect_ratio_key = rng.choice(list(aspect_ratio_sample_size.keys()))
                             local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
-                        local_sample_size = [int(x / 16) * 16 for x in local_sample_size]
+                        local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in local_sample_size]
 
                     target_shape = (
                         len(text),
@@ -2003,6 +2009,55 @@ def main():
                         dist.broadcast(indices, src=0)
                     return indices.tolist()
 
+                def randomize_denoising_step_indices(
+                    denoising_step_indices_list,
+                    train_sampling_steps,
+                    torch_rng,
+                    accelerator,
+                    jitter_ratio=0.3,
+                ):
+                    indices = list(denoising_step_indices_list)
+                    n = len(indices)
+                    
+                    if n <= 2:
+                        low = indices[1]
+                        high = indices[0] - 1
+                        random_tail = torch.randint(low, high + 1, (1,), generator=torch_rng).item()
+                        result = torch.tensor([indices[0], random_tail])
+                    else:
+                        result = [0] * n
+                        result[0] = indices[0]
+                        result[-1] = indices[-1]
+                        
+                        for i in range(1, n - 1):
+                            gap_upper = indices[i - 1] - indices[i]
+                            gap_lower = indices[i] - indices[i + 1]
+                            
+                            max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+                            
+                            if max_jitter > 0:
+                                jitter = torch.randint(
+                                    -max_jitter, max_jitter + 1, (1,),
+                                    generator=torch_rng,
+                                ).item()
+                            else:
+                                jitter = 0
+                            
+                            result[i] = indices[i] + jitter
+                        
+                        for i in range(1, n):
+                            if result[i] >= result[i - 1]:
+                                result[i] = result[i - 1] - 1
+                        
+                        result = [max(1, min(train_sampling_steps, x)) for x in result]
+                        result = torch.tensor(result)
+                    
+                    if dist.is_initialized():
+                        result = result.to(accelerator.device)
+                        dist.broadcast(result, src=0)
+                        result = result.cpu()
+                    return result
+
                 def convert_flow_pred_to_x0(
                     scheduler,
                     flow_pred: torch.Tensor,
@@ -2035,6 +2090,16 @@ def main():
 
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
+
+                # Randomize denoising step indices per batch
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                    )
+                    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
 
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
