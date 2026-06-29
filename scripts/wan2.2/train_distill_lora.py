@@ -2040,6 +2040,7 @@ def main():
                                 jitter = torch.randint(
                                     -max_jitter, max_jitter + 1, (1,),
                                     generator=torch_rng,
+                                    device=accelerator.device
                                 ).item()
                             else:
                                 jitter = 0
