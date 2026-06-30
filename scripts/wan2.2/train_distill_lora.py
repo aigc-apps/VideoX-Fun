@@ -999,6 +999,9 @@ def main():
     real_score_transformer3d.requires_grad_(False)
     fake_score_transformer3d.requires_grad_(False)
 
+    generator_transformer3d.train()
+    fake_score_transformer3d.train()
+
     # Lora will work with this...
     if args.use_peft_lora:
         from peft import (LoraConfig, get_peft_model_state_dict,
@@ -1046,7 +1049,13 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        print(f"generator missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"real_score missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
     if args.vae_path is not None:
@@ -1186,7 +1195,7 @@ def main():
 
         logging.info("Add fake_score_network parameters")
         fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_network.parameters()))
-        fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+        fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate_critic / 2, args.learning_rate_critic, args.learning_rate_critic)
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1720,7 +1729,55 @@ def main():
         train_sampling_steps = args.train_sampling_steps
 
     idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+
+                result[i] = indices[i] + jitter
+
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
@@ -1979,9 +2036,9 @@ def main():
 
             if args.train_mode == "ti2v":
                 if rng is None:
-                    t2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
+                    i2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
                 else:
-                    t2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
+                    i2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
 
             with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
@@ -2009,56 +2066,6 @@ def main():
                     if dist.is_initialized():
                         dist.broadcast(indices, src=0)
                     return indices.tolist()
-
-                def randomize_denoising_step_indices(
-                    denoising_step_indices_list,
-                    train_sampling_steps,
-                    torch_rng,
-                    accelerator,
-                    jitter_ratio=0.3,
-                ):
-                    indices = list(denoising_step_indices_list)
-                    n = len(indices)
-                    
-                    if n <= 2:
-                        low = indices[1]
-                        high = indices[0] - 1
-                        random_tail = torch.randint(low, high + 1, (1,), generator=torch_rng).item()
-                        result = torch.tensor([indices[0], random_tail])
-                    else:
-                        result = [0] * n
-                        result[0] = indices[0]
-                        result[-1] = indices[-1]
-                        
-                        for i in range(1, n - 1):
-                            gap_upper = indices[i - 1] - indices[i]
-                            gap_lower = indices[i] - indices[i + 1]
-                            
-                            max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
-                            
-                            if max_jitter > 0:
-                                jitter = torch.randint(
-                                    -max_jitter, max_jitter + 1, (1,),
-                                    generator=torch_rng,
-                                    device=accelerator.device
-                                ).item()
-                            else:
-                                jitter = 0
-                            
-                            result[i] = indices[i] + jitter
-                        
-                        for i in range(1, n):
-                            if result[i] >= result[i - 1]:
-                                result[i] = result[i - 1] - 1
-                        
-                        result = [max(1, min(train_sampling_steps, x)) for x in result]
-                        result = torch.tensor(result)
-                    
-                    if dist.is_initialized():
-                        result = result.to(accelerator.device)
-                        dist.broadcast(result, src=0)
-                        result = result.cpu()
-                    return result
 
                 def convert_flow_pred_to_x0(
                     scheduler,
@@ -2093,15 +2100,19 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
-                # Randomize denoising step indices per batch
+                # Create discrete denoising steps (per-step, with optional randomization)
                 if getattr(args, 'randomize_step_indices', False):
                     random_indices = randomize_denoising_step_indices(
                         args.denoising_step_indices_list,
                         args.train_sampling_steps,
                         torch_rng,
                         accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
                     )
-                    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
 
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
@@ -2129,7 +2140,7 @@ def main():
                             with context_manager:
                                 if args.train_mode == "ti2v":
                                     mask_bs = mask.size()[0]
-                                    if t2v_in_ti2v:
+                                    if i2v_in_ti2v:
                                         _generator_noise = (1 - mask) * inpaint_latents + mask * generator_noise
                                         
                                         temp_ts = (mask[:, 0, :, ::2, ::2] * timestep[:, None, None, None]).flatten(1)
@@ -2150,7 +2161,7 @@ def main():
                                 generator_pred = convert_flow_pred_to_x0(
                                     scheduler=noise_scheduler,
                                     flow_pred=generator_pred,
-                                    xt=generator_noise,
+                                    xt=_generator_noise,
                                     timestep=timestep
                                 )
                             
@@ -2178,8 +2189,8 @@ def main():
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
                         if args.train_mode == "ti2v":
                             mask_bs = mask.size()[0]
-                            if t2v_in_ti2v:
-                                _generator_denoised_input = (1 - mask) * inpaint_latents + mask * generator_denoised_input
+                            if i2v_in_ti2v:
+                                _generator_denoised_input = (1 - mask) * generator_pred + mask * generator_denoised_input
                                 
                                 temp_ts = (mask[:, 0, :, ::2, ::2] * generator_timestep[:, None, None, None]).flatten(1)
                                 _generator_timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * generator_timestep[:, None,]], dim = 1)
@@ -2309,7 +2320,7 @@ def main():
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                             if args.train_mode == "ti2v":
                                 mask_bs = mask.size()[0]
-                                if t2v_in_ti2v:
+                                if i2v_in_ti2v:
                                     _fake_score_critic_noise = (1 - mask) * inpaint_latents + mask * fake_score_critic_noise
                                     
                                     temp_ts = (mask[:, 0, :, ::2, ::2] * timestep[:, None, None, None]).flatten(1)
@@ -2330,7 +2341,7 @@ def main():
                             fake_score_denoised_pred = convert_flow_pred_to_x0(
                                 scheduler=noise_scheduler,
                                 flow_pred=fake_score_denoised_pred,
-                                xt=fake_score_critic_noise,
+                                xt=_fake_score_critic_noise,
                                 timestep=timestep
                             )
                             
@@ -2360,8 +2371,8 @@ def main():
                 )
                 if args.train_mode == "ti2v":
                     mask_bs = mask.size()[0]
-                    if t2v_in_ti2v:
-                        fake_score_denoised_input = (1 - mask) * inpaint_latents + mask * fake_score_denoised_input
+                    if i2v_in_ti2v:
+                        fake_score_denoised_input = (1 - mask) * fake_score_denoised_pred + mask * fake_score_denoised_input
                         
                         temp_ts = (mask[:, 0, :, ::2, ::2] * critic_timestep[:, None, None, None]).flatten(1)
                         _critic_timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * critic_timestep[:, None,]], dim = 1)

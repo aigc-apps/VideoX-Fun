@@ -789,6 +789,11 @@ def parse_args():
         help="The denoising step list.",
     )
     parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
+    )
+    parser.add_argument(
         "--num_frame_per_block",
         type=int,
         default=3,
@@ -810,6 +815,15 @@ def parse_args():
         default=21,
         help="Number of latent frames for score computation window (default: 21, matching base model). "
              "fake_score/real_score always receive this many frames."
+    )
+    parser.add_argument(
+        "--min_length_prob_bias",
+        type=float,
+        default=0.0,
+        help="Probability bias for sampling the minimum length (score_num_frames). "
+             "0.0 = uniform sampling (default), 0.5 = 50%% prob for min length, "
+             "remaining prob distributed equally among longer lengths. "
+             "Use this to increase 21-frame training ratio."
     )
     parser.add_argument(
         "--context_noise",
@@ -955,6 +969,7 @@ def main():
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
 
+    args.denoising_step_indices_list = [int(i) for i in args.denoising_step_indices_list]
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
@@ -1228,8 +1243,8 @@ def main():
 
     fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
     fake_trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
+        {'params': [], 'lr': args.learning_rate_critic},
+        {'params': [], 'lr': args.learning_rate_critic / 2},
     ]
     in_already = []
     for name, param in fake_score_transformer3d.named_parameters():
@@ -1242,7 +1257,7 @@ def main():
                 high_lr_flag = True
                 fake_trainable_params_optim[0]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic}")
                 break
         if high_lr_flag:
             continue
@@ -1251,7 +1266,7 @@ def main():
                 in_already.append(name)
                 fake_trainable_params_optim[1]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
                 break
 
     if args.use_came:
@@ -1756,7 +1771,55 @@ def main():
         vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+
+                result[i] = indices[i] + jitter
+
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
@@ -2102,6 +2165,20 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
+                # Create discrete denoising steps (per-step, with optional randomization)
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
                 if step % args.gen_update_interval == 0:
@@ -2126,13 +2203,25 @@ def main():
                                 min_num_blocks = 0
 
                         # Random sample number of blocks (Self-Forcing variable-length training)
-                        num_generated_blocks = torch.randint(
-                            min_num_blocks, max_num_blocks + 1, (1,),
-                            generator=torch_rng, device=accelerator.device
-                        )
+                        if args.min_length_prob_bias > 0.0 and max_num_blocks > min_num_blocks:
+                            # Weighted sampling: give min_num_blocks a higher probability
+                            num_options = max_num_blocks - min_num_blocks + 1
+                            bias = min(args.min_length_prob_bias, 0.99)
+                            remaining_prob = (1.0 - bias) / (num_options - 1)
+                            probs = [remaining_prob] * num_options
+                            probs[0] = bias  # min_num_blocks gets the bias
+                            probs_tensor = torch.tensor(probs, device=accelerator.device)
+                            block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                            num_generated_blocks = (min_num_blocks + block_indices).item()
+                        else:
+                            num_generated_blocks = torch.randint(
+                                min_num_blocks, max_num_blocks + 1, (1,),
+                                generator=torch_rng, device=accelerator.device
+                            ).item()
                         if dist.is_initialized():
-                            dist.broadcast(num_generated_blocks, src=0)
-                        num_generated_blocks = num_generated_blocks.item()
+                            _sync = torch.tensor([num_generated_blocks], device=accelerator.device)
+                            dist.broadcast(_sync, src=0)
+                            num_generated_blocks = _sync.item()
 
                         all_num_frames = [args.num_frame_per_block] * num_generated_blocks
                         if args.independent_first_frame:
@@ -2571,13 +2660,25 @@ def main():
                         else:
                             min_num_blocks_critic = 0
 
-                    num_generated_blocks_critic = torch.randint(
-                        min_num_blocks_critic, max_num_blocks_critic + 1, (1,),
-                        generator=torch_rng, device=accelerator.device
-                    )
+                    # Random sample number of blocks (mirrors generator's variable-length training)
+                    if args.min_length_prob_bias > 0.0 and max_num_blocks_critic > min_num_blocks_critic:
+                        num_options = max_num_blocks_critic - min_num_blocks_critic + 1
+                        bias = min(args.min_length_prob_bias, 0.99)
+                        remaining_prob = (1.0 - bias) / (num_options - 1)
+                        probs = [remaining_prob] * num_options
+                        probs[0] = bias  # min_num_blocks_critic gets the bias
+                        probs_tensor = torch.tensor(probs, device=accelerator.device)
+                        block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                        num_generated_blocks_critic = (min_num_blocks_critic + block_indices).item()
+                    else:
+                        num_generated_blocks_critic = torch.randint(
+                            min_num_blocks_critic, max_num_blocks_critic + 1, (1,),
+                            generator=torch_rng, device=accelerator.device
+                        ).item()
                     if dist.is_initialized():
-                        dist.broadcast(num_generated_blocks_critic, src=0)
-                    num_generated_blocks_critic = num_generated_blocks_critic.item()
+                        _sync = torch.tensor([num_generated_blocks_critic], device=accelerator.device)
+                        dist.broadcast(_sync, src=0)
+                        num_generated_blocks_critic = _sync.item()
 
                     all_num_frames = [args.num_frame_per_block] * num_generated_blocks_critic
                     if args.independent_first_frame:

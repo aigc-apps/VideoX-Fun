@@ -1,34 +1,11 @@
-import functools
-import glob
-import json
-import math
-import os
-import types
-import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
-import numpy as np
 import torch
-import torch.cuda.amp as amp
-import torch.nn as nn
 import torch.nn.functional as F
-from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
-from diffusers.loaders.single_file_model import FromOriginalModelMixin
-from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention
-from diffusers.models.embeddings import TimestepEmbedding, Timesteps
-from diffusers.models.modeling_outputs import Transformer2DModelOutput
-from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
-from diffusers.utils import (USE_PEFT_BACKEND, is_torch_version, logging,
-                             scale_lora_layers, unscale_lora_layers)
-from diffusers.utils.torch_utils import maybe_allow_in_graph
-from torch import nn
-from .fuser import (get_sequence_parallel_rank,
-                    get_sequence_parallel_world_size, get_sp_group,
-                    init_distributed_environment, initialize_model_parallel,
-                    xFuserLongContextAttention)
+
+from .fuser import xFuserLongContextAttention
+
 
 def apply_rotary_emb_qwen(
     x: torch.Tensor,

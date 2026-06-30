@@ -1033,8 +1033,8 @@ def main():
 
     fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
     fake_trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
+        {'params': [], 'lr': args.learning_rate_critic},
+        {'params': [], 'lr': args.learning_rate_critic / 2},
     ]
     in_already = []
     for name, param in fake_score_transformer3d.named_parameters():
@@ -1047,7 +1047,7 @@ def main():
                 high_lr_flag = True
                 fake_trainable_params_optim[0]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic}")
                 break
         if high_lr_flag:
             continue
@@ -1056,7 +1056,7 @@ def main():
                 in_already.append(name)
                 fake_trainable_params_optim[1]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
                 break
 
     if args.use_came:

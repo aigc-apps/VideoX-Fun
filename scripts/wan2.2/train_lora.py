@@ -1821,12 +1821,12 @@ def main():
 
                 if args.train_mode == "ti2v":
                     if rng is None:
-                        t2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
+                        i2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
                     else:
-                        t2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
+                        i2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
 
                     mask_bs = mask.size()[0]
-                    if t2v_in_ti2v:
+                    if i2v_in_ti2v:
                         noisy_latents = (1 - mask) * inpaint_latents + mask * noisy_latents
                         
                         temp_ts = (mask[:, 0, :, ::2, ::2] * timesteps[:, None, None, None]).flatten(1)
