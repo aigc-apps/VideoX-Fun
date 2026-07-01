@@ -203,7 +203,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -243,7 +243,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (generator) | 2e-06 |
-| `--learning_rate_critic` | Initial learning rate (critic) | 2e-07 |
+| `--learning_rate_critic` | Initial learning rate (critic) | 2e-06 |
 | `--lr_scheduler` | Learning rate scheduler | `constant_with_warmup` |
 | `--lr_warmup_steps` | Learning rate warmup steps | 100 |
 | `--seed` | Random seed | 42 |
@@ -361,7 +361,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -419,7 +419,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -469,7 +469,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_distill.py \
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -529,7 +529,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
