@@ -23,9 +23,17 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
 def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
-    """Official FlashHead timestep schedule with shift transform."""
+    """Official FlashHead timestep schedule with shift transform.
+
+    Hardcoded schedules match the CF reference for distilled few-step inference:
+      - 4-step: [1000, 750, 500, 250] — Stage 2 CCD (`causal_cd_framewise.yaml`)
+      - 2-step: [1000, 500]           — Stage 3 DMD (`causal_forcing_dmd_framewise_2step.yaml`)
+    Anything else falls back to linspace.
+    """
     if num_inference_steps == 4:
         timesteps = [1000, 750, 500, 250]
+    elif num_inference_steps == 2:
+        timesteps = [1000, 500]
     else:
         timesteps = np.linspace(num_timesteps, 1, num_inference_steps, dtype=np.float32).tolist()
     timesteps = torch.tensor(timesteps + [0.0], dtype=torch.float32, device=device)

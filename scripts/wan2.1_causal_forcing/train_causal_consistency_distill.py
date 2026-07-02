@@ -764,11 +764,20 @@ def main():
         vae.eval()
 
     # Get Transformer (causal generator)
+    # IMPORTANT: keep the trainable transformer in fp32. accelerate's
+    # mixed_precision="bf16" will autocast the forward to bf16 while keeping
+    # the master weights and Adam moments in fp32. If params live in bf16,
+    # every update (LR*grad ~ 1e-5 for LR=2e-6) falls below bf16 mantissa
+    # precision (~1e-3 relative) and is rounded to zero — Stage 1 hit exactly
+    # this and CCD has the same LR + same Adam betas so it would hit it again.
+    # CF official keeps fp32 master weights via FSDP's default behavior
+    # (MixedPrecision(param_dtype=bf16) with no compute_dtype set).
     transformer3d = WanTransformer3DModel_SelfForcing.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         low_cpu_mem_usage=True,
-    ).to(weight_dtype)
+        torch_dtype=torch.float32,
+    )
     # Stage 2 CCD trains the causal generator with the same block layout the
     # downstream Self-Forcing pipeline expects at sampling time.
     transformer3d.num_frame_per_block = args.num_frame_per_block
@@ -814,11 +823,15 @@ def main():
     # Teacher: frozen Stage 1 AR-diffusion model used to produce the one-step
     # ODE target. If `--teacher_transformer_path` is unset, it shares weights
     # with the (still-frozen) generator that was just loaded.
+    # Teacher is frozen but kept fp32 for numerical parity with the generator
+    # at init (we mirror the generator's state_dict below when no separate
+    # teacher path is given). Cast to bf16 happens via autocast at call time.
     teacher_transformer3d = WanTransformer3DModel_SelfForcing.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         low_cpu_mem_usage=True,
-    ).to(weight_dtype)
+        torch_dtype=torch.float32,
+    )
     teacher_transformer3d.num_frame_per_block = args.num_frame_per_block
     teacher_transformer3d.independent_first_frame = args.independent_first_frame
     teacher_transformer3d.requires_grad_(False)
@@ -836,11 +849,16 @@ def main():
     # `model/naive_consistency.py::NaiveConsistency`.
     use_ema = args.ema_weight is not None and args.ema_weight > 0
     if use_ema:
+        # EMA must shadow the fp32 generator: the polyak update
+        # `ema = decay*ema + (1-decay)*gen` mixes two values one mantissa apart,
+        # which underflows in bf16 for decay=0.99 (the smaller-magnitude term
+        # gets rounded away).
         ema_transformer3d = WanTransformer3DModel_SelfForcing.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
             low_cpu_mem_usage=True,
-        ).to(weight_dtype)
+            torch_dtype=torch.float32,
+        )
         ema_transformer3d.num_frame_per_block = args.num_frame_per_block
         ema_transformer3d.independent_first_frame = args.independent_first_frame
         ema_transformer3d.requires_grad_(False)
@@ -1295,12 +1313,21 @@ def main():
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu")
 
-    # Move the frozen teacher / EMA copies to the same device & dtype as the
-    # generator. They are never wrapped by accelerator.prepare(), so we keep
-    # them in inference mode on the local device only.
-    teacher_transformer3d.to(accelerator.device, dtype=weight_dtype)
+    # Move the frozen teacher / EMA copies to the same device as the generator.
+    # They are never wrapped by accelerator.prepare(), so we keep them in
+    # inference mode on the local device only.
+    # DO NOT pass dtype=weight_dtype here — we deliberately keep both modules
+    # in fp32 to match the generator's master-weight precision:
+    #   * Teacher's forward is autocast to bf16 anyway, so fp32 storage is
+    #     just a parity/precision-safety choice (extra ~5GB on 1.3B is fine
+    #     on a GB200).
+    #   * EMA polyak update below (`v.mul_(decay).add_(..., alpha=1-decay)`)
+    #     runs in v.dtype. With decay=0.99 the (1-decay)*delta term has
+    #     magnitude ~LR*grad*0.01 ~ 1e-8, which underflows in bf16. EMA MUST
+    #     be fp32 or the consistency target stops tracking the live generator.
+    teacher_transformer3d.to(accelerator.device)
     if ema_transformer3d is not None:
-        ema_transformer3d.to(accelerator.device, dtype=weight_dtype)
+        ema_transformer3d.to(accelerator.device)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
