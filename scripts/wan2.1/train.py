@@ -1047,11 +1047,6 @@ def main():
 
     if args.gradient_checkpointing:
         transformer3d.enable_gradient_checkpointing()
-    elif args.selective_ac > 0:
-        from videox_fun.models.wan_transformer3d import WanAttentionBlock
-        from videox_fun.utils.ac_handle import apply_checkpointing, partial
-        apply_selective_ac = partial(apply_checkpointing, block=WanAttentionBlock)
-        apply_selective_ac(transformer3d, p=args.selective_ac)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
