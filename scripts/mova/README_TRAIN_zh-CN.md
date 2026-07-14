@@ -41,9 +41,10 @@ pip install -r requirements.txt
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
 pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
 pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
-pip install yunchang xfuser modelscope openpyxl deepspeed==0.17.0 numpy==1.26.4
+pip install yunchang xfuser modelscope openpyxl
 pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
+pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
 **方式三：使用 Docker**
@@ -152,8 +153,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 如果你的数据使用的是相对路径，训练脚本中请这样配置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -162,7 +163,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存放在本地，请使用相对路径。如果数据集存放在外部存储（如 NAS、OSS）或多机共享，请使用绝对路径。
@@ -190,7 +191,7 @@ DeepSpeed-Zero-2 与 FSDP 的区别在于模型权重是否分片。**如果多�
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -240,8 +241,8 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
 | 参数 | 说明 | 示例值 |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/MOVA-360p` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | 训练数据元数据文件 | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批训练的样本数 | 1 |
 | `--image_sample_size` | 最大训练分辨率，自动 bucket | 480 |
 | `--video_sample_size` | 视频最大训练分辨率 | 480 |
@@ -313,8 +314,8 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -363,8 +364,8 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -422,7 +423,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -474,7 +475,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2

@@ -1,17 +1,19 @@
-# Byte-compiled / optimized / DLL files
-models*
-output*
-logs*
-taming*
-samples*
-datasets*
-asset*
+# Used in VideoX-Fun
 _*
-logs*
+/models*
+/output*
+/logs*
+/taming*
+/samples*
+/datasets*
+/asset*
+/repo*
+/scripts_demo*
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-scripts_demo*
 
 # C extensions
 *.so

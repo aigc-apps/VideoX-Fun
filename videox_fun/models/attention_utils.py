@@ -5,12 +5,6 @@ import torch
 import torch.nn as nn
 
 try:
-    import flash_attn.cute
-    FLASH_ATTN_4_AVAILABLE = True
-except ModuleNotFoundError:
-    FLASH_ATTN_4_AVAILABLE = False
-
-try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
 except ModuleNotFoundError:
@@ -222,39 +216,13 @@ def flash_attention(
     if q_scale is not None:
         q = q * q_scale
 
-    if version is not None and version == 4 and not FLASH_ATTN_4_AVAILABLE:
-        warnings.warn(
-            'Flash attention 4 is not available, use flash attention 3 or 2 instead.'
-        )
-
     if version is not None and version == 3 and not FLASH_ATTN_3_AVAILABLE:
         warnings.warn(
             'Flash attention 3 is not available, use flash attention 2 instead.'
         )
 
     # apply attention
-    if (version is None or version == 4) and FLASH_ATTN_4_AVAILABLE:
-        # Note: dropout_p, window_size are not supported in FA3 now.
-        x = flash_attn.cute.flash_attn_varlen_func(
-            q=q,
-            k=k,
-            v=v,
-            cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
-            cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
-            seqused_q=None,
-            seqused_k=None,
-            max_seqlen_q=lq,
-            max_seqlen_k=lk,
-            softmax_scale=softmax_scale,
-            causal=causal,
-            deterministic=deterministic)
-        if isinstance(x, (tuple, list)):
-            x = x[0].unflatten(0, (b, lq))
-        else:
-            x = x.unflatten(0, (b, lq))
-    elif (version is None or version == 3) and FLASH_ATTN_3_AVAILABLE:
+    if (version is None or version == 3) and FLASH_ATTN_3_AVAILABLE:
         # Note: dropout_p, window_size are not supported in FA3 now.
         x = flash_attn_interface.flash_attn_varlen_func(
             q=q,
@@ -339,7 +307,7 @@ def attention(
         out = sageattn(
             q, k, v, attn_mask=attn_mask, tensor_layout="NHD", is_causal=causal, dropout_p=dropout_p)
 
-    elif attention_type == "FLASH_ATTENTION" and (FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE or FLASH_ATTN_4_AVAILABLE):
+    elif attention_type == "FLASH_ATTENTION" and (FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE):
         return flash_attention(
             q=q,
             k=k,

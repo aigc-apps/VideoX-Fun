@@ -43,9 +43,10 @@ pip install -r requirements.txt
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
 pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
 pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
-pip install yunchang xfuser modelscope openpyxl deepspeed==0.17.0 numpy==1.26.4
+pip install yunchang xfuser modelscope openpyxl
 pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
+pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
 **Option 3: Using Docker**
@@ -142,45 +143,25 @@ It is recommended to use tools like [DWPose](https://github.com/IDEA-Research/DW
 
 ### 2.4 Relative vs Absolute Path Usage
 
-**Option 1: Using Relative Paths (Recommended)**
+**Relative Paths**:
 
-When data paths are not fixed or you need to train on different machines, it is recommended to use relative paths.
+If your data uses relative paths, set in the training script:
 
-Configure relative paths in `metadata.json`, then specify the dataset root directory via `--train_data_dir` in the training script:
-
-```json
-[
-  {
-    "file_path": "train/image001.jpg",
-    "control_file_path": "control/image001.jpg",
-    "text": "A group of young men in suits and sunglasses are walking down a city street.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata.json"
 ```
 
-During training, the system will automatically search for files corresponding to relative paths under `--train_data_dir`.
+**Absolute Paths**:
 
-**Option 2: Using Absolute Paths**
+If your data uses absolute paths, set in the training script:
 
-If the dataset path is fixed, you can directly configure absolute paths in `metadata.json`:
-
-```json
-[
-  {
-    "file_path": "/mnt/data/images/image001.jpg",
-    "control_file_path": "/mnt/data/controls/image001.jpg",
-    "text": "A group of young men in suits and sunglasses.",
-    "width": 1024,
-    "height": 1024,
-    "type": "image"
-  }
-]
+```bash
+export DATASET_NAME=""
+export DATASET_META_NAME="/mnt/data/metadata.json"
 ```
 
-When using absolute paths, the `--train_data_dir` parameter serves only as a default path, and the absolute paths in json will take precedence.
+> 💡 **Recommendation**: If the dataset is small and stored locally, relative paths are recommended; if the dataset is stored on external storage (such as NAS, OSS) or shared across multiple machines, absolute paths are recommended.
 
 ---
 
@@ -236,8 +217,8 @@ After downloading data according to **2.1 Quick Test Dataset** and weights accor
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -279,8 +260,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Z-Image-Turbo` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Images-Controls-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Batch size per device | 1 |
 | `--image_sample_size` | Maximum training resolution, automatic bucketing | 1328 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (equivalent to larger batch) | 1 |
@@ -331,8 +312,8 @@ If DeepSpeed-Zero-2 runs out of GPU memory, you can switch to FSDP for training:
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -375,8 +356,8 @@ Training without DeepSpeed or FSDP may result in insufficient GPU memory. Only r
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Z-Image-Turbo"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Images-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Images-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

@@ -44,9 +44,10 @@ pip install -r requirements.txt
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
 pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
 pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
-pip install yunchang xfuser modelscope openpyxl deepspeed==0.17.0 numpy==1.26.4
+pip install yunchang xfuser modelscope openpyxl
 pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
+pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
 **Method 3: Using Docker**
@@ -136,8 +137,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 If your data uses relative paths, configure in the training script:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Path**:
@@ -146,7 +147,7 @@ If your data uses absolute paths, configure in the training script:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Recommendation**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -179,7 +180,7 @@ The difference between DeepSpeed-Zero-2 and FSDP in this repository is whether m
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -202,7 +203,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_distill_lora" \
   --gradient_checkpointing \
@@ -248,8 +249,8 @@ In addition to distillation training, LoRA training adds the following specific 
 | Parameter | Description | Example Value |
 |-----|------|-------|
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/Wan2.1-T2V-1.3B/` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Number of samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution for images | 640 |
 | `--video_sample_size` | Maximum training resolution for videos | 640 |
@@ -261,7 +262,7 @@ In addition to distillation training, LoRA training adds the following specific 
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 50 |
 | `--learning_rate` | Initial learning rate (generator) | 1e-05 |
-| `--learning_rate_critic` | Initial learning rate (discriminator) | 1e-06 |
+| `--learning_rate_critic` | Initial learning rate (discriminator) | 1e-05 |
 | `--seed` | Random seed | 42 |
 | `--output_dir` | Output directory | `output_dir_wan2.1_distill_lora` |
 | `--gradient_checkpointing` | Activation recomputation | - |
@@ -353,7 +354,7 @@ If VRAM is insufficient when using multiple GPUs with DeepSpeed-Zero-2, you can 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -376,7 +377,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_distill_lora" \
   --gradient_checkpointing \
@@ -414,7 +415,7 @@ The training shell command is as follows:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -437,7 +438,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_distill_lora" \
   --gradient_checkpointing \
@@ -461,7 +462,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -484,7 +485,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1/train_distill_lora.py 
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_distill_lora" \
   --gradient_checkpointing \
@@ -517,7 +518,7 @@ Assuming 2 machines, each with 8 GPUs:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -545,7 +546,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_distill_lora" \
   --gradient_checkpointing \
@@ -570,7 +571,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Same as Master
 export MASTER_PORT=10086
 export WORLD_SIZE=2

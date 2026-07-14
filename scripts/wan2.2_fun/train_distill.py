@@ -16,7 +16,9 @@
 # See the License for the specific language governing permissions and
 
 import argparse
+import contextlib
 import gc
+import json
 import logging
 import math
 import os
@@ -28,11 +30,12 @@ import accelerate
 import diffusers
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import torchvision.transforms.functional as TF
 import transformers
-from accelerate import Accelerator
+from accelerate import Accelerator, FullyShardedDataParallelPlugin
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
@@ -47,7 +50,10 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.utils.data import RandomSampler
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
+    ShardedStateDictConfig)
+from torch.utils.data import Dataset, RandomSampler, BatchSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -60,18 +66,18 @@ current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
+
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, get_closest_ratio, get_random_mask)
+                             RandomSampler, TextDataset, get_closest_ratio,
+                             get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
-                               Wan2_2Transformer3DModel, WanT5EncoderModel)
+                               CLIPModel, Wan2_2Transformer3DModel,
+                               WanT5EncoderModel)
 from videox_fun.pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
-                                         create_network, merge_lora,
-                                         unmerge_lora)
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
@@ -160,7 +166,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, config, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -237,8 +243,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
 
                         video        = input_video,
                         mask_video   = input_video_mask,
-                        num_inference_steps = 25,
-                        guidance_scale      = 4.5,
+                        num_inference_steps = 4,
+                        guidance_scale      = 1.0,
                         boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
 
@@ -258,8 +264,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
-                        num_inference_steps = 25,
-                        guidance_scale      = 4.5,
+                        num_inference_steps = 4,
+                        guidance_scale      = 1.0,
                         boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -276,7 +282,6 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
             vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-            transformer3d.to(accelerator.device, dtype=weight_dtype)
             if not args.enable_text_encoder_in_dataloader:
                 text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
         if is_deepspeed:
@@ -287,9 +292,9 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
         torch.cuda.ipc_collect()
         print(f"Eval error on rank {accelerator.process_index} with info {e}")
         vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-        transformer3d.to(accelerator.device, dtype=weight_dtype)
         if not args.enable_text_encoder_in_dataloader:
             text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
@@ -369,6 +374,12 @@ def parse_args():
         help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+        help=("The negative prompt of cfg distill"),
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="sd-model-finetuned",
@@ -427,6 +438,12 @@ def parse_args():
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
+        "--learning_rate_critic",
+        type=float,
+        default=1e-4,
+        help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
         "--scale_lr",
         action="store_true",
         default=False,
@@ -455,7 +472,6 @@ def parse_args():
             " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
         ),
     )
-    parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
     parser.add_argument(
         "--non_ema_revision",
         type=str,
@@ -501,6 +517,9 @@ def parse_args():
             "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
             " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
         ),
+    )
+    parser.add_argument(
+        "--report_model_info", action="store_true", help="Whether or not to report more info about model (such as norm, grad)."
     )
     parser.add_argument(
         "--mixed_precision",
@@ -571,26 +590,6 @@ def parse_args():
     )
     
     parser.add_argument(
-        "--rank",
-        type=int,
-        default=128,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--network_alpha",
-        type=int,
-        default=64,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--use_peft_lora", action="store_true", help="Whether or not to use peft lora."
-    )
-    parser.add_argument(
-        "--train_text_encoder",
-        action="store_true",
-        help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
-    )
-    parser.add_argument(
         "--snr_loss", action="store_true", help="Whether or not to use snr_loss."
     )
     parser.add_argument(
@@ -624,15 +623,15 @@ def parse_args():
         "--motion_sub_loss_ratio", type=float, default=0.25, help="The ratio of motion sub loss."
     )
     parser.add_argument(
-        "--keep_all_node_same_token_length",
-        action="store_true", 
-        help="Reference of the length token.",
-    )
-    parser.add_argument(
         "--train_sampling_steps",
         type=int,
         default=1000,
         help="Run train_sampling_steps.",
+    )
+    parser.add_argument(
+        "--keep_all_node_same_token_length",
+        action="store_true", 
+        help="Reference of the length token.",
     )
     parser.add_argument(
         "--token_sample_size",
@@ -695,8 +694,18 @@ def parse_args():
         default=None,
         help=("If you want to load the weight from other vaes, input its path."),
     )
-    parser.add_argument("--save_state", action="store_true", help="Whether or not to save state.")
 
+    parser.add_argument(
+        '--trainable_modules', 
+        nargs='+', 
+        help='Enter a list of trainable modules'
+    )
+    parser.add_argument(
+        '--trainable_modules_low_learning_rate', 
+        nargs='+', 
+        default=[],
+        help='Enter a list of trainable modules with lower learning rate'
+    )
     parser.add_argument(
         '--tokenizer_max_length', 
         type=int,
@@ -727,40 +736,38 @@ def parse_args():
         type=str,
         default="normal",
         help=(
-            'The training mode. Support `"normal"` (T2V, default), '
-            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
+            'The training mode. Support `"normal"` (T2V, default) '
+            'and `"inpaint"` (Inpaint).'
         ),
     )
     parser.add_argument(
-        "--weighting_scheme",
-        type=str,
-        default="none",
-        choices=["sigma_sqrt", "logit_normal", "mode", "cosmap", "none"],
-        help=('We default to the "none" weighting scheme for uniform sampling and uniform loss'),
+        "--gen_update_interval",
+        type=int,
+        default=5,
+        help="The ratio to update transformer3d.",
     )
     parser.add_argument(
-        "--logit_mean", type=float, default=0.0, help="mean to use when using the `'logit_normal'` weighting scheme."
-    )
-    parser.add_argument(
-        "--logit_std", type=float, default=1.0, help="std to use when using the `'logit_normal'` weighting scheme."
-    )
-    parser.add_argument(
-        "--mode_scale",
+        "--fake_guidance_scale",
         type=float,
-        default=1.29,
-        help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
+        default=0.0,
+        help="The cfg scale for fake iscore.",
     )
     parser.add_argument(
-        "--lora_skip_name",
-        type=str,
-        default=None,
-        help=("The module is not trained in loras. "),
+        "--real_guidance_scale",
+        type=float,
+        default=6.0,
+        help="The cfg scale for real score.",
     )
     parser.add_argument(
-        "--target_name",
-        type=str,
-        default=None,
-        help=("The module is trained in loras. "),
+        '--denoising_step_indices_list', 
+        nargs='+', 
+        default=[1000, 750, 500, 250],
+        help="The denoising step list.",
+    )
+    parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
     )
 
     args = parser.parse_args()
@@ -799,6 +806,12 @@ def main():
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
     accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+        log_with=args.report_to,
+        project_config=accelerator_project_config,
+    )
+    accelerator_fake_score_transformer3d = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
@@ -883,6 +896,7 @@ def main():
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
 
+    args.denoising_step_indices_list = [int(i) for i in args.denoising_step_indices_list]
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
@@ -937,37 +951,27 @@ def main():
         sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
     else:
         sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
-    transformer3d = Wan2_2Transformer3DModel.from_pretrained(
+
+    # Get Transformer
+    generator_transformer3d = Wan2_2Transformer3DModel.from_pretrained(
+        os.path.join(args.pretrained_model_name_or_path, sub_path),
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+    ).to(weight_dtype)
+    real_score_transformer3d = Wan2_2Transformer3DModel.from_pretrained(
+        os.path.join(args.pretrained_model_name_or_path, sub_path),
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+    ).to(weight_dtype)
+    fake_score_transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
 
-    # Freeze vae and text_encoder and set transformer3d to trainable
+    # Freeze vae and text_encoder and set generator_transformer3d to trainable
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    transformer3d.requires_grad_(False)
-
-    # Lora will work with this...
-    if args.use_peft_lora:
-        from peft import (LoraConfig, get_peft_model_state_dict,
-                          inject_adapter_in_model)
-        lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
-        transformer3d = inject_adapter_in_model(lora_config, transformer3d)
-
-        network = None
-    else:
-        network = create_network(
-            1.0,
-            args.rank,
-            args.network_alpha,
-            text_encoder,
-            transformer3d,
-            neuron_dropout=None,
-            target_name=args.target_name,
-            skip_name=args.lora_skip_name,
-        )
-        network = network.to(weight_dtype)
-        network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
+    generator_transformer3d.requires_grad_(False)
+    real_score_transformer3d.requires_grad_(False)
+    fake_score_transformer3d.requires_grad_(False)
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -978,8 +982,14 @@ def main():
             state_dict = torch.load(args.transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-        m, u = transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"generator missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"real_score missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
     if args.vae_path is not None:
@@ -994,6 +1004,26 @@ def main():
         m, u = vae.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
+    
+    # A good trainable modules is showed below now.
+    # For 3D Patch: trainable_modules = ['ff.net', 'pos_embed', 'attn2', 'proj_out', 'timepositionalencoding', 'h_position', 'w_position']
+    # For 2D Patch: trainable_modules = ['ff.net', 'attn2', 'timepositionalencoding', 'h_position', 'w_position']
+    generator_transformer3d.train()
+    fake_score_transformer3d.train()
+    if accelerator.is_main_process:
+        accelerator.print(
+            f"Trainable modules '{args.trainable_modules}'."
+        )
+    for name, param in generator_transformer3d.named_parameters():
+        for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                param.requires_grad = True
+                break
+    for name, param in fake_score_transformer3d.named_parameters():
+        for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                param.requires_grad = True
+                break
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -1003,18 +1033,10 @@ def main():
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    if args.use_peft_lora:
-                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
-                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                    else:
-                        network_state_dict = {}
-                        for key in accelerate_state_dict:
-                            if "network" in key:
-                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
-                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+
+                    safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
+                    accelerate_state_dict = {k: v.to(dtype=weight_dtype) for k, v in accelerate_state_dict.items()}
+                    save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
@@ -1026,34 +1048,31 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-
         else:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
-                    from safetensors.torch import save_file
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    if args.use_peft_lora:
-                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
-                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                    else:
-                        network_state_dict = {}
-                        for key in accelerate_state_dict:
-                            if "network" in key:
-                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
-                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
-
+                    models[0].save_pretrained(os.path.join(output_dir, "transformer"))
                     if not args.use_deepspeed:
-                        for _ in range(len(weights)):
-                            weights.pop()
+                        weights.pop()
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
             def load_model_hook(models, input_dir):
+                for i in range(len(models)):
+                    # pop models so that they are not loaded again
+                    model = models.pop()
+
+                    # load diffusers style into model
+                    load_model = Wan2_2Transformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer"
+                    )
+                    model.register_to_config(**load_model.config)
+
+                    model.load_state_dict(load_model.state_dict())
+                    del load_model
+
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -1063,9 +1082,12 @@ def main():
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
+        accelerator_fake_score_transformer3d.register_save_state_pre_hook(save_model_hook)
+        accelerator_fake_score_transformer3d.register_load_state_pre_hook(load_model_hook)
 
     if args.gradient_checkpointing:
-        transformer3d.enable_gradient_checkpointing()
+        generator_transformer3d.enable_gradient_checkpointing()
+        fake_score_transformer3d.enable_gradient_checkpointing()
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -1099,14 +1121,61 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    if args.use_peft_lora:
-        logging.info("Add peft parameters")
-        trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
-        trainable_params_optim = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
-    else:
-        logging.info("Add network parameters")
-        trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
-        trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+    trainable_params = list(filter(lambda p: p.requires_grad, generator_transformer3d.parameters()))
+    trainable_params_optim = [
+        {'params': [], 'lr': args.learning_rate},
+        {'params': [], 'lr': args.learning_rate / 2},
+    ]
+    in_already = []
+    for name, param in generator_transformer3d.named_parameters():
+        high_lr_flag = False
+        if name in in_already:
+            continue
+        for trainable_module_name in args.trainable_modules:
+            if trainable_module_name in name:
+                in_already.append(name)
+                high_lr_flag = True
+                trainable_params_optim[0]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate}")
+                break
+        if high_lr_flag:
+            continue
+        for trainable_module_name in args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                in_already.append(name)
+                trainable_params_optim[1]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                break
+
+    fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
+    fake_trainable_params_optim = [
+        {'params': [], 'lr': args.learning_rate_critic},
+        {'params': [], 'lr': args.learning_rate_critic / 2},
+    ]
+    in_already = []
+    for name, param in fake_score_transformer3d.named_parameters():
+        high_lr_flag = False
+        if name in in_already:
+            continue
+        for trainable_module_name in args.trainable_modules:
+            if trainable_module_name in name:
+                in_already.append(name)
+                high_lr_flag = True
+                fake_trainable_params_optim[0]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate_critic}")
+                break
+        if high_lr_flag:
+            continue
+        for trainable_module_name in args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                in_already.append(name)
+                fake_trainable_params_optim[1]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
+                break
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1116,10 +1185,24 @@ def main():
             betas=(0.9, 0.999, 0.9999), 
             eps=(1e-30, 1e-16)
         )
+        critic_optimizer = optimizer_cls(
+            fake_trainable_params_optim,
+            lr=args.learning_rate_critic,
+            # weight_decay=args.adam_weight_decay,
+            betas=(0.9, 0.999, 0.9999), 
+            eps=(1e-30, 1e-16)
+        )
     else:
         optimizer = optimizer_cls(
             trainable_params_optim,
             lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
+        critic_optimizer = optimizer_cls(
+            fake_trainable_params_optim,
+            lr=args.learning_rate_critic,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
@@ -1136,16 +1219,35 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    train_dataset = ImageVideoDataset(
-        args.train_data_meta, args.train_data_dir,
-        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
-        video_repeat=args.video_repeat, 
-        image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, 
-        enable_inpaint=True if args.train_mode != "normal" else False,
-    )
-    
-    if args.enable_bucket:
+    if args.train_mode != "normal":
+        train_dataset = ImageVideoDataset(
+            args.train_data_meta, args.train_data_dir,
+            video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+            video_repeat=args.video_repeat, 
+            image_sample_size=args.image_sample_size,
+            enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+        )
+    else:
+        train_dataset = TextDataset(
+            args.train_data_meta
+        )
+
+    def get_length_to_frame_num(token_length):
+        if args.image_sample_size > args.video_sample_size:
+            sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
+
+            if sample_sizes[-1] != args.image_sample_size:
+                sample_sizes.append(args.image_sample_size)
+        else:
+            sample_sizes = [args.image_sample_size]
+        
+        length_to_frame_num = {
+            sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+        }
+
+        return length_to_frame_num
+
+    if args.enable_bucket and args.train_mode != "normal":
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         batch_sampler_generator = torch.Generator().manual_seed(args.seed)
         batch_sampler = AspectRatioBatchImageVideoSampler(
@@ -1153,21 +1255,6 @@ def main():
             batch_size=args.train_batch_size, train_folder = args.train_data_dir, drop_last=True,
             aspect_ratios=aspect_ratio_sample_size,
         )
-
-        def get_length_to_frame_num(token_length):
-            if args.image_sample_size > args.video_sample_size:
-                sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                if sample_sizes[-1] != args.image_sample_size:
-                    sample_sizes.append(args.image_sample_size)
-            else:
-                sample_sizes = [args.image_sample_size]
-            
-            length_to_frame_num = {
-                sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-            }
-
-            return length_to_frame_num
 
         def collate_fn(examples):
             # Get token length
@@ -1298,12 +1385,12 @@ def main():
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
-
+                
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["text"].append(example["text"])
 
                 if args.train_mode != "normal":
-                    mask = get_random_mask(new_examples["pixel_values"][-1].size(), image_start_only=True)
+                    mask = get_random_mask(new_examples["pixel_values"][-1].size())
                     mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask) 
                     # Wan 2.1 use 0 for masked pixels
                     # + torch.ones_like(new_examples["pixel_values"][-1]) * -1 * mask
@@ -1331,14 +1418,100 @@ def main():
                     truncation=True, 
                     return_tensors="pt"
                 )
-                encoder_hidden_states = text_encoder(
-                    prompt_ids.input_ids
-                )[0]
+                text_input_ids = prompt_ids.input_ids
+                prompt_attention_mask = prompt_ids.attention_mask
+
+                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                prompt_embeds = text_encoder(text_input_ids.to("cpu"), attention_mask=prompt_attention_mask.to("cpu"))[0]
+                prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
-                new_examples['encoder_hidden_states'] = encoder_hidden_states
+                new_examples['encoder_hidden_states'] = prompt_embeds
+        
+                neg_txt = [
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in new_examples['text']
+                ]
+                neg_prompt_ids = tokenizer(
+                    neg_txt, 
+                    max_length=args.tokenizer_max_length, 
+                    padding="max_length", 
+                    add_special_tokens=True, 
+                    truncation=True, 
+                    return_tensors="pt"
+                )
+                neg_text_input_ids = neg_prompt_ids.input_ids
+                neg_prompt_attention_mask = neg_prompt_ids.attention_mask
+
+                neg_seq_lens = neg_prompt_attention_mask.gt(0).sum(dim=1).long()
+                neg_prompt_embeds = text_encoder(neg_text_input_ids.to("cpu"), attention_mask=neg_prompt_attention_mask.to("cpu"))[0]
+                neg_prompt_embeds = [u[:v] for u, v in zip(neg_prompt_embeds, neg_seq_lens)]
+
+                new_examples['neg_encoder_attention_mask'] = neg_prompt_ids.attention_mask
+                new_examples['neg_encoder_hidden_states'] = neg_prompt_embeds
 
             return new_examples
         
+        # DataLoaders creation:
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=collate_fn,
+            persistent_workers=True if args.dataloader_num_workers != 0 else False,
+            num_workers=args.dataloader_num_workers,
+        )
+    elif args.train_mode == "normal":
+        def collate_fn(examples):
+            new_examples = {}
+            new_examples["text"] = []
+            for example in examples:
+                new_examples["text"].append(example["text"])
+
+            # Encode prompts when enable_text_encoder_in_dataloader=True
+            if args.enable_text_encoder_in_dataloader:
+                prompt_ids = tokenizer(
+                    new_examples['text'], 
+                    max_length=args.tokenizer_max_length, 
+                    padding="max_length", 
+                    add_special_tokens=True, 
+                    truncation=True, 
+                    return_tensors="pt"
+                )
+                text_input_ids = prompt_ids.input_ids
+                prompt_attention_mask = prompt_ids.attention_mask
+
+                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                prompt_embeds = text_encoder(text_input_ids.to("cpu"), attention_mask=prompt_attention_mask.to("cpu"))[0]
+                prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+
+                new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
+                new_examples['encoder_hidden_states'] = prompt_embeds
+        
+                neg_txt = [
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in new_examples['text']
+                ]
+                neg_prompt_ids = tokenizer(
+                    neg_txt, 
+                    max_length=args.tokenizer_max_length, 
+                    padding="max_length", 
+                    add_special_tokens=True, 
+                    truncation=True, 
+                    return_tensors="pt"
+                )
+                neg_text_input_ids = neg_prompt_ids.input_ids
+                neg_prompt_attention_mask = neg_prompt_ids.attention_mask
+
+                neg_seq_lens = neg_prompt_attention_mask.gt(0).sum(dim=1).long()
+                neg_prompt_embeds = text_encoder(neg_text_input_ids.to("cpu"), attention_mask=neg_prompt_attention_mask.to("cpu"))[0]
+                neg_prompt_embeds = [u[:v] for u, v in zip(neg_prompt_embeds, neg_seq_lens)]
+
+                new_examples['neg_encoder_attention_mask'] = neg_prompt_ids.attention_mask
+                new_examples['neg_encoder_hidden_states'] = neg_prompt_embeds
+
+            return new_examples
+        
+        batch_sampler_generator = torch.Generator().manual_seed(args.seed)
+        batch_sampler = BatchSampler(RandomSampler(train_dataset, generator=batch_sampler_generator), batch_size=args.train_batch_size, drop_last=True)
+
         # DataLoaders creation:
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
@@ -1371,19 +1544,26 @@ def main():
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
+    fake_score_lr_scheduler = get_scheduler(
+        args.lr_scheduler,
+        optimizer=critic_optimizer,
+        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+        num_training_steps=args.max_train_steps * accelerator.num_processes,
+    )
 
     # Prepare everything with our `accelerator`.
-    if args.use_peft_lora:
-        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            transformer3d, optimizer, train_dataloader, lr_scheduler
-        )
-    else:
-        transformer3d.network = network
-        transformer3d = transformer3d.to(dtype=weight_dtype)
-        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            transformer3d, optimizer, train_dataloader, lr_scheduler
-        )
+    generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        generator_transformer3d, optimizer, train_dataloader, lr_scheduler
+    )
+    fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler= accelerator_fake_score_transformer3d.prepare(
+        fake_score_transformer3d, critic_optimizer, fake_score_lr_scheduler
+    )
+    if fsdp_stage != 0 or zero_stage != 0:
+        from functools import partial
 
+        from videox_fun.dist import set_multi_gpus_devices, shard_model
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        real_score_transformer3d = shard_fn(real_score_transformer3d)
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
@@ -1393,9 +1573,9 @@ def main():
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    transformer3d.to(accelerator.device, dtype=weight_dtype)
+    real_score_transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1455,8 +1635,7 @@ def main():
 
             initial_global_step = global_step
 
-            checkpoint_folder_path = os.path.join(args.output_dir, path)
-            pkl_path = os.path.join(checkpoint_folder_path, "sampler_pos_start.pkl")
+            pkl_path = os.path.join(os.path.join(args.output_dir, path), "sampler_pos_start.pkl")
             if os.path.exists(pkl_path):
                 with open(pkl_path, 'rb') as file:
                     _, first_epoch = pickle.load(file)
@@ -1464,75 +1643,12 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            if zero_stage != 3 and not args.use_fsdp:
-                from safetensors.torch import load_file
-                state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
-                m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
-                print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-
-                optimizer_file_pt = os.path.join(checkpoint_folder_path, "optimizer.pt")
-                optimizer_file_bin = os.path.join(checkpoint_folder_path, "optimizer.bin")
-                optimizer_file_to_load = None
-
-                if os.path.exists(optimizer_file_pt):
-                    optimizer_file_to_load = optimizer_file_pt
-                elif os.path.exists(optimizer_file_bin):
-                    optimizer_file_to_load = optimizer_file_bin
-
-                if optimizer_file_to_load:
-                    try:
-                        accelerator.print(f"Loading optimizer state from {optimizer_file_to_load}")
-                        optimizer_state = torch.load(optimizer_file_to_load, map_location=accelerator.device)
-                        optimizer.load_state_dict(optimizer_state)
-                        accelerator.print("Optimizer state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load optimizer state from {optimizer_file_to_load}: {e}")
-
-                scheduler_file_pt = os.path.join(checkpoint_folder_path, "scheduler.pt")
-                scheduler_file_bin = os.path.join(checkpoint_folder_path, "scheduler.bin")
-                scheduler_file_to_load = None
-
-                if os.path.exists(scheduler_file_pt):
-                    scheduler_file_to_load = scheduler_file_pt
-                elif os.path.exists(scheduler_file_bin):
-                    scheduler_file_to_load = scheduler_file_bin
-
-                if scheduler_file_to_load:
-                    try:
-                        accelerator.print(f"Loading scheduler state from {scheduler_file_to_load}")
-                        scheduler_state = torch.load(scheduler_file_to_load, map_location=accelerator.device)
-                        lr_scheduler.load_state_dict(scheduler_state)
-                        accelerator.print("Scheduler state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load scheduler state from {scheduler_file_to_load}: {e}")
-
-                if hasattr(accelerator, 'scaler') and accelerator.scaler is not None:
-                    scaler_file = os.path.join(checkpoint_folder_path, "scaler.pt")
-                    if os.path.exists(scaler_file):
-                        try:
-                            accelerator.print(f"Loading GradScaler state from {scaler_file}")
-                            scaler_state = torch.load(scaler_file, map_location=accelerator.device)
-                            accelerator.scaler.load_state_dict(scaler_state)
-                            accelerator.print("GradScaler state loaded successfully.")
-                        except Exception as e:
-                            accelerator.print(f"Failed to load GradScaler state: {e}")
-
-            else:
-                accelerator.load_state(checkpoint_folder_path)
-                accelerator.print("accelerator.load_state() completed for zero_stage 3.")
-
+            accelerator.print(f"Resuming from checkpoint {path}")
+            fake_score_path = os.path.join(path, "fake_score")
+            accelerator.load_state(os.path.join(args.output_dir, path))
+            accelerator_fake_score_transformer3d.load_state(os.path.join(args.output_dir, fake_score_path))
     else:
         initial_global_step = 0
-
-    # function for saving/removing
-    def save_model(ckpt_file, unwrapped_nw):
-        os.makedirs(args.output_dir, exist_ok=True)
-        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
-        if isinstance(unwrapped_nw, dict):
-            from safetensors.torch import save_file
-            save_file(unwrapped_nw, ckpt_file, metadata={"format": "pt"})
-            return ckpt_file
-        unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -1569,11 +1685,62 @@ def main():
 
     idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
 
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+
+                result[i] = indices[i] + jitter
+
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
+
     for epoch in range(first_epoch, args.num_train_epochs):
-        train_loss = 0.0
+        train_dmd_loss = 0.0
+        train_denoising_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
-            if epoch == first_epoch and step == 0:
+            # Data batch sanity check
+            if args.train_mode != "normal" and epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
@@ -1581,139 +1748,142 @@ def main():
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
+
+                clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
+                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
+                for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
+                    pixel_value = pixel_value[None, ...]
+                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
+
+            with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                 if args.train_mode != "normal":
-                    clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
-                    mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
-                    for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
-                        pixel_value = pixel_value[None, ...]
-                        Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
-                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
+                    # Convert images to latent space
+                    pixel_values = batch["pixel_values"].to(weight_dtype)
 
-            with accelerator.accumulate(transformer3d):
-                # Convert images to latent space
-                pixel_values = batch["pixel_values"].to(weight_dtype)
-
-                # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
-                    if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                        pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
-                        if args.enable_text_encoder_in_dataloader:
-                            batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (4, 1, 1))
-                            batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
-                        else:
-                            batch['text'] = batch['text'] * 4
-                    elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
-                        pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
-                        if args.enable_text_encoder_in_dataloader:
-                            batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (2, 1, 1))
-                            batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
-                        else:
-                            batch['text'] = batch['text'] * 2
+                    # Increase the batch size when the length of the latent sequence of the current sample is small
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
+                        if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
+                            if args.enable_text_encoder_in_dataloader:
+                                batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (4, 1, 1))
+                                batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
+                                batch['neg_encoder_hidden_states'] = torch.tile(batch['neg_encoder_hidden_states'], (4, 1, 1))
+                                batch['neg_encoder_attention_mask'] = torch.tile(batch['neg_encoder_attention_mask'], (4, 1))
+                            else:
+                                batch['text'] = batch['text'] * 4
+                        elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
+                            if args.enable_text_encoder_in_dataloader:
+                                batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (2, 1, 1))
+                                batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
+                                batch['neg_encoder_hidden_states'] = torch.tile(batch['neg_encoder_hidden_states'], (2, 1, 1))
+                                batch['neg_encoder_attention_mask'] = torch.tile(batch['neg_encoder_attention_mask'], (2, 1))
+                            else:
+                                batch['text'] = batch['text'] * 2
                 
-                if args.train_mode != "normal":
+                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
                     if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
                         elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
                             mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
-                if args.random_frame_crop:
-                    def _create_special_list(length):
-                        if length == 1:
-                            return [1.0]
-                        if length >= 2:
-                            last_element = 0.90
-                            remaining_sum = 1.0 - last_element
-                            other_elements_value = remaining_sum / (length - 1)
-                            special_list = [other_elements_value] * (length - 1) + [last_element]
-                            return special_list
-                    select_frames = [_tmp for _tmp in list(range(sample_n_frames_bucket_interval + 1, args.video_sample_n_frames + sample_n_frames_bucket_interval, sample_n_frames_bucket_interval))]
-                    select_frames_prob = np.array(_create_special_list(len(select_frames)))
-                    
-                    if len(select_frames) != 0:
-                        if rng is None:
-                            temp_n_frames = np.random.choice(select_frames, p = select_frames_prob)
+                    if args.random_frame_crop:
+                        def _create_special_list(length):
+                            if length == 1:
+                                return [1.0]
+                            if length >= 2:
+                                last_element = 0.90
+                                remaining_sum = 1.0 - last_element
+                                other_elements_value = remaining_sum / (length - 1)
+                                special_list = [other_elements_value] * (length - 1) + [last_element]
+                                return special_list
+                        select_frames = [_tmp for _tmp in list(range(sample_n_frames_bucket_interval + 1, args.video_sample_n_frames + sample_n_frames_bucket_interval, sample_n_frames_bucket_interval))]
+                        select_frames_prob = np.array(_create_special_list(len(select_frames)))
+                        
+                        if len(select_frames) != 0:
+                            if rng is None:
+                                temp_n_frames = np.random.choice(select_frames, p = select_frames_prob)
+                            else:
+                                temp_n_frames = rng.choice(select_frames, p = select_frames_prob)
                         else:
-                            temp_n_frames = rng.choice(select_frames, p = select_frames_prob)
-                    else:
-                        temp_n_frames = 1
+                            temp_n_frames = 1
 
-                    # Magvae needs the number of frames to be 4n + 1.
-                    temp_n_frames = (temp_n_frames - 1) // sample_n_frames_bucket_interval + 1
+                        # Magvae needs the number of frames to be 4n + 1.
+                        temp_n_frames = (temp_n_frames - 1) // sample_n_frames_bucket_interval + 1
 
-                    pixel_values = pixel_values[:, :temp_n_frames, :, :]
-
-                    if args.train_mode != "normal":
+                        pixel_values = pixel_values[:, :temp_n_frames, :, :]
                         mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
                         mask = mask[:, :temp_n_frames, :, :]
-                    
-                # Keep all node same token length to accelerate the traning when resolution grows.
-                if args.keep_all_node_same_token_length:
-                    if args.token_sample_size > 256:
-                        numbers_list = list(range(256, args.token_sample_size + 1, 128))
+                        
+                    # Keep all node same token length to accelerate the traning when resolution grows.
+                    if args.keep_all_node_same_token_length:
+                        if args.token_sample_size > 256:
+                            numbers_list = list(range(256, args.token_sample_size + 1, 128))
 
-                        if numbers_list[-1] != args.token_sample_size:
-                            numbers_list.append(args.token_sample_size)
-                    else:
-                        numbers_list = [256]
-                    numbers_list = [_number * _number * args.video_sample_n_frames for _number in  numbers_list]
-            
-                    actual_token_length = index_rng.choice(numbers_list)
-                    actual_video_length = (min(
-                            actual_token_length / pixel_values.size()[-1] / pixel_values.size()[-2], args.video_sample_n_frames
-                    ) - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
-                    actual_video_length = int(max(actual_video_length, 1))
+                            if numbers_list[-1] != args.token_sample_size:
+                                numbers_list.append(args.token_sample_size)
+                        else:
+                            numbers_list = [256]
+                        numbers_list = [_number * _number * args.video_sample_n_frames for _number in  numbers_list]
+                
+                        actual_token_length = index_rng.choice(numbers_list)
+                        actual_video_length = (min(
+                                actual_token_length / pixel_values.size()[-1] / pixel_values.size()[-2], args.video_sample_n_frames
+                        ) - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
+                        actual_video_length = int(max(actual_video_length, 1))
 
-                    # Magvae needs the number of frames to be 4n + 1.
-                    actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
+                        # Magvae needs the number of frames to be 4n + 1.
+                        actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
 
-                    pixel_values = pixel_values[:, :actual_video_length, :, :]
-                    if args.train_mode != "normal":
+                        pixel_values = pixel_values[:, :actual_video_length, :, :]
                         mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
                         mask = mask[:, :actual_video_length, :, :]
 
-                # Make the inpaint latents to be zeros.
-                if args.train_mode != "normal":
-                    t2v_flag = [(_mask == 1).all() for _mask in mask]
-                    new_t2v_flag = []
-                    for _mask in t2v_flag:
-                        if _mask and np.random.rand() < 0.90:
-                            new_t2v_flag.append(0)
-                        else:
-                            new_t2v_flag.append(1)
-                    t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
+                    if args.low_vram:
+                        torch.cuda.empty_cache()
+                        vae.to(accelerator.device)
+                        real_score_transformer3d = real_score_transformer3d.to("cpu")
+                        if not args.enable_text_encoder_in_dataloader:
+                            text_encoder.to("cpu")
 
-                if args.low_vram:
-                    torch.cuda.empty_cache()
-                    vae.to(accelerator.device)
-                    if not args.enable_text_encoder_in_dataloader:
-                        text_encoder.to("cpu")
+                    with torch.no_grad():
+                        # This way is quicker when batch grows up
+                        def _batch_encode_vae(pixel_values):
+                            pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                            bs = args.vae_mini_batch
+                            new_pixel_values = []
+                            for i in range(0, pixel_values.shape[0], bs):
+                                pixel_values_bs = pixel_values[i : i + bs]
+                                pixel_values_bs = vae.encode(pixel_values_bs)[0]
+                                pixel_values_bs = pixel_values_bs.sample()
+                                new_pixel_values.append(pixel_values_bs)
+                            return torch.cat(new_pixel_values, dim = 0)
 
-                with torch.no_grad():
-                    # This way is quicker when batch grows up
-                    def _batch_encode_vae(pixel_values):
-                        pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                        bs = args.vae_mini_batch
-                        new_pixel_values = []
-                        for i in range(0, pixel_values.shape[0], bs):
-                            pixel_values_bs = pixel_values[i : i + bs]
-                            pixel_values_bs = vae.encode(pixel_values_bs)[0]
-                            pixel_values_bs = pixel_values_bs.sample()
-                            new_pixel_values.append(pixel_values_bs)
-                        return torch.cat(new_pixel_values, dim = 0)
-                    if vae_stream_1 is not None:
-                        vae_stream_1.wait_stream(torch.cuda.current_stream())
-                        with torch.cuda.stream(vae_stream_1):
-                            latents = _batch_encode_vae(pixel_values)
-                    else:
-                        latents = _batch_encode_vae(pixel_values)
+                        # Encode inpaint latents.
+                        mask_latents = _batch_encode_vae(mask_pixel_values)
+                        if vae_stream_2 is not None:
+                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
 
-                    if args.train_mode != "normal":
+                        # Compute t2v_flag for inpaint mode
+                        if args.train_mode == "inpaint":
+                            t2v_flag = [(_mask == 1).all() for _mask in mask]
+                            new_t2v_flag = []
+                            for _mask in t2v_flag:
+                                if _mask and np.random.rand() < 0.90:
+                                    new_t2v_flag.append(0)
+                                else:
+                                    new_t2v_flag.append(1)
+                            t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(accelerator.device, dtype=weight_dtype)
+
                         mask = rearrange(mask, "b f c h w -> b c f h w")
                         mask = torch.concat(
                             [
@@ -1724,34 +1894,64 @@ def main():
                         mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
                         mask = mask.transpose(1, 2)
 
-                        if args.train_mode != "ti2v":
-                            mask = resize_mask(1 - mask, latents)
-                        else:
-                            mask = F.interpolate(mask[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(accelerator.device, weight_dtype)
+                        mask_conditions = F.interpolate(mask[:, :1], size=mask_latents.size()[-3:], mode='trilinear', align_corners=True).to(accelerator.device, weight_dtype)
+                        mask = resize_mask(1 - mask, mask_latents)
+                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+                        inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
 
-                        # Encode inpaint latents.
-                        mask_latents = _batch_encode_vae(mask_pixel_values)
-                        if vae_stream_2 is not None:
-                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
+                    target_shape = mask_latents.size()
+                else:
+                    text = batch['text']
+                    if args.fix_sample_size is not None:
+                        local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
+                        num_frames = args.video_sample_n_frames
+                    else:
+                        if args.random_hw_adapt and args.training_with_video_token_length:
+                            # Get token length
+                            target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
+                            length_to_frame_num = get_length_to_frame_num(target_token_length)
 
-                        if args.train_mode != "ti2v":
-                            inpaint_latents = torch.concat([mask, mask_latents], dim=1)
-                            inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
+                            if rng is None:
+                                local_length = np.random.choice(list(length_to_frame_num.keys()))
+                            else:
+                                local_length = rng.choice(list(length_to_frame_num.keys()))
+                            num_frames = length_to_frame_num[local_length]
+
+                            aspect_ratio_sample_size = {key : [x / 512 * local_length for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+                            if rng is None:
+                                aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys()))
+                            else:
+                                aspect_ratio_key = rng.choice(list(aspect_ratio_sample_size.keys()))
+                            local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
                         else:
-                            inpaint_latents = mask_latents
-                                                    
-                # wait for latents = vae.encode(pixel_values) to complete
-                if vae_stream_1 is not None:
-                    torch.cuda.current_stream().wait_stream(vae_stream_1)
+                            num_frames = args.video_sample_n_frames
+
+                            aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+                            if rng is None:
+                                aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys()))
+                            else:
+                                aspect_ratio_key = rng.choice(list(aspect_ratio_sample_size.keys()))
+                            local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
+                        local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in local_sample_size]
+
+                    target_shape = (
+                        len(text),
+                        vae.latent_channels, 
+                        int((num_frames - 1) // vae.temporal_compression_ratio + 1), 
+                        int(local_sample_size[0] // vae.spatial_compression_ratio),
+                        int(local_sample_size[1] // vae.spatial_compression_ratio), 
+                    )
 
                 if args.low_vram:
                     vae.to('cpu')
+                    real_score_transformer3d = real_score_transformer3d.to("cpu")
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['encoder_hidden_states'].to(device=latents.device)
+                    prompt_embeds = batch['encoder_hidden_states'].to(device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_encoder_hidden_states'].to(device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_ids = tokenizer(
@@ -1766,82 +1966,372 @@ def main():
                         prompt_attention_mask = prompt_ids.attention_mask
 
                         seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
-                        prompt_embeds = text_encoder(text_input_ids.to(latents.device), attention_mask=prompt_attention_mask.to(latents.device))[0]
+                        prompt_embeds = text_encoder(text_input_ids.to(accelerator.device), attention_mask=prompt_attention_mask.to(accelerator.device))[0]
                         prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
 
-                if args.low_vram and not args.enable_text_encoder_in_dataloader:
-                    text_encoder.to('cpu')
-                    torch.cuda.empty_cache()
+                        neg_txt = [
+                            "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                        ]
+                        neg_prompt_ids = tokenizer(
+                            neg_txt, 
+                            padding="max_length", 
+                            max_length=args.tokenizer_max_length, 
+                            truncation=True, 
+                            add_special_tokens=True, 
+                            return_tensors="pt"
+                        )
+                        neg_text_input_ids = neg_prompt_ids.input_ids
+                        neg_prompt_attention_mask = neg_prompt_ids.attention_mask
 
-                bsz, channel, num_frames, height, width = latents.size()
-                noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
+                        neg_seq_lens = neg_prompt_attention_mask.gt(0).sum(dim=1).long()
+                        neg_prompt_embeds = text_encoder(neg_text_input_ids.to(accelerator.device), attention_mask=neg_prompt_attention_mask.to(accelerator.device))[0]
+                        neg_prompt_embeds = [u[:v] for u, v in zip(neg_prompt_embeds, neg_seq_lens)]
 
-                if not args.uniform_sampling:
-                    u = compute_density_for_timestep_sampling(
-                        weighting_scheme=args.weighting_scheme,
-                        batch_size=bsz,
-                        logit_mean=args.logit_mean,
-                        logit_std=args.logit_std,
-                        mode_scale=args.mode_scale,
-                    )
-                    indices = (u * noise_scheduler.config.num_train_timesteps).long()
-                else:
-                    # Sample a random timestep for each image
-                    # timesteps = generate_timestep_with_lognorm(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                    # timesteps = torch.randint(0, args.train_sampling_steps, (bsz,), device=latents.device, generator=torch_rng)
-                    indices = idx_sampling(bsz, generator=torch_rng, device=latents.device)
-                    indices = indices.long().cpu()
-                timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
+                if args.low_vram:
+                    generator_transformer3d = generator_transformer3d.to(accelerator.device)
+                    real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
+                    fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                    if not args.enable_text_encoder_in_dataloader:
+                        text_encoder.to('cpu')
+                        torch.cuda.empty_cache()
 
+            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                mask_conditions[:, :, 1:, :, :] = 1
+                _has_first_frame = not mask_conditions[:, :, 0, :, :].any()
+
+            with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
                     timesteps = timesteps.to(accelerator.device)
-                    step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
 
+                    step_indices = [
+                        torch.argmin(torch.abs(schedule_timesteps - t)).item()
+                        for t in timesteps
+                    ]
+                    step_indices = torch.tensor(step_indices, device=accelerator.device)
                     sigma = sigmas[step_indices].flatten()
+
                     while len(sigma.shape) < n_dim:
                         sigma = sigma.unsqueeze(-1)
                     return sigma
 
-                # Add noise according to flow matching.
-                # zt = (1 - texp) * x + texp * z1
-                sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-                noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
+                def add_noise(latents, noise, timesteps):
+                    sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
+                    return (1.0 - sigmas) * latents + sigmas * noise
 
-                # Add noise
-                target = noise - latents
-                
-                target_shape = (vae.latent_channels, num_frames, width, height)
-                seq_len = math.ceil(
-                    (target_shape[2] * target_shape[3]) /
-                    (accelerator.unwrap_model(transformer3d).config.patch_size[1] * accelerator.unwrap_model(transformer3d).config.patch_size[2]) *
-                    target_shape[1]
-                )
+                def generate_and_sync_list(num_denoising_steps, device):
+                    indices = torch.randint(low=0, high=num_denoising_steps, size=(1,), generator=torch_rng, device=device)
+                    if dist.is_initialized():
+                        dist.broadcast(indices, src=0)
+                    return indices.tolist()
 
-                if args.train_mode == "ti2v":
-                    if rng is None:
-                        i2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
+                def convert_flow_pred_to_x0(
+                    scheduler,
+                    flow_pred: torch.Tensor,
+                    xt: torch.Tensor,
+                    timestep: torch.Tensor
+                ) -> torch.Tensor:
+                    """
+                    Convert flow matching's prediction to x0 prediction.
+                    Supports both 4D [B, C, H, W] and 5D [B, C, F, H, W] inputs.
+                    """
+                    original_dtype = flow_pred.dtype
+                    device = flow_pred.device
+
+                    flow_pred = flow_pred.double()
+                    xt = xt.double()
+                    timesteps = scheduler.timesteps.to(device).double()
+                    sigmas = scheduler.sigmas.to(device).double()
+                    timestep = timestep.to(device).double()
+
+                    timestep_id = torch.argmin((timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+                    sigma_t = sigmas[timestep_id]
+
+                    ndim = flow_pred.ndim
+                    if ndim == 4:
+                        sigma_t = sigma_t.view(-1, 1, 1, 1)
+                    elif ndim == 5:
+                        sigma_t = sigma_t.view(-1, 1, 1, 1, 1)
                     else:
-                        i2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
+                        raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
 
-                    mask_bs = mask.size()[0]
-                    if i2v_in_ti2v:
-                        noisy_latents = (1 - mask) * inpaint_latents + mask * noisy_latents
+                    x0_pred = xt - sigma_t * flow_pred
+                    return x0_pred.to(original_dtype)
+
+                # Create discrete denoising steps (per-step, with optional randomization)
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+
+                # --- Main Training Logic ---
+                bsz, channel, num_frames, height, width = target_shape
+                if step % args.gen_update_interval == 0:
+                    generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
+                    num_denoising_steps = len(denoising_step_list)
+                    final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
+
+                    # Precompute seq_len once (same for all steps)
+                    patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                    seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+
+                    for index, current_timestep in enumerate(denoising_step_list):
+                        is_final_step = (index == final_step_index)
+                        timestep = torch.full(
+                            generator_noise.shape[:1],
+                            current_timestep,
+                            device=generator_noise.device,
+                            dtype=torch.int64
+                        )
                         
-                        temp_ts = (mask[:, 0, :, ::2, ::2] * timesteps[:, None, None, None]).flatten(1)
-                        timesteps = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * timesteps[:, None,]], dim = 1)
-                    else:
-                        timesteps = mask.new_ones(mask_bs, seq_len) * timesteps[:, None,]
+                        with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                            context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
+                            
+                            with context_manager:
+                                _timestep = timestep
+                                _generator_noise = generator_noise
+                                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                                    _generator_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_noise
+                                    if _has_first_frame:
+                                        _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
+                                        _timestep = torch.cat([_temp_ts, _temp_ts.new_ones(mask_conditions.size(0), seq_len - _temp_ts.size(1)) * _timestep[:, None,]], dim=1)
+                                    else:
+                                        _timestep = mask_conditions.new_ones(mask_conditions.size(0), seq_len) * _timestep[:, None,]
+                                generator_pred = generator_transformer3d(
+                                    x=_generator_noise,
+                                    context=prompt_embeds,
+                                    t=_timestep,
+                                    seq_len=seq_len,
+                                    y=inpaint_latents if args.train_mode != "normal" else None,
+                                )
+                                generator_pred = convert_flow_pred_to_x0(
+                                    scheduler=noise_scheduler,
+                                    flow_pred=generator_pred,
+                                    xt=_generator_noise,
+                                    timestep=timestep
+                                )
+                            
+                            if is_final_step:
+                                break
+                            
+                            next_timestep = denoising_step_list[index + 1] * torch.ones(
+                                generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
+                            )
+                            generator_noise = add_noise(
+                                generator_pred,
+                                torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                next_timestep
+                            )
 
-                # Predict the noise residual
+                    indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                    generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                    generator_denoised_input = add_noise(
+                        generator_pred,
+                        torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                        generator_timestep
+                    ).detach().to(accelerator.device, dtype=weight_dtype)
+
+                    # Compute fake score
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
+                        _generator_timestep = generator_timestep
+                        _generator_denoised_input = generator_denoised_input
+                        if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                            _generator_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_denoised_input
+                            if _has_first_frame:
+                                _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _generator_timestep[:, None, None, None]).flatten(1)
+                                _generator_timestep = torch.cat([_temp_ts, _temp_ts.new_ones(mask_conditions.size(0), seq_len - _temp_ts.size(1)) * _generator_timestep[:, None,]], dim=1)
+                            else:
+                                _generator_timestep = mask_conditions.new_ones(mask_conditions.size(0), seq_len) * _generator_timestep[:, None,]
+                        fake_score_main_cond = fake_score_transformer3d(
+                            x=_generator_denoised_input,
+                            context=prompt_embeds,
+                            t=_generator_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        )
+                        fake_score_main_cond = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=fake_score_main_cond,
+                            xt=generator_denoised_input,
+                            timestep=generator_timestep
+                        )
+
+                        if args.fake_guidance_scale != 0.0:
+                            fake_score_main_uncond = fake_score_transformer3d(
+                                x=_generator_denoised_input,
+                                context=neg_prompt_embeds,
+                                t=_generator_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                            )
+                            fake_score_main_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=fake_score_main_uncond,
+                                xt=generator_denoised_input,
+                                timestep=generator_timestep
+                            )
+                            fake_score_main = fake_score_main_uncond + (
+                                fake_score_main_cond - fake_score_main_uncond
+                            ) * args.fake_guidance_scale
+                        else:
+                            fake_score_main = fake_score_main_cond
+
+                        # Compute real score
+                        real_score_main_cond = real_score_transformer3d(
+                            x=_generator_denoised_input,
+                            context=prompt_embeds,
+                            t=_generator_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        )
+                        real_score_main_cond = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=real_score_main_cond,
+                            xt=generator_denoised_input,
+                            timestep=generator_timestep
+                        )
+
+                        real_score_main_uncond = real_score_transformer3d(
+                            x=_generator_denoised_input,
+                            context=neg_prompt_embeds,
+                            t=_generator_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        )
+                        real_score_main_uncond = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=real_score_main_uncond,
+                            xt=generator_denoised_input,
+                            timestep=generator_timestep
+                        )
+
+                        real_score_main = real_score_main_uncond + (
+                            real_score_main_cond - real_score_main_uncond
+                        ) * args.real_guidance_scale
+
+                    # DMD loss
+                    fake_to_real_grad = fake_score_main - real_score_main
+                    generator_to_real_norm = generator_pred - real_score_main
+                    normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
+                    fake_to_real_grad = fake_to_real_grad / normalizer
+                    fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+
+                    dmd_loss = 0.5 * F.mse_loss(
+                        generator_pred.double(),
+                        (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                        reduction="mean"
+                    )
+                    avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
+                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+
+                    if args.low_vram:
+                        real_score_transformer3d = real_score_transformer3d.to("cpu")
+                        fake_score_transformer3d = fake_score_transformer3d.to("cpu")
+                        torch.cuda.empty_cache()
+
+                    accelerator.backward(dmd_loss)
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    
+                    if args.low_vram:
+                        fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                        torch.cuda.empty_cache()
+
+            with accelerator_fake_score_transformer3d.accumulate(fake_score_transformer3d):
+                # --- Fake Critic Denoising Loss ---
+                with torch.no_grad():
+                    fake_score_critic_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
+                    num_denoising_steps = len(denoising_step_list)
+                    final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
+
+                    patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                    seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+
+                    for index, current_timestep in enumerate(denoising_step_list):
+                        is_final_step = (index == final_step_index)
+                        timestep = torch.full(
+                            fake_score_critic_noise.shape[:1], 
+                            current_timestep,
+                            device=fake_score_critic_noise.device,
+                            dtype=torch.int64
+                        )
+                        
+                        with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                            _timestep = timestep
+                            _fake_score_critic_noise = fake_score_critic_noise
+                            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                                _fake_score_critic_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _fake_score_critic_noise
+                                if _has_first_frame:
+                                    _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
+                                    _timestep = torch.cat([_temp_ts, _temp_ts.new_ones(mask_conditions.size(0), seq_len - _temp_ts.size(1)) * _timestep[:, None,]], dim=1)
+                                else:
+                                    _timestep = mask_conditions.new_ones(mask_conditions.size(0), seq_len) * _timestep[:, None,]
+                            fake_score_denoised_pred = generator_transformer3d(
+                                x=_fake_score_critic_noise,
+                                context=prompt_embeds,
+                                t=_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                            )
+                            fake_score_denoised_pred = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=fake_score_denoised_pred,
+                                xt=_fake_score_critic_noise,
+                                timestep=timestep
+                            )
+                            
+                            if is_final_step:
+                                break
+                            
+                            next_timestep = denoising_step_list[index + 1] * torch.ones(
+                                fake_score_critic_noise.shape[:1], 
+                                dtype=torch.long,
+                                device=fake_score_critic_noise.device
+                            )
+                            
+                            fake_score_critic_noise = add_noise(
+                                fake_score_denoised_pred,
+                                torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng),
+                                next_timestep
+                            )
+
+                indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                critic_noise = torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng)
+
+                fake_score_denoised_input = add_noise(
+                    fake_score_denoised_pred,
+                    critic_noise,
+                    critic_timestep
+                )
+                _critic_timestep = critic_timestep
+                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                    fake_score_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * fake_score_denoised_input
+                    if _has_first_frame:
+                        _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _critic_timestep[:, None, None, None]).flatten(1)
+                        _critic_timestep = torch.cat([_temp_ts, _temp_ts.new_ones(mask_conditions.size(0), seq_len - _temp_ts.size(1)) * _critic_timestep[:, None,]], dim=1)
+                    else:
+                        _critic_timestep = mask_conditions.new_ones(mask_conditions.size(0), seq_len) * _critic_timestep[:, None,]
+
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    noise_pred = transformer3d(
-                        x=noisy_latents,
+                    fake_score_denoised_output = fake_score_transformer3d(
+                        x=fake_score_denoised_input,
                         context=prompt_embeds,
-                        t=timesteps,
+                        t=_critic_timestep,
                         seq_len=seq_len,
-                        y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
+                        y=inpaint_latents if args.train_mode != "normal" else None,
                     )
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1855,35 +2345,30 @@ def main():
                         masked_loss = masked_loss * weighting
                     final_loss = masked_loss.mean()
                     return final_loss
+
+                denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
                 
-                weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-                loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
-                loss = loss.mean()
+                accelerator_fake_score_transformer3d.backward(denoising_loss)
+                if accelerator_fake_score_transformer3d.sync_gradients:
+                    accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
+                critic_optimizer.step()
+                fake_score_lr_scheduler.step()
+                critic_optimizer.zero_grad()
 
-                if args.motion_sub_loss and noise_pred.size()[2] > 2:
-                    gt_sub_noise = noise_pred[:, :, 1:].float() - noise_pred[:, :, :-1].float()
-                    pre_sub_noise = target[:, :, 1:].float() - target[:, :, :-1].float()
-                    sub_loss = F.mse_loss(gt_sub_noise, pre_sub_noise, reduction="mean")
-                    loss = loss * (1 - args.motion_sub_loss_ratio) + sub_loss * args.motion_sub_loss_ratio
-
-                # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-                train_loss += avg_loss.item() / args.gradient_accumulation_steps
-
-                # Backpropagate
-                accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
+                if args.low_vram:
+                    fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                    generator_transformer3d = generator_transformer3d.to(accelerator.device)
+                    
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
+
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_loss": train_loss}, step=global_step)
-                train_loss = 0.0
+                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
+                train_dmd_loss = 0.0
+                train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
@@ -1906,35 +2391,22 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
+
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            if args.use_peft_lora:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
-                                save_model(safetensor_save_path, network_state_dict)
-
-                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
-                            else:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        fake_score_save_path = os.path.join(save_path, "fake_score")
+                        accelerator.save_state(save_path)
+                        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                        logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
                     log_validation(
                         vae,
                         text_encoder,
                         tokenizer,
-                        transformer3d,
-                        network,
+                        generator_transformer3d,
                         args,
                         config,
                         accelerator,
@@ -1942,7 +2414,7 @@ def main():
                         global_step,
                     )
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
@@ -1953,8 +2425,7 @@ def main():
                 vae,
                 text_encoder,
                 tokenizer,
-                transformer3d,
-                network,
+                generator_transformer3d,
                 args,
                 config,
                 accelerator,
@@ -1964,28 +2435,18 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        generator_transformer3d = unwrap_model(generator_transformer3d)
+
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        if not args.save_state:
-            if args.use_peft_lora:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
-                save_model(safetensor_save_path, network_state_dict)
-
-                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
-            else:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
-        else:
-            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(accelerator_save_path)
-            logger.info(f"Saved state to {accelerator_save_path}")
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        fake_score_save_path = os.path.join(save_path, "fake_score")
+        accelerator.save_state(save_path)
+        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

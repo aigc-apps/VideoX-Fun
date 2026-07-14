@@ -117,6 +117,54 @@ def initialize_crossattn_cache_for_training(batch_size, text_len, num_layers, nu
     return crossattn_cache
 
 
+def slice_last_n_latent_frames(tensor, n):
+    """Slice last n frames from [B, C, F, H, W] tensor."""
+    if tensor.shape[2] <= n:
+        return tensor
+    return tensor[:, :, -n:]
+
+
+def reencode_boundary_latent(vae, pred_latents, weight_dtype, score_num_frames=21):
+    """
+    Re-encode the boundary frame to get a clean latent for the score window.
+    Follows Self-Forcing reference: decode all frames before the score window, take last pixel frame, re-encode.
+    Input: pred_latents [B, C, F, H, W] (all generated latent frames)
+    Output: boundary_latent [B, C, 1, H, W]
+    """
+    with torch.no_grad():
+        # Decode all frames except the last (score_num_frames - 1) to pixels
+        tail_len = score_num_frames - 1
+        latent_to_decode = pred_latents[:, :, :-tail_len]
+        # VAE expects [B, C, F, H, W], decode returns [B, C, F, H, W] pixels
+        pixels = vae.decode(latent_to_decode.to(vae.dtype)).sample  # [B, C, F, H, W]
+        # Take the last frame
+        frame = pixels[:, :, -1:, :, :]  # [B, C, 1, H, W]
+        # Re-encode the last frame to get clean boundary latent
+        boundary_latent = vae.encode(frame)[0].sample().to(weight_dtype)  # [B, C, 1, H, W]
+    return boundary_latent
+
+
+def slice_for_score(pred, vae, weight_dtype, score_num_frames=21, independent_first_frame=False):
+    """
+    Slice the last `score_num_frames` latent frames for score computation.
+    If pred has more than score_num_frames, re-encode boundary frame for clean context.
+    Returns: (pred_for_score, score_num_frames, need_gradient_mask)
+    """
+    num_frames = pred.shape[2]
+    if num_frames <= score_num_frames:
+        return pred, num_frames, False
+
+    # Re-encode boundary for cleaner score input
+    try:
+        boundary_latent = reencode_boundary_latent(vae, pred, weight_dtype, score_num_frames=score_num_frames)
+        pred_for_score = torch.cat([boundary_latent, pred[:, :, -(score_num_frames - 1):]], dim=2)
+    except Exception:
+        # Fallback: simple slice without boundary re-encoding
+        pred_for_score = pred[:, :, -score_num_frames:]
+
+    return pred_for_score, score_num_frames, True
+
+
 def filter_kwargs(cls, kwargs):
     import inspect
     sig = inspect.signature(cls.__init__)
@@ -741,6 +789,11 @@ def parse_args():
         help="The denoising step list.",
     )
     parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
+    )
+    parser.add_argument(
         "--num_frame_per_block",
         type=int,
         default=3,
@@ -755,6 +808,22 @@ def parse_args():
         "--use_kv_cache_training",
         action="store_true",
         help="Use KV cache block-by-block training (matches original Self-Forcing)"
+    )
+    parser.add_argument(
+        "--score_num_frames",
+        type=int,
+        default=21,
+        help="Number of latent frames for score computation window (default: 21, matching base model). "
+             "fake_score/real_score always receive this many frames."
+    )
+    parser.add_argument(
+        "--min_length_prob_bias",
+        type=float,
+        default=0.0,
+        help="Probability bias for sampling the minimum length (score_num_frames). "
+             "0.0 = uniform sampling (default), 0.5 = 50%% prob for min length, "
+             "remaining prob distributed equally among longer lengths. "
+             "Use this to increase 21-frame training ratio."
     )
     parser.add_argument(
         "--context_noise",
@@ -900,6 +969,7 @@ def main():
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
 
+    args.denoising_step_indices_list = [int(i) for i in args.denoising_step_indices_list]
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
@@ -1173,8 +1243,8 @@ def main():
 
     fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
     fake_trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
+        {'params': [], 'lr': args.learning_rate_critic},
+        {'params': [], 'lr': args.learning_rate_critic / 2},
     ]
     in_already = []
     for name, param in fake_score_transformer3d.named_parameters():
@@ -1187,7 +1257,7 @@ def main():
                 high_lr_flag = True
                 fake_trainable_params_optim[0]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic}")
                 break
         if high_lr_flag:
             continue
@@ -1196,7 +1266,7 @@ def main():
                 in_already.append(name)
                 fake_trainable_params_optim[1]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
                 break
 
     if args.use_came:
@@ -1461,7 +1531,7 @@ def main():
                 new_examples['encoder_hidden_states'] = prompt_embeds
         
                 neg_txt = [
-                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in new_examples['text']
                 ]
                 neg_prompt_ids = tokenizer(
                     neg_txt, 
@@ -1519,7 +1589,7 @@ def main():
                 new_examples['encoder_hidden_states'] = prompt_embeds
         
                 neg_txt = [
-                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in new_examples['text']
                 ]
                 neg_prompt_ids = tokenizer(
                     neg_txt, 
@@ -1578,7 +1648,7 @@ def main():
     )
     fake_score_lr_scheduler = get_scheduler(
         args.lr_scheduler,
-        optimizer=optimizer,
+        optimizer=critic_optimizer,
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
@@ -1701,7 +1771,55 @@ def main():
         vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+
+                result[i] = indices[i] + jitter
+
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
@@ -1908,10 +2026,25 @@ def main():
                             local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
                         local_sample_size = [int(x / 16) * 16 for x in local_sample_size]
 
+                    # Compute latent frame count
+                    latent_num_frames = int((num_frames - 1) // vae.temporal_compression_ratio + 1)
+
+                    # Align latent_num_frames to num_frame_per_block for KV cache training
+                    if args.use_kv_cache_training:
+                        if args.independent_first_frame:
+                            # latent_frames - 1 must be divisible by num_frame_per_block
+                            k = latent_num_frames - 1
+                            k = (k // args.num_frame_per_block) * args.num_frame_per_block
+                            latent_num_frames = k + 1
+                        else:
+                            # latent_frames must be divisible by num_frame_per_block
+                            latent_num_frames = (latent_num_frames // args.num_frame_per_block) * args.num_frame_per_block
+                        latent_num_frames = max(latent_num_frames, args.num_frame_per_block)
+
                     target_shape = (
                         len(text),
                         vae.latent_channels, 
-                        int((num_frames - 1) // vae.temporal_compression_ratio + 1), 
+                        latent_num_frames, 
                         int(local_sample_size[0] // vae.spatial_compression_ratio),
                         int(local_sample_size[1] // vae.spatial_compression_ratio), 
                     )
@@ -2032,6 +2165,20 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
+                # Create discrete denoising steps (per-step, with optional randomization)
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
                 if step % args.gen_update_interval == 0:
@@ -2040,17 +2187,47 @@ def main():
                         patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
                         
-                        # Determine block structure
+                        # Determine block structure with variable-length support
                         if not args.independent_first_frame:
                             assert num_frames % args.num_frame_per_block == 0
-                            num_blocks = num_frames // args.num_frame_per_block
+                            max_num_blocks = num_frames // args.num_frame_per_block
+                            assert args.score_num_frames % args.num_frame_per_block == 0
+                            min_num_blocks = args.score_num_frames // args.num_frame_per_block
                         else:
                             assert (num_frames - 1) % args.num_frame_per_block == 0
-                            num_blocks = (num_frames - 1) // args.num_frame_per_block
-                        
-                        all_num_frames = [args.num_frame_per_block] * num_blocks
+                            max_num_blocks = (num_frames - 1) // args.num_frame_per_block
+                            if args.score_num_frames > 1:
+                                assert (args.score_num_frames - 1) % args.num_frame_per_block == 0
+                                min_num_blocks = (args.score_num_frames - 1) // args.num_frame_per_block
+                            else:
+                                min_num_blocks = 0
+
+                        # Random sample number of blocks (Self-Forcing variable-length training)
+                        if args.min_length_prob_bias > 0.0 and max_num_blocks > min_num_blocks:
+                            # Weighted sampling: give min_num_blocks a higher probability
+                            num_options = max_num_blocks - min_num_blocks + 1
+                            bias = min(args.min_length_prob_bias, 0.99)
+                            remaining_prob = (1.0 - bias) / (num_options - 1)
+                            probs = [remaining_prob] * num_options
+                            probs[0] = bias  # min_num_blocks gets the bias
+                            probs_tensor = torch.tensor(probs, device=accelerator.device)
+                            block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                            num_generated_blocks = (min_num_blocks + block_indices).item()
+                        else:
+                            num_generated_blocks = torch.randint(
+                                min_num_blocks, max_num_blocks + 1, (1,),
+                                generator=torch_rng, device=accelerator.device
+                            ).item()
+                        if dist.is_initialized():
+                            _sync = torch.tensor([num_generated_blocks], device=accelerator.device)
+                            dist.broadcast(_sync, src=0)
+                            num_generated_blocks = _sync.item()
+
+                        all_num_frames = [args.num_frame_per_block] * num_generated_blocks
                         if args.independent_first_frame:
                             all_num_frames = [1] + all_num_frames
+
+                        num_generated_frames = sum(all_num_frames)
                         
                         # Initialize KV cache
                         num_layers = generator_transformer3d.config.num_layers
@@ -2098,6 +2275,10 @@ def main():
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=accelerator.device)[0]
                         
+                        # Only blocks in the last score_num_frames get gradient at exit step
+                        # (matches Self-Forcing: start_gradient_frame_index = num_output_frames - 21)
+                        start_gradient_frame_index = num_generated_frames - args.score_num_frames
+                        
                         for block_idx, current_num_frames in enumerate(all_num_frames):
                             # Extract noise for current block
                             start_idx = current_start_frame - num_input_frames
@@ -2113,7 +2294,11 @@ def main():
                                     dtype=torch.int64
                                 )
                                 
-                                context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
+                                # Only enable gradient for final step AND block within score window
+                                if not is_final_step or current_start_frame < start_gradient_frame_index:
+                                    context_manager = torch.no_grad()
+                                else:
+                                    context_manager = contextlib.nullcontext()
                                 
                                 with context_manager:
                                     # Convert noisy_input to list format
@@ -2194,13 +2379,54 @@ def main():
                             
                             current_start_frame += current_num_frames
                         
-                        # Final output
-                        generator_pred = output_pred
-                        seq_len = frame_seq_length * num_frames  # For fake/real score computation
+                        # Final output — slice generated frames (may be < num_frames for variable-length)
+                        generator_pred_full = output_pred[:, :, :num_generated_frames]
+
+                        # Gradient mask: first block gets no gradient when generating > min frames
+                        # (matches Self-Forcing reference: model/base.py L182-L190)
+                        min_num_frames_score = args.score_num_frames
+                        need_gradient_mask = (num_generated_frames != min_num_frames_score)
+                        gradient_mask = None
+                        if need_gradient_mask:
+                            gradient_mask = torch.ones_like(generator_pred_full, dtype=torch.bool)
+                            if args.independent_first_frame:
+                                gradient_mask[:, :, :1] = False
+                            else:
+                                gradient_mask[:, :, :args.num_frame_per_block] = False
+
+                        # Slice for score computation: last score_num_frames frames
+                        if num_generated_frames > args.score_num_frames:
+                            # Re-encode boundary for cleaner score input
+                            generator_pred_for_score, score_num_frames, _ = slice_for_score(
+                                generator_pred_full, vae, weight_dtype,
+                                score_num_frames=args.score_num_frames,
+                                independent_first_frame=args.independent_first_frame,
+                            )
+                        else:
+                            generator_pred_for_score = generator_pred_full
+                            score_num_frames = num_generated_frames
+
+                        # Compute score_mask for DMD loss (matches Self-Forcing: dmd.py L199-204)
+                        score_mask = None
+                        if gradient_mask is not None:
+                            mask_offset = num_generated_frames - score_num_frames
+                            score_mask = gradient_mask[:, :, mask_offset:mask_offset + score_num_frames]
+
+                        # generator_pred = the sliced version for DMD loss
+                        generator_pred = generator_pred_for_score
+                        seq_len = frame_seq_length * score_num_frames  # Score always on fixed window
                     
                     else:
                         # === Block mask training (flex attention, no KV cache) ===
                         # Block mask training: use flex attention to process entire video at once
+                        # Note: for long videos, use KV cache mode instead
+                        score_mask = None  # Block mask mode: no gradient mask needed
+                        if num_frames > args.score_num_frames:
+                            raise ValueError(
+                                f"Block mask mode does not support variable-length training "
+                                f"(video produces {num_frames} latent frames > score_num_frames={args.score_num_frames}). "
+                                f"Use --use_kv_cache_training for long video training."
+                            )
                         
                         patch_h_bm, patch_w_bm = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seqlen_bm = (height * width) // (patch_h_bm * patch_w_bm)
@@ -2379,11 +2605,20 @@ def main():
                     fake_to_real_grad = fake_to_real_grad / normalizer
                     fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
 
-                    dmd_loss = 0.5 * F.mse_loss(
-                        generator_pred.double(),
-                        (generator_pred.double() - fake_to_real_grad.double()).detach(),
-                        reduction="mean"
-                    )
+                    # Apply gradient mask: only compute loss on unmasked elements
+                    # (matches Self-Forcing dmd.py: F.mse_loss(x[mask], target[mask]))
+                    if score_mask is not None:
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred.double()[score_mask],
+                            (generator_pred.double() - fake_to_real_grad.double()).detach()[score_mask],
+                            reduction="mean"
+                        )
+                    else:
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred.double(),
+                            (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                            reduction="mean"
+                        )
                         
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
                     train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
@@ -2414,15 +2649,41 @@ def main():
                     # Calculate frame_seq_length
                     frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
                     
-                    # Determine block structure
+                    # Determine block structure (variable-length, mirrors generator branch)
                     if not args.independent_first_frame:
-                        num_blocks = num_frames // args.num_frame_per_block
+                        max_num_blocks_critic = num_frames // args.num_frame_per_block
+                        min_num_blocks_critic = args.score_num_frames // args.num_frame_per_block
                     else:
-                        num_blocks = (num_frames - 1) // args.num_frame_per_block
-                    
-                    all_num_frames = [args.num_frame_per_block] * num_blocks
+                        max_num_blocks_critic = (num_frames - 1) // args.num_frame_per_block
+                        if args.score_num_frames > 1:
+                            min_num_blocks_critic = (args.score_num_frames - 1) // args.num_frame_per_block
+                        else:
+                            min_num_blocks_critic = 0
+
+                    # Random sample number of blocks (mirrors generator's variable-length training)
+                    if args.min_length_prob_bias > 0.0 and max_num_blocks_critic > min_num_blocks_critic:
+                        num_options = max_num_blocks_critic - min_num_blocks_critic + 1
+                        bias = min(args.min_length_prob_bias, 0.99)
+                        remaining_prob = (1.0 - bias) / (num_options - 1)
+                        probs = [remaining_prob] * num_options
+                        probs[0] = bias  # min_num_blocks_critic gets the bias
+                        probs_tensor = torch.tensor(probs, device=accelerator.device)
+                        block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                        num_generated_blocks_critic = (min_num_blocks_critic + block_indices).item()
+                    else:
+                        num_generated_blocks_critic = torch.randint(
+                            min_num_blocks_critic, max_num_blocks_critic + 1, (1,),
+                            generator=torch_rng, device=accelerator.device
+                        ).item()
+                    if dist.is_initialized():
+                        _sync = torch.tensor([num_generated_blocks_critic], device=accelerator.device)
+                        dist.broadcast(_sync, src=0)
+                        num_generated_blocks_critic = _sync.item()
+
+                    all_num_frames = [args.num_frame_per_block] * num_generated_blocks_critic
                     if args.independent_first_frame:
                         all_num_frames = [1] + all_num_frames
+                    num_generated_frames_critic = sum(all_num_frames)
                     
                     # Initialize KV cache
                     num_layers = generator_transformer3d.config.num_layers
@@ -2556,8 +2817,20 @@ def main():
                         
                         current_start_frame += current_num_frames
                     
-                    fake_score_denoised_pred = output_pred
-                    seq_len = frame_seq_length * num_frames
+                    fake_score_denoised_pred_full = output_pred[:, :, :num_generated_frames_critic]
+
+                    # Slice for critic score: last score_num_frames frames
+                    if num_generated_frames_critic > args.score_num_frames:
+                        fake_score_denoised_pred, critic_score_num_frames, _ = slice_for_score(
+                            fake_score_denoised_pred_full, vae, weight_dtype,
+                            score_num_frames=args.score_num_frames,
+                            independent_first_frame=args.independent_first_frame,
+                        )
+                    else:
+                        fake_score_denoised_pred = fake_score_denoised_pred_full
+                        critic_score_num_frames = num_generated_frames_critic
+
+                    seq_len = frame_seq_length * critic_score_num_frames
                     
                 else:
                     with torch.no_grad():

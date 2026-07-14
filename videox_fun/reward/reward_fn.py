@@ -12,12 +12,34 @@ __all__ = ["AestheticReward", "HPSReward", "PickScoreReward", "MPSReward", "HPSv
 
 
 class BaseReward(ABC):
-    """An base class for reward models. A custom Reward class must implement two functions below.
+    """An base class for reward models. A custom Reward Class must implement two functions below.
     """
+    # Whether this reward operates on individual frames (image-level) rather than full videos.
+    # Image-based rewards (e.g. HPS, MPS, Aesthetic) need frame sampling before scoring.
+    is_image_reward = False
+
     def __init__(self):
         """Define your reward model and image transformations (optional) here.
         """
         pass
+
+    def to(self, device):
+        """Move the reward model to the specified device.
+
+        Supports two common patterns:
+        - self.model (AestheticReward, HPSReward, PickScoreReward, MPSReward)
+        - self.inferencer.model (HPSv3Reward, VideoAlignReward)
+
+        Subclasses with non-standard model storage should override this method.
+        """
+        if hasattr(self, 'model') and isinstance(self.model, torch.nn.Module):
+            self.model.to(device)
+        elif hasattr(self, 'inferencer') and hasattr(self.inferencer, 'model'):
+            self.inferencer.model.to(device)
+            if hasattr(self.inferencer, 'device'):
+                self.inferencer.device = device
+        self.device = device
+        return self
 
     @abstractmethod
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: Optional[list[str]]=None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -36,6 +58,8 @@ class AestheticReward(BaseReward):
     """Aesthetic Predictor [V2](https://github.com/christophschuhmann/improved-aesthetic-predictor) 
     and [V2.5](https://github.com/discus0434/aesthetic-predictor-v2-5) reward model.
     """
+    is_image_reward = True
+
     def __init__(
         self,
         encoder_path="openai/clip-vit-large-patch14",
@@ -109,6 +133,8 @@ class AestheticReward(BaseReward):
 class HPSReward(BaseReward):
     """[HPS](https://github.com/tgxs002/HPSv2) v2 and v2.1 reward model.
     """
+    is_image_reward = True
+
     def __init__(
         self,
         model_path=None,
@@ -205,6 +231,8 @@ class HPSReward(BaseReward):
 class PickScoreReward(BaseReward):
     """[PickScore](https://github.com/yuvalkirstain/PickScore) reward model.
     """
+    is_image_reward = True
+
     def __init__(
         self,
         model_path="yuvalkirstain/PickScore_v1",
@@ -272,6 +300,8 @@ class PickScoreReward(BaseReward):
 class MPSReward(BaseReward):
     """[MPS](https://github.com/Kwai-Kolors/MPS) reward model.
     """
+    is_image_reward = True
+
     def __init__(
         self,
         model_path=None,
@@ -371,6 +401,8 @@ class MPSReward(BaseReward):
 class HPSv3Reward(BaseReward):
     """[HPSv3](https://github.com/tgxs002/HPSv2) v3 reward model based on Qwen2-VL.
     """
+    is_image_reward = True
+
     def __init__(
         self,
         checkpoint_path=None,
@@ -379,6 +411,7 @@ class HPSv3Reward(BaseReward):
         dtype=torch.float16,
         max_reward=1,
         loss_scale=1,
+        differentiable=False,
     ):
         from .hpsv3_predictor import HPSv3RewardInferencer
 
@@ -387,21 +420,57 @@ class HPSv3Reward(BaseReward):
         self.dtype = dtype
         self.max_reward = max_reward
         self.loss_scale = loss_scale
+        self.differentiable = differentiable
 
         self.inferencer = HPSv3RewardInferencer(
             checkpoint_path=self.checkpoint_path,
             device=self.device,
+            dtype=self.dtype,
             model_name_or_path=model_name_or_path,
         )
 
+        # Freeze reward model parameters when using differentiable mode.
+        # The forward pass still builds the computation graph for input gradients.
+        if self.differentiable:
+            self.inferencer.model.requires_grad_(False)
+
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
-        rewards = self.get_reward(batch_frames, batch_prompt)
-        print(rewards)
+        if self.differentiable:
+            rewards = self.get_reward_differentiable(batch_frames, batch_prompt)
+        else:
+            rewards = self.get_reward(batch_frames, batch_prompt)
         if self.max_reward is None:
             loss_per_sample = (-1 * rewards) * self.loss_scale
         else:
             loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
         return loss_per_sample.mean(), rewards.mean()
+
+    def get_reward_differentiable(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
+        """Differentiable reward computation that preserves grad_fn.
+
+        Gradients flow from the returned scalar rewards back through the reward
+        model to the input batch_frames.
+
+        Args:
+            batch_frames: [B, C, T, H, W] tensor in [0, 1].
+            batch_prompt: List of B text prompts.
+        Returns:
+            torch.Tensor: [B] scalar rewards (mu) with grad_fn.
+        """
+        assert len(batch_frames) == len(batch_prompt)
+        batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
+        total_rewards = []
+
+        for frames in batch_frames:
+            # frames: [B, C, H, W] in [0, 1]
+            image_tensors = [frame for frame in frames]
+            logits = self.inferencer.reward_differentiable(image_tensors, batch_prompt)
+            # logits: [B, output_dim], extract mu (index 0)
+            reward = logits[:, 0]
+            total_rewards.append(reward)
+
+        rewards = torch.stack(total_rewards, dim=0).mean(dim=0)
+        return rewards
 
     @torch.no_grad()
     def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
@@ -429,6 +498,8 @@ class HPSv3Reward(BaseReward):
 
 
 class VideoAlignReward(BaseReward):
+    is_image_reward = False
+    
     def __init__(
         self,
         model_path=None,
@@ -442,6 +513,8 @@ class VideoAlignReward(BaseReward):
         num_frames=None,
         use_norm=True,
         return_all_dims=False,
+        use_legacy_video_io=True,
+        differentiable=False,
     ):
         from .video_align_predictor import VideoVLMRewardInference
 
@@ -450,15 +523,19 @@ class VideoAlignReward(BaseReward):
         self.dtype = dtype
         self.max_reward = max_reward
         self.loss_scale = loss_scale
-        self.reward_dim = reward_dim  # Which dimension to extract as the scalar reward.
+        self.reward_dim = reward_dim  # Which dimension(s) to extract as the scalar reward.
         #   - "VQ"     : Visual Quality (clearness, resolution, brightness, color)
         #   - "MQ"     : Motion Quality (consistency, smoothness, completeness)
         #   - "TA"     : Text-to-Video Alignment (prompt-content & motion match)
         #   - "Overall": Overall Performance = VQ + MQ + TA (sum of the three)
+        #   - Combinations like "VQ+MQ", "VQ+TA", "MQ+TA" are also supported,
+        #     which sum the specified dimensions.
         self.fps = fps
         self.num_frames = num_frames
         self.use_norm = use_norm
         self.return_all_dims = return_all_dims  # Return all dimensions instead of single reward_dim
+        self.use_legacy_video_io = use_legacy_video_io  # If True, save to temp video then read back (old path)
+        self.differentiable = differentiable  # If True, use differentiable path for backprop
 
         self.inferencer = VideoVLMRewardInference(
             load_from_pretrained=self.model_path,
@@ -466,6 +543,11 @@ class VideoAlignReward(BaseReward):
             dtype=self.dtype,
             model_name_or_path=model_name_or_path,
         )
+
+        # Freeze reward model parameters when using differentiable mode.
+        # The forward pass still builds the computation graph for input gradients.
+        if self.differentiable:
+            self.inferencer.model.requires_grad_(False)
 
     def _save_frames_to_temp_video(self, frames: torch.Tensor, fps: float = 8.0) -> str:
         """Save tensor frames to a temporary video file with lossless encoding.
@@ -477,10 +559,11 @@ class VideoAlignReward(BaseReward):
         Returns:
             Path to the temporary video file
         """
-        import tempfile
         import os
+        import tempfile
+
         import av
-        
+
         # Use /dev/shm (tmpfs, RAM-based) to avoid disk IO, fallback to tempdir
         shm_dir = "/dev/shm"
         if os.path.exists(shm_dir) and os.access(shm_dir, os.W_OK):
@@ -490,6 +573,7 @@ class VideoAlignReward(BaseReward):
         
         # Generate unique filename based on frame content hash
         import hashlib
+
         # Use multiple frames' bytes for robust hashing
         frame_data = frames.float().cpu().numpy().tobytes()
         frame_hash = hashlib.md5(frame_data[:10000] + frame_data[-10000:]).hexdigest()[:16]
@@ -520,12 +604,18 @@ class VideoAlignReward(BaseReward):
         return temp_video_path
 
     def __call__(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.return_all_dims:
-            rewards_dict = self.get_reward_all_dims(batch_frames, batch_prompt)
-            # Use Overall for loss computation
-            rewards = rewards_dict['Overall']
+        if self.differentiable:
+            if self.return_all_dims:
+                rewards_dict = self.get_reward_all_dims_differentiable(batch_frames, batch_prompt)
+                rewards = rewards_dict['Overall']
+            else:
+                rewards = self.get_reward_differentiable(batch_frames, batch_prompt)
         else:
-            rewards = self.get_reward(batch_frames, batch_prompt)
+            if self.return_all_dims:
+                rewards_dict = self.get_reward_all_dims(batch_frames, batch_prompt)
+                rewards = rewards_dict['Overall']
+            else:
+                rewards = self.get_reward(batch_frames, batch_prompt)
         
         if self.max_reward is None:
             loss_per_sample = (-1 * rewards) * self.loss_scale
@@ -533,39 +623,155 @@ class VideoAlignReward(BaseReward):
             loss_per_sample = torch.abs(rewards - self.max_reward) * self.loss_scale
         return loss_per_sample.mean(), rewards.mean()
 
-    @torch.no_grad()
-    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
-        assert len(batch_frames) == len(batch_prompt)        
-        total_rewards = []
+    def _get_rewards_legacy(self, batch_frames, batch_prompt):
+        """Legacy path: save tensors to temp video files, then read back via inferencer.reward()."""
         temp_video_paths = []
-        
         try:
             for frames in batch_frames:
-                # Save frames to temp video
                 frames = rearrange(frames, "c t h w -> t c h w")
                 temp_video_path = self._save_frames_to_temp_video(frames, fps=self.fps)
                 temp_video_paths.append(temp_video_path)
 
-            # Get rewards from VideoVLMRewardInference
             rewards_output = self.inferencer.reward(
                 video_paths=temp_video_paths,
                 prompts=batch_prompt,
                 num_frames=self.num_frames,
                 use_norm=self.use_norm,
             )
-
-            for reward_dict in rewards_output:
-                reward_value = reward_dict[self.reward_dim]
-                total_rewards.append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
-            
-            rewards = torch.stack(total_rewards, dim=0)
-        
         finally:
-            # Clean up temporary video files
             for temp_path in temp_video_paths:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-        
+        return rewards_output
+
+    def _get_rewards_direct(self, batch_frames, batch_prompt):
+        """Direct tensor path: pass tensors to inferencer without file I/O."""
+        video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
+        rewards_output = self.inferencer.reward_from_tensors(
+            video_tensors=video_tensors,
+            prompts=batch_prompt,
+            num_frames=self.num_frames,
+            video_fps=self.fps,
+            use_norm=self.use_norm,
+        )
+        return rewards_output
+
+    def _norm_logits(self, logits):
+        """Apply per-dimension normalization to raw logits tensor (differentiable).
+
+        Args:
+            logits: torch.Tensor of shape [B, 3] with columns [VQ, MQ, TA].
+        Returns:
+            Normalized logits tensor of the same shape, with grad_fn preserved.
+        """
+        if self.inferencer.inference_config is None:
+            return logits
+        # Cast to float32 for precision parity with the non-differentiable path,
+        # which normalizes in float64 after .item(). .float() preserves grad_fn.
+        logits = logits.float()
+        cfg = self.inferencer.inference_config
+        mean = torch.tensor(
+            [cfg['VQ_mean'], cfg['MQ_mean'], cfg['TA_mean']],
+            device=logits.device, dtype=logits.dtype,
+        )
+        std = torch.tensor(
+            [cfg['VQ_std'], cfg['MQ_std'], cfg['TA_std']],
+            device=logits.device, dtype=logits.dtype,
+        )
+        return (logits - mean) / std
+
+    def get_reward_differentiable(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
+        """Differentiable reward computation that preserves grad_fn.
+
+        No torch.no_grad() context, no .item() calls, no torch.tensor() wrapping.
+        Gradients flow from the returned scalar rewards back through the reward
+        model to the input batch_frames.
+
+        Args:
+            batch_frames: [B, C, T, H, W] tensor in [0, 1].
+            batch_prompt: List of B text prompts.
+        Returns:
+            torch.Tensor: [B] scalar rewards with grad_fn.
+        """
+        assert len(batch_frames) == len(batch_prompt)
+        video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
+        logits = self.inferencer.reward_from_tensors_differentiable(
+            video_tensors=video_tensors,
+            prompts=batch_prompt,
+            num_frames=self.num_frames,
+            video_fps=self.fps,
+        )  # [B, 3] with columns [VQ, MQ, TA]
+
+        if self.use_norm:
+            logits = self._norm_logits(logits)
+
+        # Select the reward dimension(s).
+        # Supports single dim ("VQ"), "Overall", or combinations like "VQ+MQ".
+        dim_map = {"VQ": 0, "MQ": 1, "TA": 2}
+        if self.reward_dim == "Overall":
+            rewards = logits.sum(dim=-1)  # [B]
+        elif "+" in self.reward_dim:
+            dims = [d.strip() for d in self.reward_dim.split("+")]
+            indices = [dim_map[d] for d in dims if d in dim_map]
+            if len(indices) == 0:
+                raise ValueError(f"Unknown reward_dim combination: {self.reward_dim}")
+            rewards = logits[:, indices].sum(dim=-1)  # [B]
+        elif self.reward_dim in dim_map:
+            rewards = logits[:, dim_map[self.reward_dim]]  # [B]
+        else:
+            raise ValueError(f"Unknown reward_dim: {self.reward_dim}")
+
+        return rewards
+
+    def get_reward_all_dims_differentiable(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> dict:
+        """Differentiable version of get_reward_all_dims.
+
+        Returns:
+            dict: 'VQ', 'MQ', 'TA', 'Overall' keys, each a [B] tensor with grad_fn.
+        """
+        assert len(batch_frames) == len(batch_prompt)
+        video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
+        logits = self.inferencer.reward_from_tensors_differentiable(
+            video_tensors=video_tensors,
+            prompts=batch_prompt,
+            num_frames=self.num_frames,
+            video_fps=self.fps,
+        )  # [B, 3]
+
+        if self.use_norm:
+            logits = self._norm_logits(logits)
+
+        return {
+            'VQ': logits[:, 0],
+            'MQ': logits[:, 1],
+            'TA': logits[:, 2],
+            'Overall': logits.sum(dim=-1),
+        }
+
+    @torch.no_grad()
+    def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
+        assert len(batch_frames) == len(batch_prompt)        
+        total_rewards = []
+
+        if self.use_legacy_video_io:
+            rewards_output = self._get_rewards_legacy(batch_frames, batch_prompt)
+        else:
+            rewards_output = self._get_rewards_direct(batch_frames, batch_prompt)
+
+        # Support single dim, "Overall", or combinations like "VQ+MQ"
+        if "+" in self.reward_dim:
+            dims = [d.strip() for d in self.reward_dim.split("+")]
+        else:
+            dims = [self.reward_dim]
+
+        for reward_dict in rewards_output:
+            if "+" in self.reward_dim:
+                reward_value = sum(reward_dict[d] for d in dims)
+            else:
+                reward_value = reward_dict[self.reward_dim]
+            total_rewards.append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
+
+        rewards = torch.stack(total_rewards, dim=0)
         return rewards
 
     @torch.no_grad()
@@ -576,45 +782,31 @@ class VideoAlignReward(BaseReward):
             dict: Dictionary with keys 'VQ', 'MQ', 'TA', 'Overall', each containing a tensor of rewards.
         """
         assert len(batch_frames) == len(batch_prompt)        
-        temp_video_paths = []
         all_rewards = {'VQ': [], 'MQ': [], 'TA': [], 'Overall': []}
-        
-        try:
-            for frames in batch_frames:
-                # Save frames to temp video
-                frames = rearrange(frames, "c t h w -> t c h w")
-                temp_video_path = self._save_frames_to_temp_video(frames, fps=self.fps)
-                temp_video_paths.append(temp_video_path)
 
-            # Get rewards from VideoVLMRewardInference
-            rewards_output = self.inferencer.reward(
-                video_paths=temp_video_paths,
-                prompts=batch_prompt,
-                num_frames=self.num_frames,
-                use_norm=self.use_norm,
-            )
+        if self.use_legacy_video_io:
+            rewards_output = self._get_rewards_legacy(batch_frames, batch_prompt)
+        else:
+            rewards_output = self._get_rewards_direct(batch_frames, batch_prompt)
 
-            for reward_dict in rewards_output:
-                for dim in ['VQ', 'MQ', 'TA', 'Overall']:
-                    reward_value = reward_dict[dim]
-                    all_rewards[dim].append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
-            
-            # Stack all dimensions
-            result = {}
+        for reward_dict in rewards_output:
             for dim in ['VQ', 'MQ', 'TA', 'Overall']:
-                result[dim] = torch.stack(all_rewards[dim], dim=0)
-        
-        finally:
-            # Clean up temporary video files
-            for temp_path in temp_video_paths:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-        
+                reward_value = reward_dict[dim]
+                all_rewards[dim].append(torch.tensor(reward_value, device=self.device, dtype=self.dtype))
+
+        # Stack all dimensions
+        result = {}
+        for dim in ['VQ', 'MQ', 'TA', 'Overall']:
+            result[dim] = torch.stack(all_rewards[dim], dim=0)
+
         return result
 
 if __name__ == "__main__":
     import numpy as np
-    from decord import VideoReader
+    try:
+        from decord import VideoReader
+    except ImportError:
+        from videox_fun.data.utils import AVVideoReader as VideoReader
 
     video_path_list = ["your_video_path_1.mp4", "your_video_path_2.mp4"]
     prompt_list = ["your_prompt_1", "your_prompt_2"]

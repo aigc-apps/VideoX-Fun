@@ -14,7 +14,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from decord import VideoReader
 from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from packaging import version as pver
@@ -22,6 +21,11 @@ from PIL import Image
 from safetensors.torch import load_file
 from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.dataset import Dataset
+
+try:
+    from decord import VideoReader
+except ImportError:
+    from .utils import AVVideoReader as VideoReader
 
 from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, padding_image,

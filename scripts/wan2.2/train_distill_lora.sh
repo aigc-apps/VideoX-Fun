@@ -23,7 +23,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_distill_lora.py 
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-05 \
-  --learning_rate_critic=1e-06 \
+  --learning_rate_critic=1e-05 \
   --seed=42 \
   --output_dir="output_dir_wan2.2_distill_lora" \
   --gradient_checkpointing \

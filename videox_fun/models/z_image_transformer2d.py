@@ -863,6 +863,18 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # Context Parallel
         if self.sp_world_size > 1:
+            # Ensure seq_len is divisible by SEQ_MULTI_OF * sp_world_size for chunking
+            required_multiple = SEQ_MULTI_OF * self.sp_world_size
+            current_seq_len = x.shape[1]
+            remainder = current_seq_len % required_multiple
+            if remainder != 0:
+                pad_amount = required_multiple - remainder
+                x = torch.nn.functional.pad(x, (0, 0, 0, pad_amount), value=0)
+                x_attn_mask = torch.nn.functional.pad(x_attn_mask, (0, pad_amount), value=False)
+                x_item_seqlens = [s + pad_amount for s in x_item_seqlens]
+                if x_freqs_cis is not None:
+                    x_freqs_cis = torch.nn.functional.pad(x_freqs_cis, (0, 0, 0, pad_amount), value=0)
+
             x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
 
             x_item_seqlens = [len(_) for _ in x]

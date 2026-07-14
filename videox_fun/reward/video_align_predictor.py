@@ -463,9 +463,9 @@ def fetch_video(ele: dict, image_factor: int = IMAGE_FACTOR) -> torch.Tensor | l
             resized_height, resized_width = smart_resize(
                 height, width, factor=image_factor, min_pixels=min_pixels, max_pixels=max_pixels,
             )
-        video = transforms.functional.resize(
-            video, [resized_height, resized_width], interpolation=InterpolationMode.BICUBIC, antialias=True,
-        ).float()
+        video = torch.nn.functional.interpolate(
+            video, size=[resized_height, resized_width], mode="bicubic", antialias=True, align_corners=False,
+        )
         return video
     else:
         assert isinstance(ele["video"], (list, tuple))
@@ -956,7 +956,6 @@ class VideoVLMRewardInference:
         model, checkpoint_step = load_model_from_checkpoint(model, load_from_pretrained, load_from_pretrained_step)
         model.eval()
 
-
         self.data_config = data_config
         self.inference_config = inference_config
         self.device = device
@@ -1078,6 +1077,349 @@ class VideoVLMRewardInference:
             rewards[i]['Overall'] = rewards[i]['VQ'] + rewards[i]['MQ'] + rewards[i]['TA']
 
         return rewards
+
+    def prepare_batch_from_tensors(self, video_tensors, prompts, fps=None, num_frames=None, max_pixels=None, video_fps=None):
+        """Prepare batch from video tensors directly, no file I/O.
+        Replicates the exact processing of prepare_batch() -> process_vision_info() -> fetch_video().
+
+        Args:
+            video_tensors: List[torch.Tensor], each [T, C, H, W] in [0, 1]
+            prompts: List[str]
+            fps: float, target sampling fps (for smart_nframes). If None, uses data_config.fps.
+            num_frames: int, if set, subsample to this many frames (after round_by_factor).
+                        If None, uses fps-based sampling.
+            max_pixels: int, max pixels per frame for resize. If None, uses data_config.max_frame_pixels.
+            video_fps: float, intrinsic fps of the input video tensors. Required when num_frames is None.
+        """
+        fps = self.data_config.fps if fps is None else fps
+        num_frames = self.data_config.num_frames if num_frames is None else num_frames
+        max_pixels = self.data_config.max_frame_pixels if max_pixels is None else max_pixels
+
+        video_inputs = []
+        for video in video_tensors:
+            # video: [T, C, H, W] in [0, 1] -> scale to [0, 255]
+            video = (video.float() * 255.0)
+            total_frames = video.shape[0]
+
+            # Replicate smart_nframes logic exactly
+            if num_frames is not None:
+                nframes = round_by_factor(num_frames, FRAME_FACTOR)
+            else:
+                assert video_fps is not None, "video_fps is required when num_frames is None"
+                min_frames = ceil_by_factor(FPS_MIN_FRAMES, FRAME_FACTOR)
+                max_frames = floor_by_factor(min(FPS_MAX_FRAMES, total_frames), FRAME_FACTOR)
+                nframes = total_frames / video_fps * fps
+                nframes = min(max(nframes, min_frames), max_frames)
+                nframes = round_by_factor(nframes, FRAME_FACTOR)
+
+            if nframes > total_frames:
+                nframes = total_frames
+
+            # Always apply linspace subsampling (same as video reader backends)
+            idx = torch.linspace(0, total_frames - 1, nframes).round().long()
+            video = video[idx]
+
+            # Resize: replicate fetch_video logic exactly
+            # When max_pixels is set from config, it overrides the computed value
+            # (matches: max_pixels = ele.get("max_pixels", computed) in fetch_video)
+            nframes, _, height, width = video.shape
+            min_pixels = VIDEO_MIN_PIXELS
+            if max_pixels is not None:
+                effective_max_pixels = max_pixels
+            else:
+                total_pixels = VIDEO_TOTAL_PIXELS
+                effective_max_pixels = max(
+                    min(VIDEO_MAX_PIXELS, total_pixels / nframes * FRAME_FACTOR),
+                    int(min_pixels * 1.05)
+                )
+            resized_height, resized_width = smart_resize(
+                height, width, factor=IMAGE_FACTOR,
+                min_pixels=min_pixels, max_pixels=effective_max_pixels
+            )
+            video = torch.nn.functional.interpolate(
+                video, size=[resized_height, resized_width],
+                mode="bicubic", antialias=True, align_corners=False,
+            )
+            video_inputs.append(video)
+
+        # Build text with chat template (same structure as prepare_batch)
+        chat_data = [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "video", "video": "placeholder"},
+                        {"type": "text", "text": build_prompt(prompt, self.data_config.eval_dim, self.data_config.prompt_template_type)},
+                    ],
+                },
+            ]
+            for prompt in prompts
+        ]
+
+        batch = self.processor(
+            text=self.processor.apply_chat_template(chat_data, tokenize=False, add_generation_prompt=True),
+            images=None,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+            videos_kwargs={"do_rescale": True, "do_resize": False},
+        )
+        batch = self._prepare_inputs(batch)
+        return batch
+
+    def reward_from_tensors(self, video_tensors, prompts, fps=None, num_frames=None, max_pixels=None, video_fps=None, use_norm=True):
+        """Compute rewards directly from video tensors without file I/O.
+
+        Args:
+            video_tensors: List[torch.Tensor], each [T, C, H, W] in [0, 1]
+            prompts: List[str]
+            fps: float, target sampling fps. If None, uses data_config.fps.
+            num_frames: int, if set, subsample to this many frames. If None, uses fps-based sampling.
+            max_pixels: int, max pixels per frame for resize.
+            video_fps: float, intrinsic fps of the input video tensors. Required when num_frames is None.
+            use_norm: bool, whether to rescale the output rewards
+        Returns:
+            List[dict]: rewards with VQ, MQ, TA, Overall for each video.
+        """
+        batch = self.prepare_batch_from_tensors(video_tensors, prompts, fps, num_frames, max_pixels, video_fps)
+        rewards = self.model(
+            return_dict=True,
+            **batch
+        )["logits"]
+
+        rewards = [{'VQ': reward[0].item(), 'MQ': reward[1].item(), 'TA': reward[2].item()} for reward in rewards]
+        for i in range(len(rewards)):
+            if use_norm:
+                rewards[i] = self._norm(rewards[i])
+            rewards[i]['Overall'] = rewards[i]['VQ'] + rewards[i]['MQ'] + rewards[i]['TA']
+
+        return rewards
+
+    def prepare_batch_from_tensors_differentiable(self, video_tensors, prompts, fps=None, num_frames=None, max_pixels=None, video_fps=None):
+        """Prepare batch with differentiable video preprocessing.
+
+        Produces the same output as prepare_batch_from_tensors(), but the
+        pixel_values_videos tensor retains its computation graph so that
+        gradients can flow back to the input video_tensors.
+
+        The text tokenization (input_ids, attention_mask) and video_grid_thw
+        are computed via the standard non-differentiable path (they do not
+        require gradients).
+
+        Args:
+            video_tensors: List[torch.Tensor], each [T, C, H, W] in [0, 1]
+            prompts: List[str]
+            fps: float, target sampling fps. If None, uses data_config.fps.
+            num_frames: int, if set, subsample to this many frames.
+            max_pixels: int, max pixels per frame for resize.
+            video_fps: float, intrinsic fps of the input video tensors.
+        """
+        # --- Get processor vision config ---
+        img_proc = self.processor.image_processor
+        patch_size = img_proc.patch_size  # typically 14
+        temporal_patch_size = img_proc.temporal_patch_size  # typically 2
+        merge_size = img_proc.merge_size  # typically 2
+        image_mean = torch.tensor(img_proc.image_mean, dtype=torch.float32)
+        image_std = torch.tensor(img_proc.image_std, dtype=torch.float32)
+
+        # --- Resolve default parameters ---
+        fps_val = self.data_config.fps if fps is None else fps
+        num_frames_val = self.data_config.num_frames if num_frames is None else num_frames
+        max_pixels_val = self.data_config.max_frame_pixels if max_pixels is None else max_pixels
+
+        # --- Step 1: Non-differentiable path for text tokens & metadata ---
+        # We process detached & resized videos in [0, 1] range directly through the
+        # processor with do_rescale=False to obtain input_ids, attention_mask, and
+        # video_grid_thw. This avoids the *255 → processor resize incompatibility
+        # with newer transformers versions.
+        with torch.no_grad():
+            ref_video_inputs = []
+            for video in video_tensors:
+                video_det = video.detach().float()
+                total_frames = video_det.shape[0]
+
+                # Frame sampling (same logic as Step 2)
+                if num_frames_val is not None:
+                    nframes = round_by_factor(int(num_frames_val), FRAME_FACTOR)
+                else:
+                    assert video_fps is not None, "video_fps is required when num_frames is None"
+                    _min_frames = ceil_by_factor(FPS_MIN_FRAMES, FRAME_FACTOR)
+                    _max_frames = floor_by_factor(min(FPS_MAX_FRAMES, total_frames), FRAME_FACTOR)
+                    nframes = total_frames / video_fps * fps_val
+                    nframes = min(max(nframes, _min_frames), _max_frames)
+                    nframes = round_by_factor(int(nframes), FRAME_FACTOR)
+                # Ensure at least FRAME_FACTOR frames (temporal_patch_size minimum)
+                nframes = max(nframes, FRAME_FACTOR)
+                if nframes > total_frames:
+                    nframes = total_frames
+
+                idx = torch.linspace(0, total_frames - 1, nframes).round().long()
+                video_det = video_det[idx]
+
+                # Resize
+                _nf, _C, _h, _w = video_det.shape
+                _min_pix = VIDEO_MIN_PIXELS
+                if max_pixels_val is not None:
+                    _eff_max = max_pixels_val
+                else:
+                    _eff_max = max(
+                        min(VIDEO_MAX_PIXELS, VIDEO_TOTAL_PIXELS / _nf * FRAME_FACTOR),
+                        int(_min_pix * 1.05)
+                    )
+                _rh, _rw = smart_resize(_h, _w, factor=IMAGE_FACTOR, min_pixels=_min_pix, max_pixels=_eff_max)
+                # Move to CPU for bicubic+antialias interpolation to avoid
+                # "CUDA error: invalid configuration argument" under low VRAM.
+                _device = video_det.device
+                video_det = torch.nn.functional.interpolate(
+                    video_det.cpu(), size=[_rh, _rw],
+                    mode="bicubic", antialias=True, align_corners=False,
+                ).to(_device)
+                ref_video_inputs.append(video_det)  # [nframes, C, H, W] in [0, 1]
+
+            # Build chat template for text tokenization
+            chat_data = [
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "video", "video": "placeholder"},
+                            {"type": "text", "text": build_prompt(prompt, self.data_config.eval_dim, self.data_config.prompt_template_type)},
+                        ],
+                    },
+                ]
+                for prompt in prompts
+            ]
+
+            # Pass [0, 1] videos to processor with do_rescale=False (no resize needed)
+            batch_ref = self.processor(
+                text=self.processor.apply_chat_template(chat_data, tokenize=False, add_generation_prompt=True),
+                images=None,
+                videos=ref_video_inputs,
+                padding=True,
+                return_tensors="pt",
+                videos_kwargs={"do_rescale": False, "do_resize": False},
+            )
+            batch_ref = self._prepare_inputs(batch_ref)
+
+        # --- Step 2: Differentiable video preprocessing ---
+        all_patches = []
+        for video in video_tensors:
+            # video: [T, C, H, W] in [0, 1]
+            video = video.float()
+            total_frames = video.shape[0]
+
+            # Frame sampling (index op preserves grad for selected frames)
+            if num_frames_val is not None:
+                nframes = round_by_factor(int(num_frames_val), FRAME_FACTOR)
+            else:
+                assert video_fps is not None, "video_fps is required when num_frames is None"
+                min_frames = ceil_by_factor(FPS_MIN_FRAMES, FRAME_FACTOR)
+                max_frames = floor_by_factor(min(FPS_MAX_FRAMES, total_frames), FRAME_FACTOR)
+                nframes = total_frames / video_fps * fps_val
+                nframes = min(max(nframes, min_frames), max_frames)
+                nframes = round_by_factor(int(nframes), FRAME_FACTOR)
+
+            # Ensure at least FRAME_FACTOR frames (temporal_patch_size minimum)
+            nframes = max(nframes, FRAME_FACTOR)
+            if nframes > total_frames:
+                nframes = total_frames
+
+            idx = torch.linspace(0, total_frames - 1, nframes).round().long()
+            video = video[idx]  # [nframes, C, H, W] - grad preserved
+
+            # Differentiable resize
+            nframes_now, C, height, width = video.shape
+            min_pixels = VIDEO_MIN_PIXELS
+            if max_pixels_val is not None:
+                effective_max_pixels = max_pixels_val
+            else:
+                total_pixels = VIDEO_TOTAL_PIXELS
+                effective_max_pixels = max(
+                    min(VIDEO_MAX_PIXELS, total_pixels / nframes_now * FRAME_FACTOR),
+                    int(min_pixels * 1.05)
+                )
+            resized_height, resized_width = smart_resize(
+                height, width, factor=IMAGE_FACTOR,
+                min_pixels=min_pixels, max_pixels=effective_max_pixels
+            )
+            video = torch.nn.functional.interpolate(
+                video, size=[resized_height, resized_width],
+                mode="bicubic", antialias=True, align_corners=False,
+            )  # differentiable
+
+            # Differentiable normalize: (x - mean) / std
+            # Input is [0, 1] range. Processor would do rescale(1/255) on [0,255] input
+            # which gives [0, 1], then normalize. We skip the roundtrip.
+            mean = image_mean.to(video.device, video.dtype).view(1, 3, 1, 1)
+            std = image_std.to(video.device, video.dtype).view(1, 3, 1, 1)
+            video = (video - mean) / std  # differentiable
+
+            # Temporal padding (replicate last frame if not divisible)
+            T = video.shape[0]
+            if T % temporal_patch_size != 0:
+                pad_count = temporal_patch_size - (T % temporal_patch_size)
+                video = torch.cat([video, video[-1:].expand(pad_count, -1, -1, -1)], dim=0)
+
+            # Differentiable patch reshape (matches processor's numpy reshape exactly)
+            T, C, H, W = video.shape
+            grid_t = T // temporal_patch_size
+            grid_h = H // patch_size
+            grid_w = W // patch_size
+
+            patches = video.reshape(
+                grid_t, temporal_patch_size, C,
+                grid_h // merge_size, merge_size, patch_size,
+                grid_w // merge_size, merge_size, patch_size,
+            )
+            # Transpose to match processor: (0, 3, 6, 4, 7, 2, 1, 5, 8)
+            patches = patches.permute(0, 3, 6, 4, 7, 2, 1, 5, 8).contiguous()
+            patches = patches.reshape(
+                grid_t * grid_h * grid_w,
+                C * temporal_patch_size * patch_size * patch_size,
+            )
+            all_patches.append(patches)
+
+        # Concatenate patches from all videos and move to model device.
+        # .to() is differentiable and preserves grad_fn.
+        pixel_values_videos = torch.cat(all_patches, dim=0).to(self.device)
+
+        # --- Step 3: Assemble batch with differentiable pixel_values_videos ---
+        batch = {
+            "input_ids": batch_ref["input_ids"],
+            "attention_mask": batch_ref["attention_mask"],
+            "pixel_values_videos": pixel_values_videos,
+            "video_grid_thw": batch_ref["video_grid_thw"],
+        }
+        # Preserve any extra keys (e.g. position_ids, rope_deltas)
+        for k, v in batch_ref.items():
+            if k not in batch:
+                batch[k] = v
+
+        return batch
+
+    def reward_from_tensors_differentiable(self, video_tensors, prompts, fps=None, num_frames=None, max_pixels=None, video_fps=None):
+        """Differentiable reward computation - returns raw logits tensor with grad_fn.
+
+        Unlike reward_from_tensors(), this does NOT call .item() and does NOT
+        wrap results in Python dicts. The returned tensor retains its computation
+        graph so gradients can flow back to the input video_tensors.
+
+        Args:
+            video_tensors: List[torch.Tensor], each [T, C, H, W] in [0, 1]
+            prompts: List[str]
+            fps: float, target sampling fps.
+            num_frames: int, if set, subsample to this many frames.
+            max_pixels: int, max pixels per frame for resize.
+            video_fps: float, intrinsic fps of the input video tensors.
+        Returns:
+            torch.Tensor: shape [B, output_dim] with grad_fn intact.
+                          Columns are [VQ, MQ, TA] (or as configured by output_dim).
+        """
+        batch = self.prepare_batch_from_tensors_differentiable(
+            video_tensors, prompts, fps, num_frames, max_pixels, video_fps,
+        )
+        logits = self.model(return_dict=True, **batch)["logits"]
+        return logits
 
 
 # ========================= Main =========================
