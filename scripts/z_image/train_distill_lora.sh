@@ -17,7 +17,7 @@ accelerate launch --mixed_precision="bf16" scripts/z_image/train_distill_lora.py
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
-  --learning_rate_critic=1e-05 \
+  --learning_rate_critic=1e-04 \
   --seed=42 \
   --output_dir="output_dir_z_image_distill_lora" \
   --gradient_checkpointing \

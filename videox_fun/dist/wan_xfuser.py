@@ -308,16 +308,36 @@ def usp_attn_self_forcing_forward(
         kv_cache["k"][:, local_start_index:local_end_index] = roped_key_full
         kv_cache["v"][:, local_start_index:local_end_index] = v_full
     
-    # Step 4: chunk back to SP distribution for attention computation
+    # Step 4: pad full Q seq dim to multiple of sp_size for even chunk under SP,
+    # then chunk back to SP distribution for attention computation.
+    unpadded_q_len = roped_query_full.shape[1]
+    q_pad = (sp_size - unpadded_q_len % sp_size) % sp_size
+    if q_pad > 0:
+        roped_query_full = torch.nn.functional.pad(
+            roped_query_full, (0, 0, 0, 0, 0, q_pad))
     roped_query = torch.chunk(roped_query_full, sp_size, dim=1)[sp_rank]
-    
+
     # Step 5: compute attention using xFuserLongContextAttention for sequence parallelism
     # Chunk KV cache window to match SP distribution
-    kv_k_full = kv_cache["k"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
-    kv_v_full = kv_cache["v"][:, max(0, local_end_index - self.max_attention_size):local_end_index]
+    if self.local_attn_size == -1:
+        max_attention_size = local_end_index
+    else:
+        max_attention_size = self.local_attn_size * frame_seqlen
+
+    kv_k_full = kv_cache["k"][:, max(0, local_end_index - max_attention_size):local_end_index]
+    kv_v_full = kv_cache["v"][:, max(0, local_end_index - max_attention_size):local_end_index]
+
+    # Pad KV window seq dim to multiple of sp_size for even chunk under SP.
+    # Padded zeros yield zero K/V contribution; softmax normalization impact
+    # is bounded since kv_pad < sp_size << kv_len.
+    kv_pad = (sp_size - kv_k_full.shape[1] % sp_size) % sp_size
+    if kv_pad > 0:
+        kv_k_full = torch.nn.functional.pad(kv_k_full, (0, 0, 0, 0, 0, kv_pad))
+        kv_v_full = torch.nn.functional.pad(kv_v_full, (0, 0, 0, 0, 0, kv_pad))
+
     kv_k = torch.chunk(kv_k_full, sp_size, dim=1)[sp_rank]
     kv_v = torch.chunk(kv_v_full, sp_size, dim=1)[sp_rank]
-    
+
     x = xFuserLongContextAttention()(
         None,
         query=half(roped_query),
@@ -325,10 +345,15 @@ def usp_attn_self_forcing_forward(
         value=kv_v,
         window_size=self.window_size
     )
-    
+
+    # Trim Q padding so the output length matches this rank's input length s
+    # (i.e. the per-rank chunk length produced by upstream torch.chunk(x, sp_size)).
+    if x.shape[1] > s:
+        x = x[:, :s]
+
     kv_cache["global_end_index"].fill_(current_end)
     kv_cache["local_end_index"].fill_(local_end_index)
-    
+
     # Output projection
     x = x.flatten(2)
     x = self.o(x)

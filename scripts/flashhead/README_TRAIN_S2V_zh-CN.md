@@ -43,9 +43,10 @@ pip install -r requirements.txt
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
 pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
 pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
-pip install yunchang xfuser modelscope openpyxl deepspeed==0.17.0 numpy==1.26.4
+pip install yunchang xfuser modelscope openpyxl
 pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
+pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
 **方式三：使用 Docker**
@@ -147,8 +148,8 @@ modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./dataset
 如果你的数据使用的是相对路径，训练脚本中请这样配置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -157,7 +158,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存放在本地，请使用相对路径。如果数据集存放在外部存储（如 NAS、OSS）或多机共享，请使用绝对路径。
@@ -240,8 +241,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--config_path` | 模型配置文件路径 | `config/wan2.1/wan_civitai.yaml` |
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/SoulX-FlashHead-1_3B` |
 | `--audio_encoder_path` | 音频编码器路径（**FlashHead-S2V 特有**） | `models/Diffusion_Transformer/wav2vec2-base-960h` |
-| `--train_data_dir` | 训练数据目录 | `datasets/internal_datasets/` |
-| `--train_data_meta` | 训练数据元数据文件 | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | 训练数据元数据文件 | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批训练的样本数 | 1 |
 | `--video_sample_size` | 视频最大训练分辨率 | 512 |
 | `--token_sample_size` | Token 长度采样大小 | 512 |

@@ -47,19 +47,12 @@ pip install Pillow einops safetensors timm tomesd librosa transformers accelerat
 
 ### 2.1 Quick Test Dataset
 
-For testing purposes, you can use the demo dataset from Hugging Face:
+We provide a test dataset containing several video-audio training samples.
 
 ```bash
-# Create dataset directory
-mkdir -p datasets
-
-# Download demo dataset from Hugging Face
-cd datasets
-git clone https://huggingface.co/datasets/modelscope/X-Fun-Videos-Audios-Demo
-cd ..
+# Download demo dataset
+modelscope download --dataset PAI/X-Fun-Videos-Audios-Demo --local_dir ./datasets/X-Fun-Videos-Audios-Demo
 ```
-
-This dataset contains 17 video-audio pairs for quick testing.
 
 ### 2.2 Dataset Structure
 
@@ -133,8 +126,8 @@ This dataset contains 17 video-audio pairs for quick testing.
 If your data uses relative paths, configure the training script as follows:
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Paths**:
@@ -143,7 +136,7 @@ If your data uses absolute paths, configure the training script as follows:
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **Tip**: If the dataset is small and stored locally, use relative paths. If the dataset is stored on external storage (e.g., NAS, OSS) or shared across multiple machines, use absolute paths.
@@ -169,7 +162,7 @@ FSDP training is recommended as it can significantly save VRAM.
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi-node environments without RDMA
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -219,8 +212,8 @@ accelerate launch --mixed_precision="bf16" scripts/mova/train.py \
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
 | `--pretrained_model_name_or_path` | Pretrained model path | `models/Diffusion_Transformer/MOVA-360p` |
-| `--train_data_dir` | Training data directory | `datasets/internal_datasets/` |
-| `--train_data_meta` | Training data metadata file | `datasets/internal_datasets/metadata.json` |
+| `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Audios-Demo/` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Number of samples per batch | 1 |
 | `--image_sample_size` | Maximum training resolution for auto bucket | 480 |
 | `--video_sample_size` | Maximum video training resolution | 480 |
@@ -269,8 +262,8 @@ Edit the script to load your trained checkpoint and generate test videos.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -320,8 +313,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MOVA-360p"
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

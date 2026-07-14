@@ -77,7 +77,10 @@ import sys
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from videox_fun.data.utils import AVVideoReader as VideoReader
 from einops import rearrange
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

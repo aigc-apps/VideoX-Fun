@@ -17,7 +17,10 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.utils import BaseOutput, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from ..data.utils import AVVideoReader as VideoReader
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
                               WanT5EncoderModel, Wan2_2Transformer3DModel_Animate)

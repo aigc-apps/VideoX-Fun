@@ -9,11 +9,15 @@ import librosa
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-from decord import VideoReader
 from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from PIL import Image
 from torch.utils.data.dataset import Dataset
+
+try:
+    from decord import VideoReader
+except ImportError:
+    from .utils import AVVideoReader as VideoReader
 
 from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, resize_frame)

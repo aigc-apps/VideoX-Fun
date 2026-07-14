@@ -1043,7 +1043,7 @@ def main():
 
         logging.info("Add fake_score_network parameters")
         fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_network.parameters()))
-        fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+        fake_trainable_params_optim = fake_score_network.prepare_optimizer_params(args.learning_rate_critic / 2, args.learning_rate_critic, args.learning_rate_critic)
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1159,7 +1159,7 @@ def main():
     )
     fake_score_lr_scheduler = get_scheduler(
         args.lr_scheduler,
-        optimizer=optimizer,
+        optimizer=critic_optimizer,
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )

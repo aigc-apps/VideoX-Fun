@@ -43,9 +43,10 @@ pip install -r requirements.txt
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
 pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
 pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
-pip install yunchang xfuser modelscope openpyxl deepspeed==0.17.0 numpy==1.26.4
+pip install yunchang xfuser modelscope openpyxl
 pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
+pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
 **方式 3：使用docker**
@@ -194,8 +195,8 @@ VACE 训练数据集除了原始视频外，还需要提供一一对应的控制
 如果数据的路径为相对路径，则在训练脚本中设置：
 
 ```bash
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 ```
 
 **绝对路径**：
@@ -204,7 +205,7 @@ export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 
 ```bash
 export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/metadata.json"
+export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 ```
 
 > 💡 **建议**：如果数据集较小且存储在本地，推荐使用相对路径；如果数据集存储在外部存储（如 NAS、OSS）或多个机器共享存储，推荐使用绝对路径。
@@ -234,7 +235,7 @@ modelscope download --model PAI/Wan2.2-VACE-Fun-A14B --local_dir models/Diffusio
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -296,7 +297,7 @@ Wan2.2采用了创新的双Transformer架构：
 | `--config_path` | 配置文件路径 | `config/wan2.2/wan_civitai_t2v.yaml` |
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B` |
 | `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Controls-Demo/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json` |
 | `--train_batch_size` | 每批次样本数 | 1 |
 | `--image_sample_size` | 图像最大训练分辨率 | 640 |
 | `--video_sample_size` | 视频最大训练分辨率 | 640 |
@@ -388,7 +389,7 @@ Wan2.2采用了创新的双Transformer架构：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -448,7 +449,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -498,7 +499,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -555,7 +556,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_vace_fun/train.py \
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 机器总数
@@ -607,7 +608,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-VACE-Fun-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_objects.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同
 export MASTER_PORT=10086
 export WORLD_SIZE=2

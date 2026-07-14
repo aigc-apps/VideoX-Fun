@@ -301,8 +301,8 @@ generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-    if transformer_2 is not None:
-        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+if lora_high_path is not None and transformer_2 is not None:
+    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -333,8 +333,8 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-    if transformer_2 is not None:
-        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
+if lora_high_path is not None and transformer_2 is not None:
+    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):

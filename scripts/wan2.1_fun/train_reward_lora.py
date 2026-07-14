@@ -39,7 +39,10 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from videox_fun.data.utils import AVVideoReader as VideoReader
 from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available

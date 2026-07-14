@@ -6,12 +6,80 @@ from contextlib import contextmanager
 import cv2
 import numpy as np
 import torch
-from decord import VideoReader
 from einops import rearrange
 from packaging import version as pver
 from PIL import Image
 
+try:
+    from decord import VideoReader
+    HAS_DECORD = True
+except ImportError:
+    HAS_DECORD = False
+    print("Warning: decord is not installed. Falling back to PyAV for video reading. "
+          "Install decord for better performance: pip install decord")
+
 VIDEO_READER_TIMEOUT = 20
+
+
+class AVVideoReader:
+    """A VideoReader implementation using PyAV as a fallback when decord is unavailable.
+    
+    Provides the same interface as decord.VideoReader:
+    - len(reader) returns total frame count
+    - reader.get_batch(indices) returns a BatchFrames object with .asnumpy()
+    - reader.get_avg_fps() returns the average FPS
+    """
+    def __init__(self, uri, num_threads=1, **kwargs):
+        import av
+        self._container = av.open(uri)
+        self._stream = self._container.streams.video[0]
+        self._stream.thread_type = 'AUTO'
+        self._num_frames = self._stream.frames
+        # Some videos may not report frame count; decode to count
+        if self._num_frames == 0:
+            for _ in self._container.decode(video=0):
+                self._num_frames += 1
+            self._container.seek(0)
+        self._avg_fps = float(self._stream.average_rate) if self._stream.average_rate else 24.0
+
+    def __len__(self):
+        return self._num_frames
+
+    def get_avg_fps(self):
+        return self._avg_fps
+
+    def get_batch(self, indices):
+        """Read frames at specified indices. Returns an object with .asnumpy() method."""
+        import av
+        indices_set = set(indices)
+        max_idx = max(indices)
+        frames_dict = {}
+
+        self._container.seek(0)
+        frame_idx = 0
+        for frame in self._container.decode(video=0):
+            if frame_idx in indices_set:
+                frames_dict[frame_idx] = frame.to_ndarray(format='rgb24')
+            if frame_idx >= max_idx:
+                break
+            frame_idx += 1
+
+        # Assemble frames in requested order
+        frames = [frames_dict[i] for i in indices]
+        return _AVBatchFrames(frames)
+
+    def __del__(self):
+        if hasattr(self, '_container') and self._container is not None:
+            self._container.close()
+
+
+class _AVBatchFrames:
+    """Wrapper to mimic decord's batch result with .asnumpy() interface."""
+    def __init__(self, frames):
+        self._frames = frames
+
+    def asnumpy(self):
+        return np.stack(self._frames)
 
 def get_random_mask(shape, image_start_only=False):
     f, c, h, w = shape
@@ -98,7 +166,10 @@ def get_random_mask(shape, image_start_only=False):
 
 @contextmanager
 def VideoReader_contextmanager(*args, **kwargs):
-    vr = VideoReader(*args, **kwargs)
+    if HAS_DECORD:
+        vr = VideoReader(*args, **kwargs)
+    else:
+        vr = AVVideoReader(*args, **kwargs)
     try:
         yield vr
     finally:

@@ -132,13 +132,15 @@ transformer = Wan2_2Transformer3DModel.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-
-transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-    os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-    low_cpu_mem_usage=True,
-    torch_dtype=weight_dtype,
-)
+if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+    transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+        os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
+        torch_dtype=weight_dtype,
+    )
+else:
+    transformer_2 = None
 
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
@@ -152,17 +154,18 @@ if transformer_path is not None:
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-if transformer_high_path is not None:
-    print(f"From checkpoint: {transformer_high_path}")
-    if transformer_high_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
-        state_dict = load_file(transformer_high_path)
-    else:
-        state_dict = torch.load(transformer_high_path, map_location="cpu")
-    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+if transformer_2 is not None:
+    if transformer_high_path is not None:
+        print(f"From checkpoint: {transformer_high_path}")
+        if transformer_high_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(transformer_high_path)
+        else:
+            state_dict = torch.load(transformer_high_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-    m, u = transformer_2.load_state_dict(state_dict, strict=False)
-    print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        m, u = transformer_2.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
 Chosen_AutoencoderKL = {
@@ -223,11 +226,13 @@ pipeline = Wan2_2Pipeline(
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
-    transformer_2.enable_multi_gpus_inference()
+    if transformer_2 is not None:
+        transformer_2.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
+        if transformer_2 is not None:
+            pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
@@ -237,33 +242,38 @@ if ulysses_degree > 1 or ring_degree > 1:
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
-    for i in range(len(pipeline.transformer_2.blocks)):
-        pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
+    if transformer_2 is not None:
+        for i in range(len(pipeline.transformer_2.blocks)):
+            pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)
-    replace_parameters_by_name(transformer_2, ["modulation",], device=device)
     transformer.freqs = transformer.freqs.to(device=device)
-    transformer_2.freqs = transformer_2.freqs.to(device=device)
+    if transformer_2 is not None:
+        replace_parameters_by_name(transformer_2, ["modulation",], device=device)
+        transformer_2.freqs = transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_group_offload":
     register_auto_device_hook(pipeline.transformer)
-    register_auto_device_hook(pipeline.transformer_2)
+    if transformer_2 is not None:
+        register_auto_device_hook(pipeline.transformer_2)
     safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
@@ -274,17 +284,20 @@ if coefficients is not None:
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
-    pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
 
 if cfg_skip_ratio is not None:
     print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
     pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-    pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+if lora_high_path is not None and transformer_2 is not None:
     pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
@@ -293,7 +306,8 @@ with torch.no_grad():
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
-        pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
+        if transformer_2 is not None:
+            pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     sample = pipeline(
         prompt, 
@@ -310,6 +324,7 @@ with torch.no_grad():
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+if lora_high_path is not None and transformer_2 is not None:
     pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
