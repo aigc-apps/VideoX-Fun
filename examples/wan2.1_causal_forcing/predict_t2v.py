@@ -61,62 +61,19 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "/mnt/nas/model_nas/Wan2.1-T2V-1.3B"
+model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++".
-# Stage 1 / Stage 2 (multi-step) recipes track Causal-Forcing's
-# CausalDiffusionInferencePipeline which uses UniPC by default — keep
-# "Flow_Unipc" here to reproduce CF's stable AR rollouts.
-sampler_name        = "Flow_Unipc"
+sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics.
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5.0
 
 # Causal-Forcing checkpoint to overlay on top of the Wan2.1 base model.
-# Pick ONE of the three official frame-wise checkpoints (or your own training output):
-#
-#   Stage 1 — AR diffusion:   .../framewise/ar_diffusion.pt    (multi-step, 50 inference steps)
-#   Stage 2 — Causal CD:      .../framewise/causal_cd.pt       (multi-step, 50 inference steps)
-#   Stage 3 — DMD (default):  .../framewise/causal_forcing.pt  (few-step, 4 inference steps)
-#
-# `transformer_path` accepts either a single weights file OR a `checkpoint-N/`
-# directory produced by our trainers. If a directory is given and `use_ema=True`,
-# we resolve to `ema_transformer/diffusion_pytorch_model.safetensors` when it
-# exists, else fall back to `transformer/...`. This matches CF official behavior:
-# Causal-Forcing's Stage 2/3 ckpts ship only `generator_ema` (see
-# `Causal-Forcing/trainer/naive_cd.py:191-198`), so EMA is what CF actually evaluates;
-# Stage 1 has no EMA dir and silently falls back to live weights.
-#
-# Make sure `num_inference_steps`, `stochastic_sampling` and `guidance_scale`
-# below match the stage you picked (see the stage-selector block further down).
-transformer_path    = "/mnt/nas/huangkunzhe.hkz/codes/VideoX-Fun/output_dir_wan2.1_causal_forcing_dmd_framewise_2step_bs1_fp32/checkpoint-10000"
-use_ema             = True
+transformer_path    = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-4000/diffusion_pytorch_model.safetensors"
+use_ema             = False
 vae_path            = None
 lora_path           = None
-
-
-def _resolve_transformer_path(raw_path: str, prefer_ema: bool) -> str:
-    """Resolve a checkpoint path to the actual weights file to load.
-
-    File paths are returned unchanged so external `.pt` ckpts (CF official) keep
-    working. For trainer-output dirs, prefer EMA when asked and available,
-    otherwise fall back to live `transformer/` weights.
-    """
-    if os.path.isfile(raw_path):
-        return raw_path
-    if os.path.isdir(raw_path):
-        candidates = []
-        if prefer_ema:
-            candidates.append(os.path.join(raw_path, "ema_transformer", "diffusion_pytorch_model.safetensors"))
-        candidates.append(os.path.join(raw_path, "transformer", "diffusion_pytorch_model.safetensors"))
-        candidates.append(os.path.join(raw_path, "diffusion_pytorch_model.safetensors"))
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-    raise FileNotFoundError(
-        f"transformer_path={raw_path!r} is neither a file nor a checkpoint dir "
-        f"with a known safetensors layout (transformer/ or ema_transformer/)."
-    )
 
 # Other params
 sample_size         = [480, 832]
@@ -156,12 +113,15 @@ negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字
 # stochastic_sampling = True
 #
 # Stage 3 — DMD (`causal_forcing.pt`): 2-step distribution-matching distilled.
+# guidance_scale      = 1.0
+# num_inference_steps = 2
+# stochastic_sampling = True
 guidance_scale      = 1.0
 num_inference_steps = 2
 stochastic_sampling = True
 seed                = 43
 lora_weight         = 0.55
-save_path           = "/mnt/nas/huangkunzhe.hkz/codes/VideoX-Fun/output_dir_wan2.1_causal_forcing_dmd_framewise_2step_bs1_fp32/inference_sweep/predict_t2v_ours_ckpt-10000_tokyo"
+save_path           = "samples/wan-videos-causal-forcing"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -178,6 +138,29 @@ transformer = WanTransformer3DModel_SelfForcing.from_pretrained(
 )
 
 if transformer_path is not None:
+    def _resolve_transformer_path(raw_path: str, prefer_ema: bool) -> str:
+        """Resolve a checkpoint path to the actual weights file to load.
+
+        File paths are returned unchanged so external `.pt` ckpts (CF official) keep
+        working. For trainer-output dirs, prefer EMA when asked and available,
+        otherwise fall back to live `transformer/` weights.
+        """
+        if os.path.isfile(raw_path):
+            return raw_path
+        if os.path.isdir(raw_path):
+            candidates = []
+            if prefer_ema:
+                candidates.append(os.path.join(raw_path, "ema_transformer", "diffusion_pytorch_model.safetensors"))
+            candidates.append(os.path.join(raw_path, "transformer", "diffusion_pytorch_model.safetensors"))
+            candidates.append(os.path.join(raw_path, "diffusion_pytorch_model.safetensors"))
+            for c in candidates:
+                if os.path.isfile(c):
+                    return c
+        raise FileNotFoundError(
+            f"transformer_path={raw_path!r} is neither a file nor a checkpoint dir "
+            f"with a known safetensors layout (transformer/ or ema_transformer/)."
+        )
+
     _raw_transformer_path = transformer_path
     transformer_path = _resolve_transformer_path(transformer_path, prefer_ema=use_ema)
     if transformer_path != _raw_transformer_path:

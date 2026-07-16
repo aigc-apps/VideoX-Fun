@@ -44,7 +44,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (EMAModel,
                                       compute_density_for_timestep_sampling,
                                       compute_loss_weighting_for_sd3)
-from diffusers.utils import check_min_version, deprecate, is_wandb_available
+from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -452,16 +452,7 @@ def parse_args():
             " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
         ),
     )
-    parser.add_argument(
-        "--non_ema_revision",
-        type=str,
-        default=None,
-        required=False,
-        help=(
-            "Revision of pretrained non-ema model identifier. Must be a branch, tag or git identifier of the local or"
-            " remote repository specified with --pretrained_model_name_or_path."
-        ),
-    )
+    parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model for the generator.")
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
@@ -685,24 +676,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--ema_weight",
-        type=float,
-        default=0.99,
-        help=(
-            "EMA decay for the generator-EMA shadow copy used by inference. Set <=0 to disable EMA. "
-            "Matches CF Stage 3 `ema_weight: 0.99`."
-        ),
-    )
-    parser.add_argument(
-        "--ema_start_step",
-        type=int,
-        default=200,
-        help=(
-            "Before this step the EMA copy mirrors the live generator (warm-up); after, polyak update applies. "
-            "Matches CF Stage 3 `ema_start_step: 200`."
-        ),
-    )
-    parser.add_argument(
         "--vae_path",
         type=str,
         default=None,
@@ -786,6 +759,22 @@ def parse_args():
         help="Use KV cache block-by-block training (matches original Self-Forcing)"
     )
     parser.add_argument(
+        "--score_num_frames",
+        type=int,
+        default=21,
+        help="Number of latent frames for score computation window (default: 21, matching base model). "
+             "fake_score/real_score always receive this many frames."
+    )
+    parser.add_argument(
+        "--min_length_prob_bias",
+        type=float,
+        default=0.0,
+        help="Probability bias for sampling the minimum length (score_num_frames). "
+             "0.0 = uniform sampling (default), 0.5 = 50%% prob for min length, "
+             "remaining prob distributed equally among longer lengths. "
+             "Use this to increase 21-frame training ratio."
+    )
+    parser.add_argument(
         "--context_noise",
         type=int,
         default=0,
@@ -808,10 +797,6 @@ def parse_args():
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 
-    # default to using the same revision for the non-ema model if not specified
-    if args.non_ema_revision is None:
-        args.non_ema_revision = args.revision
-
     return args
 
 
@@ -824,15 +809,6 @@ def main():
             " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
-    if args.non_ema_revision is not None:
-        deprecate(
-            "non_ema_revision!=None",
-            "0.15.0",
-            message=(
-                "Downloading 'non_ema' weights from revision branches of the Hub is deprecated. Please make sure to"
-                " use `--variant=non_ema` instead."
-            ),
-        )
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
 
     config = OmegaConf.load(args.config_path)
@@ -1020,43 +996,41 @@ def main():
     if args.train_mode != "normal":
         clip_image_encoder.requires_grad_(False)
 
-    def _maybe_load_ckpt_into(model, ckpt_path):
-        """Load a Stage 1 / Stage 2 / Stage 3 checkpoint into a transformer.
-
-        Accepts diffusers safetensors, accelerate `.pt` snapshots wrapping
-        `state_dict` / `generator` / `generator_ema`, and FSDP-wrapped keys
-        with `model._fsdp_wrapped_module.` / `model.` prefixes.
-        """
-        print(f"From checkpoint: {ckpt_path}")
-        if ckpt_path.endswith("safetensors"):
-            from safetensors.torch import load_file
-            state_dict = load_file(ckpt_path)
+    # CF Stage 3 init
+    if args.transformer_path is not None:
+        print(f"From checkpoint: {args.transformer_path}")
+        if args.transformer_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(args.transformer_path)
         else:
-            state_dict = torch.load(ckpt_path, map_location="cpu")
+            state_dict = torch.load(args.transformer_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+        state_dict = state_dict["generator_ema"] if "generator_ema" in state_dict else state_dict
+        if any(k.startswith("model.") for k in state_dict.keys()):
+            state_dict = {k.replace("model.", "", 1) if k.startswith("model.") else k: v for k, v in state_dict.items()}
+
+        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+
+    if args.ode_transformer_path is not None:
+        print(f"From checkpoint: {args.ode_transformer_path}")
+        if args.ode_transformer_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(args.ode_transformer_path)
+        else:
+            state_dict = torch.load(args.ode_transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
         state_dict = state_dict["generator_ema"] if "generator_ema" in state_dict else state_dict
         state_dict = state_dict["generator"] if "generator" in state_dict else state_dict
-        cleaned = {}
-        for k, v in state_dict.items():
-            if k.startswith("model._fsdp_wrapped_module."):
-                k = k.replace("model._fsdp_wrapped_module.", "model.", 1)
-            cleaned[k] = v
-        state_dict = cleaned
         if any(k.startswith("model.") for k in state_dict.keys()):
             state_dict = {k.replace("model.", "", 1) if k.startswith("model.") else k: v for k, v in state_dict.items()}
-        m, u = model.load_state_dict(state_dict, strict=False)
-        print(f"  missing keys: {len(m)}, unexpected keys: {len(u)}")
+
+        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
-
-    # CF Stage 3 init: --transformer_path = Stage 2 ckpt (causal_cd.pt). Only
-    # the student generator is initialized from Stage 2 weights; real_score (14B
-    # teacher) and fake_score (1.3B critic) stay at their pretrained init —
-    # matches CF `model/base.py:45-52` and `trainer/distillation.py:174`.
-    if args.transformer_path is not None:
-        _maybe_load_ckpt_into(generator_transformer3d, args.transformer_path)
-
-    if args.ode_transformer_path is not None:
-        _maybe_load_ckpt_into(generator_transformer3d, args.ode_transformer_path)
 
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
@@ -1070,25 +1044,6 @@ def main():
         m, u = vae.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
-
-    # EMA shadow for the generator. CF Stage 3 ckpts after `ema_start_step=200`
-    # save only the EMA copy (`generator_ema` key). We mirror that here by
-    # keeping a fp32 non-trainable copy that polyak-tracks the live generator.
-    # Saved alongside the live transformer in each `checkpoint-N/ema_transformer/`
-    # so inference (`predict_t2v.py:_resolve_transformer_path`) can pick it up.
-    use_ema = args.ema_weight is not None and args.ema_weight > 0
-    if use_ema:
-        ema_transformer3d = WanTransformer3DModel_SelfForcing.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
-            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float32,
-        )
-        ema_transformer3d.requires_grad_(False)
-        ema_transformer3d.eval()
-        ema_transformer3d.load_state_dict(generator_transformer3d.state_dict(), strict=True)
-    else:
-        ema_transformer3d = None
 
     # A good trainable modules is showed below now.
     # For 3D Patch: trainable_modules = ['ff.net', 'pos_embed', 'attn2', 'proj_out', 'timepositionalencoding', 'h_position', 'w_position']
@@ -1110,27 +1065,19 @@ def main():
                 param.requires_grad = True
                 break
 
+    # Create EMA for the generator_transformer3d.
+    if args.use_ema:
+        if zero_stage == 3:
+            raise NotImplementedError("FSDP does not support EMA.")
+
+        ema_generator_transformer3d = EMAModel(
+            generator_transformer3d.parameters(),
+            model_cls=WanTransformer3DModel_SelfForcing,
+            model_config=generator_transformer3d.config,
+        )
+
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
-        def _save_ema_pretrained(output_dir):
-            if ema_transformer3d is not None and accelerator.is_main_process:
-                ema_transformer3d.save_pretrained(os.path.join(output_dir, "ema_transformer"))
-
-        def _load_ema_pretrained(input_dir):
-            if ema_transformer3d is None:
-                return
-            ema_path = os.path.join(input_dir, "ema_transformer")
-            if not os.path.exists(ema_path):
-                return
-            ema_loaded = WanTransformer3DModel_SelfForcing.from_pretrained(
-                ema_path,
-                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                low_cpu_mem_usage=True,
-            )
-            ema_transformer3d.load_state_dict(ema_loaded.state_dict(), strict=True)
-            del ema_loaded
-            print(f"Loaded EMA generator from {ema_path}.")
-
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
@@ -1144,7 +1091,6 @@ def main():
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
-                _save_ema_pretrained(output_dir)
 
             def load_model_hook(models, input_dir):
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
@@ -1153,20 +1099,35 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-                _load_ema_pretrained(input_dir)
         else:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
+                    if args.use_ema and models[0] is generator_transformer3d:
+                        ema_generator_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
+
                     models[0].save_pretrained(os.path.join(output_dir, "transformer"))
                     if not args.use_deepspeed:
                         weights.pop()
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
-                _save_ema_pretrained(output_dir)
 
             def load_model_hook(models, input_dir):
+                if args.use_ema and models[0] is generator_transformer3d:
+                    ema_path = os.path.join(input_dir, "transformer_ema")
+                    _, ema_kwargs = WanTransformer3DModel_SelfForcing.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = WanTransformer3DModel_SelfForcing.from_pretrained(
+                        input_dir, subfolder="transformer_ema",
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                    )
+                    load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel_SelfForcing, model_config=load_model.config)
+                    load_model.load_state_dict(ema_kwargs)
+
+                    ema_generator_transformer3d.load_state_dict(load_model.state_dict())
+                    ema_generator_transformer3d.to(accelerator.device)
+                    del load_model
+
                 for i in range(len(models)):
                     # pop models so that they are not loaded again
                     model = models.pop()
@@ -1186,7 +1147,6 @@ def main():
                         loaded_number, _ = pickle.load(file)
                         batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
                     print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
-                _load_ema_pretrained(input_dir)
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1697,9 +1657,8 @@ def main():
     if args.train_mode != "normal":
         clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
-    # EMA shadow is fp32 and lives on-device (small relative to 14B teacher).
-    if ema_transformer3d is not None:
-        ema_transformer3d.to(accelerator.device)
+    if args.use_ema:
+        ema_generator_transformer3d.to(accelerator.device)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1791,7 +1750,55 @@ def main():
         vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
-    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)]
+
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+
+        if n <= 2:
+            low = indices[1]
+            high = indices[0] - 1
+            random_tail = torch.randint(low, high + 1, (1,)).item()
+
+            result = torch.tensor([indices[0], random_tail])
+        else:
+            result = [0] * n
+            result[0] = indices[0]
+            result[-1] = indices[-1]
+
+            for i in range(1, n - 1):
+                gap_upper = indices[i - 1] - indices[i]
+                gap_lower = indices[i] - indices[i + 1]
+
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+
+                if max_jitter > 0:
+                    jitter = torch.randint(
+                        -max_jitter, max_jitter + 1, (1,)
+                    ).item()
+                else:
+                    jitter = 0
+
+                result[i] = indices[i] + jitter
+
+            for i in range(1, n):
+                if result[i] >= result[i - 1]:
+                    result[i] = result[i - 1] - 1
+
+            result = [max(1, min(train_sampling_steps, x)) for x in result]
+            result = torch.tensor(result)
+
+        if dist.is_initialized():
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
@@ -1998,10 +2005,25 @@ def main():
                             local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
                         local_sample_size = [int(x / 16) * 16 for x in local_sample_size]
 
+                    # Compute latent frame count
+                    latent_num_frames = int((num_frames - 1) // vae.temporal_compression_ratio + 1)
+
+                    # Align latent_num_frames to num_frame_per_block for KV cache training
+                    if args.use_kv_cache_training:
+                        if args.independent_first_frame:
+                            # latent_frames - 1 must be divisible by num_frame_per_block
+                            k = latent_num_frames - 1
+                            k = (k // args.num_frame_per_block) * args.num_frame_per_block
+                            latent_num_frames = k + 1
+                        else:
+                            # latent_frames must be divisible by num_frame_per_block
+                            latent_num_frames = (latent_num_frames // args.num_frame_per_block) * args.num_frame_per_block
+                        latent_num_frames = max(latent_num_frames, args.num_frame_per_block)
+
                     target_shape = (
                         len(text),
                         vae.latent_channels, 
-                        int((num_frames - 1) // vae.temporal_compression_ratio + 1), 
+                        latent_num_frames, 
                         int(local_sample_size[0] // vae.spatial_compression_ratio),
                         int(local_sample_size[1] // vae.spatial_compression_ratio), 
                     )
@@ -2122,6 +2144,20 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
+                # Create discrete denoising steps (per-step, with optional randomization)
+                if getattr(args, 'randomize_step_indices', False):
+                    random_indices = randomize_denoising_step_indices(
+                        args.denoising_step_indices_list,
+                        args.train_sampling_steps,
+                        torch_rng,
+                        accelerator,
+                        jitter_ratio=getattr(args, 'index_jitter_ratio', 0.30),
+                    )
+                else:
+                    random_indices = torch.tensor(args.denoising_step_indices_list)
+
+                denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
                 if step % args.gen_update_interval == 0:
@@ -2130,25 +2166,54 @@ def main():
                         patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
                         
-                        # Determine block structure
+                        # Determine block structure with variable-length support
                         if not args.independent_first_frame:
                             assert num_frames % args.num_frame_per_block == 0
-                            num_blocks = num_frames // args.num_frame_per_block
+                            max_num_blocks = num_frames // args.num_frame_per_block
+                            assert args.score_num_frames % args.num_frame_per_block == 0
+                            min_num_blocks = args.score_num_frames // args.num_frame_per_block
                         else:
                             assert (num_frames - 1) % args.num_frame_per_block == 0
-                            num_blocks = (num_frames - 1) // args.num_frame_per_block
-                        
-                        all_num_frames = [args.num_frame_per_block] * num_blocks
+                            max_num_blocks = (num_frames - 1) // args.num_frame_per_block
+                            if args.score_num_frames > 1:
+                                assert (args.score_num_frames - 1) % args.num_frame_per_block == 0
+                                min_num_blocks = (args.score_num_frames - 1) // args.num_frame_per_block
+                            else:
+                                min_num_blocks = 0
+
+                        # Random sample number of blocks (Self-Forcing variable-length training)
+                        if args.min_length_prob_bias > 0.0 and max_num_blocks > min_num_blocks:
+                            # Weighted sampling: give min_num_blocks a higher probability
+                            num_options = max_num_blocks - min_num_blocks + 1
+                            bias = min(args.min_length_prob_bias, 0.99)
+                            remaining_prob = (1.0 - bias) / (num_options - 1)
+                            probs = [remaining_prob] * num_options
+                            probs[0] = bias  # min_num_blocks gets the bias
+                            probs_tensor = torch.tensor(probs, device=accelerator.device)
+                            block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                            num_generated_blocks = (min_num_blocks + block_indices).item()
+                        else:
+                            num_generated_blocks = torch.randint(
+                                min_num_blocks, max_num_blocks + 1, (1,),
+                                generator=torch_rng, device=accelerator.device
+                            ).item()
+                        if dist.is_initialized():
+                            _sync = torch.tensor([num_generated_blocks], device=accelerator.device)
+                            dist.broadcast(_sync, src=0)
+                            num_generated_blocks = _sync.item()
+
+                        all_num_frames = [args.num_frame_per_block] * num_generated_blocks
                         if args.independent_first_frame:
                             all_num_frames = [1] + all_num_frames
+
+                        num_generated_frames = sum(all_num_frames)
                         
                         # Initialize KV cache
-                        _gen_cfg = accelerator.unwrap_model(generator_transformer3d).config
-                        num_layers = _gen_cfg.num_layers
-                        num_heads = _gen_cfg.num_heads
-                        head_dim = _gen_cfg.dim // num_heads
+                        num_layers = generator_transformer3d.config.num_layers
+                        num_heads = generator_transformer3d.config.num_heads
+                        head_dim = generator_transformer3d.config.dim // num_heads
                         text_len = 512  # T5 sequence length
-
+                        
                         kv_cache = initialize_kv_cache_for_training(
                             batch_size=bsz,
                             num_frames=num_frames,
@@ -2189,6 +2254,10 @@ def main():
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=accelerator.device)[0]
                         
+                        # Only blocks in the last score_num_frames get gradient at exit step
+                        # (matches Self-Forcing: start_gradient_frame_index = num_output_frames - 21)
+                        start_gradient_frame_index = num_generated_frames - args.score_num_frames
+                        
                         for block_idx, current_num_frames in enumerate(all_num_frames):
                             # Extract noise for current block
                             start_idx = current_start_frame - num_input_frames
@@ -2204,7 +2273,11 @@ def main():
                                     dtype=torch.int64
                                 )
                                 
-                                context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
+                                # Only enable gradient for final step AND block within score window
+                                if not is_final_step or current_start_frame < start_gradient_frame_index:
+                                    context_manager = torch.no_grad()
+                                else:
+                                    context_manager = contextlib.nullcontext()
                                 
                                 with context_manager:
                                     # Convert noisy_input to list format
@@ -2285,13 +2358,54 @@ def main():
                             
                             current_start_frame += current_num_frames
                         
-                        # Final output
-                        generator_pred = output_pred
-                        seq_len = frame_seq_length * num_frames  # For fake/real score computation
+                        # Final output — slice generated frames (may be < num_frames for variable-length)
+                        generator_pred_full = output_pred[:, :, :num_generated_frames]
+
+                        # Gradient mask: first block gets no gradient when generating > min frames
+                        # (matches Self-Forcing reference: model/base.py L182-L190)
+                        min_num_frames_score = args.score_num_frames
+                        need_gradient_mask = (num_generated_frames != min_num_frames_score)
+                        gradient_mask = None
+                        if need_gradient_mask:
+                            gradient_mask = torch.ones_like(generator_pred_full, dtype=torch.bool)
+                            if args.independent_first_frame:
+                                gradient_mask[:, :, :1] = False
+                            else:
+                                gradient_mask[:, :, :args.num_frame_per_block] = False
+
+                        # Slice for score computation: last score_num_frames frames
+                        if num_generated_frames > args.score_num_frames:
+                            # Re-encode boundary for cleaner score input
+                            generator_pred_for_score, score_num_frames, _ = slice_for_score(
+                                generator_pred_full, vae, weight_dtype,
+                                score_num_frames=args.score_num_frames,
+                                independent_first_frame=args.independent_first_frame,
+                            )
+                        else:
+                            generator_pred_for_score = generator_pred_full
+                            score_num_frames = num_generated_frames
+
+                        # Compute score_mask for DMD loss (matches Self-Forcing: dmd.py L199-204)
+                        score_mask = None
+                        if gradient_mask is not None:
+                            mask_offset = num_generated_frames - score_num_frames
+                            score_mask = gradient_mask[:, :, mask_offset:mask_offset + score_num_frames]
+
+                        # generator_pred = the sliced version for DMD loss
+                        generator_pred = generator_pred_for_score
+                        seq_len = frame_seq_length * score_num_frames  # Score always on fixed window
                     
                     else:
                         # === Block mask training (flex attention, no KV cache) ===
                         # Block mask training: use flex attention to process entire video at once
+                        # Note: for long videos, use KV cache mode instead
+                        score_mask = None  # Block mask mode: no gradient mask needed
+                        if num_frames > args.score_num_frames:
+                            raise ValueError(
+                                f"Block mask mode does not support variable-length training "
+                                f"(video produces {num_frames} latent frames > score_num_frames={args.score_num_frames}). "
+                                f"Use --use_kv_cache_training for long video training."
+                            )
                         
                         patch_h_bm, patch_w_bm = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
                         frame_seqlen_bm = (height * width) // (patch_h_bm * patch_w_bm)
@@ -2470,11 +2584,20 @@ def main():
                     fake_to_real_grad = fake_to_real_grad / normalizer
                     fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
 
-                    dmd_loss = 0.5 * F.mse_loss(
-                        generator_pred.double(),
-                        (generator_pred.double() - fake_to_real_grad.double()).detach(),
-                        reduction="mean"
-                    )
+                    # Apply gradient mask: only compute loss on unmasked elements
+                    # (matches Self-Forcing dmd.py: F.mse_loss(x[mask], target[mask]))
+                    if score_mask is not None:
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred.double()[score_mask],
+                            (generator_pred.double() - fake_to_real_grad.double()).detach()[score_mask],
+                            reduction="mean"
+                        )
+                    else:
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred.double(),
+                            (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                            reduction="mean"
+                        )
                         
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
                     train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
@@ -2490,24 +2613,7 @@ def main():
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-
-                    # EMA update for the generator. Before `--ema_start_step`
-                    # the EMA mirrors the live generator (warm-up); after, polyak
-                    # update applies. Same pattern as Stage 2 (CCD) trainer.
-                    if ema_transformer3d is not None and accelerator.sync_gradients:
-                        live_state = accelerator.unwrap_model(generator_transformer3d).state_dict()
-                        if global_step < args.ema_start_step:
-                            ema_transformer3d.load_state_dict(live_state, strict=True)
-                        else:
-                            decay = args.ema_weight
-                            ema_state = ema_transformer3d.state_dict()
-                            with torch.no_grad():
-                                for k, v in ema_state.items():
-                                    if v.dtype.is_floating_point:
-                                        v.mul_(decay).add_(live_state[k].to(v.dtype, copy=False), alpha=1.0 - decay)
-                                    else:
-                                        v.copy_(live_state[k])
-
+                    
                     if args.low_vram:
                         fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                         torch.cuda.empty_cache()
@@ -2522,23 +2628,48 @@ def main():
                     # Calculate frame_seq_length
                     frame_seq_length = (target_shape[3] * target_shape[4]) // (patch_h * patch_w)
                     
-                    # Determine block structure
+                    # Determine block structure (variable-length, mirrors generator branch)
                     if not args.independent_first_frame:
-                        num_blocks = num_frames // args.num_frame_per_block
+                        max_num_blocks_critic = num_frames // args.num_frame_per_block
+                        min_num_blocks_critic = args.score_num_frames // args.num_frame_per_block
                     else:
-                        num_blocks = (num_frames - 1) // args.num_frame_per_block
-                    
-                    all_num_frames = [args.num_frame_per_block] * num_blocks
+                        max_num_blocks_critic = (num_frames - 1) // args.num_frame_per_block
+                        if args.score_num_frames > 1:
+                            min_num_blocks_critic = (args.score_num_frames - 1) // args.num_frame_per_block
+                        else:
+                            min_num_blocks_critic = 0
+
+                    # Random sample number of blocks (mirrors generator's variable-length training)
+                    if args.min_length_prob_bias > 0.0 and max_num_blocks_critic > min_num_blocks_critic:
+                        num_options = max_num_blocks_critic - min_num_blocks_critic + 1
+                        bias = min(args.min_length_prob_bias, 0.99)
+                        remaining_prob = (1.0 - bias) / (num_options - 1)
+                        probs = [remaining_prob] * num_options
+                        probs[0] = bias  # min_num_blocks_critic gets the bias
+                        probs_tensor = torch.tensor(probs, device=accelerator.device)
+                        block_indices = torch.multinomial(probs_tensor, 1, generator=torch_rng)
+                        num_generated_blocks_critic = (min_num_blocks_critic + block_indices).item()
+                    else:
+                        num_generated_blocks_critic = torch.randint(
+                            min_num_blocks_critic, max_num_blocks_critic + 1, (1,),
+                            generator=torch_rng, device=accelerator.device
+                        ).item()
+                    if dist.is_initialized():
+                        _sync = torch.tensor([num_generated_blocks_critic], device=accelerator.device)
+                        dist.broadcast(_sync, src=0)
+                        num_generated_blocks_critic = _sync.item()
+
+                    all_num_frames = [args.num_frame_per_block] * num_generated_blocks_critic
                     if args.independent_first_frame:
                         all_num_frames = [1] + all_num_frames
+                    num_generated_frames_critic = sum(all_num_frames)
                     
                     # Initialize KV cache
-                    _gen_cfg = accelerator.unwrap_model(generator_transformer3d).config
-                    num_layers = _gen_cfg.num_layers
-                    num_heads = _gen_cfg.num_heads
-                    head_dim = _gen_cfg.dim // num_heads
+                    num_layers = generator_transformer3d.config.num_layers
+                    num_heads = generator_transformer3d.config.num_heads
+                    head_dim = generator_transformer3d.config.dim // num_heads
                     text_len = 512
-
+                    
                     critic_kv_cache = initialize_kv_cache_for_training(
                         batch_size=bsz,
                         num_frames=num_frames,
@@ -2665,8 +2796,20 @@ def main():
                         
                         current_start_frame += current_num_frames
                     
-                    fake_score_denoised_pred = output_pred
-                    seq_len = frame_seq_length * num_frames
+                    fake_score_denoised_pred_full = output_pred[:, :, :num_generated_frames_critic]
+
+                    # Slice for critic score: last score_num_frames frames
+                    if num_generated_frames_critic > args.score_num_frames:
+                        fake_score_denoised_pred, critic_score_num_frames, _ = slice_for_score(
+                            fake_score_denoised_pred_full, vae, weight_dtype,
+                            score_num_frames=args.score_num_frames,
+                            independent_first_frame=args.independent_first_frame,
+                        )
+                    else:
+                        fake_score_denoised_pred = fake_score_denoised_pred_full
+                        critic_score_num_frames = num_generated_frames_critic
+
+                    seq_len = frame_seq_length * critic_score_num_frames
                     
                 else:
                     with torch.no_grad():
@@ -2802,10 +2945,12 @@ def main():
                 if args.low_vram:
                     fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                     generator_transformer3d = generator_transformer3d.to(accelerator.device)
-                    
+
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
 
+                if args.use_ema:
+                    ema_generator_transformer3d.step(generator_transformer3d.parameters())
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
@@ -2844,6 +2989,10 @@ def main():
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    if args.use_ema:
+                        # Store the generator parameters temporarily and load the EMA parameters to perform inference.
+                        ema_generator_transformer3d.store(generator_transformer3d.parameters())
+                        ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
                     log_validation(
                         vae,
                         text_encoder,
@@ -2856,6 +3005,9 @@ def main():
                         weight_dtype,
                         global_step,
                     )
+                    if args.use_ema:
+                        # Switch back to the original generator parameters.
+                        ema_generator_transformer3d.restore(generator_transformer3d.parameters())
 
             logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2864,6 +3016,10 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            if args.use_ema:
+                # Store the generator parameters temporarily and load the EMA parameters to perform inference.
+                ema_generator_transformer3d.store(generator_transformer3d.parameters())
+                ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
             log_validation(
                 vae,
                 text_encoder,
@@ -2876,9 +3032,15 @@ def main():
                 weight_dtype,
                 global_step,
             )
+            if args.use_ema:
+                # Switch back to the original generator parameters.
+                ema_generator_transformer3d.restore(generator_transformer3d.parameters())
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if args.use_ema:
+        # Copy EMA weights to generator on ALL processes before save_state (collective op).
+        ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
     if accelerator.is_main_process:
         generator_transformer3d = unwrap_model(generator_transformer3d)
 
@@ -2890,6 +3052,8 @@ def main():
         fake_score_save_path = os.path.join(save_path, "fake_score")
         accelerator.save_state(save_path)
         accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+        if args.use_ema and accelerator.is_main_process:
+            ema_generator_transformer3d.save_pretrained(os.path.join(save_path, "transformer_ema"))
         logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()

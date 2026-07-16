@@ -44,7 +44,6 @@ from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
-from torch.utils.data import BatchSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -78,46 +77,6 @@ def filter_kwargs(cls, kwargs):
     valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
-
-
-class LatentLMDBDataset(torch.utils.data.Dataset):
-    """Read precomputed latents + prompts from a Causal-Forcing-style LMDB.
-
-    Mirrors `utils/dataset.py::LatentLMDBDataset` in https://github.com/thu-ml/Causal-Forcing
-    so an LMDB produced by `utils/merge_and_get_clean.py` / `utils/create_lmdb_iterative.py`
-    can be consumed directly. Each row stores either `(F, C, H, W)` (clean latent only) or
-    `(T, F, C, H, W)` (full ODE trajectory) — we always return the clean endpoint.
-    """
-
-    def __init__(self, data_path, max_pair=int(1e8)):
-        import lmdb  # lazy import; only required when --train_data_format=latent_lmdb
-        self._lmdb = lmdb
-        self.data_path = data_path
-        self.max_pair = max_pair
-        self.env = lmdb.open(
-            data_path, readonly=True, lock=False, readahead=False, meminit=False
-        )
-        with self.env.begin() as txn:
-            self.latents_shape = tuple(map(int, txn.get(b"latents_shape").decode().split()))
-        # dataset stub so AspectRatio-style samplers (which expect `.dataset`) are not needed.
-        self.dataset = list(range(min(self.latents_shape[0], self.max_pair)))
-
-    def __len__(self):
-        return min(self.latents_shape[0], self.max_pair)
-
-    def __getitem__(self, idx):
-        with self.env.begin() as txn:
-            latent_bytes = txn.get(f"latents_{idx}_data".encode())
-            prompt_bytes = txn.get(f"prompts_{idx}_data".encode())
-        latents = np.frombuffer(latent_bytes, dtype=np.float16).reshape(self.latents_shape[1:])
-        if latents.ndim == 4:
-            latents = latents[None, ...]
-        # Per CF's convention the clean endpoint is the *last* trajectory point.
-        clean_latent = torch.tensor(latents, dtype=torch.float32)[-1]
-        return {
-            "text": prompt_bytes.decode(),
-            "clean_latent": clean_latent,
-        }
 
 
 def get_random_downsample_ratio(sample_size, image_ratio=[],
@@ -163,7 +122,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
         if is_deepspeed:
             origin_config = transformer3d.config
             transformer3d.config = accelerator.unwrap_model(transformer3d).config
-        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
             logger.info("Running validation... ")
             scheduler_kwargs = OmegaConf.to_container(config['scheduler_kwargs'])
             scheduler_kwargs['shift'] = args.shift
@@ -591,19 +550,6 @@ def parse_args():
         action="store_true",
         help="Apply the Causal-Forcing per-timestep loss weight (Gaussian centered at T/2)."
     )
-    parser.add_argument(
-        "--train_data_format",
-        type=str,
-        default="video",
-        choices=["video", "latent_lmdb"],
-        help=(
-            "Training data format. `video` (default) loads raw videos via ImageVideoDataset"
-            " and encodes them with the VAE on the fly. `latent_lmdb` reads precomputed"
-            " latents from a Causal-Forcing-style LMDB (`--train_data_meta` should then"
-            " point to the LMDB directory)."
-        ),
-    )
-
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -963,233 +909,227 @@ def main():
             eps=args.adam_epsilon,
         )
 
-    if args.train_data_format == "video":
-        # Get the training dataset
-        sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
+    # Get the training dataset
+    sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     
-        if args.fix_sample_size is not None and args.enable_bucket:
-            args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
-            args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
-            args.training_with_video_token_length = False
-            args.random_hw_adapt = False
+    if args.fix_sample_size is not None and args.enable_bucket:
+        args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.image_sample_size = max(max(args.fix_sample_size), args.image_sample_size)
+        args.training_with_video_token_length = False
+        args.random_hw_adapt = False
 
-        # Get the dataset (Stage 1 always trains on raw videos with teacher forcing).
-        train_dataset = ImageVideoDataset(
-            args.train_data_meta, args.train_data_dir,
-            video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames,
-            video_repeat=args.video_repeat,
-            image_sample_size=args.image_sample_size,
-            enable_bucket=args.enable_bucket, enable_inpaint=False,
-        )
+    # Get the dataset (Stage 1 always trains on raw videos with teacher forcing).
+    train_dataset = ImageVideoDataset(
+        args.train_data_meta, args.train_data_dir,
+        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames,
+        video_repeat=args.video_repeat,
+        image_sample_size=args.image_sample_size,
+        enable_bucket=args.enable_bucket, enable_inpaint=False,
+    )
 
-        def get_length_to_frame_num(token_length):
-            if args.image_sample_size > args.video_sample_size:
-                sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
-
-                if sample_sizes[-1] != args.image_sample_size:
-                    sample_sizes.append(args.image_sample_size)
-            else:
-                sample_sizes = [args.image_sample_size]
-        
-            length_to_frame_num = {
-                sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
-            }
-
-            return length_to_frame_num
-
-        aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-        batch_sampler_generator = torch.Generator().manual_seed(args.seed)
-        batch_sampler = AspectRatioBatchImageVideoSampler(
-            sampler=RandomSampler(train_dataset, generator=batch_sampler_generator), dataset=train_dataset.dataset,
-            batch_size=args.train_batch_size, train_folder = args.train_data_dir, drop_last=True,
-            aspect_ratios=aspect_ratio_sample_size,
-        )
-
-        def collate_fn(examples):
-            # Get token length
-            target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
-            length_to_frame_num = get_length_to_frame_num(target_token_length)
-
-            # Create new output
-            new_examples                 = {}
-            new_examples["target_token_length"] = target_token_length
-            new_examples["pixel_values"] = []
-            new_examples["text"]         = []
-
-            # Get downsample ratio in image and videos
-            pixel_value     = examples[0]["pixel_values"]
-            data_type       = examples[0]["data_type"]
-            f, h, w, c      = np.shape(pixel_value)
-            if data_type == 'image':
-                random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size], rng=rng)
-
-                aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
-
-                batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-            else:
-                if args.random_hw_adapt:
-                    if args.training_with_video_token_length:
-                        local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
-                        # The video will be resized to a lower resolution than its own.
-                        choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
-                        if len(choice_list) == 0:
-                            choice_list = list(length_to_frame_num.keys())
-                        if rng is None:
-                            local_video_sample_size = np.random.choice(choice_list)
-                        else:
-                            local_video_sample_size = rng.choice(choice_list)
-                        batch_video_length = length_to_frame_num[local_video_sample_size]
-                        random_downsample_ratio = args.video_sample_size / local_video_sample_size
-                    else:
-                        random_downsample_ratio = get_random_downsample_ratio(
-                                args.video_sample_size, rng=rng)
-                        batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-                else:
-                    random_downsample_ratio = 1
-                    batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
-
-                aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
-
-            if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
-            elif args.random_ratio_crop:
-                if rng is None:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                else:
-                    random_sample_size = aspect_ratio_random_crop_sample_size[
-                        rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
-                    ]
-                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
-            else:
-                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / 16) * 16 for x in closest_size]
-
-            min_example_length = min(
-                [example["pixel_values"].shape[0] for example in examples]
-            )
-            batch_video_length = int(min(batch_video_length, min_example_length))
-
-            # Magvae needs the number of frames to be 4n + 1.
-            batch_video_length = (batch_video_length - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
-
-            # Causal-Forcing needs the latent frame count to align with num_frame_per_block.
-            k = (batch_video_length - 1) // sample_n_frames_bucket_interval
-            if args.independent_first_frame:
-                # latent_frames - 1 = k must be divisible by num_frame_per_block
-                k = (k // args.num_frame_per_block) * args.num_frame_per_block
-            else:
-                # latent_frames = k + 1 must be divisible by num_frame_per_block
-                k = ((k + 1) // args.num_frame_per_block) * args.num_frame_per_block - 1
-            batch_video_length = k * sample_n_frames_bucket_interval + 1
-
-            if batch_video_length <= 0:
-                batch_video_length = 1
-
-            for example in examples:
-                if args.fix_sample_size is not None:
-                    # To 0~1
-                    pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-
-                    # Get adapt hw for resize
-                    fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
-                    transform = transforms.Compose([
-                        transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(fix_sample_size),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-                elif args.random_ratio_crop:
-                    # To 0~1
-                    pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-
-                    # Get adapt hw for resize
-                    b, c, h, w = pixel_values.size()
-                    th, tw = random_sample_size
-                    if th / tw > h / w:
-                        nh = int(th)
-                        nw = int(w / h * nh)
-                    else:
-                        nw = int(tw)
-                        nh = int(h / w * nw)
-
-                    transform = transforms.Compose([
-                        transforms.Resize([nh, nw]),
-                        transforms.CenterCrop([int(x) for x in random_sample_size]),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-                else:
-                    # To 0~1
-                    pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-
-                    # Get adapt hw for resize
-                    closest_size = list(map(lambda x: int(x), closest_size))
-                    if closest_size[0] / h > closest_size[1] / w:
-                        resize_size = closest_size[0], int(w * closest_size[0] / h)
-                    else:
-                        resize_size = int(h * closest_size[1] / w), closest_size[1]
-
-                    transform = transforms.Compose([
-                        transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
-                        transforms.CenterCrop(closest_size),
-                        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
-                    ])
-
-                new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
-                new_examples["text"].append(example["text"])
-
-            # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
-
-            # Encode prompts when enable_text_encoder_in_dataloader=True
-            if args.enable_text_encoder_in_dataloader:
-                prompt_ids = tokenizer(
-                    new_examples['text'],
-                    max_length=args.tokenizer_max_length,
-                    padding="max_length",
-                    add_special_tokens=True,
-                    truncation=True,
-                    return_tensors="pt"
-                )
-                text_input_ids = prompt_ids.input_ids
-                prompt_attention_mask = prompt_ids.attention_mask
-
-                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
-                prompt_embeds = text_encoder(text_input_ids.to("cpu"), attention_mask=prompt_attention_mask.to("cpu"))[0]
-                prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
-
-                new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
-                new_examples['encoder_hidden_states'] = prompt_embeds
-
-            return new_examples
-
-        # DataLoaders creation:
-        train_dataloader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_sampler=batch_sampler,
-            collate_fn=collate_fn,
-            persistent_workers=True if args.dataloader_num_workers != 0 else False,
-            num_workers=args.dataloader_num_workers,
-        )
+    # Causal-Forcing needs at least one full block of latent frames per clip.
+    # Enforce the matching pixel-frame minimum at video-read time so too-short
+    # clips raise and get resampled instead of collapsing the block reshape.
+    if args.independent_first_frame:
+        # latent_frames - 1 must be >= num_frame_per_block
+        train_dataset.min_video_sample_n_frames = args.num_frame_per_block * sample_n_frames_bucket_interval + 1
     else:
-        # Read precomputed latents + prompts from a Causal-Forcing-style LMDB.
-        train_dataset = LatentLMDBDataset(args.train_data_meta)
-        batch_sampler_generator = torch.Generator().manual_seed(args.seed)
-        batch_sampler = BatchSampler(
-            RandomSampler(train_dataset, generator=batch_sampler_generator),
-            batch_size=args.train_batch_size, drop_last=True,
+        # latent_frames must be >= num_frame_per_block
+        train_dataset.min_video_sample_n_frames = (args.num_frame_per_block - 1) * sample_n_frames_bucket_interval + 1
+
+    def get_length_to_frame_num(token_length):
+        if args.image_sample_size > args.video_sample_size:
+            sample_sizes = list(range(args.video_sample_size, args.image_sample_size + 1, 128))
+
+            if sample_sizes[-1] != args.image_sample_size:
+                sample_sizes.append(args.image_sample_size)
+        else:
+            sample_sizes = [args.image_sample_size]
+    
+        length_to_frame_num = {
+            sample_size: min(token_length / sample_size / sample_size, args.video_sample_n_frames) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1 for sample_size in sample_sizes
+        }
+
+        return length_to_frame_num
+
+    aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+    batch_sampler_generator = torch.Generator().manual_seed(args.seed)
+    batch_sampler = AspectRatioBatchImageVideoSampler(
+        sampler=RandomSampler(train_dataset, generator=batch_sampler_generator), dataset=train_dataset.dataset,
+        batch_size=args.train_batch_size, train_folder = args.train_data_dir, drop_last=True,
+        aspect_ratios=aspect_ratio_sample_size,
+    )
+
+    def collate_fn(examples):
+        # Get token length
+        target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
+        length_to_frame_num = get_length_to_frame_num(target_token_length)
+
+        # Create new output
+        new_examples                 = {}
+        new_examples["target_token_length"] = target_token_length
+        new_examples["pixel_values"] = []
+        new_examples["text"]         = []
+
+        # Get downsample ratio in image and videos
+        pixel_value     = examples[0]["pixel_values"]
+        data_type       = examples[0]["data_type"]
+        f, h, w, c      = np.shape(pixel_value)
+        if data_type == 'image':
+            random_downsample_ratio = 1 if not args.random_hw_adapt else get_random_downsample_ratio(args.image_sample_size, image_ratio=[args.image_sample_size / args.video_sample_size], rng=rng)
+
+            aspect_ratio_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+            aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.image_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
+
+            batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
+        else:
+            if args.random_hw_adapt:
+                if args.training_with_video_token_length:
+                    local_min_size = np.min(np.array([np.mean(np.array([np.shape(example["pixel_values"])[1], np.shape(example["pixel_values"])[2]])) for example in examples]))
+                    # The video will be resized to a lower resolution than its own.
+                    choice_list = [length for length in list(length_to_frame_num.keys()) if length < local_min_size * 1.25]
+                    if len(choice_list) == 0:
+                        choice_list = list(length_to_frame_num.keys())
+                    if rng is None:
+                        local_video_sample_size = np.random.choice(choice_list)
+                    else:
+                        local_video_sample_size = rng.choice(choice_list)
+                    batch_video_length = length_to_frame_num[local_video_sample_size]
+                    random_downsample_ratio = args.video_sample_size / local_video_sample_size
+                else:
+                    random_downsample_ratio = get_random_downsample_ratio(
+                            args.video_sample_size, rng=rng)
+                    batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
+            else:
+                random_downsample_ratio = 1
+                batch_video_length = args.video_sample_n_frames + sample_n_frames_bucket_interval
+
+            aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+            aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
+
+        if args.fix_sample_size is not None:
+            fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+        elif args.random_ratio_crop:
+            if rng is None:
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    np.random.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
+            else:
+                random_sample_size = aspect_ratio_random_crop_sample_size[
+                    rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
+                ]
+            random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
+        else:
+            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+            closest_size = [int(x / 16) * 16 for x in closest_size]
+
+        min_example_length = min(
+            [example["pixel_values"].shape[0] for example in examples]
         )
-        train_dataloader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_sampler=batch_sampler,
-            persistent_workers=True if args.dataloader_num_workers != 0 else False,
-            num_workers=args.dataloader_num_workers,
-        )
+        batch_video_length = int(min(batch_video_length, min_example_length))
+
+        # Magvae needs the number of frames to be 4n + 1.
+        batch_video_length = (batch_video_length - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
+
+        # Causal-Forcing needs the latent frame count to align with num_frame_per_block.
+        # Always keep at least one full causal block so the per-block timestep
+        # reshape (num_frames -> [-1, num_frame_per_block]) stays valid.
+        k = (batch_video_length - 1) // sample_n_frames_bucket_interval
+        if args.independent_first_frame:
+            # latent_frames - 1 = k must be a positive multiple of num_frame_per_block
+            k = max(k // args.num_frame_per_block, 1) * args.num_frame_per_block
+        else:
+            # latent_frames = k + 1 must be a positive multiple of num_frame_per_block
+            k = max((k + 1) // args.num_frame_per_block, 1) * args.num_frame_per_block - 1
+        batch_video_length = k * sample_n_frames_bucket_interval + 1
+
+        for example in examples:
+            if args.fix_sample_size is not None:
+                # To 0~1
+                pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+
+                # Get adapt hw for resize
+                fix_sample_size = list(map(lambda x: int(x), fix_sample_size))
+                transform = transforms.Compose([
+                    transforms.Resize(fix_sample_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(fix_sample_size),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+            elif args.random_ratio_crop:
+                # To 0~1
+                pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+
+                # Get adapt hw for resize
+                b, c, h, w = pixel_values.size()
+                th, tw = random_sample_size
+                if th / tw > h / w:
+                    nh = int(th)
+                    nw = int(w / h * nh)
+                else:
+                    nw = int(tw)
+                    nh = int(h / w * nw)
+
+                transform = transforms.Compose([
+                    transforms.Resize([nh, nw]),
+                    transforms.CenterCrop([int(x) for x in random_sample_size]),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+            else:
+                # To 0~1
+                pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+
+                # Get adapt hw for resize
+                closest_size = list(map(lambda x: int(x), closest_size))
+                if closest_size[0] / h > closest_size[1] / w:
+                    resize_size = closest_size[0], int(w * closest_size[0] / h)
+                else:
+                    resize_size = int(h * closest_size[1] / w), closest_size[1]
+
+                transform = transforms.Compose([
+                    transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),  # Image.BICUBIC
+                    transforms.CenterCrop(closest_size),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+                ])
+
+            new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
+            new_examples["text"].append(example["text"])
+
+        # Limit the number of frames to the same
+        new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
+
+        # Encode prompts when enable_text_encoder_in_dataloader=True
+        if args.enable_text_encoder_in_dataloader:
+            prompt_ids = tokenizer(
+                new_examples['text'],
+                max_length=args.tokenizer_max_length,
+                padding="max_length",
+                add_special_tokens=True,
+                truncation=True,
+                return_tensors="pt"
+            )
+            text_input_ids = prompt_ids.input_ids
+            prompt_attention_mask = prompt_ids.attention_mask
+
+            seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+            prompt_embeds = text_encoder(text_input_ids.to("cpu"), attention_mask=prompt_attention_mask.to("cpu"))[0]
+            prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+
+            new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
+            new_examples['encoder_hidden_states'] = prompt_embeds
+
+        return new_examples
+
+    # DataLoaders creation:
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_sampler=batch_sampler,
+        collate_fn=collate_fn,
+        persistent_workers=True if args.dataloader_num_workers != 0 else False,
+        num_workers=args.dataloader_num_workers,
+    )
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1317,7 +1257,7 @@ def main():
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
             # Data batch sanity check (only available when training on raw videos)
-            if epoch == first_epoch and step == 0 and args.train_data_format == "video":
+            if epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
@@ -1326,7 +1266,7 @@ def main():
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
 
-            with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            with torch.amp.autocast('cuda', dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                 # Convert prompts to text embeddings.
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['encoder_hidden_states'].to(device=accelerator.device)
@@ -1354,35 +1294,28 @@ def main():
                             text_encoder.to('cpu')
                             torch.cuda.empty_cache()
 
-                # Convert pixel videos to clean latents via the VAE, or read
-                # precomputed latents directly from the LMDB.
-                if args.train_data_format == "latent_lmdb":
-                    # LMDB rows are (F, C, H, W); permute to (B, C, F, H, W).
-                    clean_latents = batch["clean_latent"].to(
-                        device=accelerator.device, dtype=weight_dtype
-                    ).permute(0, 2, 1, 3, 4).contiguous()
-                else:
-                    pixel_values = batch["pixel_values"].to(weight_dtype)
-                    if args.low_vram:
-                        torch.cuda.empty_cache()
-                        vae.to(accelerator.device)
+                # Convert pixel videos to clean latents via the VAE.
+                pixel_values = batch["pixel_values"].to(weight_dtype)
+                if args.low_vram:
+                    torch.cuda.empty_cache()
+                    vae.to(accelerator.device)
 
-                    with torch.no_grad():
-                        def _batch_encode_vae(pixel_values):
-                            pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                            bs = args.vae_mini_batch
-                            new_pixel_values = []
-                            for i in range(0, pixel_values.shape[0], bs):
-                                pixel_values_bs = pixel_values[i : i + bs]
-                                pixel_values_bs = vae.encode(pixel_values_bs)[0]
-                                pixel_values_bs = pixel_values_bs.sample()
-                                new_pixel_values.append(pixel_values_bs)
-                            return torch.cat(new_pixel_values, dim=0)
-                        clean_latents = _batch_encode_vae(pixel_values)
+                with torch.no_grad():
+                    def _batch_encode_vae(pixel_values):
+                        pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                        bs = args.vae_mini_batch
+                        new_pixel_values = []
+                        for i in range(0, pixel_values.shape[0], bs):
+                            pixel_values_bs = pixel_values[i : i + bs]
+                            pixel_values_bs = vae.encode(pixel_values_bs)[0]
+                            pixel_values_bs = pixel_values_bs.sample()
+                            new_pixel_values.append(pixel_values_bs)
+                        return torch.cat(new_pixel_values, dim=0)
+                    clean_latents = _batch_encode_vae(pixel_values)
 
-                    if args.low_vram:
-                        vae.to('cpu')
-                        torch.cuda.empty_cache()
+                if args.low_vram:
+                    vae.to('cpu')
+                    torch.cuda.empty_cache()
 
             with accelerator.accumulate(transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
@@ -1445,7 +1378,7 @@ def main():
                     clean_latents_aug = clean_latents
                     aug_t = None
 
-                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                with torch.amp.autocast('cuda', dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     # The transformer expects List[Tensor] of shape [C, F, H, W] per item.
                     noisy_input_list = [noisy_latents[i] for i in range(bsz)]
                     clean_x_list = [clean_latents_aug[i] for i in range(bsz)] if not args.no_teacher_forcing else None
