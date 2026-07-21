@@ -743,6 +743,11 @@ def parse_args():
         help="Denoising step indices (in train_sampling_steps space). CF Stage 3 DMD default = 2-step [1000, 500].",
     )
     parser.add_argument(
+        "--randomize_step_indices",
+        action="store_true",
+        help="whether to use randomize timesteps indices in training.",
+    )
+    parser.add_argument(
         "--num_frame_per_block",
         type=int,
         default=3,

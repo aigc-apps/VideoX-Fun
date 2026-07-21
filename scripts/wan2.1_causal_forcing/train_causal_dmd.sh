@@ -56,9 +56,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --enable_bucket \
   --num_frame_per_block=1 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 500 \
-  --real_guidance_scale=3.0 \
+  --denoising_step_indices_list 1000 667 334 1 \
+  --real_guidance_scale=6.0 \
+  --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
-  --resume_from_checkpoint="latest" \
   --trainable_modules "."

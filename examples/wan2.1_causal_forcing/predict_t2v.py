@@ -68,9 +68,12 @@ sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics.
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5.0
+# `stochastic_sampling`: False: ar
+#                        True : ccd and dmd
+stochastic_sampling = True
 
 # Causal-Forcing checkpoint to overlay on top of the Wan2.1 base model.
-transformer_path    = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-4000/diffusion_pytorch_model.safetensors"
+transformer_path    = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-2000/diffusion_pytorch_model.safetensors"
 use_ema             = False
 vae_path            = None
 lora_path           = None
@@ -81,8 +84,8 @@ video_length        = 81
 fps                 = 16
 
 # Causal-Forcing causal inference config
-# `num_frame_per_block`: 1 = frame-wise (matches the .../checkpoints/framewise ckpts);
-#                        3 = chunk-wise (matches the .../checkpoints/chunkwise ckpts).
+# `num_frame_per_block`: 3 = chunk-wise: ar and ccd
+#                        1 = frame-wise: dmd
 num_frame_per_block     = 1
 # Local attention window size (-1 for global attention)
 local_attn_size         = -1
@@ -114,11 +117,10 @@ negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字
 #
 # Stage 3 — DMD (`causal_forcing.pt`): 2-step distribution-matching distilled.
 # guidance_scale      = 1.0
-# num_inference_steps = 2
+# num_inference_steps = 4
 # stochastic_sampling = True
 guidance_scale      = 1.0
-num_inference_steps = 2
-stochastic_sampling = True
+num_inference_steps = 4
 seed                = 43
 lora_weight         = 0.55
 save_path           = "samples/wan-videos-causal-forcing"

@@ -2165,8 +2165,8 @@ def main():
                         fake_score_main_cond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=fake_score_main_cond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         if args.fake_guidance_scale != 0.0:
@@ -2180,8 +2180,8 @@ def main():
                             fake_score_main_uncond = convert_flow_pred_to_x0(
                                 scheduler=noise_scheduler,
                                 flow_pred=fake_score_main_uncond,
-                                xt=generator_denoised_input,
-                                timestep=generator_timestep
+                                xt=_generator_denoised_input,
+                                timestep=generator_timestep,
                             )
                             fake_score_main = fake_score_main_uncond + (
                                 fake_score_main_cond - fake_score_main_uncond
@@ -2200,8 +2200,8 @@ def main():
                         real_score_main_cond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_cond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         real_score_main_uncond = real_score_transformer3d(
@@ -2214,8 +2214,8 @@ def main():
                         real_score_main_uncond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_uncond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         real_score_main = real_score_main_uncond + (
@@ -2371,7 +2371,7 @@ def main():
                 if args.low_vram:
                     fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                     generator_transformer3d = generator_transformer3d.to(accelerator.device)
-                    
+
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
 

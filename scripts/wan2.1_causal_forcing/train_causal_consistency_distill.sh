@@ -11,7 +11,12 @@ NCCL_DEBUG=INFO
 # - --transformer_path / --teacher_transformer_path point to the Stage 1 AR-diffusion ckpt.
 # - num_frame_per_block=3 -> chunkwise; set to 1 for the framewise variant.
 # - discrete_cd_N=48 mirrors the official `causal_cd_chunkwise.yaml`.
-accelerate launch --mixed_precision="bf16" scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \

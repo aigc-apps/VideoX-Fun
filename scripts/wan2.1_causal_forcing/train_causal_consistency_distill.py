@@ -1238,6 +1238,9 @@ def main():
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
 
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
+        teacher_transformer3d = shard_fn(teacher_transformer3d)
+
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
@@ -1548,8 +1551,42 @@ def main():
                 # we keep the EMA copy in lock-step with the live generator, so
                 # that early-training instability does not bias the right-hand
                 # side of the CCD objective.
+                #
+                # Under FSDP the live generator only holds a *shard* of each
+                # parameter per rank (the launch script uses FULL_SHARD +
+                # SHARDED_STATE_DICT), so `unwrap_model(...).state_dict()` returns
+                # sharded tensors whose keys/shapes do not line up with the full,
+                # un-sharded `ema_transformer3d` copy that every rank runs forward
+                # on. Accelerate's default FULL_STATE_DICT config is also
+                # rank0-only + CPU-offloaded, which would leave rank>0 with empty
+                # dicts and rank0 with device-mismatched CPU tensors. We therefore
+                # force a full, un-sharded gather to *every* rank (rank0_only=False,
+                # offload_to_cpu=False) so each rank can update its own
+                # full-precision EMA copy locally and stay bit-for-bit in sync.
                 if ema_transformer3d is not None and accelerator.sync_gradients:
-                    live_state = accelerator.unwrap_model(transformer3d).state_dict()
+                    if args.use_fsdp:
+                        from torch.distributed.fsdp import \
+                            FullyShardedDataParallel as FSDP
+                        from torch.distributed.fsdp import (FullStateDictConfig,
+                                                            StateDictType)
+                        # Collective: all ranks enter this together because the
+                        # enclosing guard only depends on synchronized state
+                        # (`sync_gradients` / `use_fsdp`), never on rank-local data.
+                        with FSDP.state_dict_type(
+                            transformer3d,
+                            StateDictType.FULL_STATE_DICT,
+                            FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+                        ):
+                            live_state = transformer3d.state_dict()
+                    else:
+                        live_state = accelerator.unwrap_model(transformer3d).state_dict()
+                    # FULL_STATE_DICT already strips FSDP wrapper prefixes, but stay
+                    # defensive against any `_fsdp_wrapped_module.` leftovers so the
+                    # keys match the plain EMA module's state_dict.
+                    live_state = {
+                        (k.replace("_fsdp_wrapped_module.", "") if "_fsdp_wrapped_module." in k else k): v
+                        for k, v in live_state.items()
+                    }
                     if global_step < args.ema_start_step:
                         ema_transformer3d.load_state_dict(live_state, strict=True)
                     else:
@@ -1557,10 +1594,11 @@ def main():
                         ema_state = ema_transformer3d.state_dict()
                         with torch.no_grad():
                             for k, v in ema_state.items():
+                                src = live_state[k].to(device=v.device, dtype=v.dtype)
                                 if v.dtype.is_floating_point:
-                                    v.mul_(decay).add_(live_state[k].to(v.dtype, copy=False), alpha=1.0 - decay)
+                                    v.mul_(decay).add_(src, alpha=1.0 - decay)
                                 else:
-                                    v.copy_(live_state[k])
+                                    v.copy_(src)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
