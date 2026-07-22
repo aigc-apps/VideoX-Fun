@@ -287,6 +287,13 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
 else:
     pipeline.to(device=device)
 
+# Only the main process (rank 0, or single-GPU) writes files to disk.
+if ulysses_degree * ring_degree > 1:
+    import torch.distributed as dist
+    is_main_process = dist.get_rank() == 0
+else:
+    is_main_process = True
+
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
@@ -359,13 +366,6 @@ def save_results():
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)
-
-# Only the main process (rank 0, or single-GPU) writes files to disk.
-if ulysses_degree * ring_degree > 1:
-    import torch.distributed as dist
-    is_main_process = dist.get_rank() == 0
-else:
-    is_main_process = True
 
 # Streaming already wrote the video incrementally above; only the
 # non-streaming path needs the one-shot save below.
