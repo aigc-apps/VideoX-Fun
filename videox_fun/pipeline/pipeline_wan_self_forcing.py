@@ -23,9 +23,17 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
 def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
-    """Official FlashHead timestep schedule with shift transform."""
+    """Official FlashHead timestep schedule with shift transform.
+
+    Hardcoded schedules match the CF reference for distilled few-step inference:
+      - 4-step: [1000, 750, 500, 250] — Stage 2 CCD (`causal_cd_framewise.yaml`)
+      - 2-step: [1000, 500]           — Stage 3 DMD (`causal_forcing_dmd_framewise_2step.yaml`)
+    Anything else falls back to linspace.
+    """
     if num_inference_steps == 4:
         timesteps = [1000, 750, 500, 250]
+    elif num_inference_steps == 2:
+        timesteps = [1000, 500]
     else:
         timesteps = np.linspace(num_timesteps, 1, num_inference_steps, dtype=np.float32).tolist()
     timesteps = torch.tensor(timesteps + [0.0], dtype=torch.float32, device=device)
@@ -312,6 +320,18 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         frames = frames.cpu().float().numpy()
         return frames
 
+    def decode_latents_stream(self, latents: torch.Tensor) -> torch.Tensor:
+        # Decode a single chunk of latent frames while preserving the VAE's
+        # causal temporal feature cache across chunks (see
+        # AutoencoderKLWan.decode_stream). `self.vae.clear_cache()` must be
+        # called once before the first chunk and once after the last one.
+        # Returns a CPU float tensor of shape [B, C, F_pixels, H, W] in [0, 1],
+        # matching the layout produced by `decode_latents`.
+        frames = self.vae.decode_stream(latents.to(self.vae.dtype)).sample
+        frames = (frames / 2 + 0.5).clamp(0, 1)
+        frames = frames.cpu().float()
+        return frames
+
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
@@ -490,6 +510,8 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         independent_first_frame: bool = True,
         context_noise: int = 0,
         stochastic_sampling: bool = True,
+        streaming: bool = False,
+        decode_callback: Optional[Callable[[torch.Tensor, int], None]] = None,
     ) -> Union[WanSelfForcingPipelineOutput, Tuple]:
         r"""
         Function invoked when calling the pipeline for Self-Forcing causal generation.
@@ -502,6 +524,16 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             num_frame_per_block: Number of frames to generate per block.
             independent_first_frame: Whether to generate the first frame independently (T2V mode).
             context_noise: Context noise level for KV cache update (matches training config).
+            streaming: If True, decode each causal block into pixels right after it is
+                generated (instead of accumulating all latents and decoding once at the end).
+                The VAE's causal temporal cache is threaded across blocks so the result is
+                seam-free and identical to a single full decode, while lowering peak decode
+                memory and enabling incremental output.
+            decode_callback: Optional callable invoked as `decode_callback(video_chunk, block_idx)`
+                after each block is decoded in streaming mode, where `video_chunk` is a CPU float
+                tensor of shape [B, C, F_pixels, H, W] in [0, 1]. When provided, chunks are NOT
+                accumulated in memory and the returned `videos` is an empty tensor (the caller is
+                responsible for consuming/saving each chunk). Only used when `streaming` is True.
         
         Examples:
             ```python
@@ -684,6 +716,12 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             # First frame is generated independently (standard Self-Forcing T2V pattern)
             all_num_frames = [1] + all_num_frames
 
+        # Streaming decode state: reset the VAE causal cache once before the
+        # first block so the per-block decodes can be threaded seamlessly.
+        streamed_videos = []
+        if streaming:
+            self.vae.clear_cache()
+
         for block_idx, current_num_frames in enumerate(all_num_frames):
             # Extract noise for current block and convert to list format
             # noise only contains frames to generate, indexed from 0
@@ -778,24 +816,35 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             denoised_pred.shape, dtype=denoised_pred.dtype, device=device, generator=generator
                         )
                     else:
-                        # Get current sigma for x0 conversion
-                        sigma_t = self.scheduler.sigmas[step_idx]
-                        
-                        # Convert to x0: x0 = x_t - sigma_t * flow_pred
-                        denoised_pred = noisy_input - sigma_t * flow_pred
-                        
-                        if step_idx < len(denoise_timesteps) - 1:
-                            # Not the last step: add noise for next timestep
-                            next_sigma = self.scheduler.sigmas[step_idx + 1]
-                            local_noise = torch.randn(denoised_pred.shape, device=denoised_pred.device, dtype=denoised_pred.dtype, generator=generator)
-                            noisy_input = (1 - next_sigma) * denoised_pred + next_sigma * local_noise
-                        else:
-                            noisy_input = denoised_pred
+                        # Delegate to the scheduler's own step() so each sampler
+                        # (Flow Euler, UniPC, DPM++) applies its correct
+                        # multi-step formula. The previous "predict-x0 + resample
+                        # fresh noise" hybrid did NOT match CF's UniPC reference
+                        # (CF's CausalDiffusionInferencePipeline calls
+                        # sample_scheduler.step(...)). For framewise AR rollouts
+                        # this mismatch caused subtle drift on top of CF's own
+                        # output for the same checkpoint.
+                        t = denoise_timesteps[step_idx]
+                        step_out = self.scheduler.step(
+                            flow_pred, t, noisy_input, return_dict=False
+                        )
+                        noisy_input = step_out[0]
+                        denoised_pred = noisy_input
 
                     progress_bar.update()
 
             # Update output with denoised block
             output[:, :, cache_start_frame:cache_start_frame + current_num_frames] = denoised_pred
+
+            # Streaming decode: turn this block's latents into pixels right away.
+            # The VAE cache is preserved across blocks, so this is seam-free and
+            # matches a single full decode of `output`.
+            if streaming:
+                video_chunk = self.decode_latents_stream(denoised_pred)
+                if decode_callback is not None:
+                    decode_callback(video_chunk, block_idx)
+                else:
+                    streamed_videos.append(video_chunk)
 
             # Update KV cache with clean context (timestep=context_noise) for next block
             # Reference: causal_inference.py line 227 - uses context_noise for KV cache update
@@ -850,7 +899,16 @@ class WanSelfForcingPipeline(DiffusionPipeline):
 
         # 9. Decode output
         
-        if output_type == "pil":
+        if streaming:
+            # Close the VAE causal cache opened before the block loop.
+            self.vae.clear_cache()
+            if decode_callback is not None:
+                # Frames were streamed out via the callback; nothing to return.
+                video = output.new_zeros(0)
+            else:
+                # Concatenate the per-block pixel chunks along the frame axis.
+                video = torch.cat(streamed_videos, dim=2)
+        elif output_type == "pil":
             video = self.decode_latents(output)
             video = torch.from_numpy(video)
         else:

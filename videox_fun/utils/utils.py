@@ -84,6 +84,73 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
         outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
     print(f"Saved video to: {path}")
 
+class StreamVideoSaver:
+    """Incrementally write video frames to an mp4 as each block is decoded.
+
+    Used as a streaming pipeline `decode_callback`: it receives one pixel chunk
+    per causal block ([B, C, F, H, W] float in [0, 1]) and appends its frames to
+    an open imageio writer, so a long video never has to be held in memory. The
+    file is only finalized on `close()`.
+    """
+    def __init__(self, video_path, fps):
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+        self.video_path = video_path
+        self.writer = imageio.get_writer(video_path, fps=fps)
+        self.num_frames = 0
+
+    def __call__(self, video_chunk, block_idx):
+        # video_chunk: [B, C, F, H, W] in [0, 1]; take the first sample.
+        chunk = video_chunk[0].permute(1, 2, 3, 0)  # [F, H, W, C]
+        chunk = (chunk.clamp(0, 1) * 255).numpy().astype(np.uint8)
+        for frame in chunk:
+            self.writer.append_data(frame)
+            self.num_frames += 1
+
+    def close(self):
+        self.writer.close()
+        print(f"Saved video to: {self.video_path} ({self.num_frames} frames)")
+
+class SegmentVideoSaver:
+    """Save each decoded block as its own standalone mp4, flushed immediately,
+    while also assembling one complete continuous mp4.
+
+    Unlike `StreamVideoSaver` (only one continuous file finalized on close),
+    every block is written to a separate, fully-closed mp4 the moment it is
+    decoded (so partial results survive an interruption), AND its frames are
+    appended to a single `full.mp4` so a ready-to-play complete video is also
+    produced. Segments are named by block index.
+    """
+    def __init__(self, out_dir, fps, full_name="full.mp4"):
+        os.makedirs(out_dir, exist_ok=True)
+        self.out_dir = out_dir
+        self.fps = fps
+        self.segments = []
+        # Continuous writer for the assembled full video.
+        self.full_path = os.path.join(out_dir, full_name)
+        self.full_writer = imageio.get_writer(self.full_path, fps=fps)
+        self.num_frames = 0
+
+    def __call__(self, video_chunk, block_idx):
+        # video_chunk: [B, C, F, H, W] in [0, 1]; take the first sample.
+        chunk = video_chunk[0].permute(1, 2, 3, 0)  # [F, H, W, C]
+        chunk = (chunk.clamp(0, 1) * 255).numpy().astype(np.uint8)
+        # 1) Standalone, fully-flushed segment file.
+        seg_path = os.path.join(self.out_dir, f"seg_{block_idx:04d}.mp4")
+        with imageio.get_writer(seg_path, fps=self.fps) as writer:
+            for frame in chunk:
+                writer.append_data(frame)
+        self.segments.append(seg_path)
+        # 2) Append the same frames to the continuous full video.
+        for frame in chunk:
+            self.full_writer.append_data(frame)
+            self.num_frames += 1
+        print(f"Saved segment to: {seg_path} ({len(chunk)} frames)")
+
+    def close(self):
+        self.full_writer.close()
+        print(f"Saved {len(self.segments)} segments to: {self.out_dir}")
+        print(f"Saved full video to: {self.full_path} ({self.num_frames} frames)")
+
 def save_videos_with_audio_grid(
     videos: torch.Tensor, 
     audio: torch.Tensor, 

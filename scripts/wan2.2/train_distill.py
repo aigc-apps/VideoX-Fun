@@ -76,7 +76,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                CLIPModel, Wan2_2Transformer3DModel,
                                WanT5EncoderModel)
-from videox_fun.pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline
+from videox_fun.pipeline import (Wan2_2I2VPipeline, Wan2_2Pipeline,
+                                 Wan2_2TI2VPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
@@ -198,7 +199,16 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
 
                     transformer3d_2 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
             
-            if args.train_mode != "normal":
+            if args.train_mode == "ti2v":
+                pipeline = Wan2_2TI2VPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=transformer3d_1,
+                    transformer_2=transformer3d_2,
+                    scheduler=scheduler,
+                )
+            elif args.train_mode != "normal":
                 pipeline = Wan2_2I2VPipeline(
                     vae=vae, 
                     text_encoder=text_encoder,
@@ -2165,8 +2175,8 @@ def main():
                         fake_score_main_cond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=fake_score_main_cond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         if args.fake_guidance_scale != 0.0:
@@ -2180,8 +2190,8 @@ def main():
                             fake_score_main_uncond = convert_flow_pred_to_x0(
                                 scheduler=noise_scheduler,
                                 flow_pred=fake_score_main_uncond,
-                                xt=generator_denoised_input,
-                                timestep=generator_timestep
+                                xt=_generator_denoised_input,
+                                timestep=generator_timestep,
                             )
                             fake_score_main = fake_score_main_uncond + (
                                 fake_score_main_cond - fake_score_main_uncond
@@ -2200,8 +2210,8 @@ def main():
                         real_score_main_cond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_cond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         real_score_main_uncond = real_score_transformer3d(
@@ -2214,8 +2224,8 @@ def main():
                         real_score_main_uncond = convert_flow_pred_to_x0(
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_uncond,
-                            xt=generator_denoised_input,
-                            timestep=generator_timestep
+                            xt=_generator_denoised_input,
+                            timestep=generator_timestep,
                         )
 
                         real_score_main = real_score_main_uncond + (
@@ -2371,7 +2381,7 @@ def main():
                 if args.low_vram:
                     fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                     generator_transformer3d = generator_transformer3d.to(accelerator.device)
-                    
+
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
 

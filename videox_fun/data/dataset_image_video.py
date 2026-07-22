@@ -182,6 +182,11 @@ class ImageVideoDataset(Dataset):
                 )
                 if min_sample_n_frames == 0:
                     raise ValueError(f"No Frames in video.")
+                min_video_sample_n_frames = getattr(self, "min_video_sample_n_frames", None)
+                if min_video_sample_n_frames is not None and min_sample_n_frames < min_video_sample_n_frames:
+                    raise ValueError(
+                        f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
+                    )
 
                 # Select contiguous clip with random start position
                 video_length = int(self.video_length_drop_end * len(video_reader))
@@ -392,6 +397,11 @@ class ImageVideoControlDataset(Dataset):
                 )
                 if min_sample_n_frames == 0:
                     raise ValueError(f"No Frames in video.")
+                min_video_sample_n_frames = getattr(self, "min_video_sample_n_frames", None)
+                if min_video_sample_n_frames is not None and min_sample_n_frames < min_video_sample_n_frames:
+                    raise ValueError(
+                        f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
+                    )
 
                 # Select contiguous clip with random start position
                 video_length = int(self.video_length_drop_end * len(video_reader))

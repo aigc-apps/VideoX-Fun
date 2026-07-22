@@ -13,7 +13,7 @@ from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
-
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 CACHE_T = 2
 
@@ -549,6 +549,76 @@ class AutoencoderKLWan_(nn.Module):
         self.clear_cache()
         return x
 
+    def encode_stream(self, x, scale=None, is_first_chunk=True):
+        # Streaming variant of `encode`. Unlike `encode`, it does NOT call
+        # `clear_cache()` at the start/end, so the causal temporal feature
+        # cache (`self._enc_feat_map`, mutated in place by the encoder's
+        # CausalConv3d layers) is threaded across successive pixel chunks. The
+        # caller is responsible for calling `clear_cache()` exactly once before
+        # the first chunk and once after the last chunk. Encoding the pixel
+        # sequence chunk-by-chunk this way is mathematically equivalent to a
+        # single `encode` call over the whole sequence (no boundary seams).
+        #
+        # Temporal alignment (mirrors the VAE's 1,4,4,... compression):
+        #   - is_first_chunk=True : chunk contains the very first pixel frame;
+        #     `t` must be `1 + 4*k` (k>=0) -> yields `1 + k` latent frames.
+        #   - is_first_chunk=False: continuation chunk; `t` must be a multiple
+        #     of 4 -> yields `t // 4` latent frames.
+        # x: [b,c,t,h,w]
+        t = x.shape[2]
+        if scale is not None:
+            scale = [item.to(x.device, x.dtype) for item in scale]
+        out = None
+        if is_first_chunk:
+            assert (t - 1) % 4 == 0, \
+                f"first streaming encode chunk needs t=1+4*k frames, got t={t}"
+            iter_ = 1 + (t - 1) // 4
+            for i in range(iter_):
+                self._enc_conv_idx = [0]
+                if i == 0:
+                    cur = self.encoder(
+                        x[:, :, :1, :, :],
+                        feat_cache=self._enc_feat_map,
+                        feat_idx=self._enc_conv_idx)
+                else:
+                    cur = self.encoder(
+                        x[:, :, 1 + 4 * (i - 1):1 + 4 * i, :, :],
+                        feat_cache=self._enc_feat_map,
+                        feat_idx=self._enc_conv_idx)
+                out = cur if out is None else torch.cat([out, cur], 2)
+        else:
+            assert t % 4 == 0, \
+                f"continuation streaming encode chunk needs t=4*k frames, got t={t}"
+            iter_ = t // 4
+            for i in range(iter_):
+                self._enc_conv_idx = [0]
+                cur = self.encoder(
+                    x[:, :, 4 * i:4 * (i + 1), :, :],
+                    feat_cache=self._enc_feat_map,
+                    feat_idx=self._enc_conv_idx)
+                out = cur if out is None else torch.cat([out, cur], 2)
+        # conv1 has temporal kernel size 1, so applying it per chunk is
+        # identical to applying it once over the concatenated sequence.
+        mu, log_var = self.conv1(out).chunk(2, dim=1)
+        if scale is not None:
+            if isinstance(scale[0], torch.Tensor):
+                mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                mu = (mu - scale[0]) * scale[1]
+        x = torch.cat([mu, log_var], dim=1)
+        return x
+
+    def _decode_frame(self, frame, feat_map_in):
+        # Decode a single latent frame with a functional (non-mutating) cache
+        # so it can be wrapped by gradient checkpointing safely. The input
+        # cache list is copied and never mutated in place, and the updated
+        # cache is returned explicitly to be threaded to the next frame.
+        conv_idx = [0]
+        feat_map = list(feat_map_in)
+        out = self.decoder(frame, feat_cache=feat_map, feat_idx=conv_idx)
+        return out, feat_map
+
     def decode(self, z, scale=None):
         self.clear_cache()
         # z: [b,c,t,h,w]
@@ -561,20 +631,61 @@ class AutoencoderKLWan_(nn.Module):
                 z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
         x = self.conv2(z)
+        # Per-frame gradient checkpointing: each latent frame is an independent
+        # recompute unit, so backward only materializes one frame's decoder
+        # activations at a time instead of all frames at once.
+        use_ckpt = getattr(self, "gradient_checkpointing", False) \
+            and torch.is_grad_enabled()
+        feat_map = self._feat_map
+        outs = []
         for i in range(iter_):
-            self._conv_idx = [0]
-            if i == 0:
-                out = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
+            frame = x[:, :, i:i + 1, :, :]
+            if use_ckpt:
+                out_, feat_map = torch_checkpoint(
+                    self._decode_frame, frame, feat_map,
+                    use_reentrant=False)
             else:
-                out_ = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
-                out = torch.cat([out, out_], 2)
+                out_, feat_map = self._decode_frame(frame, feat_map)
+            outs.append(out_)
+        out = torch.cat(outs, 2)
         self.clear_cache()
+        return out
+
+    def decode_stream(self, z, scale=None):
+        # Streaming variant of `decode`. Unlike `decode`, it does NOT call
+        # `clear_cache()` at the start/end, so the causal temporal feature
+        # cache (`self._feat_map`) is threaded across successive chunks. The
+        # caller is responsible for calling `clear_cache()` exactly once before
+        # the first chunk and once after the last chunk. Decoding the latent
+        # sequence chunk-by-chunk this way is mathematically equivalent to a
+        # single `decode` call over the whole sequence (no boundary seams),
+        # while enabling "generate a chunk, decode a chunk" streaming.
+        # z: [b,c,t,h,w]
+        if scale is not None:
+            scale = [item.to(z.device, z.dtype) for item in scale]
+            if isinstance(scale[0], torch.Tensor):
+                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                z = z / scale[1] + scale[0]
+        iter_ = z.shape[2]
+        x = self.conv2(z)
+        use_ckpt = getattr(self, "gradient_checkpointing", False) \
+            and torch.is_grad_enabled()
+        feat_map = self._feat_map
+        outs = []
+        for i in range(iter_):
+            frame = x[:, :, i:i + 1, :, :]
+            if use_ckpt:
+                out_, feat_map = torch_checkpoint(
+                    self._decode_frame, frame, feat_map,
+                    use_reentrant=False)
+            else:
+                out_, feat_map = self._decode_frame(frame, feat_map)
+            outs.append(out_)
+        # Persist the updated cache so the next chunk continues seamlessly.
+        self._feat_map = feat_map
+        out = torch.cat(outs, 2)
         return out
 
     def reparameterize(self, mu, log_var):
@@ -657,6 +768,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.gradient_checkpointing = kwargs["enable"]
         else:
             raise ValueError("Invalid set gradient checkpointing")
+        self.model.gradient_checkpointing = self.gradient_checkpointing
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [
@@ -678,7 +790,30 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (posterior,)
         return AutoencoderKLOutput(latent_dist=posterior)
 
+    def _encode_stream(self, x, is_first_chunk=True):
+        # Streaming encode of one pixel chunk over the full batch at once. The
+        # whole batch must be encoded in a single call so that the persistent
+        # `self.model._enc_feat_map` stays consistent across chunks (a per-sample
+        # loop would clobber the cache between samples/chunks).
+        return self.model.encode_stream(x, self.scale, is_first_chunk=is_first_chunk)
+
+    @apply_forward_hook
+    def encode_stream(
+        self, x: torch.Tensor, is_first_chunk: bool = True, return_dict: bool = True
+    ) -> Union[AutoencoderKLOutput, Tuple[DiagonalGaussianDistribution]]:
+        h = self._encode_stream(x, is_first_chunk=is_first_chunk)
+
+        posterior = DiagonalGaussianDistribution(h)
+
+        if not return_dict:
+            return (posterior,)
+        return AutoencoderKLOutput(latent_dist=posterior)
+
     def _decode(self, zs):
+        # Gradient checkpointing is applied per-frame inside self.model.decode
+        # (see AutoencoderKLWan_.decode), which lowers the backward peak to a
+        # single latent frame's decoder activations.
+        self.model.gradient_checkpointing = self.gradient_checkpointing
         dec = [
             self.model.decode(u.unsqueeze(0), self.scale).clamp_(-1, 1).squeeze(0)
             for u in zs
@@ -690,6 +825,28 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     @apply_forward_hook
     def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
         decoded = self._decode(z).sample
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
+
+    def clear_cache(self):
+        # Reset the causal temporal feature cache. Must be called once before
+        # the first streaming chunk and once after the last one.
+        self.model.clear_cache()
+
+    def _decode_stream(self, zs):
+        # Streaming decode of one chunk over the full batch at once. The whole
+        # batch must be decoded in a single call so that the persistent
+        # `self.model._feat_map` stays consistent across chunks (a per-sample
+        # loop would clobber the cache between samples/chunks).
+        self.model.gradient_checkpointing = self.gradient_checkpointing
+        dec = self.model.decode_stream(zs, self.scale).clamp_(-1, 1)
+        return DecoderOutput(sample=dec)
+
+    @apply_forward_hook
+    def decode_stream(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+        decoded = self._decode_stream(z).sample
 
         if not return_dict:
             return (decoded,)
