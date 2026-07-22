@@ -73,7 +73,7 @@ shift               = 5.0
 stochastic_sampling = True
 
 # Causal-Forcing checkpoint to overlay on top of the Wan2.1 base model.
-transformer_path    = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-4000/diffusion_pytorch_model.safetensors"
+transformer_path    = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-2000/diffusion_pytorch_model.safetensors"
 use_ema             = False
 vae_path            = None
 lora_path           = None
@@ -84,9 +84,9 @@ video_length        = 81
 fps                 = 16
 
 # Causal-Forcing causal inference config
-# `num_frame_per_block`: 3 = chunk-wise: ar and ccd
-#                        1 = frame-wise: dmd
-num_frame_per_block     = 1
+# `num_frame_per_block`: 3 = chunk-wise: 
+#                        1 = frame-wise: 
+num_frame_per_block     = 3
 # Local attention window size (-1 for global attention)
 local_attn_size         = -1
 # Others

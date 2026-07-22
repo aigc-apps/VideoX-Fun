@@ -383,13 +383,13 @@ def parse_args():
     parser.add_argument(
         "--validation_guidance_scale",
         type=float,
-        default=3.0,
+        default=1,
         help="CFG scale used when sampling validation videos.",
     )
     parser.add_argument(
         "--validation_num_inference_steps",
         type=int,
-        default=50,
+        default=4,
         help=(
             "Number of denoising steps used for validation. AR diffusion validation runs a"
             " full multi-step rollout, so a larger value (e.g. 50) is recommended."

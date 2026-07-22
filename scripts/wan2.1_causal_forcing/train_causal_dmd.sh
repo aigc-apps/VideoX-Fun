@@ -11,7 +11,7 @@ NCCL_DEBUG=INFO
 # Causal-Forcing Stage 3: Distribution Matching Distillation (DMD), frame-wise 2-step variant.
 # - --real_score_pretrained_model_name_or_path -> Wan2.1-T2V-14B non-causal teacher (DMD real_score).
 # - --transformer_path -> Stage 2 CCD ckpt (generator/critic init).
-# - num_frame_per_block=1 -> frame-wise; --denoising_step_indices_list 1000 500 -> 2-step DMD.
+# - num_frame_per_block=3 -> frame-wise; --denoising_step_indices_list 1000 500 -> 2-step DMD.
 # - train_mode="normal" (default) -> TextDataset (prompt-only); generation shape from video_sample_* / fix_sample_size.
 # - Note: DMD parser has no --shift; the flow scheduler shift is fixed inside the training loop.
 accelerate launch --mixed_precision="bf16" --use_fsdp \
@@ -54,7 +54,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --num_frame_per_block=1 \
+  --num_frame_per_block=3 \
   --use_kv_cache_training \
   --denoising_step_indices_list 1000 667 334 1 \
   --real_guidance_scale=6.0 \

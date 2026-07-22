@@ -4,11 +4,11 @@ This document provides the complete workflow for **Causal-Forcing Stage 3 — Di
 
 > **What is Distribution Matching Distillation?**
 >
-> DMD is the **third and final stage** of the Causal-Forcing pipeline, which further compresses a CCD model into a **2-step causal autoregressive generator** using a large (14B) teacher:
+> DMD is the **third and final stage** of the Causal-Forcing pipeline, which further compresses a CCD model into a **few-step causal autoregressive generator** using a large (14B) teacher:
 >
 > 1. **Stage 1 — AR Diffusion** (`train_ar_diffusion.py`): Train the model with teacher forcing on clean video latents, producing a strong AR backbone.
 > 2. **Stage 2 — Causal Consistency Distillation** (`train_causal_consistency_distill.py`): Distill the multi-step AR model into a **one-step-per-block** consistency model using an EMA teacher with CFG guidance.
-> 3. **Stage 3 — Distribution Matching Distillation** (`train_causal_dmd.py`): Further distill to a **2-step frame-wise** generator using distribution matching with a **14B real-score teacher**.
+> 3. **Stage 3 — Distribution Matching Distillation** (`train_causal_dmd.py`): Further distill to a **few-step** generator using distribution matching with a **14B real-score teacher**.
 >
 > This README covers **Stage 3 only**. See [README_TRAIN_CAUSAL_CONSISTENCY_DISTILL.md](./README_TRAIN_CAUSAL_CONSISTENCY_DISTILL.md) for Stage 2 and [README_TRAIN_AR_DIFFUSION.md](./README_TRAIN_AR_DIFFUSION.md) for Stage 1.
 
@@ -40,7 +40,7 @@ Stage 3 requires:
 
 ```bash
 # Example: Stage 2 checkpoint from CCD training
-export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-5000/transformer/diffusion_pytorch_model.safetensors"
 ```
 
 See [README_TRAIN_CAUSAL_CONSISTENCY_DISTILL.md](./README_TRAIN_CAUSAL_CONSISTENCY_DISTILL.md) for how to produce this checkpoint.
@@ -97,7 +97,7 @@ modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_
 modelscope download --model Wan-AI/Wan2.1-T2V-14B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-14B
 ```
 
-The Stage 2 CCD checkpoint (generator/critic init) is loaded via `--transformer_path`.
+The Stage 2 CCD checkpoint (generator/critic init) is loaded via `--ode_transformer_path`.
 
 ---
 
@@ -146,7 +146,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-5000/transformer/diffusion_pytorch_model.safetensors"
 
 accelerate launch --mixed_precision="bf16" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -159,7 +159,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --real_score_pretrained_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --transformer_path=$STAGE2_CKPT \
+  --ode_transformer_path=$STAGE2_CKPT \
   --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
@@ -188,13 +188,13 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --num_frame_per_block=1 \
+  --num_frame_per_block=3 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 500 \
-  --real_guidance_scale=3.0 \
+  --denoising_step_indices_list 1000 667 334 1 \
+  --real_guidance_scale=6.0 \
+  --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
-  --resume_from_checkpoint="latest" \
   --trainable_modules "."
 ```
 
@@ -213,7 +213,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--config_path` | Model config YAML | `config/wan2.1/wan_civitai.yaml` |
 | `--train_data_dir` | Data root directory | `""` |
 | `--train_data_meta` | Path to `metadata.json` (prompts only) | `datasets/X-Fun-Videos-Demo/metadata.json` |
-| `--transformer_path` | Stage 2 CCD checkpoint for generator/critic init | `$STAGE2_CKPT` |
+| `--ode_transformer_path` | Stage 2 CCD checkpoint for generator/critic init | `$STAGE2_CKPT` |
 | `--train_batch_size` | Per-GPU batch size | 1 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
@@ -253,11 +253,12 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
-| `--denoising_step_indices_list` | Denoising step indices (DMD core param). `[1000, 500]` = 2-step DMD | `1000 500` |
-| `--real_guidance_scale` | CFG scale for the real-score (14B teacher) | 3.0 |
+| `--denoising_step_indices_list` | Denoising step indices (DMD core param). Example runs 4-step; parser default `[1000, 500]` = 2-step | `1000 667 334 1` |
+| `--real_guidance_scale` | CFG scale for the real-score (14B teacher) | 6.0 |
+| `--randomize_step_indices` | Randomize the denoising step indices during training | - |
 | `--fake_guidance_scale` | CFG scale for the fake-score (generator). 0.0 = no CFG | 0.0 |
 | `--gen_update_interval` | Generator update interval (generator updates every N critic steps) | 5 |
-| `--num_frame_per_block` | Frames per causal block. `1` = frame-wise (DMD default) | 1 |
+| `--num_frame_per_block` | Frames per causal block. `3` = chunkwise (default), `1` = frame-wise | 3 |
 | `--use_kv_cache_training` | Use KV cache block-by-block training (matches original Self-Forcing) | - |
 | `--independent_first_frame` | First frame is independent (`[1, N, N, ...]` block pattern, useful for I2V) | - |
 | `--context_noise` | Context noise level for KV cache update | 0 |
@@ -278,9 +279,9 @@ transformer_path = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-{N}/diffusio
 
 # DMD Stage 3 inference config
 guidance_scale      = 1.0    # CFG is baked into distilled weights
-num_inference_steps = 2      # 2-step DMD
+num_inference_steps = 4      # 4-step DMD
 stochastic_sampling = True
-num_frame_per_block = 1      # Frame-wise generation
+num_frame_per_block = 3      # Chunk-wise generation
 ```
 
 Or run:
@@ -292,7 +293,7 @@ python examples/wan2.1_causal_forcing/predict_t2v.py
 > **Stage Selector** in `predict_t2v.py` provides preset configs for all stages:
 > - **Stage 1 (AR Diffusion)**: `guidance_scale=3.0`, `num_inference_steps=50`, `stochastic_sampling=False`
 > - **Stage 2 (CCD)**: `guidance_scale=1.0`, `num_inference_steps=4`, `stochastic_sampling=True`
-> - **Stage 3 (DMD)**: `guidance_scale=1.0`, `num_inference_steps=2`, `stochastic_sampling=True`
+> - **Stage 3 (DMD)**: `guidance_scale=1.0`, `num_inference_steps=4`, `stochastic_sampling=True`
 
 ---
 

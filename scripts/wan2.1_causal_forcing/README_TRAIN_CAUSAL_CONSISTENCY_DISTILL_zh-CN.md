@@ -37,7 +37,7 @@
 
 ```bash
 # 示例：第一阶段 AR Diffusion 训练输出的 checkpoint
-export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-8000/diffusion_pytorch_model.safetensors"
 ```
 
 第一阶段的训练方法参见 [README_TRAIN_AR_DIFFUSION_zh-CN.md](./README_TRAIN_AR_DIFFUSION_zh-CN.md)。
@@ -151,9 +151,14 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-8000/diffusion_pytorch_model.safetensors"
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -170,7 +175,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_causal_forcing/train_c
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --checkpointing_steps=200 \
   --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
@@ -216,7 +221,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
-| `--checkpointing_steps` | 每 N 步保存 checkpoint | 500 |
+| `--checkpointing_steps` | 每 N 步保存 checkpoint | 200 |
 | `--learning_rate` | 初始学习率 | 2e-06 |
 | `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
@@ -275,7 +280,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 第二阶段 CCD 输出的 checkpoint 用于初始化 **第三阶段（因果 DMD）**。在 `train_causal_dmd.py` 中指定路径：
 
 ```bash
---generator_path="output_dir_wan2.1_causal_forcing_ccd/checkpoint-{N}/diffusion_pytorch_model.safetensors"
+--ode_transformer_path="output_dir_wan2.1_causal_forcing_ccd/checkpoint-{N}/diffusion_pytorch_model.safetensors"
 ```
 
 完整的第三阶段流程参见 `train_causal_dmd.sh`。

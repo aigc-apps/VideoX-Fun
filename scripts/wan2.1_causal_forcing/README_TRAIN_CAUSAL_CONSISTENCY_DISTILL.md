@@ -37,7 +37,7 @@ Stage 2 requires a **Stage 1 AR Diffusion checkpoint** to initialize both the ge
 
 ```bash
 # Example: Stage 1 checkpoint from AR Diffusion training
-export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-8000/diffusion_pytorch_model.safetensors"
 ```
 
 See [README_TRAIN_AR_DIFFUSION.md](./README_TRAIN_AR_DIFFUSION.md) for how to produce this checkpoint.
@@ -151,9 +151,14 @@ The ready-to-use launcher is [train_causal_consistency_distill.sh](./train_causa
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE1_CKPT="output_dir_wan2.1_causal_forcing_ar_diffusion/checkpoint-8000/diffusion_pytorch_model.safetensors"
 
-accelerate launch --mixed_precision="bf16" scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/wan2.1_causal_forcing/train_causal_consistency_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -170,7 +175,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_causal_forcing/train_c
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --checkpointing_steps=200 \
   --learning_rate=2.0e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
@@ -216,7 +221,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
 | `--num_train_epochs` | Number of training epochs | 100 |
-| `--checkpointing_steps` | Save checkpoint every N steps | 500 |
+| `--checkpointing_steps` | Save checkpoint every N steps | 200 |
 | `--learning_rate` | Initial learning rate | 2e-06 |
 | `--lr_scheduler` | LR scheduler type | `constant_with_warmup` |
 | `--lr_warmup_steps` | LR warmup steps | 100 |
@@ -275,7 +280,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 The Stage 2 CCD checkpoint is used to initialize **Stage 3 (Causal DMD)**. Pass its path to `train_causal_dmd.py`:
 
 ```bash
---generator_path="output_dir_wan2.1_causal_forcing_ccd/checkpoint-{N}/diffusion_pytorch_model.safetensors"
+--ode_transformer_path="output_dir_wan2.1_causal_forcing_ccd/checkpoint-{N}/diffusion_pytorch_model.safetensors"
 ```
 
 See `train_causal_dmd.sh` for the full Stage 3 workflow.

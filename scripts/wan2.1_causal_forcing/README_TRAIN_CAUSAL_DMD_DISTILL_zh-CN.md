@@ -4,11 +4,11 @@
 
 > **什么是分布匹配蒸馏？**
 >
-> DMD 是 Causal-Forcing 流水线的**第三阶段（最终阶段）**，使用大规模（14B）teacher 将 CCD 模型进一步蒸馏为 **2 步因果自回归生成器**：
+> DMD 是 Causal-Forcing 流水线的**第三阶段（最终阶段）**，使用大规模（14B）teacher 将 CCD 模型进一步蒸馏为 **少步因果自回归生成器**：
 >
 > 1. **Stage 1 — AR Diffusion** (`train_ar_diffusion.py`)：在干净视频 latent 上以 teacher forcing 训练模型，产出强 AR 基座。
 > 2. **Stage 2 — 因果一致性蒸馏 (CCD)** (`train_causal_consistency_distill.py`)：使用 EMA teacher + CFG 将多步 AR 模型蒸馏为**每块一步**的一致性模型。
-> 3. **Stage 3 — 分布匹配蒸馏 (DMD)** (`train_causal_dmd.py`)：使用 **14B real-score teacher** 的分布匹配进一步蒸馏为 **2 步逐帧**生成器。
+> 3. **Stage 3 — 分布匹配蒸馏 (DMD)** (`train_causal_dmd.py`)：使用 **14B real-score teacher** 的分布匹配进一步蒸馏为 **少步**生成器。
 >
 > 本文档仅覆盖 **Stage 3**。Stage 2 请参见 [README_TRAIN_CAUSAL_CONSISTENCY_DISTILL_zh-CN.md](./README_TRAIN_CAUSAL_CONSISTENCY_DISTILL_zh-CN.md)，Stage 1 请参见 [README_TRAIN_AR_DIFFUSION_zh-CN.md](./README_TRAIN_AR_DIFFUSION_zh-CN.md)。
 
@@ -40,7 +40,7 @@ Stage 3 需要：
 
 ```bash
 # 示例：Stage 2 CCD 训练的 checkpoint
-export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-5000/transformer/diffusion_pytorch_model.safetensors"
 ```
 
 如何产出该 checkpoint 请参见 [README_TRAIN_CAUSAL_CONSISTENCY_DISTILL_zh-CN.md](./README_TRAIN_CAUSAL_CONSISTENCY_DISTILL_zh-CN.md)。
@@ -97,7 +97,7 @@ modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_
 modelscope download --model Wan-AI/Wan2.1-T2V-14B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-14B
 ```
 
-Stage 2 CCD checkpoint（生成器/判别器初始化）通过 `--transformer_path` 加载。
+Stage 2 CCD checkpoint（生成器/判别器初始化）通过 `--ode_transformer_path` 加载。
 
 ---
 
@@ -146,7 +146,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
 export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-2000/diffusion_pytorch_model.safetensors"
+export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-5000/transformer/diffusion_pytorch_model.safetensors"
 
 accelerate launch --mixed_precision="bf16" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -159,7 +159,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --real_score_pretrained_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --transformer_path=$STAGE2_CKPT \
+  --ode_transformer_path=$STAGE2_CKPT \
   --image_sample_size=640 \
   --video_sample_size=640 \
   --token_sample_size=640 \
@@ -188,13 +188,13 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --num_frame_per_block=1 \
+  --num_frame_per_block=3 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 500 \
-  --real_guidance_scale=3.0 \
+  --denoising_step_indices_list 1000 667 334 1 \
+  --real_guidance_scale=6.0 \
+  --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
-  --resume_from_checkpoint="latest" \
   --trainable_modules "."
 ```
 
@@ -213,7 +213,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--config_path` | 模型配置 YAML | `config/wan2.1/wan_civitai.yaml` |
 | `--train_data_dir` | 数据根目录 | `""` |
 | `--train_data_meta` | `metadata.json` 路径（仅含提示词） | `datasets/X-Fun-Videos-Demo/metadata.json` |
-| `--transformer_path` | Stage 2 CCD checkpoint（生成器/判别器初始化） | `$STAGE2_CKPT` |
+| `--ode_transformer_path` | Stage 2 CCD checkpoint（生成器/判别器初始化） | `$STAGE2_CKPT` |
 | `--train_batch_size` | 每 GPU batch 大小 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
@@ -253,11 +253,12 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 | 参数 | 说明 | 示例值 |
 |------|------|--------|
-| `--denoising_step_indices_list` | 去噪步骤索引（DMD 核心参数）。`[1000, 500]` = 2 步 DMD | `1000 500` |
-| `--real_guidance_scale` | real-score（14B teacher）的 CFG scale | 3.0 |
+| `--denoising_step_indices_list` | 去噪步骤索引（DMD 核心参数）。示例为 4 步；解析器默认 `[1000, 500]` = 2 步 | `1000 667 334 1` |
+| `--real_guidance_scale` | real-score（14B teacher）的 CFG scale | 6.0 |
+| `--randomize_step_indices` | 训练时随机化去噪步骤索引 | - |
 | `--fake_guidance_scale` | fake-score（生成器）的 CFG scale。0.0 = 无 CFG | 0.0 |
 | `--gen_update_interval` | 生成器更新间隔（每 N 步判别器更新后更新 1 次生成器） | 5 |
-| `--num_frame_per_block` | 每个因果块的帧数。`1` = 逐帧（DMD 默认值） | 1 |
+| `--num_frame_per_block` | 每个因果块的帧数。`3` = chunkwise（默认），`1` = 逐帧 | 3 |
 | `--use_kv_cache_training` | 使用 KV 缓存逐块训练（匹配原始 Self-Forcing） | - |
 | `--independent_first_frame` | 第一帧是否独立（`[1, N, N, ...]` 模式，适用于 I2V） | - |
 | `--context_noise` | KV 缓存更新的上下文噪声级别 | 0 |
@@ -277,9 +278,9 @@ transformer_path = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-{N}/diffusio
 
 # DMD Stage 3 推理配置
 guidance_scale      = 1.0    # CFG 已烘焦到蒸馏权重中
-num_inference_steps = 2      # 2 步 DMD
+num_inference_steps = 4      # 4 步 DMD
 stochastic_sampling = True
-num_frame_per_block = 1      # 逐帧生成
+num_frame_per_block = 3      # 分块生成
 ```
 
 或运行：
@@ -291,7 +292,7 @@ python examples/wan2.1_causal_forcing/predict_t2v.py
 > **阶段选择器**：`predict_t2v.py` 中包含阶段选择器部分，提供不同阶段的预设配置：
 > - **Stage 1 (AR Diffusion)**：`guidance_scale=3.0`、`num_inference_steps=50`、`stochastic_sampling=False`
 > - **Stage 2 (CCD)**：`guidance_scale=1.0`、`num_inference_steps=4`、`stochastic_sampling=True`
-> - **Stage 3 (DMD)**：`guidance_scale=1.0`、`num_inference_steps=2`、`stochastic_sampling=True`
+> - **Stage 3 (DMD)**：`guidance_scale=1.0`、`num_inference_steps=4`、`stochastic_sampling=True`
 
 ---
 
