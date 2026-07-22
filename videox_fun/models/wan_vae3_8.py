@@ -14,7 +14,7 @@ from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
-
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 CACHE_T = 2
 
@@ -817,6 +817,17 @@ class AutoencoderKLWan2_2_(nn.Module):
         self.clear_cache()
         return x
 
+    def _decode_frame(self, frame, feat_map_in, first_chunk=False):
+        # Decode a single latent frame with a functional (non-mutating) cache
+        # so it can be wrapped by gradient checkpointing safely. The input
+        # cache list is copied and never mutated in place, and the updated
+        # cache is returned explicitly to be threaded to the next frame.
+        conv_idx = [0]
+        feat_map = list(feat_map_in)
+        out = self.decoder(frame, feat_cache=feat_map, feat_idx=conv_idx,
+                           first_chunk=first_chunk)
+        return out, feat_map
+
     def decode(self, z, scale):
         self.clear_cache()
         # z: [b,c,t,h,w]
@@ -828,22 +839,24 @@ class AutoencoderKLWan2_2_(nn.Module):
             z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
         x = self.conv2(z)
+        # Per-frame gradient checkpointing: each latent frame is an independent
+        # recompute unit, so backward only materializes one frame's decoder
+        # activations at a time instead of all frames at once.
+        use_ckpt = getattr(self, "gradient_checkpointing", False) \
+            and torch.is_grad_enabled()
+        feat_map = self._feat_map
+        outs = []
         for i in range(iter_):
-            self._conv_idx = [0]
-            if i == 0:
-                out = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx,
-                    first_chunk=True,
-                )
+            frame = x[:, :, i:i + 1, :, :]
+            first_chunk = (i == 0)
+            if use_ckpt:
+                out_, feat_map = torch_checkpoint(
+                    self._decode_frame, frame, feat_map, first_chunk,
+                    use_reentrant=False)
             else:
-                out_ = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx,
-                )
-                out = torch.cat([out, out_], 2)
+                out_, feat_map = self._decode_frame(frame, feat_map, first_chunk)
+            outs.append(out_)
+        out = torch.cat(outs, 2)
         out = unpatchify(out, patch_size=2)
         self.clear_cache()
         return out
@@ -901,7 +914,7 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         dim_mult=[1, 2, 4, 4],
         temperal_downsample=[False, True, True],
         temporal_compression_ratio=4,
-        spatial_compression_ratio=8
+        spatial_compression_ratio=16
     ):
         super().__init__()
         mean = torch.tensor(
@@ -1012,12 +1025,12 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # init model
         self.model = _video_vae(
-                pretrained_path=vae_pth,
-                z_dim=latent_channels,
-                dim=c_dim,
-                dim_mult=dim_mult,
-                temperal_downsample=temperal_downsample,
-            ).eval().requires_grad_(False)
+            pretrained_path=vae_pth,
+            z_dim=latent_channels,
+            dim=c_dim,
+            dim_mult=dim_mult,
+            temperal_downsample=temperal_downsample,
+        ).eval().requires_grad_(False)
 
         self.gradient_checkpointing = False
 
@@ -1028,6 +1041,7 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.gradient_checkpointing = kwargs["enable"]
         else:
             raise ValueError("Invalid set gradient checkpointing")
+        self.model.gradient_checkpointing = self.gradient_checkpointing
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [
@@ -1050,6 +1064,10 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     def _decode(self, zs):
+        # Gradient checkpointing is applied per-frame inside self.model.decode
+        # (see AutoencoderKLWan2_2_.decode), which lowers the backward peak to a
+        # single latent frame's decoder activations.
+        self.model.gradient_checkpointing = self.gradient_checkpointing
         dec = [
             self.model.decode(u.unsqueeze(0), self.scale).clamp_(-1, 1).squeeze(0)
             for u in zs
