@@ -12,7 +12,7 @@ def get_teacache_coefficients(model_name):
     elif "wan2.1-i2v-14b-720p" in model_name.lower() or "wan2.1-fun-14b" in model_name.lower() or "wan2.2-fun" in model_name.lower() \
         or "wan2.2-i2v-a14b" in model_name.lower() or "wan2.2-t2v-a14b" in model_name.lower() or "wan2.2-ti2v-5b" in model_name.lower() \
         or "wan2.2-s2v" in model_name.lower() or "wan2.1-vace-14b" in model_name.lower() or "wan2.2-vace-fun" in model_name.lower() \
-        or "wan2.2-animate" in model_name.lower():
+        or "wan2.2-animate" in model_name.lower() or "lingbot-world" in model_name.lower():
         return [8.10705460e+03,  2.13393892e+03, -3.72934672e+02,  1.66203073e+01, -4.17769401e-02]
     elif "qwen-image" in model_name.lower():
         # Copied from https://github.com/chenpipi0807/ComfyUI-TeaCache/blob/main/nodes.py
