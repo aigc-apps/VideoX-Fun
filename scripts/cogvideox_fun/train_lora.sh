@@ -10,8 +10,8 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
+  --image_sample_size=512 \
+  --video_sample_size=512 \
   --token_sample_size=512 \
   --video_sample_stride=3 \
   --video_sample_n_frames=49 \
@@ -23,7 +23,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_cogvideox_fun_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -33,6 +33,10 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="to_q,to_k,to_v,ff.0,ff.2" \
+  --use_peft_lora \
   --low_vram \
   --train_mode="inpaint" 
 
@@ -48,8 +52,8 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
 #   --pretrained_model_name_or_path=$MODEL_NAME \
 #   --train_data_dir=$DATASET_NAME \
 #   --train_data_meta=$DATASET_META_NAME \
-#   --image_sample_size=1024 \
-#   --video_sample_size=256 \
+#   --image_sample_size=512 \
+#   --video_sample_size=512 \
 #   --token_sample_size=512 \
 #   --video_sample_stride=3 \
 #   --video_sample_n_frames=85 \
@@ -61,7 +65,7 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
 #   --checkpointing_steps=50 \
 #   --learning_rate=1e-04 \
 #   --seed=42 \
-#   --output_dir="output_dir" \
+#   --output_dir="output_dir_cogvideox_fun_lora" \
 #   --gradient_checkpointing \
 #   --mixed_precision="bf16" \
 #   --adam_weight_decay=3e-2 \
@@ -71,5 +75,9 @@ accelerate launch --mixed_precision="bf16" scripts/cogvideox_fun/train_lora.py \
 #   --random_hw_adapt \
 #   --training_with_video_token_length \
 #   --enable_bucket \
+#   --rank=64 \
+#   --network_alpha=32 \
+#   --target_name="to_q,to_k,to_v,ff.0,ff.2" \
+#   --use_peft_lora \
 #   --low_vram \
 #   --train_mode="inpaint" 

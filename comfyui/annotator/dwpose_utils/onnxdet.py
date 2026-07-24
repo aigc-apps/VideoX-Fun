@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+
 def nms(boxes, scores, nms_thr):
     """Single class NMS implemented in Numpy."""
     x1 = boxes[:, 0]

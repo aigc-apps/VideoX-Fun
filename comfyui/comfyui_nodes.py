@@ -1,21 +1,58 @@
 import json
+import os
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
-from .annotator.nodes import VideoToCanny, VideoToDepth, VideoToPose
+from .annotator.nodes import (ImageToCanny, ImageToDepth, ImageToPose,
+                              VideoToCanny, VideoToDepth, VideoToPose)
 from .camera_utils import CAMERA, combine_camera_motion, get_camera_motion
 from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunT2VSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
-from .wan2_1.nodes import (LoadWanLora, LoadWanModel, WanI2VSampler,
-                           WanT2VSampler)
+from .comfyui_utils import script_directory
+from .flux2.nodes import (CombineFlux2Pipeline, Flux2ControlSampler,
+                          Flux2T2ISampler, LoadFlux2ControlNetInModel,
+                          LoadFlux2ControlNetInPipeline, LoadFlux2Lora,
+                          LoadFlux2Model, LoadFlux2TextEncoderModel,
+                          LoadFlux2TransformerModel, LoadFlux2VAEModel)
+from .qwenimage.nodes import (CombineQwenImagePipeline,
+                              LoadQwenImageControlNetInModel,
+                              LoadQwenImageControlNetInPipeline,
+                              LoadQwenImageLora, LoadQwenImageModel,
+                              LoadQwenImageProcessor,
+                              LoadQwenImageTextEncoderModel,
+                              LoadQwenImageTransformerModel,
+                              LoadQwenImageVAEModel, QwenImageControlSampler,
+                              QwenImageEditPlusSampler, QwenImageEditSampler,
+                              QwenImageT2VSampler)
+from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
+                           LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
+                           LoadWanTransformerModel, LoadWanVAEModel,
+                           WanI2VSampler, WanT2VSampler)
 from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunInpaintSampler, WanFunT2VSampler,
                                WanFunV2VSampler)
+from .wan2_2.nodes import (CombineWan2_2Pipeline, LoadWan2_2Lora,
+                           LoadWan2_2Model, LoadWan2_2TransformerModel,
+                           Wan2_2I2VSampler, Wan2_2T2VSampler)
+from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
+                               Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
+                               Wan2_2FunV2VSampler)
+from .wan2_2_vace_fun.nodes import (CombineWan2_2VaceFunPipeline,
+                                    LoadVaceWanTransformer3DModel,
+                                    LoadWan2_2VaceFunModel,
+                                    Wan2_2VaceFunSampler)
+from .z_image.nodes import (CombineZImagePipeline, LoadZImageControlNetInModel,
+                            LoadZImageControlNetInPipeline, LoadZImageLora,
+                            LoadZImageModel, LoadZImageTextEncoderModel,
+                            LoadZImageTransformerModel, LoadZImageVAEModel,
+                            ZImageControlSampler, ZImageT2ISampler)
+
 
 class FunTextBox:
     @classmethod
@@ -67,19 +104,116 @@ class FunCompile:
 
     def compile(self, cache_size_limit, funmodels):
         torch._dynamo.config.cache_size_limit = cache_size_limit
+
+        if funmodels["pipeline"].transformer.device == torch.device(type="meta"):
+            if hasattr(funmodels["pipeline"].transformer, "blocks"):
+                for i, block in enumerate(funmodels["pipeline"].transformer.blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+
+                if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                    for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
+                        if hasattr(block, "_orig_mod"):
+                            block = block._orig_mod
+
+            elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
+                for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+            
+                if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                    for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
+                        if hasattr(block, "_orig_mod"):
+                            block = block._orig_mod
+                
+            print("Sequential cpu offload can not work with compile. Continue")
+            return (funmodels,)
+
         if hasattr(funmodels["pipeline"].transformer, "blocks"):
-            for i in range(len(funmodels["pipeline"].transformer.blocks)):
-                funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
+            for i, block in enumerate(funmodels["pipeline"].transformer.blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.blocks[i] = torch.compile(block)
         
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(block)
+            
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
-                for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
-                    funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
+            for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(block)
+        
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(block)
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
 
+            if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
+                funmodels["pipeline"].transformer_2.forward = torch.compile(funmodels["pipeline"].transformer_2.forward)
+
         print("Add Compile")
         return (funmodels,)
+    
+class FunAttention:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "attention_type": (
+                    ["flash", "sage", "torch"],
+                    {"default": "flash"},
+                ),
+                "funmodels": ("FunModels",)
+            }
+        }
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "funattention"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def funattention(self, attention_type, funmodels):
+        os.environ['VIDEOX_ATTENTION_TYPE'] = {
+            "flash": "FLASH_ATTENTION",
+            "sage": "SAGE_ATTENTION",
+            "torch": "TORCH_SCALED_DOT"
+        }[attention_type]
+        return (funmodels,)
+
+class LoadConfig:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": (
+                [
+                    "wan2.1/wan_civitai.yaml",
+                    "wan2.2/wan_civitai_t2v.yaml",
+                    "wan2.2/wan_civitai_i2v.yaml",
+                    "wan2.2/wan_civitai_5b.yaml",
+                ],
+                {
+                    "default": "wan2.2/wan_civitai_i2v.yaml",
+                }
+            ),
+        }
+    
+    RETURN_TYPES = ("FunConfig",)
+    RETURN_NAMES = ("config",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, config):
+        # Load config
+        config_path = f"{script_directory}/config/{config}"
+        config = OmegaConf.load(config_path)
+        return (config, )
 
 def gen_gaussian_heatmap(imgSize=200):
     circle_img = np.zeros((imgSize, imgSize,), np.float32) 
@@ -182,6 +316,27 @@ class ImageMaximumNode:
         else:
             outputs = torch.maximum(video_1, video_2[:length_1])
         return (outputs, )
+
+class ImageCollectNode:
+    RETURN_TYPES = ("IMAGE", )
+    RETURN_NAMES = ("image", )
+    FUNCTION = "imagecollect"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_1": ("IMAGE",)
+            },
+            "optional": {
+                "image_2": ("IMAGE",),
+            }
+    } 
+
+    def imagecollect(self, image_1, image_2):
+        image_out = [_image_1 for _image_1 in image_1] + [_image_2 for _image_2 in image_2]
+        return (image_out, )
 
 class CameraBasicFromChaoJie:
     # Copied from https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper/blob/main/nodes.py
@@ -301,12 +456,60 @@ NODE_CLASS_MAPPINGS = {
     "FunTextBox": FunTextBox,
     "FunRiflex": FunRiflex,
     "FunCompile": FunCompile,
+    "FunAttention": FunAttention,
 
     "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
     "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
     "CogVideoXFunT2VSampler": CogVideoXFunT2VSampler,
     "CogVideoXFunInpaintSampler": CogVideoXFunInpaintSampler,
     "CogVideoXFunV2VSampler": CogVideoXFunV2VSampler,
+    
+    "LoadQwenImageLora": LoadQwenImageLora,
+    "LoadQwenImageTextEncoderModel": LoadQwenImageTextEncoderModel,
+    "LoadQwenImageTransformerModel": LoadQwenImageTransformerModel,
+    "LoadQwenImageVAEModel": LoadQwenImageVAEModel, 
+    "LoadQwenImageProcessor": LoadQwenImageProcessor,
+    "CombineQwenImagePipeline": CombineQwenImagePipeline, 
+    "LoadQwenImageControlNetInPipeline": LoadQwenImageControlNetInPipeline, 
+    "LoadQwenImageControlNetInModel": LoadQwenImageControlNetInModel, 
+
+    "LoadQwenImageModel": LoadQwenImageModel,
+    "QwenImageT2VSampler": QwenImageT2VSampler,
+    "QwenImageEditSampler": QwenImageEditSampler,
+    "QwenImageEditPlusSampler": QwenImageEditPlusSampler,
+    "QwenImageControlSampler": QwenImageControlSampler,
+
+    "LoadFlux2Lora": LoadFlux2Lora,
+    "LoadFlux2TransformerModel": LoadFlux2TransformerModel,
+    "LoadFlux2VAEModel": LoadFlux2VAEModel,
+    "LoadFlux2TextEncoderModel": LoadFlux2TextEncoderModel,
+    "CombineFlux2Pipeline": CombineFlux2Pipeline,
+    "LoadFlux2ControlNetInModel": LoadFlux2ControlNetInModel,
+    "LoadFlux2ControlNetInPipeline": LoadFlux2ControlNetInPipeline,
+
+    "LoadFlux2Model": LoadFlux2Model,
+    "Flux2T2ISampler": Flux2T2ISampler,
+    "Flux2ControlSampler": Flux2ControlSampler,
+    
+    "LoadZImageLora": LoadZImageLora,
+    "LoadZImageTextEncoderModel": LoadZImageTextEncoderModel,
+    "LoadZImageTransformerModel": LoadZImageTransformerModel,
+    "LoadZImageVAEModel": LoadZImageVAEModel, 
+    "CombineZImagePipeline": CombineZImagePipeline, 
+    "LoadZImageControlNetInPipeline": LoadZImageControlNetInPipeline,
+    "LoadZImageControlNetInModel": LoadZImageControlNetInModel,
+
+    "LoadZImageModel": LoadZImageModel,
+    "ZImageT2ISampler": ZImageT2ISampler,
+    "ZImageControlSampler": ZImageControlSampler,
+                                
+    "LoadWanClipEncoderModel": LoadWanClipEncoderModel,
+    "LoadWanTextEncoderModel": LoadWanTextEncoderModel,
+    "LoadWanTransformerModel": LoadWanTransformerModel,
+    "LoadWanVAEModel": LoadWanVAEModel,
+    "CombineWanPipeline": CombineWanPipeline,
+    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
+    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
 
     "LoadWanModel": LoadWanModel,
     "LoadWanLora": LoadWanLora,
@@ -319,6 +522,26 @@ NODE_CLASS_MAPPINGS = {
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
 
+    "LoadWan2_2Model": LoadWan2_2Model,
+    "LoadWan2_2Lora": LoadWan2_2Lora,
+    "Wan2_2T2VSampler": Wan2_2T2VSampler,
+    "Wan2_2I2VSampler": Wan2_2I2VSampler,
+
+    "LoadWan2_2FunModel": LoadWan2_2FunModel,
+    "LoadWan2_2FunLora": LoadWan2_2FunLora,
+    "Wan2_2FunT2VSampler": Wan2_2FunT2VSampler,
+    "Wan2_2FunInpaintSampler": Wan2_2FunInpaintSampler,
+    "Wan2_2FunV2VSampler": Wan2_2FunV2VSampler,
+
+    "LoadVaceWanTransformer3DModel": LoadVaceWanTransformer3DModel, 
+    "CombineWan2_2VaceFunPipeline": CombineWan2_2VaceFunPipeline,
+
+    "LoadWan2_2VaceFunModel": LoadWan2_2VaceFunModel,
+    "Wan2_2VaceFunSampler": Wan2_2VaceFunSampler,
+    
+    "ImageToCanny": ImageToCanny,
+    "ImageToPose": ImageToPose,
+    "ImageToDepth": ImageToDepth,
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
     "VideoToOpenpose": VideoToPose,
@@ -329,19 +552,68 @@ NODE_CLASS_MAPPINGS = {
     "CameraJoinFromChaoJie": CameraJoinFromChaoJie,
     "CameraCombineFromChaoJie": CameraCombineFromChaoJie,
     "ImageMaximumNode": ImageMaximumNode,
+    "ImageCollectNode": ImageCollectNode,
 }
-
-
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
     "FunRiflex": "FunRiflex",
     "FunCompile": "FunCompile",
+    "FunAttention": "FunAttention",
+    "LoadZImageControlNetInPipeline": "LoadZImageControlNetInPipeline",
+    "LoadZImageControlNetInModel": "LoadZImageControlNetInModel",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
     "CogVideoXFunInpaintSampler": "CogVideoX-Fun Sampler for Image to Video",
     "CogVideoXFunT2VSampler": "CogVideoX-Fun Sampler for Text to Video",
     "CogVideoXFunV2VSampler": "CogVideoX-Fun Sampler for Video to Video",
+
+    "LoadQwenImageLora": "Load QwenImage Lora",
+    "LoadQwenImageTextEncoderModel": "Load QwenImage TextEncoder Model",
+    "LoadQwenImageTransformerModel": "Load QwenImage Transformer Model",
+    "LoadQwenImageVAEModel": "Load QwenImage VAE Model", 
+    "LoadQwenImageProcessor": "Load QwenImage Processor",
+    "CombineQwenImagePipeline": "Combine QwenImage Pipeline", 
+    "LoadQwenImageControlNetInPipeline": "Load QwenImage ControlNet In Pipeline", 
+    "LoadQwenImageControlNetInModel": "Load QwenImage ControlNet In Model", 
+
+    "LoadQwenImageModel": "Load QwenImage Model",
+    "QwenImageT2VSampler": "QwenImage T2V Sampler",
+    "QwenImageEditSampler": "QwenImage Edit Sampler",
+    "QwenImageEditPlusSampler": "QwenImage Edit Plus Sampler",
+    "QwenImageControlSampler": "QwenImage Control Sampler",
+    
+    "LoadFlux2Lora": "Load FLUX2 Lora",
+    "LoadFlux2TransformerModel": "Load FLUX2 Transformer Model",
+    "LoadFlux2VAEModel": "Load FLUX2 VAE Model",
+    "LoadFlux2TextEncoderModel": "Load FLUX2 Text Encoder Model",
+    "CombineFlux2Pipeline": "Combine FLUX2 Pipeline",
+    "LoadFlux2ControlNetInModel": "Load Flux2 ControlNet In Model",
+    "LoadFlux2ControlNetInPipeline": "Load Flux2 ControlNet In Pipeline",
+
+    "LoadFlux2Model": "Load FLUX2 Model",
+    "Flux2T2ISampler": "FLUX2 Text to Image Sampler",
+    "Flux2ControlSampler": "FLUX2 Control Sampler",
+    
+    "LoadZImageLora": "Load ZImage Lora",
+    "LoadZImageTextEncoderModel": "Load ZImage TextEncoder Model",
+    "LoadZImageTransformerModel": "Load ZImage Transformer Model",
+    "LoadZImageVAEModel": "Load ZImage VAE Model", 
+    "CombineZImagePipeline": "Combine ZImage Pipeline", 
+
+    "LoadZImageModel": "Load ZImage Model",
+    "ZImageT2ISampler": "ZImage T2I Sampler",
+    "ZImageControlSampler": "ZImage Control Sampler",
+
+    "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
+    "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",
+    "LoadWanTransformerModel": "Load Wan Transformer Model",
+    "LoadWanVAEModel": "Load Wan VAE Model",
+    "CombineWanPipeline": "Combine Wan Pipeline", 
+    "LoadWan2_2TransformerModel": "Load Wan2_2 Transformer Model", 
+    "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
+    "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer 3DModel", 
+    "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace Fun Pipeline",
 
     "LoadWanModel": "Load Wan Model",
     "LoadWanLora": "Load Wan Lora",
@@ -354,6 +626,23 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanFunInpaintSampler": "Wan Fun Sampler for Image to Video",
     "WanFunV2VSampler": "Wan Fun Sampler for Video to Video",
 
+    "LoadWan2_2Model": "Load Wan 2.2 Model",
+    "LoadWan2_2Lora": "Load Wan 2.2 Lora",
+    "Wan2_2T2VSampler": "Wan 2.2 Sampler for Text to Video",
+    "Wan2_2I2VSampler": "Wan 2.2 Sampler for Image to Video",
+
+    "LoadWan2_2FunModel": "Load Wan 2.2 Fun Model",
+    "LoadWan2_2FunLora": "Load Wan 2.2 Fun Lora",
+    "Wan2_2FunT2VSampler": "Wan 2.2 Fun Sampler for Text to Video",
+    "Wan2_2FunInpaintSampler": "Wan 2.2 Fun Sampler for Image to Video",
+    "Wan2_2FunV2VSampler": "Wan 2.2 Fun Sampler for Video to Video",
+
+    "LoadWan2_2VaceFunModel": "Load Wan2_2 Vace Fun Model",
+    "Wan2_2VaceFunSampler": "Wan2_2 Vace Fun Sampler",
+    
+    "ImageToCanny": "Image To Canny",
+    "ImageToPose": "Image To Pose",
+    "ImageToDepth": "Image To Depth",
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
     "VideoToOpenpose": "Video To Pose",
@@ -364,4 +653,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CameraJoinFromChaoJie": "Camera Join From ChaoJie",
     "CameraCombineFromChaoJie": "Camera Combine From ChaoJie",
     "ImageMaximumNode": "Image Maximum Node",
+    "ImageCollectNode": "Image Collect Node",
 }

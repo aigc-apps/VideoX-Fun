@@ -1,0 +1,906 @@
+{
+  "id": "1464c536-caf0-472a-a5d5-6a0d06d5101a",
+  "revision": 0,
+  "last_node_id": 141,
+  "last_link_id": 313,
+  "nodes": [
+    {
+      "id": 107,
+      "type": "Note",
+      "pos": [
+        4,
+        634
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 108,
+      "type": "Note",
+      "pos": [
+        -110,
+        842
+      ],
+      "size": [
+        326.1556091308594,
+        145.20904541015625
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Using longer neg prompt such as \"Blurring, mutation, deformation, distortion, dark and solid, comics.\" can increase stability. Adding words such as \"quiet, solid\" to the neg prompt can increase dynamism.\n(使用更长的neg prompt如\"模糊，突变，变形，失真，画面暗，画面固定，连环画，漫画，线稿，没有主体。\"，可以增加稳定性。在neg prompt中添加\"安静，固定\"等词语可以增加动态性。)"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 122,
+      "type": "FunTextBox",
+      "pos": [
+        238,
+        805
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            310
+          ]
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
+    },
+    {
+      "id": 129,
+      "type": "CameraBasicFromChaoJie",
+      "pos": [
+        805.2059326171875,
+        1012.381103515625
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CameraPose",
+          "type": "CameraPose",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CameraBasicFromChaoJie"
+      },
+      "widgets_values": [
+        "Static",
+        1,
+        16
+      ]
+    },
+    {
+      "id": 130,
+      "type": "CameraTrajectoryFromChaoJie",
+      "pos": [
+        1170.206298828125,
+        763.3814697265625
+      ],
+      "size": [
+        367.79998779296875,
+        150
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "camera_pose",
+          "type": "CameraPose",
+          "link": 285
+        }
+      ],
+      "outputs": [
+        {
+          "name": "camera_trajectory",
+          "type": "STRING",
+          "slot_index": 0,
+          "links": [
+            312
+          ]
+        },
+        {
+          "name": "video_length",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CameraTrajectoryFromChaoJie"
+      },
+      "widgets_values": [
+        0.532139961,
+        0.946026558,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": 106,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1408,
+        68
+      ],
+      "size": [
+        390,
+        537.4615478515625
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "图像",
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 313
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "label": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "文件名",
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "slot_index": 0,
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 16,
+        "loop_count": 0,
+        "filename_prefix": "Fun",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 22,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "Fun_00112.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 16
+          }
+        }
+      }
+    },
+    {
+      "id": 121,
+      "type": "FunTextBox",
+      "pos": [
+        235,
+        539
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "links": [
+            309
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "Fireworks light up the evening sky over a sprawling cityscape with gothic-style buildings featuring pointed towers and clock faces. The city is lit by both artificial lights from the buildings and the colorful bursts of the fireworks. The scene is viewed from an elevated angle, showcasing a vibrant urban environment set against a backdrop of a dramatic, partially cloudy sky at dusk."
+      ]
+    },
+    {
+      "id": 100,
+      "type": "LoadImage",
+      "pos": [
+        237.59738159179688,
+        1164.597412109375
+      ],
+      "size": [
+        378.07147216796875,
+        314
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            311
+          ]
+        },
+        {
+          "label": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Start Image（图片到视频的开始图片）",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "5.png",
+        "image"
+      ]
+    },
+    {
+      "id": 131,
+      "type": "CameraCombineFromChaoJie",
+      "pos": [
+        814.2059326171875,
+        763.3814697265625
+      ],
+      "size": [
+        315,
+        178
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CameraPose",
+          "type": "CameraPose",
+          "links": [
+            285
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CameraCombineFromChaoJie"
+      },
+      "widgets_values": [
+        "Pan Right",
+        "Pan Up",
+        "Static",
+        "Static",
+        1,
+        81
+      ]
+    },
+    {
+      "id": 110,
+      "type": "Note",
+      "pos": [
+        1158.206298828125,
+        970.381103515625
+      ],
+      "size": [
+        608.1410522460938,
+        188.2682342529297
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "CameraCombine is used to combine multiple camera movements, while CameraBasic produces a single camera movement. The nodes come from https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper/. Since ComfyUI-CameraCtrl-Wrapper requires a specific version of diffusers, the code has been copied into the current repository.\n(CameraCombine用于组合多个镜头运动，CameraBasic产出单个镜头运动；节点来自于https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper/，由于ComfyUI-CameraCtrl-Wrapper有具体diffusers版本要求，故复制代码到当前库中。)"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 137,
+      "type": "CombineWan2_2Pipeline",
+      "pos": [
+        459.86553955078125,
+        105.53478240966797
+      ],
+      "size": [
+        360.3475341796875,
+        206
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 301
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 302
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 303
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 304
+        },
+        {
+          "name": "clip_encoder",
+          "shape": 7,
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": 305
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 306
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            308
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWan2_2Pipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload",
+        "Control"
+      ]
+    },
+    {
+      "id": 138,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        2.877215623855591,
+        210.45326232910156
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            303
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            304
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 139,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        2.877215623855591,
+        59.883544921875
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            302
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.1_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 112,
+      "type": "Note",
+      "pos": [
+        -252.11000061035156,
+        389.1165771484375
+      ],
+      "size": [
+        427.074951171875,
+        143.9142608642578
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 140,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        6.800307750701904,
+        -99.07373809814453
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            301
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            306
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.2-Fun-A14B-Control-Camera-LOW_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 136,
+      "type": "LoadWan2_2TransformerModel",
+      "pos": [
+        438.7657470703125,
+        -97.08856964111328
+      ],
+      "size": [
+        393.9992370605469,
+        102
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            305
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWan2_2TransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.2-Fun-A14B-Control-Camera-HIGH_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 141,
+      "type": "Wan2_2FunV2VSampler",
+      "pos": [
+        923.9700317382812,
+        64.22538757324219
+      ],
+      "size": [
+        350.2320251464844,
+        574
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 308
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 309
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 310
+        },
+        {
+          "name": "validation_video",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "control_video",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "start_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 311
+        },
+        {
+          "name": "end_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "camera_conditions",
+          "shape": 7,
+          "type": "STRING",
+          "link": 312
+        },
+        {
+          "name": "riflex_k",
+          "shape": 7,
+          "type": "RIFLEXT_ARGS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            313
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Wan2_2FunV2VSampler"
+      },
+      "widgets_values": [
+        81,
+        640,
+        329092863634844,
+        "randomize",
+        50,
+        6,
+        1,
+        "Flow",
+        5,
+        0.9,
+        0.1,
+        true,
+        3,
+        true,
+        0.25000000000000006
+      ]
+    }
+  ],
+  "links": [
+    [
+      285,
+      131,
+      0,
+      130,
+      0,
+      "CameraPose"
+    ],
+    [
+      301,
+      140,
+      0,
+      137,
+      0,
+      "TransformerModel"
+    ],
+    [
+      302,
+      139,
+      0,
+      137,
+      1,
+      "VAEModel"
+    ],
+    [
+      303,
+      138,
+      0,
+      137,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      304,
+      138,
+      1,
+      137,
+      3,
+      "Tokenizer"
+    ],
+    [
+      305,
+      136,
+      0,
+      137,
+      5,
+      "TransformerModel"
+    ],
+    [
+      306,
+      140,
+      1,
+      137,
+      6,
+      "STRING"
+    ],
+    [
+      308,
+      137,
+      0,
+      141,
+      0,
+      "FunModels"
+    ],
+    [
+      309,
+      121,
+      0,
+      141,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      310,
+      122,
+      0,
+      141,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      311,
+      100,
+      0,
+      141,
+      5,
+      "IMAGE"
+    ],
+    [
+      312,
+      130,
+      0,
+      141,
+      8,
+      "STRING"
+    ],
+    [
+      313,
+      141,
+      0,
+      106,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Generate Control Video",
+      "bounding": [
+        773,
+        666,
+        1025,
+        531
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "First Image",
+      "bounding": [
+        191,
+        1068,
+        475,
+        456
+      ],
+      "color": "#a1309b",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Prompts",
+      "bounding": [
+        191,
+        456,
+        475,
+        587
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "Load Model",
+      "bounding": [
+        -7.123280048370361,
+        -178.99830627441406,
+        863.243896484375,
+        511.2655029296875
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6830134553650709,
+      "offset": [
+        201.7628279830343,
+        116.00196884690006
+      ]
+    },
+    "frontendVersion": "1.21.3",
+    "node_versions": {
+      "CogVideoX-Fun": "37bd73564702fa47ffe4576c87da6f82a50cb60e",
+      "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e",
+      "comfy-core": "0.3.44"
+    }
+  },
+  "version": 0.4
+}

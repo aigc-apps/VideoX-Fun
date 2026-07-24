@@ -1,5 +1,6 @@
 """Modified from https://github.com/kijai/ComfyUI-EasyAnimateWrapper/blob/main/nodes.py
 """
+import copy
 import gc
 import json
 import os
@@ -7,7 +8,6 @@ import os
 import comfy.model_management as mm
 import cv2
 import folder_paths
-import copy
 import numpy as np
 import torch
 from comfy.utils import ProgressBar, load_torch_file
@@ -15,21 +15,22 @@ from diffusers import EulerDiscreteScheduler
 from einops import rearrange
 from PIL import Image
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                              get_closest_ratio)
+from ...videox_fun.data import ASPECT_RATIO_512, get_closest_ratio
 from ...videox_fun.models import (AutoencoderKLCogVideoX,
-                                 CogVideoXTransformer3DModel, T5EncoderModel,
-                                 T5Tokenizer)
-from ...videox_fun.pipeline import (CogVideoXFunPipeline,
-                                   CogVideoXFunControlPipeline,
-                                   CogVideoXFunInpaintPipeline)
+                                  CogVideoXTransformer3DModel, T5EncoderModel,
+                                  T5Tokenizer)
+from ...videox_fun.pipeline import (CogVideoXFunControlPipeline,
+                                    CogVideoXFunInpaintPipeline,
+                                    CogVideoXFunPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
+from ...videox_fun.utils.fp8_optimization import (
+    convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (get_image_to_video_latent,
-                                      get_video_to_video_latent,
-                                      save_videos_grid)
-from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
-from ..comfyui_utils import eas_cache_dir, to_pil
+                                       get_video_to_video_latent,
+                                       save_videos_grid)
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
 
 # Used in lora cache
 transformer_cpu_cache   = {}
@@ -64,7 +65,7 @@ class LoadCogVideoXFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -89,38 +90,18 @@ class LoadCogVideoXFunModel:
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
+        mm.unload_all_models()
+        mm.cleanup_models_gc()
+        mm.soft_empty_cache()
+
         # Init processbar
         pbar = ProgressBar(5)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download cogvideoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         vae = AutoencoderKLCogVideoX.from_pretrained(
             model_name, 
@@ -181,6 +162,10 @@ class LoadCogVideoXFunModel:
                 transformer=transformer,
                 scheduler=scheduler,
             )
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
+
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
@@ -221,13 +206,18 @@ class LoadCogVideoXFunLora:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def load_lora(self, cogvideoxfun_model, lora_name, strength_model, lora_cache):
+        new_funmodels = dict(cogvideoxfun_model)  
+
         if lora_name is not None:
-            cogvideoxfun_model['lora_cache'] = lora_cache
-            cogvideoxfun_model['loras'] = cogvideoxfun_model.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)]
-            cogvideoxfun_model['strength_model'] = cogvideoxfun_model.get("strength_model", []) + [strength_model]
-            return (cogvideoxfun_model,)
-        else:
-            return (cogvideoxfun_model,)
+            lora_path = folder_paths.get_full_path("loras", lora_name)
+            if lora_path is None:
+                raise FileNotFoundError(f"LoRA 文件未找到: {lora_name}")
+
+            new_funmodels['lora_cache'] = lora_cache
+            new_funmodels['loras'] = cogvideoxfun_model.get("loras", []) + [lora_path]
+            new_funmodels['strength_model'] = cogvideoxfun_model.get("strength_model", []) + [strength_model]
+
+        return (new_funmodels,)
 
 class CogVideoXFunT2VSampler:
     @classmethod
@@ -363,7 +353,6 @@ class CogVideoXFunT2VSampler:
                 for _lora_path, _lora_weight in zip(cogvideoxfun_model.get("loras", []), cogvideoxfun_model.get("strength_model", [])):
                     pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
         return (videos,)   
-
 
 class CogVideoXFunInpaintSampler:
     @classmethod
@@ -541,7 +530,7 @@ class CogVideoXFunV2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "denoise_strength": (
-                    "FLOAT", {"default": 0.70, "min": 0.05, "max": 1.00, "step": 0.01}
+                    "FLOAT", {"default": 1.00, "min": 0.05, "max": 1.00, "step": 0.01}
                 ),
                 "scheduler": (
                     [ 

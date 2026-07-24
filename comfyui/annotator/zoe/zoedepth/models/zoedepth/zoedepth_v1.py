@@ -26,12 +26,13 @@ import itertools
 
 import torch
 import torch.nn as nn
-from ..depth_model import DepthModel
+
 from ..base_models.midas import MidasCore
+from ..depth_model import DepthModel
 from ..layers.attractor import AttractorLayer, AttractorLayerUnnormed
 from ..layers.dist_layers import ConditionalLogBinomial
 from ..layers.localbins_layers import (Projector, SeedBinRegressor,
-                                            SeedBinRegressorUnnormed)
+                                       SeedBinRegressorUnnormed)
 from ..model_io import load_state_from_resource
 
 

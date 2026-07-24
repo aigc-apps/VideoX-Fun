@@ -3,6 +3,7 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 
+
 def preprocess(
     img: np.ndarray, out_bbox, input_size: Tuple[int, int] = (192, 256)
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

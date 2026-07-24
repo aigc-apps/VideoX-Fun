@@ -272,3 +272,243 @@ class VideoToPose:
         output_video = [self.process_frame(model, frame) for frame in video_frames]
         output_video = torch.from_numpy(np.array(output_video)) / 255
         return (output_video,)
+
+
+class ImageToCanny:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_image": ("IMAGE",),
+                "low_threshold": ("INT", {"default": 100, "min": 0, "max": 255, "step": 1}),
+                "high_threshold": ("INT", {"default": 200, "min": 0, "max": 255, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process(self, input_image, low_threshold, high_threshold):
+        # Convert input image to numpy array
+        image = np.array(input_image * 255, np.uint8)
+        
+        # If it's a batch of images, only process the first one
+        if len(image.shape) == 4:
+            image = image[0]
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        # Canny edge detection
+        edges = cv2.Canny(gray, low_threshold, high_threshold)
+        
+        # Convert back to RGB format
+        edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+        
+        # Convert to torch tensor and normalize
+        output_image = torch.from_numpy(edges_colored).float() / 255.0
+        
+        # Add batch dimension
+        output_image = output_image.unsqueeze(0)
+        
+        return (output_image,)
+
+
+class ImageToDepth:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process_single_image(self, model, image, device, weight_dtype):
+        """
+        Process a single image to generate depth map
+        
+        Args:
+            model: ZoeDepth model instance
+            image: Input image as numpy array
+            device: Computing device (cuda/cpu)
+            weight_dtype: Data type for model weights
+        
+        Returns:
+            Processed depth map as numpy array
+        """
+        with torch.no_grad():
+            # Resize image with padding to match model input size
+            image, remove_pad = resize_image_with_pad(image, 512)
+            image_depth = image
+            
+            with torch.no_grad():
+                # Convert to tensor and normalize
+                image_depth = torch.from_numpy(image_depth).to(device, weight_dtype)
+                image_depth = image_depth / 255.0
+                # Rearrange dimensions for model input
+                image_depth = rearrange(image_depth, 'h w c -> 1 c h w')
+                # Infer depth map
+                depth = model.infer(image_depth)
+
+                depth = depth[0, 0].cpu().numpy()
+
+                # Normalize depth values using percentiles
+                vmin = np.percentile(depth, 2)
+                vmax = np.percentile(depth, 85)
+
+                depth -= vmin
+                depth /= vmax - vmin
+                depth = 1.0 - depth
+                # Convert to uint8 format
+                depth_image = (depth * 255.0).clip(0, 255).astype(np.uint8)
+            
+            # Remove padding and ensure 3-channel output
+            image = remove_pad(depth_image)
+            image = HWC3(image)
+        return image
+
+    def process(self, input_image):
+        # Initialize ZoeDepth model
+        model = ZoeDepth.build_from_config(get_config("zoedepth", "infer"))
+
+        # Detect model path from possible folders
+        possible_folders = ["CogVideoX_Fun/Third_Party", "Fun_Models/Third_Party", "VideoX_Fun/Third_Party"]
+        zoe_model_path = "ZoeD_M12_N.pt"
+        
+        # Search for existing model file
+        for folder in possible_folders:
+            candidate_path = os.path.join(folder_paths.models_dir, folder, zoe_model_path)
+            if os.path.exists(candidate_path):
+                zoe_model_path = candidate_path
+                break
+        
+        # Download model if not found locally
+        if not os.path.exists(zoe_model_path):
+            load_file_from_url(remote_zoe, model_dir=os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party"))
+            zoe_model_path = os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party", zoe_model_path)
+
+        # Load model weights
+        model.load_state_dict(
+            torch.load(zoe_model_path, map_location="cpu")['model'], 
+            strict=False
+        )
+        
+        # Set device and data type
+        if torch.cuda.is_available():
+            device = "cuda"
+            weight_dtype = torch.float32
+        else:
+            device = "cpu"
+            weight_dtype = torch.float32
+        
+        # Move model to device and set to evaluation mode
+        model = model.to(device=device, dtype=weight_dtype).eval().requires_grad_(False)
+
+        # Convert input image to numpy array
+        image = np.array(input_image * 255, np.uint8)
+        
+        # If it's a batch of images, only process the first one
+        if len(image.shape) == 4:
+            image = image[0]
+        
+        # Process image to generate depth map
+        output_image = self.process_single_image(model, image, device, weight_dtype)
+        output_image = torch.from_numpy(output_image).float() / 255.0
+        
+        # Add batch dimension
+        output_image = output_image.unsqueeze(0)
+        
+        return (output_image,)
+
+
+class ImageToPose:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "process"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def process_single_image(self, model, image):
+        """
+        Process a single image to detect and draw pose keypoints
+        
+        Args:
+            model: DWPose detector model instance
+            image: Input image as numpy array
+        
+        Returns:
+            Image with pose keypoints drawn as numpy array
+        """
+        with torch.no_grad():
+            # Resize image with padding to match model input size
+            image, remove_pad = resize_image_with_pad(image, 512)
+            # Detect and draw pose keypoints
+            pose_image = model(image)
+            # Remove padding
+            image = remove_pad(pose_image)
+            # Ensure 3-channel output
+            image = HWC3(image)
+        return image
+    
+    def process(self, input_image):
+        # Detect model paths from possible folders
+        possible_folders = ["CogVideoX_Fun/Third_Party", "Fun_Models/Third_Party", "VideoX_Fun/Third_Party"]
+
+        # Search for detection model (yolox_l.onnx)
+        onnx_det = "yolox_l.onnx"
+        for folder in possible_folders:
+            candidate_path = os.path.join(folder_paths.models_dir, folder, onnx_det)
+            if os.path.exists(candidate_path):
+                onnx_det = candidate_path
+                break
+        
+        # Download detection model if not found locally
+        if not os.path.exists(onnx_det):
+            load_file_from_url(remote_onnx_det, os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party"))
+            onnx_det = os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party", onnx_det)
+            
+        # Search for pose model (dw-ll_ucoco_384.onnx)
+        onnx_pose = "dw-ll_ucoco_384.onnx"
+        for folder in possible_folders:
+            candidate_path = os.path.join(folder_paths.models_dir, folder, onnx_pose)
+            if os.path.exists(candidate_path):
+                onnx_pose = candidate_path
+                break
+        
+        # Download pose model if not found locally
+        if not os.path.exists(onnx_pose):
+            load_file_from_url(remote_onnx_pose, os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party"))
+            onnx_pose = os.path.join(folder_paths.models_dir, "Fun_Models/Third_Party", onnx_pose)
+        
+        # Initialize DWPose detector model
+        model = DWposeDetector(onnx_det, onnx_pose)
+
+        # Convert input image to numpy array
+        image = np.array(input_image * 255, np.uint8)
+        
+        # If it's a batch of images, only process the first one
+        if len(image.shape) == 4:
+            image = image[0]
+        
+        # Process image to detect and draw pose
+        output_image = self.process_single_image(model, image)
+        output_image = torch.from_numpy(output_image).float() / 255.0
+        
+        # Add batch dimension for compatibility
+        output_image = output_image.unsqueeze(0)
+        
+        return (output_image,)

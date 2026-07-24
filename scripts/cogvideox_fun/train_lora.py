@@ -56,28 +56,29 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                           ASPECT_RATIO_RANDOM_CROP_512,
-                                           ASPECT_RATIO_RANDOM_CROP_PROB,
-                                           AspectRatioBatchImageVideoSampler,
-                                           RandomSampler, get_closest_ratio)
-from videox_fun.data.dataset_image_video import (ImageVideoControlDataset,
-                                                ImageVideoDataset,
-                                                ImageVideoSampler,
-                                                get_random_mask)
+from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
+                             ASPECT_RATIO_RANDOM_CROP_PROB,
+                             AspectRatioBatchImageVideoSampler,
+                             ImageVideoControlDataset, ImageVideoDataset,
+                             ImageVideoSampler, RandomSampler,
+                             get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLCogVideoX,
-                              CogVideoXTransformer3DModel, T5EncoderModel,
-                              T5Tokenizer)
-from videox_fun.pipeline import (CogVideoXFunPipeline,
-                                CogVideoXFunControlPipeline,
-                                CogVideoXFunInpaintPipeline)
-from videox_fun.pipeline.pipeline_CogVideoXFuninpaint import (
+                               CogVideoXTransformer3DModel, T5EncoderModel,
+                               T5Tokenizer)
+from videox_fun.pipeline import (CogVideoXFunControlPipeline,
+                                 CogVideoXFunInpaintPipeline,
+                                 CogVideoXFunPipeline)
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import create_network, merge_lora, unmerge_lora
-from videox_fun.utils.utils import (get_image_to_video_latent,
-                                   get_video_to_video_latent, save_videos_grid)
+from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
+                                         create_network, merge_lora,
+                                         unmerge_lora)
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    get_image_to_video_latent,
+                                    get_video_to_video_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -158,116 +159,108 @@ logger = get_logger(__name__, log_level="INFO")
 
 def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, accelerator, weight_dtype, global_step):
     try:
-        logger.info("Running validation... ")
-
-        transformer3d_val = CogVideoXTransformer3DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer",
-        ).to(weight_dtype)
-        transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
-        scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+        is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
+        if is_deepspeed:
+            origin_config = transformer3d.config
+            transformer3d.config = accelerator.unwrap_model(transformer3d).config
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+            logger.info("Running validation... ")
+            scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
         
-        if args.train_mode != "normal":
-            pipeline = CogVideoXFunInpaintPipeline.from_pretrained(
-                args.pretrained_model_name_or_path, 
-                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                tokenizer=tokenizer,
-                transformer=transformer3d_val,
-                scheduler=scheduler,
-                torch_dtype=weight_dtype,
-            )
-        else:
-            pipeline = CogVideoXFunPipeline.from_pretrained(
-                args.pretrained_model_name_or_path, 
-                vae=accelerator.unwrap_model(vae).to(weight_dtype), 
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                tokenizer=tokenizer,
-                transformer=transformer3d_val,
-                scheduler=scheduler,
-                torch_dtype=weight_dtype
-            )
+            if args.train_mode != "normal":
+                pipeline = CogVideoXFunInpaintPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
+                    scheduler=scheduler,
+                )
+            else:
+                pipeline = CogVideoXFunPipeline(
+                    vae=vae, 
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
+                    scheduler=scheduler,
+                )
+            pipeline = pipeline.to(accelerator.device)
 
-        pipeline = pipeline.to(accelerator.device)
-        pipeline = merge_lora(
-            pipeline, None, 1, accelerator.device, state_dict=accelerator.unwrap_model(network).state_dict(), transformer_only=True
-        )
+            if args.seed is None:
+                generator = None
+            else:
+                rank_seed = args.seed + accelerator.process_index
+                generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
+                logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-        if args.seed is None:
-            generator = None
-        else:
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
-        for i in range(len(args.validation_prompts)):
-            with torch.no_grad():
+            for i in range(len(args.validation_prompts)):
                 if args.train_mode != "normal":
-                    with torch.autocast("cuda", dtype=weight_dtype):
-                        video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
-                        input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                        sample = pipeline(
-                            args.validation_prompts[i],
-                            num_frames = video_length,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            guidance_scale = 7,
-                            generator   = generator,
+                    start_image = Image.open(args.validation_paths[i])
+                    width, height = start_image.width, start_image.height
+                    width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size,  width / height)
 
-                            video        = input_video,
-                            mask_video   = input_video_mask,
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                    video_length = int((args.video_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if args.video_sample_n_frames != 1 else 1
+                    input_video, input_video_mask, _ = get_image_to_video_latent(args.validation_paths[i], None, video_length=video_length, sample_size=[height, width])
+                    sample = pipeline(
+                        args.validation_prompts[i],
+                        num_frames = video_length,
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
+                        height      = height,
+                        width       = width,
+                        generator   = generator,
 
-                        video_length = 1
-                        input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=[args.video_sample_size, args.video_sample_size])
-                        sample = pipeline(
-                            args.validation_prompts[i],
-                            num_frames = video_length,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator,
+                        video        = input_video,
+                        mask_video   = input_video_mask,
+                        num_inference_steps = 25,
+                        guidance_scale      = 4.5,
+                    ).videos
 
-                            video        = input_video,
-                            mask_video   = input_video_mask,
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
+                    os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                    save_videos_grid(
+                        sample, 
+                        os.path.join(
+                            args.output_dir, 
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
+                        )
+                    )
                 else:
-                    with torch.autocast("cuda", dtype=weight_dtype):
-                        sample = pipeline(
-                            args.validation_prompts[i], 
-                            num_frames = args.video_sample_n_frames,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-{i}.gif"))
+                    sample = pipeline(
+                        args.validation_prompts[i],
+                        num_frames = args.video_sample_n_frames,
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
+                        height      = args.video_sample_size,
+                        width       = args.video_sample_size,
+                        generator   = generator,
+                        num_inference_steps = 25,
+                        guidance_scale      = 4.5,
+                    ).videos
+                    os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                    save_videos_grid(
+                        sample, 
+                        os.path.join(
+                            args.output_dir, 
+                            f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4"
+                        )
+                    )
 
-                        sample = pipeline(
-                            args.validation_prompts[i], 
-                            num_frames = 1,
-                            negative_prompt = "bad detailed",
-                            height      = args.video_sample_size,
-                            width       = args.video_sample_size,
-                            generator   = generator
-                        ).videos
-                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                        save_videos_grid(sample, os.path.join(args.output_dir, f"sample/sample-{global_step}-image-{i}.gif"))
-
-        del pipeline
-        del transformer3d_val
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+            del pipeline
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+            transformer3d.to(accelerator.device, dtype=weight_dtype)
+            if not args.enable_text_encoder_in_dataloader:
+                text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        if is_deepspeed:
+            transformer3d.config = origin_config
     except Exception as e:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error with info {e}")
-        return None
+        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+        transformer3d.to(accelerator.device, dtype=weight_dtype)
+        if not args.enable_text_encoder_in_dataloader:
+            text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
@@ -338,6 +331,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -554,6 +554,9 @@ def parse_args():
         help=("The dimension of the LoRA update matrices."),
     )
     parser.add_argument(
+        "--use_peft_lora", action="store_true", help="Whether or not to use peft lora."
+    )
+    parser.add_argument(
         "--train_text_encoder",
         action="store_true",
         help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
@@ -584,12 +587,6 @@ def parse_args():
     )
     parser.add_argument(
         "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
-    )
-    parser.add_argument(
-        "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
-    )
-    parser.add_argument(
-        "--noise_share_in_frames_ratio", type=float, default=0.5, help="Noise share ratio.",
     )
     parser.add_argument(
         "--motion_sub_loss", action="store_true", help="Whether enable motion sub loss."
@@ -645,12 +642,6 @@ def parse_args():
         help="Num of repeat video.",
     )
     parser.add_argument(
-        "--image_repeat_in_forward",
-        type=int,
-        default=0,
-        help="Num of repeat image in forward.",
-    )
-    parser.add_argument(
         "--transformer_path",
         type=str,
         default=None,
@@ -674,6 +665,9 @@ def parse_args():
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
     )
     parser.add_argument(
+        "--use_fsdp", action="store_true", help="Whether or not to use fsdp."
+    )
+    parser.add_argument(
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
     )
     parser.add_argument(
@@ -684,6 +678,12 @@ def parse_args():
             'The format of training data. Support `"normal"`'
             ' (default), `"inpaint"`.'
         ),
+    )
+    parser.add_argument(
+        "--target_name",
+        type=str,
+        default=None,
+        help=("The module is trained in loras. "),
     )
 
     args = parser.parse_args()
@@ -726,6 +726,40 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+
+    deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
+    fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
+    if deepspeed_plugin is not None:
+        zero_stage = int(deepspeed_plugin.zero_stage)
+        fsdp_stage = 0
+        print(f"Using DeepSpeed Zero stage: {zero_stage}")
+
+        args.use_deepspeed = True
+        if zero_stage == 3:
+            print(f"Auto set save_state to True because zero_stage == 3")
+            args.save_state = True
+    elif fsdp_plugin is not None:
+        from torch.distributed.fsdp import ShardingStrategy
+        zero_stage = 0
+        if fsdp_plugin.sharding_strategy is ShardingStrategy.FULL_SHARD:
+            fsdp_stage = 3
+        elif fsdp_plugin.sharding_strategy is None: # The fsdp_plugin.sharding_strategy is None in FSDP 2.
+            fsdp_stage = 3
+        elif fsdp_plugin.sharding_strategy is ShardingStrategy.SHARD_GRAD_OP:
+            fsdp_stage = 2
+        else:
+            fsdp_stage = 0
+        print(f"Using FSDP stage: {fsdp_stage}")
+
+        args.use_fsdp = True
+        if fsdp_stage == 3:
+            print(f"Auto set save_state to True because fsdp_stage == 3")
+            args.save_state = True
+    else:
+        zero_stage = 0
+        fsdp_stage = 0
+        print("DeepSpeed is not enabled.")
+
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir=logging_dir)
 
@@ -817,16 +851,26 @@ def main():
     transformer3d.requires_grad_(False)
 
     # Lora will work with this...
-    network = create_network(
-        1.0,
-        args.rank,
-        args.network_alpha,
-        text_encoder,
-        transformer3d,
-        neuron_dropout=None,
-        add_lora_in_attn_temporal=True,
-    )
-    network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
+    if args.use_peft_lora:
+        from peft import (LoraConfig, get_peft_model_state_dict,
+                          inject_adapter_in_model)
+        lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
+        transformer3d = inject_adapter_in_model(lora_config, transformer3d)
+
+        network = None
+    else:
+        network = create_network(
+            1.0,
+            args.rank,
+            args.network_alpha,
+            text_encoder,
+            transformer3d,
+            neuron_dropout=None,
+            target_name=args.target_name,
+            skip_name=args.lora_skip_name,
+        )
+        network = network.to(weight_dtype)
+        network.apply_to(text_encoder, transformer3d, args.train_text_encoder and not args.training_with_video_token_length, True)
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -857,24 +901,68 @@ def main():
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        def save_model_hook(models, weights, output_dir):
-            if accelerator.is_main_process:
-                safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
-                if not args.use_deepspeed:
-                    for _ in range(len(weights)):
-                        weights.pop()
+        if fsdp_stage != 0 or zero_stage == 3:
+            def save_model_hook(models, weights, output_dir):
+                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                if accelerator.is_main_process:
+                    from safetensors.torch import save_file
+                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
+                    if args.use_peft_lora:
+                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
+                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
+                    else:
+                        network_state_dict = {}
+                        for key in accelerate_state_dict:
+                            if "network" in key:
+                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
+                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
-                with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
-                    pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
-        def load_model_hook(models, input_dir):
-            pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
-            if os.path.exists(pkl_path):
-                with open(pkl_path, 'rb') as file:
-                    loaded_number, _ = pickle.load(file)
-                    batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
-                print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
+
+        else:
+            # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+            def save_model_hook(models, weights, output_dir):
+                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                if accelerator.is_main_process:
+                    from safetensors.torch import save_file
+                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
+                    if args.use_peft_lora:
+                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
+                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
+                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
+                    else:
+                        network_state_dict = {}
+                        for key in accelerate_state_dict:
+                            if "network" in key:
+                                network_state_dict[key.replace("network.", "")] = accelerate_state_dict[key].to(weight_dtype)
+                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+
+                    if not args.use_deepspeed:
+                        for _ in range(len(weights)):
+                            weights.pop()
+
+                    with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
+                        pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+
+            def load_model_hook(models, input_dir):
+                pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
+                if os.path.exists(pkl_path):
+                    with open(pkl_path, 'rb') as file:
+                        loaded_number, _ = pickle.load(file)
+                        batch_sampler.sampler._pos_start = max(loaded_number - args.dataloader_num_workers * accelerator.num_processes * 2, 0)
+                    print(f"Load pkl from {pkl_path}. Get loaded_number = {loaded_number}.")
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -905,7 +993,7 @@ def main():
     elif args.use_came:
         try:
             from came_pytorch import CAME
-        except:
+        except Exception:
             raise ImportError(
                 "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
             )
@@ -914,9 +1002,14 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    logging.info("Add network parameters")
-    trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
-    trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
+    if args.use_peft_lora:
+        logging.info("Add peft parameters")
+        trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
+        trainable_params_optim = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
+    else:
+        logging.info("Add network parameters")
+        trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
+        trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -941,10 +1034,14 @@ def main():
 
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
-        video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+        video_sample_size=args.video_sample_size, 
+        video_sample_stride=args.video_sample_stride, 
+        video_sample_n_frames=args.video_sample_n_frames, 
         video_repeat=args.video_repeat, 
         image_sample_size=args.image_sample_size,
-        enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+        enable_bucket=args.enable_bucket, 
+        enable_inpaint=True if args.train_mode != "normal" else False,
+        inpaint_mask_fill_value=-1.0,
     )
     
     if args.enable_bucket:
@@ -1159,15 +1256,22 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        network, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.use_peft_lora:
+        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            transformer3d, optimizer, train_dataloader, lr_scheduler
+        )
+    else:
+        transformer3d.network = network
+        transformer3d = transformer3d.to(dtype=weight_dtype)
+        transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            transformer3d, optimizer, train_dataloader, lr_scheduler
+        )
 
     # Move text_encode and vae to gpu and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device)
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1180,7 +1284,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1233,57 +1340,58 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            from safetensors.torch import load_file
-            state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
-            m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
-            print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+            if zero_stage != 3 and not args.use_fsdp:
+                from safetensors.torch import load_file
+                state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
+                m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
+                print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-            optimizer_file_pt = os.path.join(checkpoint_folder_path, "optimizer.pt")
-            optimizer_file_bin = os.path.join(checkpoint_folder_path, "optimizer.bin")
-            optimizer_file_to_load = None
+                optimizer_file_pt = os.path.join(checkpoint_folder_path, "optimizer.pt")
+                optimizer_file_bin = os.path.join(checkpoint_folder_path, "optimizer.bin")
+                optimizer_file_to_load = None
 
-            if os.path.exists(optimizer_file_pt):
-                optimizer_file_to_load = optimizer_file_pt
-            elif os.path.exists(optimizer_file_bin):
-                optimizer_file_to_load = optimizer_file_bin
+                if os.path.exists(optimizer_file_pt):
+                    optimizer_file_to_load = optimizer_file_pt
+                elif os.path.exists(optimizer_file_bin):
+                    optimizer_file_to_load = optimizer_file_bin
 
-            if optimizer_file_to_load:
-                try:
-                    accelerator.print(f"Loading optimizer state from {optimizer_file_to_load}")
-                    optimizer_state = torch.load(optimizer_file_to_load, map_location=accelerator.device)
-                    optimizer.load_state_dict(optimizer_state)
-                    accelerator.print("Optimizer state loaded successfully.")
-                except Exception as e:
-                    accelerator.print(f"Failed to load optimizer state from {optimizer_file_to_load}: {e}")
-
-            scheduler_file_pt = os.path.join(checkpoint_folder_path, "scheduler.pt")
-            scheduler_file_bin = os.path.join(checkpoint_folder_path, "scheduler.bin")
-            scheduler_file_to_load = None
-
-            if os.path.exists(scheduler_file_pt):
-                scheduler_file_to_load = scheduler_file_pt
-            elif os.path.exists(scheduler_file_bin):
-                scheduler_file_to_load = scheduler_file_bin
-
-            if scheduler_file_to_load:
-                try:
-                    accelerator.print(f"Loading scheduler state from {scheduler_file_to_load}")
-                    scheduler_state = torch.load(scheduler_file_to_load, map_location=accelerator.device)
-                    lr_scheduler.load_state_dict(scheduler_state)
-                    accelerator.print("Scheduler state loaded successfully.")
-                except Exception as e:
-                    accelerator.print(f"Failed to load scheduler state from {scheduler_file_to_load}: {e}")
-
-            if hasattr(accelerator, 'scaler') and accelerator.scaler is not None:
-                scaler_file = os.path.join(checkpoint_folder_path, "scaler.pt")
-                if os.path.exists(scaler_file):
+                if optimizer_file_to_load:
                     try:
-                        accelerator.print(f"Loading GradScaler state from {scaler_file}")
-                        scaler_state = torch.load(scaler_file, map_location=accelerator.device)
-                        accelerator.scaler.load_state_dict(scaler_state)
-                        accelerator.print("GradScaler state loaded successfully.")
+                        accelerator.print(f"Loading optimizer state from {optimizer_file_to_load}")
+                        optimizer_state = torch.load(optimizer_file_to_load, map_location=accelerator.device)
+                        optimizer.load_state_dict(optimizer_state)
+                        accelerator.print("Optimizer state loaded successfully.")
                     except Exception as e:
-                        accelerator.print(f"Failed to load GradScaler state: {e}")
+                        accelerator.print(f"Failed to load optimizer state from {optimizer_file_to_load}: {e}")
+
+                scheduler_file_pt = os.path.join(checkpoint_folder_path, "scheduler.pt")
+                scheduler_file_bin = os.path.join(checkpoint_folder_path, "scheduler.bin")
+                scheduler_file_to_load = None
+
+                if os.path.exists(scheduler_file_pt):
+                    scheduler_file_to_load = scheduler_file_pt
+                elif os.path.exists(scheduler_file_bin):
+                    scheduler_file_to_load = scheduler_file_bin
+
+                if scheduler_file_to_load:
+                    try:
+                        accelerator.print(f"Loading scheduler state from {scheduler_file_to_load}")
+                        scheduler_state = torch.load(scheduler_file_to_load, map_location=accelerator.device)
+                        lr_scheduler.load_state_dict(scheduler_state)
+                        accelerator.print("Scheduler state loaded successfully.")
+                    except Exception as e:
+                        accelerator.print(f"Failed to load scheduler state from {scheduler_file_to_load}: {e}")
+
+                if hasattr(accelerator, 'scaler') and accelerator.scaler is not None:
+                    scaler_file = os.path.join(checkpoint_folder_path, "scaler.pt")
+                    if os.path.exists(scaler_file):
+                        try:
+                            accelerator.print(f"Loading GradScaler state from {scaler_file}")
+                            scaler_state = torch.load(scaler_file, map_location=accelerator.device)
+                            accelerator.scaler.load_state_dict(scaler_state)
+                            accelerator.print("GradScaler state loaded successfully.")
+                        except Exception as e:
+                            accelerator.print(f"Failed to load GradScaler state: {e}")
 
             else:
                 accelerator.load_state(checkpoint_folder_path)
@@ -1296,6 +1404,10 @@ def main():
     def save_model(ckpt_file, unwrapped_nw):
         os.makedirs(args.output_dir, exist_ok=True)
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
+        if isinstance(unwrapped_nw, dict):
+            from safetensors.torch import save_file
+            save_file(unwrapped_nw, ckpt_file, metadata={"format": "pt"})
+            return ckpt_file
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
     progress_bar = tqdm(
@@ -1328,13 +1440,13 @@ def main():
                 for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
                     pixel_value = pixel_value[None, ...]
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
-                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.gif", rescale=True)
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
                 if args.train_mode != "normal":
                     mask_pixel_values, texts = batch['mask_pixel_values'].cpu(), batch['text']
                     mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
                     for idx, (pixel_value, text) in enumerate(zip(mask_pixel_values, texts)):
                         pixel_value = pixel_value[None, ...]
-                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.gif", rescale=True)
+                        save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with accelerator.accumulate(transformer3d):
                 # Convert images to latent space
@@ -1361,7 +1473,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
@@ -1635,7 +1747,7 @@ def main():
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or accelerator.is_main_process:
+                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1655,28 +1767,40 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
                         if not args.save_state:
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            if args.use_peft_lora:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                                save_model(safetensor_save_path, network_state_dict)
+
+                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            else:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
                         else:
                             accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                             accelerator.save_state(accelerator_save_path)
                             logger.info(f"Saved state to {accelerator_save_path}")
 
-                if accelerator.is_main_process:
-                    if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            transformer3d,
-                            network,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
+                if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        transformer3d,
+                        network,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1684,26 +1808,39 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    transformer3d,
-                    network,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
+        if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                transformer3d,
+                network,
+                args,
+                accelerator,
+                weight_dtype,
+                global_step,
+            )
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if args.use_deepspeed or accelerator.is_main_process:
+    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         if not args.save_state:
-            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-            save_model(safetensor_save_path, accelerator.unwrap_model(network))
+            if args.use_peft_lora:
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                save_model(safetensor_save_path, network_state_dict)
+
+                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
+            else:
+                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                logger.info(f"Saved safetensor to {safetensor_save_path}")
         else:
             accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)

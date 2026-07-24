@@ -137,7 +137,7 @@ class Wan2_2Pipeline(DiffusionPipeline):
             tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, 
             transformer_2=transformer_2, scheduler=scheduler
         )
-        self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spacial_compression_ratio)
+        self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
 
     def _get_t5_prompt_embeds(
         self,
@@ -277,8 +277,8 @@ class Wan2_2Pipeline(DiffusionPipeline):
             batch_size,
             num_channels_latents,
             (num_frames - 1) // self.vae.temporal_compression_ratio + 1,
-            height // self.vae.spacial_compression_ratio,
-            width // self.vae.spacial_compression_ratio,
+            height // self.vae.spatial_compression_ratio,
+            width // self.vae.spatial_compression_ratio,
         )
 
         if latents is None:
@@ -403,8 +403,8 @@ class Wan2_2Pipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "numpy",
-        return_dict: bool = False,
+        output_type: str = "pil",
+        return_dict: bool = True,
         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
@@ -513,7 +513,7 @@ class Wan2_2Pipeline(DiffusionPipeline):
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        target_shape = (self.vae.latent_channels, (num_frames - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spacial_compression_ratio, height // self.vae.spacial_compression_ratio)
+        target_shape = (self.vae.latent_channels, (num_frames - 1) // self.vae.temporal_compression_ratio + 1, width // self.vae.spatial_compression_ratio, height // self.vae.spatial_compression_ratio)
         seq_len = math.ceil((target_shape[2] * target_shape[3]) / (self.transformer.config.patch_size[1] * self.transformer.config.patch_size[2]) * target_shape[1]) 
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
@@ -584,11 +584,9 @@ class Wan2_2Pipeline(DiffusionPipeline):
 
         @timer_record("VAE")
         def vae_forward(latents):
-            if output_type == "numpy":
+            if output_type == "pil":
                 video = self.decode_latents(latents)
-            elif not output_type == "latent":
-                video = self.decode_latents(latents)
-                video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+                video = torch.from_numpy(video)
             else:
                 video = latents
             return video
@@ -598,6 +596,6 @@ class Wan2_2Pipeline(DiffusionPipeline):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            video = torch.from_numpy(video)
+            return video
 
         return WanPipelineOutput(videos=video)

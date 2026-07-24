@@ -16,21 +16,25 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 
-from ...videox_fun.data.bucket_sampler import (ASPECT_RATIO_512,
-                                              get_closest_ratio)
+from ...videox_fun.data import (ASPECT_RATIO_512, get_closest_ratio,
+                                process_pose_params)
 from ...videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                                 WanT5EncoderModel, WanTransformer3DModel)
-from ...videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline, WanFunControlPipeline
+                                  WanT5EncoderModel, WanTransformer3DModel)
+from ...videox_fun.models.cache_utils import get_teacache_coefficients
+from ...videox_fun.pipeline import (WanFunControlPipeline,
+                                    WanFunInpaintPipeline, WanFunPipeline)
 from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper, replace_parameters_by_name)
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    replace_parameters_by_name, undo_convert_weight_dtype_wrapper)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import (get_image_to_video_latent, filter_kwargs, get_image_latent,
-                                      get_video_to_video_latent,
-                                      save_videos_grid)
-from ...videox_fun.models.cache_utils import get_teacache_coefficients
-from ...videox_fun.data.dataset_image_video import process_pose_params
-from ..comfyui_utils import eas_cache_dir, script_directory, to_pil
+from ...videox_fun.utils.utils import (filter_kwargs, get_image_latent,
+                                       get_image_to_video_latent,
+                                       get_video_to_video_latent,
+                                       save_videos_grid)
+from ..comfyui_utils import (eas_cache_dir, script_directory,
+                             search_model_in_possible_folders, to_pil)
+from ..wan2_1.nodes import get_wan_scheduler
 
 # Used in lora cache
 transformer_cpu_cache   = {}
@@ -66,7 +70,7 @@ class LoadWanFunModel:
                     }
                 ),
                 "GPU_memory_mode":(
-                    ["model_full_load", "model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
+                    ["model_full_load", "model_full_load_and_qfloat8","model_cpu_offload", "model_cpu_offload_and_qfloat8", "sequential_cpu_offload"],
                     {
                         "default": "model_cpu_offload",
                     }
@@ -82,7 +86,7 @@ class LoadWanFunModel:
                 "precision": (
                     ['fp16', 'bf16'],
                     {
-                        "default": 'fp16'
+                        "default": 'bf16'
                     }
                 ),
             },
@@ -99,6 +103,10 @@ class LoadWanFunModel:
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
+        mm.unload_all_models()
+        mm.cleanup_models_gc()
+        mm.soft_empty_cache()
+
         # Init processbar
         pbar = ProgressBar(5)
 
@@ -107,34 +115,10 @@ class LoadWanFunModel:
         config = OmegaConf.load(config_path)
 
         # Detect model is existing or not
-        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun"] + \
+        possible_folders = ["CogVideoX_Fun", "Fun_Models", "VideoX_Fun", "Wan-AI"] + \
                 [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models/Diffusion_Transformer")] # Possible folder names to check
         # Initialize model_name as None
-        model_name = None
-
-        # Check if the model exists in any of the possible folders within folder_paths.models_dir
-        for folder in possible_folders:
-            candidate_path = os.path.join(folder_paths.models_dir, folder, model)
-            if os.path.exists(candidate_path):
-                model_name = candidate_path
-                break
-
-        # If model_name is still None, check eas_cache_dir for each possible folder
-        if model_name is None and os.path.exists(eas_cache_dir):
-            for folder in possible_folders:
-                candidate_path = os.path.join(eas_cache_dir, folder, model)
-                if os.path.exists(candidate_path):
-                    model_name = candidate_path
-                    break
-
-        # If model_name is still None, prompt the user to download the model
-        if model_name is None:
-            print(f"Please download cogvideoxfun model to one of the following directories:")
-            for folder in possible_folders:
-                print(f"- {os.path.join(folder_paths.models_dir, folder)}")
-                if os.path.exists(eas_cache_dir):
-                    print(f"- {os.path.join(eas_cache_dir, folder)}")
-            raise ValueError("Please download Fun model")
+        model_name = search_model_in_possible_folders(possible_folders, model)
 
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
@@ -211,9 +195,12 @@ class LoadWanFunModel:
                 clip_image_encoder=clip_image_encoder
             )
 
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
+
         if GPU_memory_mode == "sequential_cpu_offload":
-            replace_parameters_by_name(transformer, ["modulation",], device="cuda")
-            transformer.freqs = transformer.freqs.to(device="cuda")
+            replace_parameters_by_name(transformer, ["modulation",], device=device)
+            transformer.freqs = transformer.freqs.to(device=device)
             pipeline.enable_sequential_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
             convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",])
@@ -226,7 +213,7 @@ class LoadWanFunModel:
             convert_weight_dtype_wrapper(transformer, weight_dtype)
             pipeline.to(device=device)
         else:
-            pipeline.to("cuda")
+            pipeline.to(device)
 
         funmodels = {
             'pipeline': pipeline, 
@@ -256,13 +243,16 @@ class LoadWanFunLora:
     CATEGORY = "CogVideoXFUNWrapper"
 
     def load_lora(self, funmodels, lora_name, strength_model, lora_cache):
+        new_funmodels = dict(funmodels)  
+
         if lora_name is not None:
-            funmodels['lora_cache'] = lora_cache
-            funmodels['loras'] = funmodels.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)]
-            funmodels['strength_model'] = funmodels.get("strength_model", []) + [strength_model]
-            return (funmodels,)
-        else:
-            return (funmodels,)
+            lora_path = folder_paths.get_full_path("loras", lora_name)
+
+            new_funmodels['lora_cache'] = lora_cache
+            new_funmodels['loras'] = funmodels.get("loras", []) + [lora_path]
+            new_funmodels['strength_model'] = funmodels.get("strength_model", []) + [strength_model]
+
+        return (new_funmodels,)
 
 class WanFunT2VSampler:
     @classmethod
@@ -306,12 +296,13 @@ class WanFunT2VSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -339,7 +330,7 @@ class WanFunT2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, width, height, is_image, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -351,12 +342,10 @@ class WanFunT2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
-
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -396,7 +385,7 @@ class WanFunT2VSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
             else:
                 # Clear lora when switch from lora_cache=True to lora_cache=False.
                 if len(transformer_cpu_cache) != 0:
@@ -406,7 +395,7 @@ class WanFunT2VSampler:
                     gc.collect()
                 print('Merge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
             if pipeline.transformer.config.in_channels != pipeline.vae.config.latent_channels:
                 input_video, input_video_mask, _ = get_image_to_video_latent(None, None, video_length=video_length, sample_size=(height, width))
@@ -442,7 +431,7 @@ class WanFunT2VSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
         return (videos,)   
 
 
@@ -483,12 +472,13 @@ class WanFunInpaintSampler:
                     "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -518,7 +508,7 @@ class WanFunInpaintSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, start_img=None, end_img=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
         device = mm.get_torch_device()
@@ -538,11 +528,10 @@ class WanFunInpaintSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -583,7 +572,7 @@ class WanFunInpaintSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
             else:
                 # Clear lora when switch from lora_cache=True to lora_cache=False.
                 if len(transformer_cpu_cache) != 0:
@@ -594,7 +583,7 @@ class WanFunInpaintSampler:
                     gc.collect()
                 print('Merge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
             sample = pipeline(
                 prompt, 
@@ -616,7 +605,7 @@ class WanFunInpaintSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
         return (videos,)   
 
 
@@ -651,21 +640,22 @@ class WanFunV2VSampler:
                     "INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff}
                 ),
                 "steps": (
-                    "INT", {"default": 25, "min": 1, "max": 200, "step": 1}
+                    "INT", {"default": 50, "min": 1, "max": 200, "step": 1}
                 ),
                 "cfg": (
-                    "FLOAT", {"default": 7.0, "min": 1.0, "max": 20.0, "step": 0.01}
+                    "FLOAT", {"default": 6.0, "min": 1.0, "max": 20.0, "step": 0.01}
                 ),
                 "denoise_strength": (
-                    "FLOAT", {"default": 0.70, "min": 0.05, "max": 1.00, "step": 0.01}
+                    "FLOAT", {"default": 1.00, "min": 0.05, "max": 1.00, "step": 0.01}
                 ),
                 "scheduler": (
-                    [ 
-                        "Flow",
-                    ],
+                    ["Flow", "Flow_Unipc", "Flow_DPM++"],
                     {
                         "default": 'Flow'
                     }
+                ),
+                "shift": (
+                    "INT", {"default": 5, "min": 1, "max": 100, "step": 1}
                 ),
                 "teacache_threshold": (
                     "FLOAT", {"default": 0.10, "min": 0.00, "max": 1.00, "step": 0.005}
@@ -698,7 +688,7 @@ class WanFunV2VSampler:
     FUNCTION = "process"
     CATEGORY = "CogVideoXFUNWrapper"
 
-    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
+    def process(self, funmodels, prompt, negative_prompt, video_length, base_resolution, seed, steps, cfg, denoise_strength, scheduler, shift, teacache_threshold, enable_teacache, num_skip_start_steps, teacache_offload, cfg_skip_ratio, validation_video=None, control_video=None, start_image=None, ref_image=None, camera_conditions=None, riflex_k=0):
         global transformer_cpu_cache
         global lora_path_before
 
@@ -711,7 +701,6 @@ class WanFunV2VSampler:
         # Get Pipeline
         pipeline = funmodels['pipeline']
         model_name = funmodels['model_name']
-        config = funmodels['config']
         weight_dtype = funmodels['dtype']
         model_type = funmodels['model_type']
 
@@ -744,7 +733,7 @@ class WanFunV2VSampler:
         height, width = [int(x / 16) * 16 for x in closest_size]
 
         # Load Sampler
-        pipeline.scheduler = all_cheduler_dict[scheduler](**filter_kwargs(all_cheduler_dict[scheduler], OmegaConf.to_container(config['scheduler_kwargs'])))
+        pipeline.scheduler = get_wan_scheduler(scheduler, shift)
         coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
         if coefficients is not None:
             print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -810,7 +799,7 @@ class WanFunV2VSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
             else:
                 # Clear lora when switch from lora_cache=True to lora_cache=False.
                 if len(transformer_cpu_cache) != 0:
@@ -820,7 +809,7 @@ class WanFunV2VSampler:
                     gc.collect()
                 print('Merge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
             if model_type == "Inpaint":
                 sample = pipeline(
@@ -862,6 +851,6 @@ class WanFunV2VSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
         return (videos,)   
 

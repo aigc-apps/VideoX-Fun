@@ -1,0 +1,573 @@
+{
+  "id": "7771a2ee-e50b-4606-8122-63139795c002",
+  "revision": 0,
+  "last_node_id": 121,
+  "last_link_id": 90,
+  "nodes": [
+    {
+      "id": 73,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        160
+      ],
+      "size": [
+        383.7149963378906,
+        183.83506774902344
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            88
+          ]
+        }
+      ],
+      "title": "Negtive Prompt（反向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
+    },
+    {
+      "id": 115,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        250.1365203857422,
+        -450.6431884765625
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            78
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.1_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 117,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        250.1365203857422,
+        -300.0733642578125
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            77
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            80
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        20.679954528808594,
+        -43.9061279296875
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 119,
+      "type": "Note",
+      "pos": [
+        1104.6458740234375,
+        -372.9275207519531
+      ],
+      "size": [
+        257.3695983886719,
+        117.2574234008789
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 113,
+      "type": "LoadWanTransformerModel",
+      "pos": [
+        250.1365203857422,
+        -614.3566284179688
+      ],
+      "size": [
+        401.8365478515625,
+        102.11343383789062
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            76
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            75
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTransformerModel"
+      },
+      "widgets_values": [
+        "Wan2.1-T2V-1.3B_transformer.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 118,
+      "type": "CombineWanPipeline",
+      "pos": [
+        714.62158203125,
+        -408.345703125
+      ],
+      "size": [
+        362.322021484375,
+        206
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 76
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 78
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 77
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 80
+        },
+        {
+          "name": "clip_encoder",
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": null
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 75
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            89
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWanPipeline"
+      },
+      "widgets_values": [
+        "",
+        "model_cpu_offload_and_qfloat8",
+        "Inpaint"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "FunTextBox",
+      "pos": [
+        250,
+        -50
+      ],
+      "size": [
+        383.54010009765625,
+        156.71620178222656
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            87
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "fireworks display over night city. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic."
+      ]
+    },
+    {
+      "id": 17,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1125.2930908203125,
+        -74.02973175048828
+      ],
+      "size": [
+        390,
+        537.4615478515625
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "图像",
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 90
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "label": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "文件名",
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "slot_index": 0,
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 16,
+        "loop_count": 0,
+        "filename_prefix": "Fun",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 22,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "Fun_00123.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 16
+          }
+        }
+      }
+    },
+    {
+      "id": 121,
+      "type": "WanT2VSampler",
+      "pos": [
+        762.89892578125,
+        -67.31344604492188
+      ],
+      "size": [
+        288.9888610839844,
+        454
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 89
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 87
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 88
+        },
+        {
+          "name": "riflex_k",
+          "shape": 7,
+          "type": "RIFLEXT_ARGS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            90
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanT2VSampler"
+      },
+      "widgets_values": [
+        81,
+        832,
+        480,
+        false,
+        775022241121010,
+        "randomize",
+        50,
+        6,
+        "Flow",
+        5,
+        0.1,
+        true,
+        3,
+        true,
+        0.25000000000000006
+      ]
+    }
+  ],
+  "links": [
+    [
+      75,
+      113,
+      1,
+      118,
+      6,
+      "STRING"
+    ],
+    [
+      76,
+      113,
+      0,
+      118,
+      0,
+      "TransformerModel"
+    ],
+    [
+      77,
+      117,
+      0,
+      118,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      78,
+      115,
+      0,
+      118,
+      1,
+      "VAEModel"
+    ],
+    [
+      80,
+      117,
+      1,
+      118,
+      3,
+      "Tokenizer"
+    ],
+    [
+      87,
+      75,
+      0,
+      121,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      88,
+      73,
+      0,
+      121,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      89,
+      118,
+      0,
+      121,
+      0,
+      "FunModels"
+    ],
+    [
+      90,
+      121,
+      0,
+      17,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 2,
+      "title": "Prompts",
+      "bounding": [
+        218,
+        -127,
+        450,
+        483
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Load Model",
+      "bounding": [
+        212.720947265625,
+        -700.9775390625,
+        924.4893798828125,
+        529.3465576171875
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8264462809917356,
+      "offset": [
+        67.75547551936205,
+        679.2236887623583
+      ]
+    },
+    "frontendVersion": "1.21.3",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "CogVideoX-Fun": "37bd73564702fa47ffe4576c87da6f82a50cb60e",
+      "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e"
+    }
+  },
+  "version": 0.4
+}

@@ -608,11 +608,12 @@
         6,
         1.0,
         "Flow",
+        5,
         0.1,
         true,
-        5,
+        3,
         true,
-        0
+        0.25000000000000006
       ]
     }
   ],
@@ -696,7 +697,7 @@
       "flags": {}
     },
     {
-      "title": "Load EasyAnimate",
+      "title": "Load Model",
       "bounding": [
         218,
         -387,

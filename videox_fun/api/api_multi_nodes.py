@@ -18,7 +18,7 @@ from .api import download_from_url, encode_file_to_base64
 
 try:
     import ray
-except:
+except Exception:
     print("Ray is not installed. If you want to use multi gpus api. Please install it by running 'pip install ray'.")
     ray =  None
 
@@ -213,8 +213,8 @@ if ray is not None:
                         cfg_skip_ratio = cfg_skip_ratio,
                         enable_riflex = enable_riflex, 
                         riflex_k = riflex_k, 
-                        base_model_2_path = base_model_2_path,
-                        lora_model_2_path = lora_model_2_path,
+                        base_model_2_dropdown = base_model_2_path,
+                        lora_model_2_dropdown = lora_model_2_path,
                         fps = fps,
                         is_api = True,
                     )

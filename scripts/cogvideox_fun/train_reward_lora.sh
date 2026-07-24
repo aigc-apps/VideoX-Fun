@@ -1,4 +1,4 @@
-export MODEL_NAME="alibaba-pai/CogVideoX-Fun-V1.1-2b-InP"
+export MODEL_NAME="models/Diffusion_Transformer/CogVideoX-Fun-V1.1-2b-InP"
 export TRAIN_PROMPT_PATH="MovieGenVideoBench_train.txt"
 # Performing validation simultaneously with training will increase time and GPU memory usage.
 export VALIDATION_PROMPT_PATH="MovieGenVideoBench_val.txt"
@@ -25,7 +25,7 @@ accelerate launch --num_processes=1 --mixed_precision="bf16" scripts/cogvideox_f
   --prompt_path=$TRAIN_PROMPT_PATH \
   --train_sample_height=224 \
   --train_sample_width=224 \
-  --video_length=49 \
+  --video_length=$VIDEO_LENGTH \
   --num_decoded_latents=1 \
   --num_sampled_frames=1 \
   --reward_fn="HPSReward" \
@@ -52,7 +52,7 @@ accelerate launch --num_processes=1 --mixed_precision="bf16" scripts/cogvideox_f
 #   --prompt_path=$TRAIN_PROMPT_PATH \
 #   --train_sample_height=256 \
 #   --train_sample_width=256 \
-#   --video_length=49 \
+#   --video_length=$VIDEO_LENGTH \
 #   --validation_prompt_path=$VALIDATION_PROMPT_PATH \
 #   --validation_steps=100 \
 #   --validation_batch_size=8 \

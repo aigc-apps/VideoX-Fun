@@ -39,7 +39,10 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from videox_fun.data.utils import AVVideoReader as VideoReader
 from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
@@ -61,7 +64,7 @@ for project_root in project_roots:
 
 import videox_fun.reward.reward_fn as reward_fn
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
-                              WanTransformer3DModel)
+                               WanTransformer3DModel)
 from videox_fun.pipeline import WanFunInpaintPipeline
 from videox_fun.utils.lora_utils import create_network, merge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
@@ -156,7 +159,7 @@ def log_validation(
                     sample = pipeline(
                         validation_prompt,
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height = args.validation_sample_height,
                         width = args.validation_sample_width,
                         guidance_scale = 7,
@@ -990,7 +993,7 @@ def main():
     elif args.use_came:
         try:
             from came_pytorch import CAME
-        except:
+        except Exception:
             raise ImportError(
                 "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
             )
@@ -1054,7 +1057,7 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     transformer3d.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device)
-    clip_image_encoder.to(accelerator.device, dtype=weight_dtype)
+    clip_image_encoder.to(accelerator.device)
     
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(prompt_list) / args.gradient_accumulation_steps)
@@ -1067,8 +1070,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
-        tracker_config.pop("backprop_step_list", None)
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Train!
@@ -1184,7 +1189,7 @@ def main():
             timesteps = noise_scheduler.timesteps
 
             # Prepare latent variables
-            vae_scale_factor = vae.spacial_compression_ratio
+            vae_scale_factor = vae.spatial_compression_ratio
             latent_shape = [
                 args.train_batch_size,
                 vae.config.latent_channels,
@@ -1372,6 +1377,9 @@ def main():
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
                         
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
                         if not args.save_state:
                             safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
                             save_model(safetensor_save_path, accelerator.unwrap_model(network))

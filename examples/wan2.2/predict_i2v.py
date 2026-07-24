@@ -13,19 +13,23 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                              WanT5EncoderModel, Wan2_2Transformer3DModel)
+from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+                               AutoTokenizer, CLIPModel,
+                               Wan2_2Transformer3DModel, WanT5EncoderModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import Wan2_2I2VPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, replace_parameters_by_name,
-                                              convert_weight_dtype_wrapper)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+from videox_fun.utils import (register_auto_device_hook,
+                              safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
+                                               convert_weight_dtype_wrapper,
+                                               replace_parameters_by_name)
+from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
+                                    save_videos_grid)
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -35,6 +39,9 @@ from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 # 
 # model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use, 
 # and the transformer model has been quantized to float8, which can save more GPU memory. 
+# 
+# model_group_offload transfers internal layer groups between CPU/CUDA, 
+# balancing memory efficiency and speed between full-module and leaf-level offloading methods.
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
@@ -85,8 +92,6 @@ model_name          = "models/Diffusion_Transformer/Wan2.2-I2V-A14B"
 sampler_name        = "Flow_Unipc"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
-# If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
-# If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
 shift               = 5
 
 # Load pretrained model if need
@@ -131,13 +136,15 @@ transformer = Wan2_2Transformer3DModel.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-
-transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-    os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-    low_cpu_mem_usage=True,
-    torch_dtype=weight_dtype,
-)
+if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
+    transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+        os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
+        torch_dtype=weight_dtype,
+    )
+else:
+    transformer_2 = None
 
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
@@ -151,20 +158,25 @@ if transformer_path is not None:
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-if transformer_high_path is not None:
-    print(f"From checkpoint: {transformer_high_path}")
-    if transformer_high_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
-        state_dict = load_file(transformer_high_path)
-    else:
-        state_dict = torch.load(transformer_high_path, map_location="cpu")
-    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
+if transformer_2 is not None:
+    if transformer_high_path is not None:
+        print(f"From checkpoint: {transformer_high_path}")
+        if transformer_high_path.endswith("safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(transformer_high_path)
+        else:
+            state_dict = torch.load(transformer_high_path, map_location="cpu")
+        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-    m, u = transformer_2.load_state_dict(state_dict, strict=False)
-    print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
+        m, u = transformer_2.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKLWan.from_pretrained(
+Chosen_AutoencoderKL = {
+    "AutoencoderKLWan": AutoencoderKLWan,
+    "AutoencoderKLWan3_8": AutoencoderKLWan3_8
+}[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+vae = Chosen_AutoencoderKL.from_pretrained(
     os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
     additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
 ).to(weight_dtype)
@@ -196,15 +208,15 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 text_encoder = text_encoder.eval()
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
 if sampler_name == "Flow_Unipc" or sampler_name == "Flow_DPM++":
     config['scheduler_kwargs']['shift'] = 1
-scheduler = Choosen_Scheduler(
-    **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+scheduler = Chosen_Scheduler(
+    **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
 
 # Get Pipeline
@@ -219,11 +231,13 @@ pipeline = Wan2_2I2VPipeline(
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
-    transformer_2.enable_multi_gpus_inference()
+    if transformer_2 is not None:
+        transformer_2.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
+        if transformer_2 is not None:
+            pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
@@ -233,29 +247,38 @@ if ulysses_degree > 1 or ring_degree > 1:
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
-    for i in range(len(pipeline.transformer_2.blocks)):
-        pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
+    if transformer_2 is not None:
+        for i in range(len(pipeline.transformer_2.blocks)):
+            pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)
-    replace_parameters_by_name(transformer_2, ["modulation",], device=device)
     transformer.freqs = transformer.freqs.to(device=device)
-    transformer_2.freqs = transformer_2.freqs.to(device=device)
+    if transformer_2 is not None:
+        replace_parameters_by_name(transformer_2, ["modulation",], device=device)
+        transformer_2.freqs = transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
+elif GPU_memory_mode == "model_group_offload":
+    register_auto_device_hook(pipeline.transformer)
+    if transformer_2 is not None:
+        register_auto_device_hook(pipeline.transformer_2)
+    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    convert_weight_dtype_wrapper(transformer_2, weight_dtype)
+    if transformer_2 is not None:
+        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
+        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
@@ -266,18 +289,21 @@ if coefficients is not None:
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
-    pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
 
 if cfg_skip_ratio is not None:
     print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
     pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-    pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
+    if transformer_2 is not None:
+        pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
-    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+if lora_high_path is not None and transformer_2 is not None:
+    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -285,7 +311,8 @@ with torch.no_grad():
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
-        pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
+        if transformer_2 is not None:
+            pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, None, video_length=video_length, sample_size=sample_size)
 
@@ -306,8 +333,9 @@ with torch.no_grad():
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
-    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
+if lora_high_path is not None and transformer_2 is not None:
+    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):

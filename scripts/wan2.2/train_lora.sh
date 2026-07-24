@@ -11,9 +11,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=1024 \
-  --video_sample_size=256 \
-  --token_sample_size=512 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -24,7 +24,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
   --checkpointing_steps=50 \
   --learning_rate=1e-04 \
   --seed=42 \
-  --output_dir="output_dir" \
+  --output_dir="output_dir_wan2.2_lora" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -36,6 +36,10 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
   --enable_bucket \
   --uniform_sampling \
   --boundary_type="low" \
+  --rank=64 \
+  --network_alpha=32 \
+  --target_name="q,k,v,ffn.0,ffn.2" \
+  --use_peft_lora \
   --train_mode="normal" \
   --low_vram 
 
@@ -55,9 +59,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
 #   --pretrained_model_name_or_path=$MODEL_NAME \
 #   --train_data_dir=$DATASET_NAME \
 #   --train_data_meta=$DATASET_META_NAME \
-#   --image_sample_size=1024 \
-#   --video_sample_size=256 \
-#   --token_sample_size=512 \
+#   --image_sample_size=640 \
+#   --video_sample_size=640 \
+#   --token_sample_size=640 \
 #   --video_sample_stride=2 \
 #   --video_sample_n_frames=81 \
 #   --train_batch_size=1 \
@@ -68,7 +72,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
 #   --checkpointing_steps=50 \
 #   --learning_rate=1e-04 \
 #   --seed=42 \
-#   --output_dir="output_dir" \
+#   --output_dir="output_dir_wan2.2_lora" \
 #   --gradient_checkpointing \
 #   --mixed_precision="bf16" \
 #   --adam_weight_decay=3e-2 \
@@ -80,5 +84,9 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2/train_lora.py \
 #   --enable_bucket \
 #   --uniform_sampling \
 #   --boundary_type="low" \
+#   --rank=64 \
+#   --network_alpha=32 \
+#   --target_name="q,k,v,ffn.0,ffn.2" \
+#   --use_peft_lora \
 #   --train_mode="i2v" \
 #   --low_vram 

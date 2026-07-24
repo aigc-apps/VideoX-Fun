@@ -1,0 +1,41 @@
+format: civitai
+pipeline: Wan
+transformer_additional_kwargs:
+  transformer_low_noise_model_subpath: ./
+  transformer_combination_type: "single"
+  dict_mapping:
+    in_dim: in_channels
+    dim: hidden_size
+
+vae_kwargs:
+  vae_type: "AutoencoderKLWan3_8"
+  vae_subpath: Wan2.2_VAE.pth
+  temporal_compression_ratio: 4
+  spatial_compression_ratio: 16
+
+text_encoder_kwargs:
+  text_encoder_subpath: models_t5_umt5-xxl-enc-bf16.pth
+  tokenizer_subpath: google/umt5-xxl
+  text_length: 512
+  vocab: 256384
+  dim: 4096
+  dim_attn: 4096
+  dim_ffn: 10240
+  num_heads: 64
+  num_layers: 24
+  num_buckets: 32
+  shared_pos: False
+  dropout: 0.0
+
+scheduler_kwargs:
+  scheduler_subpath: null
+  num_train_timesteps: 1000
+  shift: 5.0
+  use_dynamic_shifting: false
+  base_shift: 0.5
+  max_shift: 1.15
+  base_image_seq_len: 256
+  max_image_seq_len: 4096
+
+image_encoder_kwargs:
+  image_encoder_subpath: models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth

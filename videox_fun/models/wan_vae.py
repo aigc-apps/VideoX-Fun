@@ -13,7 +13,7 @@ from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
-
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 CACHE_T = 2
 
@@ -517,12 +517,13 @@ class AutoencoderKLWan_(nn.Module):
         x_recon = self.decode(z)
         return x_recon, mu, log_var
 
-    def encode(self, x, scale):
+    def encode(self, x, scale=None):
         self.clear_cache()
         ## cache
         t = x.shape[2]
         iter_ = 1 + (t - 1) // 4
-        scale = [item.to(x.device, x.dtype) for item in scale]
+        if scale != None:
+            scale = [item.to(x.device, x.dtype) for item in scale]
         ## 对encode输入的x，按时间拆分为1、4、4、4....
         for i in range(iter_):
             self._enc_conv_idx = [0]
@@ -538,40 +539,153 @@ class AutoencoderKLWan_(nn.Module):
                     feat_idx=self._enc_conv_idx)
                 out = torch.cat([out, out_], 2)
         mu, log_var = self.conv1(out).chunk(2, dim=1)
-        if isinstance(scale[0], torch.Tensor):
-            mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
-                1, self.z_dim, 1, 1, 1)
-        else:
-            mu = (mu - scale[0]) * scale[1]
+        if scale != None:
+            if isinstance(scale[0], torch.Tensor):
+                mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                mu = (mu - scale[0]) * scale[1]
         x = torch.cat([mu, log_var], dim = 1)
         self.clear_cache()
         return x
 
-    def decode(self, z, scale):
+    def encode_stream(self, x, scale=None, is_first_chunk=True):
+        # Streaming variant of `encode`. Unlike `encode`, it does NOT call
+        # `clear_cache()` at the start/end, so the causal temporal feature
+        # cache (`self._enc_feat_map`, mutated in place by the encoder's
+        # CausalConv3d layers) is threaded across successive pixel chunks. The
+        # caller is responsible for calling `clear_cache()` exactly once before
+        # the first chunk and once after the last chunk. Encoding the pixel
+        # sequence chunk-by-chunk this way is mathematically equivalent to a
+        # single `encode` call over the whole sequence (no boundary seams).
+        #
+        # Temporal alignment (mirrors the VAE's 1,4,4,... compression):
+        #   - is_first_chunk=True : chunk contains the very first pixel frame;
+        #     `t` must be `1 + 4*k` (k>=0) -> yields `1 + k` latent frames.
+        #   - is_first_chunk=False: continuation chunk; `t` must be a multiple
+        #     of 4 -> yields `t // 4` latent frames.
+        # x: [b,c,t,h,w]
+        t = x.shape[2]
+        if scale is not None:
+            scale = [item.to(x.device, x.dtype) for item in scale]
+        out = None
+        if is_first_chunk:
+            assert (t - 1) % 4 == 0, \
+                f"first streaming encode chunk needs t=1+4*k frames, got t={t}"
+            iter_ = 1 + (t - 1) // 4
+            for i in range(iter_):
+                self._enc_conv_idx = [0]
+                if i == 0:
+                    cur = self.encoder(
+                        x[:, :, :1, :, :],
+                        feat_cache=self._enc_feat_map,
+                        feat_idx=self._enc_conv_idx)
+                else:
+                    cur = self.encoder(
+                        x[:, :, 1 + 4 * (i - 1):1 + 4 * i, :, :],
+                        feat_cache=self._enc_feat_map,
+                        feat_idx=self._enc_conv_idx)
+                out = cur if out is None else torch.cat([out, cur], 2)
+        else:
+            assert t % 4 == 0, \
+                f"continuation streaming encode chunk needs t=4*k frames, got t={t}"
+            iter_ = t // 4
+            for i in range(iter_):
+                self._enc_conv_idx = [0]
+                cur = self.encoder(
+                    x[:, :, 4 * i:4 * (i + 1), :, :],
+                    feat_cache=self._enc_feat_map,
+                    feat_idx=self._enc_conv_idx)
+                out = cur if out is None else torch.cat([out, cur], 2)
+        # conv1 has temporal kernel size 1, so applying it per chunk is
+        # identical to applying it once over the concatenated sequence.
+        mu, log_var = self.conv1(out).chunk(2, dim=1)
+        if scale is not None:
+            if isinstance(scale[0], torch.Tensor):
+                mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                mu = (mu - scale[0]) * scale[1]
+        x = torch.cat([mu, log_var], dim=1)
+        return x
+
+    def _decode_frame(self, frame, feat_map_in):
+        # Decode a single latent frame with a functional (non-mutating) cache
+        # so it can be wrapped by gradient checkpointing safely. The input
+        # cache list is copied and never mutated in place, and the updated
+        # cache is returned explicitly to be threaded to the next frame.
+        conv_idx = [0]
+        feat_map = list(feat_map_in)
+        out = self.decoder(frame, feat_cache=feat_map, feat_idx=conv_idx)
+        return out, feat_map
+
+    def decode(self, z, scale=None):
         self.clear_cache()
         # z: [b,c,t,h,w]
-        scale = [item.to(z.device, z.dtype) for item in scale]
-        if isinstance(scale[0], torch.Tensor):
-            z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
-                1, self.z_dim, 1, 1, 1)
-        else:
-            z = z / scale[1] + scale[0]
+        if scale != None:
+            scale = [item.to(z.device, z.dtype) for item in scale]
+            if isinstance(scale[0], torch.Tensor):
+                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
         x = self.conv2(z)
+        # Per-frame gradient checkpointing: each latent frame is an independent
+        # recompute unit, so backward only materializes one frame's decoder
+        # activations at a time instead of all frames at once.
+        use_ckpt = getattr(self, "gradient_checkpointing", False) \
+            and torch.is_grad_enabled()
+        feat_map = self._feat_map
+        outs = []
         for i in range(iter_):
-            self._conv_idx = [0]
-            if i == 0:
-                out = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
+            frame = x[:, :, i:i + 1, :, :]
+            if use_ckpt:
+                out_, feat_map = torch_checkpoint(
+                    self._decode_frame, frame, feat_map,
+                    use_reentrant=False)
             else:
-                out_ = self.decoder(
-                    x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
-                out = torch.cat([out, out_], 2)
+                out_, feat_map = self._decode_frame(frame, feat_map)
+            outs.append(out_)
+        out = torch.cat(outs, 2)
         self.clear_cache()
+        return out
+
+    def decode_stream(self, z, scale=None):
+        # Streaming variant of `decode`. Unlike `decode`, it does NOT call
+        # `clear_cache()` at the start/end, so the causal temporal feature
+        # cache (`self._feat_map`) is threaded across successive chunks. The
+        # caller is responsible for calling `clear_cache()` exactly once before
+        # the first chunk and once after the last chunk. Decoding the latent
+        # sequence chunk-by-chunk this way is mathematically equivalent to a
+        # single `decode` call over the whole sequence (no boundary seams),
+        # while enabling "generate a chunk, decode a chunk" streaming.
+        # z: [b,c,t,h,w]
+        if scale is not None:
+            scale = [item.to(z.device, z.dtype) for item in scale]
+            if isinstance(scale[0], torch.Tensor):
+                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
+                    1, self.z_dim, 1, 1, 1)
+            else:
+                z = z / scale[1] + scale[0]
+        iter_ = z.shape[2]
+        x = self.conv2(z)
+        use_ckpt = getattr(self, "gradient_checkpointing", False) \
+            and torch.is_grad_enabled()
+        feat_map = self._feat_map
+        outs = []
+        for i in range(iter_):
+            frame = x[:, :, i:i + 1, :, :]
+            if use_ckpt:
+                out_, feat_map = torch_checkpoint(
+                    self._decode_frame, frame, feat_map,
+                    use_reentrant=False)
+            else:
+                out_, feat_map = self._decode_frame(frame, feat_map)
+            outs.append(out_)
+        # Persist the updated cache so the next chunk continues seamlessly.
+        self._feat_map = feat_map
+        out = torch.cat(outs, 2)
         return out
 
     def reparameterize(self, mu, log_var):
@@ -618,13 +732,14 @@ def _video_vae(z_dim=None, **kwargs):
 
 
 class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    _supports_gradient_checkpointing = True
 
     @register_to_config
     def __init__(
         self,
         latent_channels=16,
         temporal_compression_ratio=4,
-        spacial_compression_ratio=8
+        spatial_compression_ratio=8
     ):
         super().__init__()
         mean = [
@@ -643,6 +758,17 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.model = _video_vae(
             z_dim=latent_channels,
         )
+
+        self.gradient_checkpointing = False
+
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if "value" in kwargs:
+            self.gradient_checkpointing = kwargs["value"]
+        elif "enable" in kwargs:
+            self.gradient_checkpointing = kwargs["enable"]
+        else:
+            raise ValueError("Invalid set gradient checkpointing")
+        self.model.gradient_checkpointing = self.gradient_checkpointing
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [
@@ -664,9 +790,372 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (posterior,)
         return AutoencoderKLOutput(latent_dist=posterior)
 
+    def _encode_stream(self, x, is_first_chunk=True):
+        # Streaming encode of one pixel chunk over the full batch at once. The
+        # whole batch must be encoded in a single call so that the persistent
+        # `self.model._enc_feat_map` stays consistent across chunks (a per-sample
+        # loop would clobber the cache between samples/chunks).
+        return self.model.encode_stream(x, self.scale, is_first_chunk=is_first_chunk)
+
+    @apply_forward_hook
+    def encode_stream(
+        self, x: torch.Tensor, is_first_chunk: bool = True, return_dict: bool = True
+    ) -> Union[AutoencoderKLOutput, Tuple[DiagonalGaussianDistribution]]:
+        h = self._encode_stream(x, is_first_chunk=is_first_chunk)
+
+        posterior = DiagonalGaussianDistribution(h)
+
+        if not return_dict:
+            return (posterior,)
+        return AutoencoderKLOutput(latent_dist=posterior)
+
     def _decode(self, zs):
+        # Gradient checkpointing is applied per-frame inside self.model.decode
+        # (see AutoencoderKLWan_.decode), which lowers the backward peak to a
+        # single latent frame's decoder activations.
+        self.model.gradient_checkpointing = self.gradient_checkpointing
         dec = [
             self.model.decode(u.unsqueeze(0), self.scale).clamp_(-1, 1).squeeze(0)
+            for u in zs
+        ]
+        dec = torch.stack(dec)
+
+        return DecoderOutput(sample=dec)
+
+    @apply_forward_hook
+    def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+        decoded = self._decode(z).sample
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
+
+    def clear_cache(self):
+        # Reset the causal temporal feature cache. Must be called once before
+        # the first streaming chunk and once after the last one.
+        self.model.clear_cache()
+
+    def _decode_stream(self, zs):
+        # Streaming decode of one chunk over the full batch at once. The whole
+        # batch must be decoded in a single call so that the persistent
+        # `self.model._feat_map` stays consistent across chunks (a per-sample
+        # loop would clobber the cache between samples/chunks).
+        self.model.gradient_checkpointing = self.gradient_checkpointing
+        dec = self.model.decode_stream(zs, self.scale).clamp_(-1, 1)
+        return DecoderOutput(sample=dec)
+
+    @apply_forward_hook
+    def decode_stream(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+        decoded = self._decode_stream(z).sample
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_path, additional_kwargs={}):
+        def filter_kwargs(cls, kwargs):
+            import inspect
+            sig = inspect.signature(cls.__init__)
+            valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+            return filtered_kwargs
+
+        def convert_state_dict_keys(state_dict):
+            """
+            Convert old checkpoint keys to new format for compatibility.
+            """
+            import re
+            new_state_dict = {}
+            
+            for old_key in state_dict:
+                new_key = old_key
+                
+                # Map quant_conv -> conv1, post_quant_conv -> conv2
+                if '.quant_conv.' in old_key and 'post_quant_conv' not in old_key:
+                    new_key = old_key.replace('.quant_conv.', '.conv1.')
+                elif '.post_quant_conv.' in old_key:
+                    new_key = old_key.replace('.post_quant_conv.', '.conv2.')
+                
+                # Map mid_block.attentions -> middle (attention is at index 1)
+                if '.encoder.mid_block.attentions.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.mid_block\.attentions\.(\d+)\.(norm|to_qkv|proj)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        new_key = f"{prefix}.encoder.middle.1.{layer_name}.{param_name}"
+                    else:
+                        continue
+                
+                if '.decoder.mid_block.attentions.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.mid_block\.attentions\.(\d+)\.(norm|to_qkv|proj)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        new_key = f"{prefix}.decoder.middle.1.{layer_name}.{param_name}"
+                    else:
+                        continue
+                
+                # 1. Map encoder.down_blocks -> encoder.downsamples
+                if '.encoder.down_blocks.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.down_blocks\.(\d+)\.(conv1|conv2|norm1|norm2|conv_shortcut|resample\.\d+|time_conv)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3',
+                            'conv_shortcut': 'shortcut'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.encoder.downsamples.{block_idx}.{new_layer}.{param_name}"
+                
+                # 2. Map decoder.up_blocks.X.resnets.Y -> decoder.upsamples
+                elif '.decoder.up_blocks.' in old_key and '.resnets.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.up_blocks\.(\d+)\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2|conv_shortcut)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        resnet_idx = match.group(3)
+                        layer_name = match.group(4)
+                        param_name = match.group(5)
+                        
+                        # Calculate upsample index based on actual structure
+                        # up_blocks.0: resnets 0,1,2 -> upsamples 0,1,2
+                        # up_blocks.1: resnets 0,1,2 -> upsamples 4,5,6 (3 is upsampler)
+                        # up_blocks.2: resnets 0,1,2 -> upsamples 8,9,10 (7 is upsampler)
+                        # up_blocks.3: resnets 0,1,2 -> upsamples 12,13,14 (11 is upsampler)
+                        block_start = {0: 0, 1: 4, 2: 8, 3: 12}
+                        upsample_idx = block_start.get(int(block_idx), 0) + int(resnet_idx)
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3',
+                            'conv_shortcut': 'shortcut'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.decoder.upsamples.{upsample_idx}.{new_layer}.{param_name}"
+                
+                # 3. Map decoder.up_blocks.X.upsamplers -> decoder.upsamples
+                elif '.decoder.up_blocks.' in old_key and '.upsamplers.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.up_blocks\.(\d+)\.upsamplers\.0\.(resample\.\d+|time_conv)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        block_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        # upsamplers are at indices 3, 7, 11
+                        upsampler_idx = {0: 3, 1: 7, 2: 11, 3: None}
+                        idx = upsampler_idx.get(int(block_idx))
+                        if idx is not None:
+                            new_key = f"{prefix}.decoder.upsamples.{idx}.{layer_name}.{param_name}"
+                        else:
+                            continue  # Skip if no upsampler for this block
+                
+                # 4. Map encoder.mid_block.resnets -> encoder.middle
+                elif '.encoder.mid_block.resnets.' in old_key:
+                    match = re.match(r'(.*)\.encoder\.mid_block\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        resnet_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        # middle structure: [ResidualBlock(0), AttentionBlock(1), ResidualBlock(2)]
+                        middle_idx = int(resnet_idx) * 2
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.encoder.middle.{middle_idx}.{new_layer}.{param_name}"
+                
+                # 5. Map decoder.mid_block.resnets -> decoder.middle
+                elif '.decoder.mid_block.resnets.' in old_key:
+                    match = re.match(r'(.*)\.decoder\.mid_block\.resnets\.(\d+)\.(conv1|conv2|norm1|norm2)\.(.*)', old_key)
+                    if match:
+                        prefix = match.group(1)
+                        resnet_idx = match.group(2)
+                        layer_name = match.group(3)
+                        param_name = match.group(4)
+                        
+                        middle_idx = int(resnet_idx) * 2
+                        
+                        layer_map = {
+                            'conv1': 'residual.2',
+                            'conv2': 'residual.6',
+                            'norm1': 'residual.0',
+                            'norm2': 'residual.3'
+                        }
+                        new_layer = layer_map.get(layer_name, layer_name)
+                        new_key = f"{prefix}.decoder.middle.{middle_idx}.{new_layer}.{param_name}"
+                
+                # 6. Map encoder.norm_out -> encoder.head
+                elif '.encoder.norm_out.' in old_key:
+                    new_key = old_key.replace('.encoder.norm_out.', '.encoder.head.0.')
+                
+                # 7. Map decoder.norm_out -> decoder.head
+                elif '.decoder.norm_out.' in old_key:
+                    new_key = old_key.replace('.decoder.norm_out.', '.decoder.head.0.')
+                
+                # 9. Map conv_in -> conv1
+                if '.encoder.conv_in.' in new_key:
+                    new_key = new_key.replace('.encoder.conv_in.', '.encoder.conv1.')
+                if '.decoder.conv_in.' in new_key:
+                    new_key = new_key.replace('.decoder.conv_in.', '.decoder.conv1.')
+                
+                # 10. Map conv_out -> head.2
+                if '.encoder.conv_out.' in new_key:
+                    new_key = new_key.replace('.encoder.conv_out.', '.encoder.head.2.')
+                if '.decoder.conv_out.' in new_key:
+                    new_key = new_key.replace('.decoder.conv_out.', '.decoder.head.2.')
+                
+                new_state_dict[new_key] = state_dict[old_key]
+            
+            return new_state_dict
+
+        model = cls(**filter_kwargs(cls, additional_kwargs))
+        if pretrained_model_path.endswith(".safetensors"):
+            from safetensors.torch import load_file, safe_open
+            state_dict = load_file(pretrained_model_path)
+        else:
+            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+        
+        # Add model. prefix
+        tmp_state_dict = {} 
+        for key in state_dict:
+            if not key.startswith("model."):
+                tmp_state_dict["model." + key] = state_dict[key]
+            else:
+                tmp_state_dict[key] = state_dict[key]
+        state_dict = tmp_state_dict
+        # Convert keys for old checkpoint compatibility
+        state_dict = convert_state_dict_keys(state_dict)
+        
+        m, u = model.load_state_dict(state_dict, strict=False)
+        print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
+        print(m, u)
+        return model
+
+
+class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    @register_to_config
+    def __init__(
+        self,
+        attn_scales = [],
+        base_dim = 96,
+        dim_mult = [
+            1,
+            2,
+            4,
+            4
+        ],
+        dropout = 0.0,
+        num_res_blocks = 2,
+        temperal_downsample = [
+            False,
+            True,
+            True
+        ],
+        z_dim = 16,
+        latents_mean = [
+            -0.7571,
+            -0.7089,
+            -0.9113,
+            0.1075,
+            -0.1745,
+            0.9653,
+            -0.1517,
+            1.5508,
+            0.4134,
+            -0.0715,
+            0.5517,
+            -0.3632,
+            -0.1922,
+            -0.9497,
+            0.2503,
+            -0.2921
+        ],
+        latents_std = [
+            2.8184,
+            1.4541,
+            2.3275,
+            2.6558,
+            1.2196,
+            1.7708,
+            2.6052,
+            2.0743,
+            3.2687,
+            2.1526,
+            2.8652,
+            1.5579,
+            1.6382,
+            1.1253,
+            2.8251,
+            1.916
+        ],
+        temporal_compression_ratio=4,
+        spatial_compression_ratio=8
+    ):
+        super().__init__()
+        cfg = dict(
+            dim=base_dim,
+            z_dim=z_dim,
+            dim_mult=dim_mult,
+            num_res_blocks=num_res_blocks,
+            attn_scales=attn_scales,
+            temperal_downsample=temperal_downsample,
+            dropout=dropout)
+
+        # init model
+        self.model = AutoencoderKLWan_(**cfg)
+
+        self.dim = base_dim
+        self.z_dim = z_dim
+        self.dim_mult = dim_mult
+        self.num_res_blocks = num_res_blocks
+        self.attn_scales = attn_scales
+        self.temperal_downsample = temperal_downsample
+        self.temperal_upsample = temperal_downsample[::-1]
+        self.temporal_compression_ratio = temporal_compression_ratio
+        self.spatial_compression_ratio = spatial_compression_ratio
+
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = [
+            self.model.encode(u.unsqueeze(0)).squeeze(0)
+            for u in x
+        ]
+        x = torch.stack(x)
+        return x
+
+    @apply_forward_hook
+    def encode(
+        self, x: torch.Tensor, return_dict: bool = True
+    ) -> Union[AutoencoderKLOutput, Tuple[DiagonalGaussianDistribution]]:
+        h = self._encode(x)
+
+        posterior = DiagonalGaussianDistribution(h)
+
+        if not return_dict:
+            return (posterior,)
+        return AutoencoderKLOutput(latent_dist=posterior)
+
+    def _decode(self, zs):
+        dec = [
+            self.model.decode(u.unsqueeze(0)).clamp_(-1, 1).squeeze(0)
             for u in zs
         ]
         dec = torch.stack(dec)

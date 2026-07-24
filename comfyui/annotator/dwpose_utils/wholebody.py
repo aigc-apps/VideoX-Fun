@@ -1,10 +1,11 @@
+from typing import List, NamedTuple, Optional, Union
+
 import cv2
 import numpy as np
-
 import onnxruntime as ort
+
 from .onnxdet import inference_detector
 from .onnxpose import inference_pose
-from typing import NamedTuple, List, Optional, Union
 
 
 class Keypoint(NamedTuple):

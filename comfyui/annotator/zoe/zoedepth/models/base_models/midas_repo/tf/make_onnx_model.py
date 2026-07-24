@@ -1,18 +1,19 @@
 """Compute depth maps for images in the input folder.
 """
-import os
-import ntpath
+import fileinput
 import glob
-import torch
-import utils
+import ntpath
+import os
+import sys
+from shutil import copyfile
+
 import cv2
 import numpy as np
-from torchvision.transforms import Compose, Normalize
+import torch
+import utils
 from torchvision import transforms
+from torchvision.transforms import Compose, Normalize
 
-from shutil import copyfile
-import fileinput
-import sys
 sys.path.append(os.getcwd() + '/..')
                  
 def modify_file():
@@ -36,7 +37,7 @@ def restore_file():
 modify_file()
 
 from midas.midas_net import MidasNet
-from midas.transforms import Resize, NormalizeImage, PrepareForNet
+from midas.transforms import NormalizeImage, PrepareForNet, Resize
 
 restore_file()
 

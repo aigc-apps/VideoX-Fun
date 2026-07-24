@@ -224,7 +224,7 @@ Please read the [quick-start](https://github.com/aigc-apps/CogVideoX-Fun/blob/ma
 pip install hpsv2
 site_packages=$(python -c "import site; print(site.getsitepackages()[0])")
 wget -O $site_packages/hpsv2/src/open_clip/factory.py https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/easyanimate/package/patches/hpsv2_src_open_clip_factory_patches.py
-wget -O $site_packages/hpsv2/src/open_clip/ https://github.com/tgxs002/HPSv2/raw/refs/heads/master/hpsv2/src/open_clip/bpe_simple_vocab_16e6.txt.gz
+wget -O $site_packages/hpsv2/src/open_clip/bpe_simple_vocab_16e6.txt.gz https://github.com/tgxs002/HPSv2/raw/refs/heads/master/hpsv2/src/open_clip/bpe_simple_vocab_16e6.txt.gz
 ```
 
 > [!NOTE]

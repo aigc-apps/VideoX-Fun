@@ -3,12 +3,14 @@ pipeline: Wan
 transformer_additional_kwargs:
   transformer_low_noise_model_subpath: ./low_noise_model
   transformer_high_noise_model_subpath: ./high_noise_model
+  transformer_combination_type: "moe"
   boundary: 0.900
   dict_mapping:
     in_dim: in_channels
     dim: hidden_size
 
 vae_kwargs:
+  vae_type: "AutoencoderKLWan"
   vae_subpath: Wan2.1_VAE.pth
   temporal_compression_ratio: 4
   spatial_compression_ratio: 8

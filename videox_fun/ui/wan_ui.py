@@ -82,9 +82,9 @@ class Wan_Controller(Fun_Controller):
         else:
             self.clip_image_encoder = None
         
-        Choosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
-        self.scheduler = Choosen_Scheduler(
-            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
+        Chosen_Scheduler = self.scheduler_dict[list(self.scheduler_dict.keys())[0]]
+        self.scheduler = Chosen_Scheduler(
+            **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(self.config['scheduler_kwargs']))
         )
 
         # Get pipeline
@@ -180,6 +180,8 @@ class Wan_Controller(Fun_Controller):
         cfg_skip_ratio = None,
         enable_riflex = None, 
         riflex_k = None, 
+        base_model_2_dropdown=None,
+        lora_model_2_dropdown=None, 
         fps = None,
         is_api = False,
     ):

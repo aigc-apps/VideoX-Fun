@@ -1,0 +1,8 @@
+format: diffusers
+pipeline: z_image
+transformer_additional_kwargs:
+    control_layers_places: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28]
+    control_refiner_layers_places: [0, 1]
+    add_control_noise_refiner: true
+    add_control_noise_refiner_correctly: true
+    control_in_dim: 33

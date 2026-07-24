@@ -1,11 +1,9 @@
 import cv2
 import torch
-
 from midas.dpt_depth import DPTDepthModel
 from midas.midas_net import MidasNet
 from midas.midas_net_custom import MidasNet_small
-from midas.transforms import Resize, NormalizeImage, PrepareForNet
-
+from midas.transforms import NormalizeImage, PrepareForNet, Resize
 from torchvision.transforms import Compose
 
 default_models = {

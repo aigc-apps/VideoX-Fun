@@ -81,9 +81,11 @@ class Fun_Controller:
         self.diffusion_transformer_dropdown = model_name
         self.scheduler_dict             = scheduler_dict
         self.model_type                 = model_type
-        self.config_path                = os.path.realpath(config_path)
         if config_path is not None:
-            self.config = OmegaConf.load(config_path)
+            self.config_path            = os.path.realpath(config_path)
+            self.config                 = OmegaConf.load(config_path)
+        else:
+            self.config_path            = None
         self.ulysses_degree             = ulysses_degree
         self.ring_degree                = ring_degree
         self.fsdp_dit                   = fsdp_dit       
@@ -256,6 +258,7 @@ class Fun_Controller:
         validation_video,
         control_video,
     ):
+        spatial_compression_ratio = self.vae.config.spatial_compression_ratio if hasattr(self.vae.config, "spatial_compression_ratio") else 8
         aspect_ratio_sample_size    = {key : [x / 512 * base_resolution for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         if self.model_type == "Inpaint":
             if validation_video is not None:
@@ -265,7 +268,7 @@ class Fun_Controller:
         else:
             original_width, original_height = Image.fromarray(cv2.VideoCapture(control_video).read()[1]).size
         closest_size, closest_ratio = get_closest_ratio(original_height, original_width, ratios=aspect_ratio_sample_size)
-        height_slider, width_slider = [int(x / 16) * 16 for x in closest_size]
+        height_slider, width_slider = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
         return height_slider, width_slider
 
     def save_outputs(self, is_image, length_slider, sample, fps):
@@ -479,7 +482,7 @@ class Fun_Controller_Client:
 
         try:
             base64_encoding = outputs["base64_encoding"]
-        except:
+        except Exception:
             return gr.Image(visible=False, value=None), gr.Video(None, visible=True), outputs["message"]
             
         decoded_data = base64.b64decode(base64_encoding)

@@ -106,9 +106,8 @@ if __name__ == '__main__':
     # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
     # but it may cause slight differences between the generated content and the original content.
     # # --------------------------------------------------------------------------------------------------- #
-    # | Model Name          | threshold | Model Name          | threshold | Model Name          | threshold |
-    # | Wan2.1-T2V-1.3B     | 0.05~0.10 | Wan2.1-T2V-14B      | 0.10~0.15 | Wan2.1-I2V-14B-720P | 0.20~0.30 |
-    # | Wan2.1-I2V-14B-480P | 0.20~0.25 | Wan2.1-Fun-*-1.3B-* | 0.05~0.10 | Wan2.1-Fun-*-14B-*  | 0.20~0.30 |
+    # | Model Name          | threshold | Model Name          | threshold |
+    # | Wan2.2-T2V-A14B     | 0.10~0.15 | Wan2.2-I2V-A14B     | 0.15~0.20 |
     # # --------------------------------------------------------------------------------------------------- #
     teacache_threshold  = 0.10
     # The number of steps to skip TeaCache at the beginning of the inference process, which can

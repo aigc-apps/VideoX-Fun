@@ -18,6 +18,12 @@ from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from safetensors.torch import load_file
 from transformers import T5EncoderModel
 
+from videox_fun.utils.group_offload import (_get_top_level_group_offload_hook,
+                                            _is_group_offload_enabled,
+                                            register_auto_device_hook,
+                                            safe_enable_group_offload,
+                                            safe_remove_group_offloading)
+
 
 class LoRAModule(torch.nn.Module):
     """
@@ -111,7 +117,6 @@ class LoRAModule(torch.nn.Module):
 
         return org_forwarded.to(weight_dtype) + lx.to(weight_dtype) * self.multiplier * scale
 
-
 def addnet_hash_legacy(b):
     """Old model hash used by sd-webui-additional-networks for .safetensors format files"""
     m = hashlib.sha256()
@@ -119,7 +124,6 @@ def addnet_hash_legacy(b):
     b.seek(0x100000)
     m.update(b.read(0x10000))
     return m.hexdigest()[0:8]
-
 
 def addnet_hash_safetensors(b):
     """New model hash used by sd-webui-additional-networks for .safetensors format files"""
@@ -137,7 +141,6 @@ def addnet_hash_safetensors(b):
 
     return hash_sha256.hexdigest()
 
-
 def precalculate_safetensors_hashes(tensors, metadata):
     """Precalculate the model hashes needed by sd-webui-additional-networks to
     save time on indexing the model later."""
@@ -154,9 +157,16 @@ def precalculate_safetensors_hashes(tensors, metadata):
     legacy_hash = addnet_hash_legacy(b)
     return model_hash, legacy_hash
 
-
 class LoRANetwork(torch.nn.Module):
-    TRANSFORMER_TARGET_REPLACE_MODULE = ["CogVideoXTransformer3DModel", "WanTransformer3DModel", "Wan2_2Transformer3DModel"]
+    TRANSFORMER_TARGET_REPLACE_MODULE = [
+        "CogVideoXTransformer3DModel", "WanTransformer3DModel", \
+        "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel", \
+        "Wan2_2Transformer3DModel_Animate", "Wan2_2Transformer3DModel_S2V", "FantasyTalkingTransformer3DModel", \
+        "HunyuanVideoTransformer3DModel", "Flux2Transformer2DModel", "ZImageTransformer2DModel", \
+        "LongCatVideoTransformer3DModel", "LongCatVideoAvatarTransformer3DModel", "TurboWanTransformer3DModel", \
+        "LTX2VideoTransformer3DModel", "InfiniteTalkTransformer3DModel", "WanAudioTransformer3DModel", \
+        "MOVADualTowerConditionalBridge",  "FlashHeadTransformer3DModel", "LensTransformer2DModel"
+    ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -170,6 +180,7 @@ class LoRANetwork(torch.nn.Module):
         dropout: Optional[float] = None,
         module_class: Type[object] = LoRAModule,
         skip_name: str = None,
+        target_name: str = None,
         varbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
@@ -202,9 +213,18 @@ class LoRANetwork(torch.nn.Module):
                         is_conv2d = child_module.__class__.__name__ == "Conv2d" or child_module.__class__.__name__ == "LoRACompatibleConv"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
                         
-                        if skip_name is not None and skip_name in child_name:
+                        skip_names = skip_name.split(',') if skip_name is not None else []
+                        target_names = target_name.split(',') if target_name is not None else []
+                        
+                        skip_names = [name.strip() for name in skip_names if name.strip()]
+                        target_names = [name.strip() for name in target_names if name.strip()]
+                        
+                        if skip_names and any(skip_n in child_name for skip_n in skip_names):
                             continue
-
+                        
+                        if target_names and not any(target_n in child_name for target_n in target_names):
+                            continue
+                            
                         if is_linear or is_conv2d:
                             lora_name = prefix + "." + name + "." + child_name
                             lora_name = lora_name.replace(".", "_")
@@ -346,6 +366,7 @@ def create_network(
     transformer,
     neuron_dropout: Optional[float] = None,
     skip_name: str = None,
+    target_name: str = None,
     **kwargs,
 ):
     if network_dim is None:
@@ -361,32 +382,96 @@ def create_network(
         alpha=network_alpha,
         dropout=neuron_dropout,
         skip_name=skip_name,
+        target_name=target_name,
         varbose=True,
     )
     return network
 
+def convert_peft_lora_to_kohya_lora(state_dict):
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
+            key = "lora_unet__" + key
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        new_state_dict[key] = value
+    return new_state_dict
+
 def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
+    if lora_path is None:
+        return pipeline
+
+    print(f"[LoRA Merge] Starting to merge LoRA from: {lora_path if lora_path else 'state_dict'}")
+    print(f"[LoRA Merge] Multiplier: {multiplier}, Device: {device}, Dtype: {dtype}")
+
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
+
     if state_dict is None:
-        state_dict = load_file(lora_path)
+        if lora_path.endswith("safetensors"):
+            print(f"[LoRA Merge] Loading safetensors file...")
+            state_dict = load_file(lora_path)
+        else:
+            print(f"[LoRA Merge] Loading pytorch file...")
+            state_dict = torch.load(lora_path, map_location="cpu")
     else:
+        print(f"[LoRA Merge] Using provided state_dict")
         state_dict = state_dict
+
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
+            key = "lora_unet__" + key
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_default_weight"):
+            key = key[:-22] + ".lora_A.weight"
+        if key.endswith("_lora_B_default_weight"):
+            key = key[:-22] + ".lora_B.weight"
+        if key.endswith("_lora_A_weight"):
+            key = key[:-14] + ".lora_A.weight"
+        if key.endswith("_lora_B_weight"):
+            key = key[:-14] + ".lora_B.weight"
+        if key.endswith("_alpha"):
+            key = key[:-6] + ".alpha"
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
+    print(f"[LoRA Merge] Organized into {len(updates)} layers")
+
     sequential_cpu_offload_flag = False
     if pipeline.transformer.device == torch.device(type="meta"):
+        print(f"[LoRA Merge] Removing hooks for meta device...")
         pipeline.remove_all_hooks()
         sequential_cpu_offload_flag = True
         offload_device = pipeline._offload_device
 
-    for layer, elems in updates.items():
+    merged_count = 0
+    skipped_count = 0
+    error_count = 0
 
+    for layer, elems in updates.items():
         if "lora_te" in layer:
             if transformer_only:
+                skipped_count += 1
                 continue
             else:
                 layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
@@ -413,13 +498,42 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer: {layer}')
+                                print(f'[LoRA Merge] Warning: Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
                                 temp_name = layer_infos.pop(0)
             except Exception:
-                continue
+                if "lora_te" in layer:
+                    if transformer_only:
+                        skipped_count += 1
+                        continue
+                    else:
+                        layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                        curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+
+                len_layer_infos = len(layer_infos)
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'[LoRA Merge] Error: Failed to load layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    error_count += 1
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -440,27 +554,92 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         else:
             curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+        merged_count += 1
+
+    print(f"[LoRA Merge] Completed: {merged_count} layers merged, {skipped_count} layers skipped, {error_count} errors")
 
     if sequential_cpu_offload_flag:
+        print(f"[LoRA Merge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=offload_device)
+    else:
+        # When group offload is active, remove and re-apply it on the whole pipeline
+        # so that all ModuleGroup.cpu_param_dict references are rebuilt from the
+        # freshly-merged weights. A simple _maybe_remove_and_reapply is not enough
+        # because .to() during merge creates new tensor objects that break cached refs.
+        try:
+            local_transformer = getattr(pipeline, sub_transformer_name)
+            if _is_group_offload_enabled(local_transformer):
+                print(f"[LoRA Merge] Removing group offload hooks from pipeline...")
+                safe_remove_group_offloading(pipeline)
+                print(f"[LoRA Merge] Re-applying group offload hooks to pipeline...")
+                register_auto_device_hook(getattr(pipeline, sub_transformer_name))
+                safe_enable_group_offload(
+                    pipeline,
+                    onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True
+                )
+                print(pipeline._execution_device)
+        except Exception as e:
+            print(f"[LoRA Merge] Warning: Failed to refresh group offload: {e}")
+    print(f"[LoRA Merge] ✓ LoRA merge finished successfully")
     return pipeline
 
 # TODO: Refactor with merge_lora.
 def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32, sub_transformer_name="transformer"):
+    if lora_path is None:
+        return pipeline
+
+    print(f"[LoRA Unmerge] Starting to unmerge LoRA from: {lora_path}")
+    print(f"[LoRA Unmerge] Multiplier: {multiplier}, Device: {device}, Dtype: {dtype}")
+
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
-    state_dict = load_file(lora_path)
+
+    if lora_path.endswith("safetensors"):
+        print(f"[LoRA Unmerge] Loading safetensors file...")
+        state_dict = load_file(lora_path)
+    else:
+        print(f"[LoRA Unmerge] Loading pytorch file...")
+        state_dict = torch.load(lora_path, map_location="cpu")
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model." in key:
+            key = key.replace("diffusion_model.", "")
+        if "lora_unet__" not in key:
+            key = "lora_unet__" + key
+        key = key.replace(".", "_")
+        if key.endswith("_lora_up_weight"):
+            key = key[:-15] + ".lora_up.weight"
+        if key.endswith("_lora_down_weight"):
+            key = key[:-17] + ".lora_down.weight"
+        if key.endswith("_lora_A_default_weight"):
+            key = key[:-22] + ".lora_A.weight"
+        if key.endswith("_lora_B_default_weight"):
+            key = key[:-22] + ".lora_B.weight"
+        if key.endswith("_lora_A_weight"):
+            key = key[:-14] + ".lora_A.weight"
+        if key.endswith("_lora_B_weight"):
+            key = key[:-14] + ".lora_B.weight"
+        if key.endswith("_alpha"):
+            key = key[:-6] + ".alpha"
+        key = key.replace(".lora_A.default.", ".lora_down.")
+        key = key.replace(".lora_B.default.", ".lora_up.")
+        key = key.replace(".lora_A.", ".lora_down.")
+        key = key.replace(".lora_B.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
+    print(f"[LoRA Unmerge] Organized into {len(updates)} layers")
+
     sequential_cpu_offload_flag = False
     if pipeline.transformer.device == torch.device(type="meta"):
+        print(f"[LoRA Unmerge] Removing hooks for meta device...")
         pipeline.remove_all_hooks()
         sequential_cpu_offload_flag = True
+
+    unmerged_count = 0
+    error_count = 0
 
     for layer, elems in updates.items():
 
@@ -489,13 +668,38 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                                 break
                         except Exception:
                             if len(layer_infos) == 0:
-                                print(f'Error loading layer: {layer}')
+                                print(f'[LoRA Unmerge] Warning: Error loading layer in front search: {layer}. Try it in back search.')
                             if len(temp_name) > 0:
                                 temp_name += "_" + layer_infos.pop(0)
                             else:
                                 temp_name = layer_infos.pop(0)
             except Exception:
-                continue
+                if "lora_te" in layer:
+                    layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                    curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+                len_layer_infos = len(layer_infos)
+
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'[LoRA Unmerge] Error: Failed to load layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    error_count += 1
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -516,7 +720,29 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         else:
             curr_layer.weight.data -= multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+        unmerged_count += 1
+
+    print(f"[LoRA Unmerge] Completed: {unmerged_count} layers unmerged, {error_count} errors")
 
     if sequential_cpu_offload_flag:
+        print(f"[LoRA Unmerge] Re-enabling sequential CPU offload...")
         pipeline.enable_sequential_cpu_offload(device=device)
+    else:
+        # Same as merge_lora: remove and re-apply group offload on the whole pipeline
+        # to rebuild cpu_param_dict with the post-unmerge weights.
+        try:
+            local_transformer = getattr(pipeline, sub_transformer_name)
+            if _is_group_offload_enabled(local_transformer):
+                print(f"[LoRA Unmerge] Removing group offload hooks from pipeline...")
+                safe_remove_group_offloading(pipeline)
+                print(f"[LoRA Unmerge] Re-applying group offload hooks to pipeline...")
+                register_auto_device_hook(getattr(pipeline, sub_transformer_name))
+                safe_enable_group_offload(
+                    pipeline,
+                    onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True
+                )
+        except Exception as e:
+            print(f"[LoRA Unmerge] Warning: Failed to refresh group offload: {e}")
+
+    print(f"[LoRA Unmerge] ✓ LoRA unmerge finished successfully")
     return pipeline

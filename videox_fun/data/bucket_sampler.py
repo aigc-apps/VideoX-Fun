@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 from torch.utils.data import BatchSampler, Dataset, Sampler
 
+
 ASPECT_RATIO_512 = {
     '0.25': [256.0, 1024.0], '0.26': [256.0, 992.0], '0.27': [256.0, 960.0], '0.28': [256.0, 928.0],
     '0.32': [288.0, 896.0], '0.33': [288.0, 864.0], '0.35': [288.0, 832.0], '0.4': [320.0, 800.0],
@@ -37,14 +38,17 @@ ASPECT_RATIO_RANDOM_CROP_PROB = [
 ]
 ASPECT_RATIO_RANDOM_CROP_PROB = np.array(ASPECT_RATIO_RANDOM_CROP_PROB) / sum(ASPECT_RATIO_RANDOM_CROP_PROB)
 
+
 def get_closest_ratio(height: float, width: float, ratios: dict = ASPECT_RATIO_512):
     aspect_ratio = height / width
     closest_ratio = min(ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return ratios[closest_ratio], float(closest_ratio)
 
+
 def get_image_size_without_loading(path):
     with Image.open(path) as img:
         return img.size  # (width, height)
+
 
 class RandomSampler(Sampler[int]):
     r"""Samples elements randomly. If without replacement, then sample from a shuffled dataset.
@@ -56,18 +60,22 @@ class RandomSampler(Sampler[int]):
         replacement (bool): samples are drawn on-demand with replacement if ``True``, default=``False``
         num_samples (int): number of samples to draw, default=`len(dataset)`.
         generator (Generator): Generator used in sampling.
+        k_repeat (int): number of times to repeat each sampled index consecutively, default=1.
+            When k_repeat > 1, each index is yielded k_repeat times in a row,
+            so a batch of size B will contain B // k_repeat unique samples.
     """
 
     data_source: Sized
     replacement: bool
 
     def __init__(self, data_source: Sized, replacement: bool = False,
-                 num_samples: Optional[int] = None, generator=None) -> None:
+                 num_samples: Optional[int] = None, generator=None, k_repeat: int = 1) -> None:
         self.data_source = data_source
         self.replacement = replacement
         self._num_samples = num_samples
         self.generator = generator
         self._pos_start = 0
+        self.k_repeat = k_repeat
 
         if not isinstance(self.replacement, bool):
             raise TypeError(f"replacement should be a boolean value, but got replacement={self.replacement}")
@@ -93,8 +101,12 @@ class RandomSampler(Sampler[int]):
 
         if self.replacement:
             for _ in range(self.num_samples // 32):
-                yield from torch.randint(high=n, size=(32,), dtype=torch.int64, generator=generator).tolist()
-            yield from torch.randint(high=n, size=(self.num_samples % 32,), dtype=torch.int64, generator=generator).tolist()
+                for idx in torch.randint(high=n, size=(32,), dtype=torch.int64, generator=generator).tolist():
+                    for _ in range(self.k_repeat):
+                        yield idx
+            for idx in torch.randint(high=n, size=(self.num_samples % 32,), dtype=torch.int64, generator=generator).tolist():
+                for _ in range(self.k_repeat):
+                    yield idx
         else:
             for _ in range(self.num_samples // n):
                 xx = torch.randperm(n, generator=generator).tolist()
@@ -102,13 +114,17 @@ class RandomSampler(Sampler[int]):
                     self._pos_start = 0
                 print("xx top 10", xx[:10], self._pos_start)
                 for idx in range(self._pos_start, n):
-                    yield xx[idx]
+                    for _ in range(self.k_repeat):
+                        yield xx[idx]
                     self._pos_start = (self._pos_start + 1) % n
                 self._pos_start = 0
-            yield from torch.randperm(n, generator=generator).tolist()[:self.num_samples % n]
+            for idx in torch.randperm(n, generator=generator).tolist()[:self.num_samples % n]:
+                for _ in range(self.k_repeat):
+                    yield idx
 
     def __len__(self) -> int:
-        return self.num_samples
+        return self.num_samples * self.k_repeat
+
 
 class AspectRatioBatchImageSampler(BatchSampler):
     """A sampler wrapper for grouping images with similar aspect ratio into a same batch.
@@ -244,9 +260,9 @@ class AspectRatioBatchSampler(BatchSampler):
                         video_dir = os.path.join(self.video_folder, f"{videoid}.mp4")
                     cap = cv2.VideoCapture(video_dir)
 
-                    # 获取视频尺寸
-                    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # 浮点数转换为整数
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 浮点数转换为整数
+                    # Get video dimensions
+                    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # Convert float to integer
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Convert float to integer
                     
                     ratio = height / width # self.dataset[idx]
                 else:
@@ -316,11 +332,19 @@ class AspectRatioBatchImageVideoSampler(BatchSampler):
 
                     width, height = image_dict.get("width", None), image_dict.get("height", None)
                     if width is None or height is None:
-                        image_id, name = image_dict['file_path'], image_dict['text']
-                        if self.train_folder is None:
-                            image_dir = image_id
+                        image_id = image_dict['file_path']
+                        # Handle multiview: file_path can be list or str
+                        if isinstance(image_id, list):
+                            image_dir = image_id[0]
                         else:
-                            image_dir = os.path.join(self.train_folder, image_id)
+                            image_dir = image_id
+                        
+                        if self.train_folder is None:
+                            pass  # image_dir is already absolute path
+                        elif isinstance(self.train_folder, list):
+                            pass  # train_folder is list, use image_dir directly
+                        else:
+                            image_dir = os.path.join(self.train_folder, image_dir)
 
                         width, height = get_image_size_without_loading(image_dir)
 
@@ -348,16 +372,24 @@ class AspectRatioBatchImageVideoSampler(BatchSampler):
                     width, height = video_dict.get("width", None), video_dict.get("height", None)
 
                     if width is None or height is None:
-                        video_id, name = video_dict['file_path'], video_dict['text']
-                        if self.train_folder is None:
-                            video_dir = video_id
+                        video_id = video_dict['file_path']
+                        # Handle multiview: file_path can be list or str
+                        if isinstance(video_id, list):
+                            video_dir = video_id[0]  # Use first view for aspect ratio
                         else:
-                            video_dir = os.path.join(self.train_folder, video_id)
+                            video_dir = video_id
+                        
+                        if self.train_folder is None:
+                            pass  # video_dir is already absolute path
+                        elif isinstance(self.train_folder, list):
+                            pass  # train_folder is list, use video_dir directly
+                        else:
+                            video_dir = os.path.join(self.train_folder, video_dir)
                         cap = cv2.VideoCapture(video_dir)
 
-                        # 获取视频尺寸
-                        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # 浮点数转换为整数
-                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 浮点数转换为整数
+                        # Get video dimensions
+                        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))   # Convert float to integer
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Convert float to integer
                         
                         ratio = height / width # self.dataset[idx]
                     else:

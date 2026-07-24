@@ -9,13 +9,11 @@ from contextlib import contextmanager
 from random import shuffle
 from threading import Thread
 
-import albumentations
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from decord import VideoReader
 from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from packaging import version as pver
@@ -24,238 +22,16 @@ from safetensors.torch import load_file
 from torch.utils.data import BatchSampler, Sampler
 from torch.utils.data.dataset import Dataset
 
-VIDEO_READER_TIMEOUT = 20
+try:
+    from decord import VideoReader
+except ImportError:
+    from .utils import AVVideoReader as VideoReader
 
-def get_random_mask(shape, image_start_only=False):
-    f, c, h, w = shape
-    mask = torch.zeros((f, 1, h, w), dtype=torch.uint8)
+from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
+                    get_random_mask, get_video_reader_batch, padding_image,
+                    process_pose_file, process_pose_params, resize_frame,
+                    resize_image_with_target_area)
 
-    if not image_start_only:
-        if f != 1:
-            mask_index = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], p=[0.05, 0.2, 0.2, 0.2, 0.05, 0.05, 0.05, 0.1, 0.05, 0.05]) 
-        else:
-            mask_index = np.random.choice([0, 1], p = [0.2, 0.8])
-        if mask_index == 0:
-            center_x = torch.randint(0, w, (1,)).item()
-            center_y = torch.randint(0, h, (1,)).item()
-            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
-
-            start_x = max(center_x - block_size_x // 2, 0)
-            end_x = min(center_x + block_size_x // 2, w)
-            start_y = max(center_y - block_size_y // 2, 0)
-            end_y = min(center_y + block_size_y // 2, h)
-            mask[:, :, start_y:end_y, start_x:end_x] = 1
-        elif mask_index == 1:
-            mask[:, :, :, :] = 1
-        elif mask_index == 2:
-            mask_frame_index = np.random.randint(1, 5)
-            mask[mask_frame_index:, :, :, :] = 1
-        elif mask_index == 3:
-            mask_frame_index = np.random.randint(1, 5)
-            mask[mask_frame_index:-mask_frame_index, :, :, :] = 1
-        elif mask_index == 4:
-            center_x = torch.randint(0, w, (1,)).item()
-            center_y = torch.randint(0, h, (1,)).item()
-            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # 方块的宽度范围
-            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # 方块的高度范围
-
-            start_x = max(center_x - block_size_x // 2, 0)
-            end_x = min(center_x + block_size_x // 2, w)
-            start_y = max(center_y - block_size_y // 2, 0)
-            end_y = min(center_y + block_size_y // 2, h)
-
-            mask_frame_before = np.random.randint(0, f // 2)
-            mask_frame_after = np.random.randint(f // 2, f)
-            mask[mask_frame_before:mask_frame_after, :, start_y:end_y, start_x:end_x] = 1
-        elif mask_index == 5:
-            mask = torch.randint(0, 2, (f, 1, h, w), dtype=torch.uint8)
-        elif mask_index == 6:
-            num_frames_to_mask = random.randint(1, max(f // 2, 1))
-            frames_to_mask = random.sample(range(f), num_frames_to_mask)
-
-            for i in frames_to_mask:
-                block_height = random.randint(1, h // 4)
-                block_width = random.randint(1, w // 4)
-                top_left_y = random.randint(0, h - block_height)
-                top_left_x = random.randint(0, w - block_width)
-                mask[i, 0, top_left_y:top_left_y + block_height, top_left_x:top_left_x + block_width] = 1
-        elif mask_index == 7:
-            center_x = torch.randint(0, w, (1,)).item()
-            center_y = torch.randint(0, h, (1,)).item()
-            a = torch.randint(min(w, h) // 8, min(w, h) // 4, (1,)).item()  # 长半轴
-            b = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()  # 短半轴
-
-            for i in range(h):
-                for j in range(w):
-                    if ((i - center_y) ** 2) / (b ** 2) + ((j - center_x) ** 2) / (a ** 2) < 1:
-                        mask[:, :, i, j] = 1
-        elif mask_index == 8:
-            center_x = torch.randint(0, w, (1,)).item()
-            center_y = torch.randint(0, h, (1,)).item()
-            radius = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()
-            for i in range(h):
-                for j in range(w):
-                    if (i - center_y) ** 2 + (j - center_x) ** 2 < radius ** 2:
-                        mask[:, :, i, j] = 1
-        elif mask_index == 9:
-            for idx in range(f):
-                if np.random.rand() > 0.5:
-                    mask[idx, :, :, :] = 1
-        else:
-            raise ValueError(f"The mask_index {mask_index} is not define")
-    else:
-        if f != 1:
-            mask[1:, :, :, :] = 1
-        else:
-            mask[:, :, :, :] = 1
-    return mask
-
-class Camera(object):
-    """Copied from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    def __init__(self, entry):
-        fx, fy, cx, cy = entry[1:5]
-        self.fx = fx
-        self.fy = fy
-        self.cx = cx
-        self.cy = cy
-        w2c_mat = np.array(entry[7:]).reshape(3, 4)
-        w2c_mat_4x4 = np.eye(4)
-        w2c_mat_4x4[:3, :] = w2c_mat
-        self.w2c_mat = w2c_mat_4x4
-        self.c2w_mat = np.linalg.inv(w2c_mat_4x4)
-
-def custom_meshgrid(*args):
-    """Copied from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    # ref: https://pytorch.org/docs/stable/generated/torch.meshgrid.html?highlight=meshgrid#torch.meshgrid
-    if pver.parse(torch.__version__) < pver.parse('1.10'):
-        return torch.meshgrid(*args)
-    else:
-        return torch.meshgrid(*args, indexing='ij')
-
-def get_relative_pose(cam_params):
-    """Copied from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    abs_w2cs = [cam_param.w2c_mat for cam_param in cam_params]
-    abs_c2ws = [cam_param.c2w_mat for cam_param in cam_params]
-    cam_to_origin = 0
-    target_cam_c2w = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, -cam_to_origin],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1]
-    ])
-    abs2rel = target_cam_c2w @ abs_w2cs[0]
-    ret_poses = [target_cam_c2w, ] + [abs2rel @ abs_c2w for abs_c2w in abs_c2ws[1:]]
-    ret_poses = np.array(ret_poses, dtype=np.float32)
-    return ret_poses
-
-def ray_condition(K, c2w, H, W, device):
-    """Copied from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    # c2w: B, V, 4, 4
-    # K: B, V, 4
-
-    B = K.shape[0]
-
-    j, i = custom_meshgrid(
-        torch.linspace(0, H - 1, H, device=device, dtype=c2w.dtype),
-        torch.linspace(0, W - 1, W, device=device, dtype=c2w.dtype),
-    )
-    i = i.reshape([1, 1, H * W]).expand([B, 1, H * W]) + 0.5  # [B, HxW]
-    j = j.reshape([1, 1, H * W]).expand([B, 1, H * W]) + 0.5  # [B, HxW]
-
-    fx, fy, cx, cy = K.chunk(4, dim=-1)  # B,V, 1
-
-    zs = torch.ones_like(i)  # [B, HxW]
-    xs = (i - cx) / fx * zs
-    ys = (j - cy) / fy * zs
-    zs = zs.expand_as(ys)
-
-    directions = torch.stack((xs, ys, zs), dim=-1)  # B, V, HW, 3
-    directions = directions / directions.norm(dim=-1, keepdim=True)  # B, V, HW, 3
-
-    rays_d = directions @ c2w[..., :3, :3].transpose(-1, -2)  # B, V, 3, HW
-    rays_o = c2w[..., :3, 3]  # B, V, 3
-    rays_o = rays_o[:, :, None].expand_as(rays_d)  # B, V, 3, HW
-    # c2w @ dirctions
-    rays_dxo = torch.cross(rays_o, rays_d)
-    plucker = torch.cat([rays_dxo, rays_d], dim=-1)
-    plucker = plucker.reshape(B, c2w.shape[1], H, W, 6)  # B, V, H, W, 6
-    # plucker = plucker.permute(0, 1, 4, 2, 3)
-    return plucker
-
-def process_pose_file(pose_file_path, width=672, height=384, original_pose_width=1280, original_pose_height=720, device='cpu', return_poses=False):
-    """Modified from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    with open(pose_file_path, 'r') as f:
-        poses = f.readlines()
-
-    poses = [pose.strip().split(' ') for pose in poses[1:]]
-    cam_params = [[float(x) for x in pose] for pose in poses]
-    if return_poses:
-        return cam_params
-    else:
-        cam_params = [Camera(cam_param) for cam_param in cam_params]
-
-        sample_wh_ratio = width / height
-        pose_wh_ratio = original_pose_width / original_pose_height  # Assuming placeholder ratios, change as needed
-
-        if pose_wh_ratio > sample_wh_ratio:
-            resized_ori_w = height * pose_wh_ratio
-            for cam_param in cam_params:
-                cam_param.fx = resized_ori_w * cam_param.fx / width
-        else:
-            resized_ori_h = width / pose_wh_ratio
-            for cam_param in cam_params:
-                cam_param.fy = resized_ori_h * cam_param.fy / height
-
-        intrinsic = np.asarray([[cam_param.fx * width,
-                                cam_param.fy * height,
-                                cam_param.cx * width,
-                                cam_param.cy * height]
-                                for cam_param in cam_params], dtype=np.float32)
-
-        K = torch.as_tensor(intrinsic)[None]  # [1, 1, 4]
-        c2ws = get_relative_pose(cam_params)  # Assuming this function is defined elsewhere
-        c2ws = torch.as_tensor(c2ws)[None]  # [1, n_frame, 4, 4]
-        plucker_embedding = ray_condition(K, c2ws, height, width, device=device)[0].permute(0, 3, 1, 2).contiguous()  # V, 6, H, W
-        plucker_embedding = plucker_embedding[None]
-        plucker_embedding = rearrange(plucker_embedding, "b f c h w -> b f h w c")[0]
-        return plucker_embedding
-
-def process_pose_params(cam_params, width=672, height=384, original_pose_width=1280, original_pose_height=720, device='cpu'):
-    """Modified from https://github.com/hehao13/CameraCtrl/blob/main/inference.py
-    """
-    cam_params = [Camera(cam_param) for cam_param in cam_params]
-
-    sample_wh_ratio = width / height
-    pose_wh_ratio = original_pose_width / original_pose_height  # Assuming placeholder ratios, change as needed
-
-    if pose_wh_ratio > sample_wh_ratio:
-        resized_ori_w = height * pose_wh_ratio
-        for cam_param in cam_params:
-            cam_param.fx = resized_ori_w * cam_param.fx / width
-    else:
-        resized_ori_h = width / pose_wh_ratio
-        for cam_param in cam_params:
-            cam_param.fy = resized_ori_h * cam_param.fy / height
-
-    intrinsic = np.asarray([[cam_param.fx * width,
-                            cam_param.fy * height,
-                            cam_param.cx * width,
-                            cam_param.cy * height]
-                            for cam_param in cam_params], dtype=np.float32)
-
-    K = torch.as_tensor(intrinsic)[None]  # [1, 1, 4]
-    c2ws = get_relative_pose(cam_params)  # Assuming this function is defined elsewhere
-    c2ws = torch.as_tensor(c2ws)[None]  # [1, n_frame, 4, 4]
-    plucker_embedding = ray_condition(K, c2ws, height, width, device=device)[0].permute(0, 3, 1, 2).contiguous()  # V, 6, H, W
-    plucker_embedding = plucker_embedding[None]
-    plucker_embedding = rearrange(plucker_embedding, "b f c h w -> b f h w c")[0]
-    return plucker_embedding
 
 class ImageVideoSampler(BatchSampler):
     """A sampler wrapper for grouping images with similar aspect ratio into a same batch.
@@ -304,40 +80,16 @@ class ImageVideoSampler(BatchSampler):
                 yield bucket[:]
                 del bucket[:]
 
-@contextmanager
-def VideoReader_contextmanager(*args, **kwargs):
-    vr = VideoReader(*args, **kwargs)
-    try:
-        yield vr
-    finally:
-        del vr
-        gc.collect()
-
-def get_video_reader_batch(video_reader, batch_index):
-    frames = video_reader.get_batch(batch_index).asnumpy()
-    return frames
-
-def resize_frame(frame, target_short_side):
-    h, w, _ = frame.shape
-    if h < w:
-        if target_short_side > h:
-            return frame
-        new_h = target_short_side
-        new_w = int(target_short_side * w / h)
-    else:
-        if target_short_side > w:
-            return frame
-        new_w = target_short_side
-        new_h = int(target_short_side * h / w)
-    
-    resized_frame = cv2.resize(frame, (new_w, new_h))
-    return resized_frame
 
 class ImageVideoDataset(Dataset):
+    """Dataset for mixed image and video training with inpainting support."""
     def __init__(
         self,
-        ann_path, data_root=None,
-        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        ann_path, 
+        data_root=None,
+        video_sample_size=512, 
+        video_sample_stride=4, 
+        video_sample_n_frames=16,
         image_sample_size=512,
         video_repeat=0,
         text_drop_ratio=0.1,
@@ -345,6 +97,7 @@ class ImageVideoDataset(Dataset):
         video_length_drop_start=0.0, 
         video_length_drop_end=1.0,
         enable_inpaint=False,
+        inpaint_mask_fill_value=0,
         return_file_name=False,
     ):
         # Loading annotations from files
@@ -357,7 +110,7 @@ class ImageVideoDataset(Dataset):
     
         self.data_root = data_root
 
-        # It's used to balance num of images and videos.
+        # Balance image/video ratio by duplicating video entries
         if video_repeat > 0:
             self.dataset = []
             for data in dataset:
@@ -374,20 +127,21 @@ class ImageVideoDataset(Dataset):
 
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
-        # TODO: enable bucket training
+        # Enable bucket training (TODO)
         self.enable_bucket = enable_bucket
         self.text_drop_ratio = text_drop_ratio
         self.enable_inpaint = enable_inpaint
+        self.inpaint_mask_fill_value = inpaint_mask_fill_value
         self.return_file_name = return_file_name
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
 
-        # Video params
+        # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride    = video_sample_stride
         self.video_sample_n_frames  = video_sample_n_frames
-        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
-        self.video_transforms = transforms.Compose(
+        self.video_sample_size      = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
+        self.video_transforms       = transforms.Compose(
             [
                 transforms.Resize(min(self.video_sample_size)),
                 transforms.CenterCrop(self.video_sample_size),
@@ -395,7 +149,7 @@ class ImageVideoDataset(Dataset):
             ]
         )
 
-        # Image params
+        # Image params: resize, center crop, normalize to [-1, 1]
         self.image_sample_size  = tuple(image_sample_size) if not isinstance(image_sample_size, int) else (image_sample_size, image_sample_size)
         self.image_transforms   = transforms.Compose([
             transforms.Resize(min(self.image_sample_size)),
@@ -404,27 +158,37 @@ class ImageVideoDataset(Dataset):
             transforms.Normalize([0.5, 0.5, 0.5],[0.5, 0.5, 0.5])
         ])
 
+        # Use larger side for consistent resizing across images and videos
         self.larger_side_of_image_and_video = max(min(self.image_sample_size), min(self.video_sample_size))
 
     def get_batch(self, idx):
+        """Load and preprocess a single video or image sample."""
         data_info = self.dataset[idx % len(self.dataset)]
         
         if data_info.get('type', 'image')=='video':
             video_id, text = data_info['file_path'], data_info['text']
 
+            # Resolve video path
             if self.data_root is None:
                 video_dir = video_id
             else:
                 video_dir = os.path.join(self.data_root, video_id)
 
             with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+                # Calculate frame sampling range with length dropout
                 min_sample_n_frames = min(
                     self.video_sample_n_frames, 
                     int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
                 )
                 if min_sample_n_frames == 0:
                     raise ValueError(f"No Frames in video.")
+                min_video_sample_n_frames = getattr(self, "min_video_sample_n_frames", None)
+                if min_video_sample_n_frames is not None and min_sample_n_frames < min_video_sample_n_frames:
+                    raise ValueError(
+                        f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
+                    )
 
+                # Select contiguous clip with random start position
                 video_length = int(self.video_length_drop_end * len(video_reader))
                 clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
                 start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
@@ -432,35 +196,36 @@ class ImageVideoDataset(Dataset):
 
                 try:
                     sample_args = (video_reader, batch_index)
-                    pixel_values = func_timeout(
+                    raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early to reduce peak memory
                     resized_frames = []
-                    for i in range(len(pixel_values)):
-                        frame = pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    pixel_values = np.array(resized_frames)
+                    for i in range(len(raw_frames)):
+                        resized_frames.append(resize_frame(raw_frames[i], self.larger_side_of_image_and_video))
+                    del raw_frames
+                    pixel_values = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
-                if not self.enable_bucket:
-                    pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-                    del video_reader
-                else:
-                    pixel_values = pixel_values
+            # Release video reader early to free file handles and decode buffers
+            del video_reader
 
-                if not self.enable_bucket:
-                    pixel_values = self.video_transforms(pixel_values)
-                
-                # Random use no text generation
-                if random.random() < self.text_drop_ratio:
-                    text = ''
+            # Convert to tensor, normalize to [-1, 1], apply transforms
+            if not self.enable_bucket:
+                pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+                pixel_values = self.video_transforms(pixel_values)
+            
+            # Random text dropout for classifier-free guidance
+            if random.random() < self.text_drop_ratio:
+                text = ''
             return pixel_values, text, 'video', video_dir
         else:
+            # Load and preprocess image
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
                 image_path = os.path.join(self.data_root, image_path)
@@ -469,6 +234,7 @@ class ImageVideoDataset(Dataset):
                 image = self.image_transforms(image).unsqueeze(0)
             else:
                 image = np.expand_dims(np.array(image), 0)
+            # Random text dropout for classifier-free guidance
             if random.random() < self.text_drop_ratio:
                 text = ''
             return image, text, 'image', image_path
@@ -477,6 +243,7 @@ class ImageVideoDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
         data_info = self.dataset[idx % len(self.dataset)]
         data_type = data_info.get('type', 'image')
         while True:
@@ -503,7 +270,8 @@ class ImageVideoDataset(Dataset):
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size())
-            mask_pixel_values = pixel_values * (1 - mask) + torch.ones_like(pixel_values) * -1 * mask
+            # Fill masked regions with configurable value (default -1.0, some models use 0.0)
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
@@ -513,19 +281,27 @@ class ImageVideoDataset(Dataset):
 
         return sample
 
+
 class ImageVideoControlDataset(Dataset):
+    """Dataset for control-based image and video training (Canny, Depth, Pose, etc.)."""
     def __init__(
         self,
-        ann_path, data_root=None,
-        video_sample_size=512, video_sample_stride=4, video_sample_n_frames=16,
+        ann_path, 
+        data_root=None,
+        video_sample_size=512, 
+        video_sample_stride=4, 
+        video_sample_n_frames=16,
         image_sample_size=512,
         video_repeat=0,
         text_drop_ratio=0.1,
         enable_bucket=False,
-        video_length_drop_start=0.1, 
-        video_length_drop_end=0.9,
+        video_length_drop_start=0.0, 
+        video_length_drop_end=1.0,
         enable_inpaint=False,
+        inpaint_mask_fill_value=0,
         enable_camera_info=False,
+        enable_subject_info=False,
+        padding_subject_info=True,
         return_file_name=False,
     ):
         # Loading annotations from files
@@ -538,7 +314,7 @@ class ImageVideoControlDataset(Dataset):
     
         self.data_root = data_root
 
-        # It's used to balance num of images and videos.
+        # Balance image/video ratio by duplicating video entries
         if video_repeat > 0:
             self.dataset = []
             for data in dataset:
@@ -555,21 +331,24 @@ class ImageVideoControlDataset(Dataset):
 
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
-        # TODO: enable bucket training
+        # Enable bucket training (TODO)
         self.enable_bucket = enable_bucket
         self.text_drop_ratio = text_drop_ratio
         self.enable_inpaint = enable_inpaint
+        self.inpaint_mask_fill_value = inpaint_mask_fill_value
         self.enable_camera_info = enable_camera_info
+        self.enable_subject_info = enable_subject_info
+        self.padding_subject_info = padding_subject_info
         self.return_file_name = return_file_name
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
 
-        # Video params
+        # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride    = video_sample_stride
         self.video_sample_n_frames  = video_sample_n_frames
-        self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
-        self.video_transforms = transforms.Compose(
+        self.video_sample_size      = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
+        self.video_transforms       = transforms.Compose(
             [
                 transforms.Resize(min(self.video_sample_size)),
                 transforms.CenterCrop(self.video_sample_size),
@@ -577,6 +356,7 @@ class ImageVideoControlDataset(Dataset):
             ]
         )
         if self.enable_camera_info:
+            # Camera info only needs resize and crop, no normalization
             self.video_transforms_camera = transforms.Compose(
                 [
                     transforms.Resize(min(self.video_sample_size)),
@@ -584,7 +364,7 @@ class ImageVideoControlDataset(Dataset):
                 ]
             )
 
-        # Image params
+        # Image params: resize, center crop, normalize to [-1, 1]
         self.image_sample_size  = tuple(image_sample_size) if not isinstance(image_sample_size, int) else (image_sample_size, image_sample_size)
         self.image_transforms   = transforms.Compose([
             transforms.Resize(min(self.image_sample_size)),
@@ -593,26 +373,37 @@ class ImageVideoControlDataset(Dataset):
             transforms.Normalize([0.5, 0.5, 0.5],[0.5, 0.5, 0.5])
         ])
 
+        # Use larger side for consistent resizing across images and videos
         self.larger_side_of_image_and_video = max(min(self.image_sample_size), min(self.video_sample_size))
     
     def get_batch(self, idx):
+        """Load and preprocess a single video or image sample with control signals."""
         data_info = self.dataset[idx % len(self.dataset)]
-        video_id, text = data_info['file_path'], data_info['text']
-
+        
         if data_info.get('type', 'image')=='video':
+            video_id, text = data_info['file_path'], data_info['text']
+
+            # Resolve video path
             if self.data_root is None:
                 video_dir = video_id
             else:
                 video_dir = os.path.join(self.data_root, video_id)
 
             with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+                # Calculate frame sampling range with length dropout
                 min_sample_n_frames = min(
                     self.video_sample_n_frames, 
                     int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
                 )
                 if min_sample_n_frames == 0:
                     raise ValueError(f"No Frames in video.")
+                min_video_sample_n_frames = getattr(self, "min_video_sample_n_frames", None)
+                if min_video_sample_n_frames is not None and min_sample_n_frames < min_video_sample_n_frames:
+                    raise ValueError(
+                        f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
+                    )
 
+                # Select contiguous clip with random start position
                 video_length = int(self.video_length_drop_end * len(video_reader))
                 clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
                 start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
@@ -620,96 +411,123 @@ class ImageVideoControlDataset(Dataset):
 
                 try:
                     sample_args = (video_reader, batch_index)
-                    pixel_values = func_timeout(
+                    raw_frames = func_timeout(
                         VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
                     )
+                    # Resize each frame and free the original array early to reduce peak memory
                     resized_frames = []
-                    for i in range(len(pixel_values)):
-                        frame = pixel_values[i]
-                        resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                        resized_frames.append(resized_frame)
-                    pixel_values = np.array(resized_frames)
+                    for i in range(len(raw_frames)):
+                        resized_frames.append(resize_frame(raw_frames[i], self.larger_side_of_image_and_video))
+                    del raw_frames
+                    pixel_values = np.stack(resized_frames)
+                    del resized_frames
                 except FunctionTimedOut:
                     raise ValueError(f"Read {idx} timeout.")
                 except Exception as e:
                     raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
-                if not self.enable_bucket:
-                    pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
-                    pixel_values = pixel_values / 255.
-                    del video_reader
-                else:
-                    pixel_values = pixel_values
+            # Release video reader early to free file handles and decode buffers
+            del video_reader
 
-                if not self.enable_bucket:
-                    pixel_values = self.video_transforms(pixel_values)
-                
-                # Random use no text generation
-                if random.random() < self.text_drop_ratio:
-                    text = ''
+            # Convert to tensor, normalize to [-1, 1], apply transforms
+            if not self.enable_bucket:
+                pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+                pixel_values = self.video_transforms(pixel_values)
+            
+            # Random text dropout for classifier-free guidance
+            if random.random() < self.text_drop_ratio:
+                text = ''
 
+            # Load control signal (Canny/Depth/Pose/Camera)
             control_video_id = data_info['control_file_path']
-
-            if self.data_root is None:
-                control_video_id = control_video_id
+            if control_video_id is not None:
+                if self.data_root is None:
+                    control_video_path = control_video_id
+                else:
+                    control_video_path = os.path.join(self.data_root, control_video_id)
             else:
-                control_video_id = os.path.join(self.data_root, control_video_id)
+                control_video_path = None
             
             if self.enable_camera_info:
-                if control_video_id.lower().endswith('.txt'):
+                # Camera parameters from txt file
+                if control_video_path is not None and control_video_path.lower().endswith('.txt'):
                     if not self.enable_bucket:
                         control_pixel_values = torch.zeros_like(pixel_values)
-
-                        control_camera_values = process_pose_file(control_video_id, width=self.video_sample_size[1], height=self.video_sample_size[0])
+                        control_camera_values = process_pose_file(control_video_path, width=self.video_sample_size[1], height=self.video_sample_size[0])
                         control_camera_values = torch.from_numpy(control_camera_values).permute(0, 3, 1, 2).contiguous()
                         control_camera_values = F.interpolate(control_camera_values, size=(len(video_reader), control_camera_values.size(3)), mode='bilinear', align_corners=True)
                         control_camera_values = self.video_transforms_camera(control_camera_values)
                     else:
                         control_pixel_values = np.zeros_like(pixel_values)
-
-                        control_camera_values = process_pose_file(control_video_id, width=self.video_sample_size[1], height=self.video_sample_size[0], return_poses=True)
+                        control_camera_values = process_pose_file(control_video_path, width=self.video_sample_size[1], height=self.video_sample_size[0], return_poses=True)
                         control_camera_values = torch.from_numpy(np.array(control_camera_values)).unsqueeze(0).unsqueeze(0)
                         control_camera_values = F.interpolate(control_camera_values, size=(len(video_reader), control_camera_values.size(3)), mode='bilinear', align_corners=True)[0][0]
                         control_camera_values = np.array([control_camera_values[index] for index in batch_index])
                 else:
-                    if not self.enable_bucket:
-                        control_pixel_values = torch.zeros_like(pixel_values)
-                        control_camera_values = None
-                    else:
-                        control_pixel_values = np.zeros_like(pixel_values)
-                        control_camera_values = None
+                    control_pixel_values = torch.zeros_like(pixel_values) if not self.enable_bucket else np.zeros_like(pixel_values)
+                    control_camera_values = None
             else:
-                with VideoReader_contextmanager(control_video_id, num_threads=2) as control_video_reader:
-                    try:
-                        sample_args = (control_video_reader, batch_index)
-                        control_pixel_values = func_timeout(
-                            VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
-                        )
-                        resized_frames = []
-                        for i in range(len(control_pixel_values)):
-                            frame = control_pixel_values[i]
-                            resized_frame = resize_frame(frame, self.larger_side_of_image_and_video)
-                            resized_frames.append(resized_frame)
-                        control_pixel_values = np.array(resized_frames)
-                    except FunctionTimedOut:
-                        raise ValueError(f"Read {idx} timeout.")
-                    except Exception as e:
-                        raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+                # Load control video (Canny/Depth/Pose)
+                if control_video_path is not None:
+                    with VideoReader_contextmanager(control_video_path, num_threads=2) as control_video_reader:
+                        try:
+                            sample_args = (control_video_reader, batch_index)
+                            control_raw_frames = func_timeout(
+                                VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                            )
+                            # Resize each frame and free the original array early
+                            resized_frames = []
+                            for i in range(len(control_raw_frames)):
+                                resized_frames.append(resize_frame(control_raw_frames[i], self.larger_side_of_image_and_video))
+                            del control_raw_frames
+                            control_pixel_values = np.stack(resized_frames)
+                            del resized_frames
+                        except FunctionTimedOut:
+                            raise ValueError(f"Read {idx} timeout.")
+                        except Exception as e:
+                            raise ValueError(f"Failed to extract frames from video. Error is {e}.")
 
+                    # Release control video reader early
+                    del control_video_reader
+
+                    # Convert to tensor and apply transforms
                     if not self.enable_bucket:
                         control_pixel_values = torch.from_numpy(control_pixel_values).permute(0, 3, 1, 2).contiguous()
                         control_pixel_values = control_pixel_values / 255.
-                        del control_video_reader
-                    else:
-                        control_pixel_values = control_pixel_values
-
-                    if not self.enable_bucket:
                         control_pixel_values = self.video_transforms(control_pixel_values)
+                else:
+                    control_pixel_values = torch.zeros_like(pixel_values) if not self.enable_bucket else np.zeros_like(pixel_values)
                 control_camera_values = None
+            
+            # Load subject reference images (for subject-driven generation)
+            if self.enable_subject_info:
+                visual_height, visual_width = pixel_values.shape[-2:] if not self.enable_bucket else pixel_values.shape[1:3]
 
-            return pixel_values, control_pixel_values, control_camera_values, text, "video", video_dir
+                subject_id = data_info.get('object_file_path', [])
+                shuffle(subject_id)
+                subject_images = []
+                for i in range(min(len(subject_id), 4)):
+                    subject_image_path = subject_id[i] if self.data_root is None else os.path.join(self.data_root, subject_id[i])
+                    subject_image = Image.open(subject_image_path)
 
+                    if self.padding_subject_info:
+                        img = padding_image(subject_image, visual_width, visual_height)
+                    else:
+                        img = resize_image_with_target_area(subject_image, 1024 * 1024)
+
+                    # Random horizontal flip for augmentation
+                    if random.random() < 0.5:
+                        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    subject_images.append(np.array(img))
+                
+                subject_image = np.array(subject_images) if self.padding_subject_info else subject_images
+            else:
+                subject_image = None
+
+            return pixel_values, control_pixel_values, subject_image, control_camera_values, text, "video"
         else:
+            # Load and preprocess image
             image_path, text = data_info['file_path'], data_info['text']
             if self.data_root is not None:
                 image_path = os.path.join(self.data_root, image_path)
@@ -718,28 +536,56 @@ class ImageVideoControlDataset(Dataset):
                 image = self.image_transforms(image).unsqueeze(0)
             else:
                 image = np.expand_dims(np.array(image), 0)
-
+            
+            # Random text dropout for classifier-free guidance
             if random.random() < self.text_drop_ratio:
                 text = ''
 
+            # Load control image
             control_image_id = data_info['control_file_path']
-
             if self.data_root is None:
-                control_image_id = control_image_id
+                control_image_path = control_image_id
             else:
-                control_image_id = os.path.join(self.data_root, control_image_id)
+                control_image_path = os.path.join(self.data_root, control_image_id)
 
-            control_image = Image.open(control_image_id).convert('RGB')
+            control_image = Image.open(control_image_path).convert('RGB')
             if not self.enable_bucket:
                 control_image = self.image_transforms(control_image).unsqueeze(0)
             else:
                 control_image = np.expand_dims(np.array(control_image), 0)
-            return image, control_image, None, text, 'image', image_path
             
+            # Load subject reference images
+            if self.enable_subject_info:
+                visual_height, visual_width = image.shape[-2:] if not self.enable_bucket else image.shape[1:3]
+
+                subject_id = data_info.get('object_file_path', [])
+                shuffle(subject_id)
+                subject_images = []
+                for i in range(min(len(subject_id), 4)):
+                    subject_image_path = subject_id[i] if self.data_root is None else os.path.join(self.data_root, subject_id[i])
+                    subject_image = Image.open(subject_image_path).convert('RGB')
+
+                    if self.padding_subject_info:
+                        img = padding_image(subject_image, visual_width, visual_height)
+                    else:
+                        img = resize_image_with_target_area(subject_image, 1024 * 1024)
+
+                    # Random horizontal flip for augmentation
+                    if random.random() < 0.5:
+                        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    subject_images.append(np.array(img))
+                
+                subject_image = np.array(subject_images) if self.padding_subject_info else subject_images
+            else:
+                subject_image = None
+
+            return image, control_image, subject_image, None, text, 'image'
+
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
+        """Get a sample with retry on failure."""
         data_info = self.dataset[idx % len(self.dataset)]
         data_type = data_info.get('type', 'image')
         while True:
@@ -750,19 +596,20 @@ class ImageVideoControlDataset(Dataset):
                 if data_type_local != data_type:
                     raise ValueError("data_type_local != data_type")
 
-                pixel_values, control_pixel_values, control_camera_values, name, data_type, file_path = self.get_batch(idx)
+                pixel_values, control_pixel_values, subject_image, control_camera_values, name, data_type = self.get_batch(idx)
 
                 sample["pixel_values"] = pixel_values
                 sample["control_pixel_values"] = control_pixel_values
+                sample["subject_image"] = subject_image
                 sample["text"] = name
                 sample["data_type"] = data_type
                 sample["idx"] = idx
 
                 if self.enable_camera_info:
                     sample["control_camera_values"] = control_camera_values
-
+                
                 if self.return_file_name:
-                    sample["file_name"] = os.path.basename(file_path)
+                    sample["file_name"] = os.path.basename(data_info['file_path'])
 
                 if len(sample) > 0:
                     break
@@ -772,7 +619,8 @@ class ImageVideoControlDataset(Dataset):
 
         if self.enable_inpaint and not self.enable_bucket:
             mask = get_random_mask(pixel_values.size())
-            mask_pixel_values = pixel_values * (1 - mask) + torch.zeros_like(pixel_values) * mask
+            # Fill masked regions with configurable value (default -1.0, some models use 0.0)
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
             sample["mask_pixel_values"] = mask_pixel_values
             sample["mask"] = mask
 
@@ -782,23 +630,112 @@ class ImageVideoControlDataset(Dataset):
 
         return sample
 
+
 class ImageVideoSafetensorsDataset(Dataset):
+    """Dataset for loading preprocessed latents in safetensors format.
+
+    Supports two JSON entry formats produced by ``train_preprocess.py``:
+
+    1. Single-file mode (default preprocess output)::
+
+           {"file_path": "/path/to/scene.safetensors"}
+
+       The whole state dict is loaded from a single ``.safetensors`` file.
+
+    2. Per-tensor mode (``--save_per_tensor`` preprocess output)::
+
+           {
+               "file_path": "/path/to/scene_dir",
+               "latents": "/path/to/scene_dir/latents.safetensors",
+               "prompt_embeds": "/path/to/scene_dir/prompt_embeds.safetensors",
+               ...
+           }
+
+       Each key whose value is a ``.safetensors`` path is loaded individually
+       and merged into the returned ``state_dict``. The inner safetensors file
+       stores the tensor under the same key name, so a plain ``dict.update``
+       is sufficient to assemble the final state dict.
+    """
     def __init__(
         self,
-        ann_path
+        ann_path,
+        data_root=None,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
         if ann_path.endswith('.json'):
             dataset = json.load(open(ann_path))
-    
+
+        self.data_root = data_root
         self.dataset = dataset
         self.length = len(self.dataset)
         print(f"data scale: {self.length}")
+
+    def _resolve_path(self, path):
+        if self.data_root is None:
+            return path
+        return os.path.join(self.data_root, path)
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        state_dict = load_file(self.dataset[idx]["file_path"])
+        """Load preprocessed latents, supporting both single-file and per-tensor formats."""
+        item = self.dataset[idx]
+        file_path = item.get("file_path")
+
+        # Single-file mode: ``file_path`` points to a ``.safetensors`` archive
+        # that already holds every preprocessed tensor.
+        # Fall through to per-tensor mode when the key is absent or the file does not exist.
+        if (
+            file_path is not None
+            and file_path.endswith(".safetensors")
+            and os.path.exists(self._resolve_path(file_path))
+        ):
+            return load_file(self._resolve_path(file_path))
+
+        # Per-tensor mode: iterate over every ``.safetensors`` entry in the
+        # JSON record and merge their contents into a single state dict.
+        state_dict = {}
+        for key, value in item.items():
+            if key == "file_path":
+                continue
+            if isinstance(value, str) and value.endswith(".safetensors"):
+                tensor_path = self._resolve_path(value)
+                state_dict.update(load_file(tensor_path))
         return state_dict
+
+
+class TextDataset(Dataset):
+    """Dataset for text-only training (e.g., text encoder fine-tuning)."""
+    def __init__(self, ann_path, text_drop_ratio=0.0):
+        print(f"loading annotations from {ann_path} ...")
+        with open(ann_path, 'r') as f:
+            self.dataset = json.load(f)
+        self.length = len(self.dataset)
+        print(f"data scale: {self.length}")
+        self.text_drop_ratio = text_drop_ratio
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        """Get a single text sample with retry on failure."""
+        while True:
+            try:
+                item = self.dataset[idx]
+                text = item['text']
+
+                # Randomly drop text for classifier-free guidance
+                if random.random() < self.text_drop_ratio:
+                    text = ''
+
+                sample = {
+                    "text": text,
+                    "idx": idx
+                }
+                return sample
+
+            except Exception as e:
+                print(f"Error at index {idx}: {e}, retrying with random index...")
+                idx = np.random.randint(0, self.length - 1)

@@ -1,47 +1,25 @@
-import importlib.util
-
 from .cogvideox_xfuser import CogVideoXMultiGPUsAttnProcessor2_0
+from .ernie_image_xfuser import ErnieImageMultiGPUsAttnProcessor
+from .flashhead_xfuser import usp_attn_flashhead_forward
+from .flux2_xfuser import Flux2MultiGPUsAttnProcessor2_0
+from .flux_xfuser import FluxMultiGPUsAttnProcessor2_0
 from .fsdp import shard_model
 from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     get_world_group, init_distributed_environment,
-                    initialize_model_parallel, set_multi_gpus_devices,
-                    xFuserLongContextAttention)
-from .wan_xfuser import usp_attn_forward
-
-# The pai_fuser is an internally developed acceleration package, which can be used on PAI.
-if importlib.util.find_spec("pai_fuser") is not None:
-    # The simple_wrapper is used to solve the problem about conflicts between cython and torch.compile
-    def simple_wrapper(func):
-        def inner(*args, **kwargs):
-            return func(*args, **kwargs)
-        return inner
-
-    from pai_fuser.core import parallel_magvit_vae
-    from pai_fuser.core.attention import wan_usp_sparse_attention_wrapper
-    from . import wan_xfuser
-
-    usp_sparse_attn_wrap_forward = simple_wrapper(wan_usp_sparse_attention_wrapper()(wan_xfuser.usp_attn_forward))
-    wan_xfuser.usp_attn_forward = usp_sparse_attn_wrap_forward
-    usp_attn_forward = usp_sparse_attn_wrap_forward
-    print("Import PAI VAE Turbo and Sparse Attention")
-
-    from pai_fuser.core.rope import ENABLE_KERNEL, usp_fast_rope_apply_qk
-
-    if ENABLE_KERNEL:
-        import torch
-        import types
-
-        def deepcopy_function(f):
-            return types.FunctionType(f.__code__, f.__globals__, name=f.__name__, argdefs=f.__defaults__,closure=f.__closure__)
-
-        local_rope_apply_qk = deepcopy_function(wan_xfuser.rope_apply_qk)
-        def adaptive_fast_usp_rope_apply_qk(q, k, grid_sizes, freqs):
-            if torch.is_grad_enabled():
-                return local_rope_apply_qk(q, k, grid_sizes, freqs)
-            else:
-                return usp_fast_rope_apply_qk(q, k, grid_sizes, freqs)
-            
-        wan_xfuser.rope_apply_qk = adaptive_fast_usp_rope_apply_qk
-        rope_apply_qk = adaptive_fast_usp_rope_apply_qk
-        print("Import PAI Fast rope")
+                    initialize_model_parallel, model_parallel_is_initialized,
+                    sequence_parallel_all_gather, sequence_parallel_chunk,
+                    set_multi_gpus_devices, xFuserLongContextAttention)
+from .hunyuanvideo_xfuser import HunyuanVideoMultiGPUsAttnProcessor2_0
+from .infinitalk_xfuser import usp_attn_infinitetalk_forward
+from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
+                                  usp_attn_longcatvideo_forward,
+                                  usp_cross_attn_longcatvideo_forward,
+                                  usp_rope_longcatvideo_forward)
+from .lens_xfuser import usp_lens_joint_attention_forward
+from .ltx2_xfuser import (LTX2MultiGPUsAttnProcessor,
+                          LTX2PerturbedMultiGPUsAttnProcessor)
+from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
+from .wan_xfuser import (usp_attn_forward, usp_attn_s2v_forward,
+                         usp_attn_self_forcing_forward)
+from .z_image_xfuser import ZMultiGPUsSingleStreamAttnProcessor

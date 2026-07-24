@@ -38,7 +38,10 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    from videox_fun.data.utils import AVVideoReader as VideoReader
 from diffusers import CogVideoXDPMScheduler, DDIMScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
@@ -57,11 +60,11 @@ for project_root in project_roots:
 
 import videox_fun.reward.reward_fn as reward_fn
 from videox_fun.models import (AutoencoderKLCogVideoX,
-                              CogVideoXTransformer3DModel, T5EncoderModel,
-                              T5Tokenizer)
-from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (CogVideoXFunInpaintPipeline,
-                                                               get_3d_rotary_pos_embed,
-                                                               get_resize_crop_region_for_grid)
+                               CogVideoXTransformer3DModel, T5EncoderModel,
+                               T5Tokenizer)
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
+    CogVideoXFunInpaintPipeline, get_3d_rotary_pos_embed,
+    get_resize_crop_region_for_grid)
 from videox_fun.utils.lora_utils import create_network, merge_lora
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
@@ -143,7 +146,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network,
                     sample = pipeline(
                         validation_prompt, 
                         num_frames = video_length,
-                        negative_prompt = "bad detailed",
+                        negative_prompt = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. ",
                         height = args.validation_sample_height,
                         width = args.validation_sample_width,
                         guidance_scale = 7,
@@ -969,7 +972,7 @@ def main():
     elif args.use_came:
         try:
             from came_pytorch import CAME
-        except:
+        except Exception:
             raise ImportError(
                 "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
             )
@@ -1049,7 +1052,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1355,6 +1361,9 @@ def main():
                                             removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                             shutil.rmtree(removing_checkpoint)
                                 
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                torch.cuda.ipc_collect()
                                 if not args.save_state:
                                     safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
                                     save_model(safetensor_save_path, accelerator.unwrap_model(network))

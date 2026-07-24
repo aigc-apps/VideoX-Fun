@@ -207,8 +207,8 @@ def infer_forward_api(_: gr.Blocks, app: FastAPI, controller):
                 cfg_skip_ratio = cfg_skip_ratio, 
                 enable_riflex = enable_riflex, 
                 riflex_k = riflex_k, 
-                base_model_2_path = base_model_2_path,
-                lora_model_2_path = lora_model_2_path,
+                base_model_2_dropdown = base_model_2_path,
+                lora_model_2_dropdown = lora_model_2_path,
                 fps = fps,
                 is_api = True,
             )

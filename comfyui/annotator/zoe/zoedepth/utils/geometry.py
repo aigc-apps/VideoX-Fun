@@ -24,6 +24,7 @@
 
 import numpy as np
 
+
 def get_intrinsics(H,W):
     """
     Intrinsics for a pinhole camera model.

@@ -1,0 +1,844 @@
+{
+  "id": "71b53971-2ab9-41eb-a405-78c174d97672",
+  "revision": 0,
+  "last_node_id": 110,
+  "last_link_id": 91,
+  "nodes": [
+    {
+      "id": 78,
+      "type": "Note",
+      "pos": [
+        18,
+        -46
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can write prompt here\n（你可以在此填写提示词）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 88,
+      "type": "Note",
+      "pos": [
+        -99,
+        197
+      ],
+      "size": [
+        326.1556091308594,
+        145.20904541015625
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Using longer neg prompt such as \"Blurring, mutation, deformation, distortion, dark and solid, comics.\" can increase stability. Adding words such as \"quiet, solid\" to the neg prompt can increase dynamism.\n(使用更长的neg prompt如\"模糊，突变，变形，失真，画面暗，画面固定，连环画，漫画，线稿，没有主体。\"，可以增加稳定性。在neg prompt中添加\"安静，固定\"等词语可以增加动态性。)"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 94,
+      "type": "FunTextBox",
+      "pos": [
+        258,
+        178
+      ],
+      "size": [
+        368.5529479980469,
+        159.4075927734375
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            77
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      ]
+    },
+    {
+      "id": 17,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1179.8734130859375,
+        -215.58523559570312
+      ],
+      "size": [
+        390.9534912109375,
+        942.2557983398438
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "图像",
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 80
+        },
+        {
+          "label": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "label": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "文件名",
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "slot_index": 0,
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 16,
+        "loop_count": 0,
+        "filename_prefix": "Fun",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 22,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "Fun_00143.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 16
+          }
+        }
+      }
+    },
+    {
+      "id": 79,
+      "type": "Note",
+      "pos": [
+        -215.824951171875,
+        490.2828369140625
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "You can upload ref images here\n（在此上传参考图片）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 104,
+      "type": "ImageCollectNode",
+      "pos": [
+        835.30908203125,
+        491.93438720703125
+      ],
+      "size": [
+        162.85116577148438,
+        46
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "link": 83
+        },
+        {
+          "name": "image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            84
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageCollectNode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 103,
+      "type": "LoadImage",
+      "pos": [
+        409.56060791015625,
+        457.4063415527344
+      ],
+      "size": [
+        315,
+        314.0000305175781
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            82
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ref_1.png",
+        "image"
+      ]
+    },
+    {
+      "id": 92,
+      "type": "FunTextBox",
+      "pos": [
+        254,
+        -46
+      ],
+      "size": [
+        380.845703125,
+        157.68350219726562
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "slot_index": 0,
+          "links": [
+            76
+          ]
+        }
+      ],
+      "title": "Positive Prompt（正向提示词）",
+      "properties": {
+        "Node name for S&R": "FunTextBox"
+      },
+      "widgets_values": [
+        "海风作曲，浪花打拍。她握着一台亮黄色相机，双臂如翼般舒展流转。双手托举相机，在胸前划出轻柔的圆弧，时而高举过肩，迎向天际的光晕，时而缓缓贴近心口，倾听快门低语般的节奏。紫色长发在风中扬起，拂过肩头，仿佛与镜头共舞。她的目光随取景框游走，每一次微倾与回旋，都让镜头掠过海天相接的边际、摇曳的花丛。最后，呼吸一凝，稳稳对准水中倒影，轻轻按下快门——将风、光与心动，悄然收藏。"
+      ]
+    },
+    {
+      "id": 97,
+      "type": "LoadImage",
+      "pos": [
+        51.6423454284668,
+        459.73138427734375
+      ],
+      "size": [
+        315,
+        314.0000305175781
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            83
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "8.png",
+        "image"
+      ]
+    },
+    {
+      "id": 101,
+      "type": "Wan2_2VaceFunSampler",
+      "pos": [
+        842.1512451171875,
+        -215.00350952148438
+      ],
+      "size": [
+        280.724609375,
+        534
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "link": 91
+        },
+        {
+          "name": "prompt",
+          "type": "STRING_PROMPT",
+          "link": 76
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING_PROMPT",
+          "link": 77
+        },
+        {
+          "name": "control_video",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "start_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "end_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "subject_ref_images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 84
+        },
+        {
+          "name": "riflex_k",
+          "shape": 7,
+          "type": "RIFLEXT_ARGS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            80
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Wan2_2VaceFunSampler"
+      },
+      "widgets_values": [
+        81,
+        640,
+        360428861626678,
+        "randomize",
+        50,
+        6,
+        "Flow",
+        12,
+        0.875,
+        0.1,
+        true,
+        3,
+        true,
+        0.25000000000000006,
+        true
+      ]
+    },
+    {
+      "id": 105,
+      "type": "LoadVaceWanTransformer3DModel",
+      "pos": [
+        238.0269317626953,
+        -745.763671875
+      ],
+      "size": [
+        408.1667785644531,
+        102
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            85
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": [
+            90
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVaceWanTransformer3DModel"
+      },
+      "widgets_values": [
+        "Wan2.2-VACE-Fun-A14B-LOW_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 106,
+      "type": "LoadWanVAEModel",
+      "pos": [
+        240.40968322753906,
+        -583.1104736328125
+      ],
+      "size": [
+        406.1996154785156,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "links": [
+            86
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanVAEModel"
+      },
+      "widgets_values": [
+        "Wan2.1_VAE.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 107,
+      "type": "LoadWanTextEncoderModel",
+      "pos": [
+        241.08558654785156,
+        -434.9287109375
+      ],
+      "size": [
+        404.7171936035156,
+        102
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "links": [
+            87
+          ]
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "links": [
+            88
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadWanTextEncoderModel"
+      },
+      "widgets_values": [
+        "models_t5_umt5-xxl-enc-bf16.pth",
+        "bf16"
+      ]
+    },
+    {
+      "id": 109,
+      "type": "LoadVaceWanTransformer3DModel",
+      "pos": [
+        692.4532470703125,
+        -742.7451782226562
+      ],
+      "size": [
+        354.0464782714844,
+        102
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "links": [
+            89
+          ]
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVaceWanTransformer3DModel"
+      },
+      "widgets_values": [
+        "Wan2.2-VACE-Fun-A14B-HIGH_bf16.safetensors",
+        "bf16"
+      ]
+    },
+    {
+      "id": 108,
+      "type": "CombineWan2_2VaceFunPipeline",
+      "pos": [
+        693.27978515625,
+        -566.5641479492188
+      ],
+      "size": [
+        361.8251953125,
+        182
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "transformer",
+          "type": "TransformerModel",
+          "link": 85
+        },
+        {
+          "name": "vae",
+          "type": "VAEModel",
+          "link": 86
+        },
+        {
+          "name": "text_encoder",
+          "type": "TextEncoderModel",
+          "link": 87
+        },
+        {
+          "name": "tokenizer",
+          "type": "Tokenizer",
+          "link": 88
+        },
+        {
+          "name": "clip_encoder",
+          "shape": 7,
+          "type": "ClipEncoderModel",
+          "link": null
+        },
+        {
+          "name": "transformer_2",
+          "shape": 7,
+          "type": "TransformerModel",
+          "link": 89
+        },
+        {
+          "name": "model_name",
+          "type": "STRING",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": 90
+        }
+      ],
+      "outputs": [
+        {
+          "name": "funmodels",
+          "type": "FunModels",
+          "links": [
+            91
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CombineWan2_2VaceFunPipeline"
+      },
+      "widgets_values": [
+        "",
+        "sequential_cpu_offload"
+      ]
+    },
+    {
+      "id": 110,
+      "type": "Note",
+      "pos": [
+        -220.1790008544922,
+        -468.36676025390625
+      ],
+      "size": [
+        427.074951171875,
+        143.9142608642578
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "When using the 14B model, you can use sequential_cpu_offload to save GPU memory during generation.\n（在使用14B模型时，可以使用sequential_cpu_offload节省显存，进行生成。）"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      76,
+      92,
+      0,
+      101,
+      1,
+      "STRING_PROMPT"
+    ],
+    [
+      77,
+      94,
+      0,
+      101,
+      2,
+      "STRING_PROMPT"
+    ],
+    [
+      80,
+      101,
+      0,
+      17,
+      0,
+      "IMAGE"
+    ],
+    [
+      82,
+      103,
+      0,
+      104,
+      1,
+      "IMAGE"
+    ],
+    [
+      83,
+      97,
+      0,
+      104,
+      0,
+      "IMAGE"
+    ],
+    [
+      84,
+      104,
+      0,
+      101,
+      6,
+      "IMAGE"
+    ],
+    [
+      85,
+      105,
+      0,
+      108,
+      0,
+      "TransformerModel"
+    ],
+    [
+      86,
+      106,
+      0,
+      108,
+      1,
+      "VAEModel"
+    ],
+    [
+      87,
+      107,
+      0,
+      108,
+      2,
+      "TextEncoderModel"
+    ],
+    [
+      88,
+      107,
+      1,
+      108,
+      3,
+      "Tokenizer"
+    ],
+    [
+      89,
+      109,
+      0,
+      108,
+      5,
+      "TransformerModel"
+    ],
+    [
+      90,
+      105,
+      1,
+      108,
+      6,
+      "STRING"
+    ],
+    [
+      91,
+      108,
+      0,
+      101,
+      0,
+      "FunModels"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Upload Your Ref Images",
+      "bounding": [
+        -0.4573218524456024,
+        378.5783386230469,
+        1071.616943359375,
+        451.41473388671875
+      ],
+      "color": "#a1309b",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Prompts",
+      "bounding": [
+        218,
+        -127,
+        450,
+        483
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "Load Model",
+      "bounding": [
+        220.02639770507812,
+        -821.3883056640625,
+        863.243896484375,
+        511.2655029296875
+      ],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.751314800901578,
+      "offset": [
+        342.74554399865866,
+        838.8420856437743
+      ]
+    },
+    "frontendVersion": "1.21.3",
+    "workspace_info": {
+      "id": "776b62b4-bd17-4ed3-9923-b7aad000b1ea"
+    },
+    "node_versions": {
+      "CogVideoX-Fun": "a4d5cca5c80bb811e1ee35915ad1e096ca62a3bf",
+      "ComfyUI-VideoHelperSuite": "70faa9bcef65932ab72e7404d6373fb300013a2e",
+      "comfy-core": "0.3.57"
+    }
+  },
+  "version": 0.4
+}

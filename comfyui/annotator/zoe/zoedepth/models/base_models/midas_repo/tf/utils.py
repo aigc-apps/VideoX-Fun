@@ -1,6 +1,7 @@
-import numpy as np
 import sys
+
 import cv2
+import numpy as np
 
 
 def write_pfm(path, image, scale=1):

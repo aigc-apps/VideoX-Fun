@@ -3,6 +3,7 @@ einops
 safetensors
 timm
 tomesd
+librosa
 torch>=2.1.2
 torchdiffeq
 torchsde
@@ -20,6 +21,7 @@ tensorboard
 beautifulsoup4
 ftfy
 func_timeout
+onnxruntime
 accelerate>=0.25.0
 gradio>=3.41.2
 diffusers>=0.30.1

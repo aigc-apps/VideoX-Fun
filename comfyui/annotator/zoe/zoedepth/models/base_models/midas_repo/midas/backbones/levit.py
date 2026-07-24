@@ -1,9 +1,9 @@
+import numpy as np
 import timm
 import torch
 import torch.nn as nn
-import numpy as np
 
-from .utils import activations, get_activation, Transpose
+from .utils import Transpose, activations, get_activation
 
 
 def forward_levit(pretrained, x):
