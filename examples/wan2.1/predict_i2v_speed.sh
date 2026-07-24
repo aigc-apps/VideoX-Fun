@@ -5,7 +5,7 @@ export DIT_EXCEL_COL=0 VAE_EXCEL_COL=1 TOTAL_EXCEL_COL=2
 # 14B 720P
 export DIT_EXCEL_ROW=1 VAE_EXCEL_ROW=1 TOTAL_EXCEL_ROW=1
 python examples/wan2.1/predict_i2v_speed.py --model_name="models/Diffusion_Transformer/Wan2.1-I2V-14B-720P" \
-    --GPU_memory_mode="model_full_load_and_qfloat8" --ulysses_degree=1 --ring_degree=1 --fsdp_text_encoder --fsdp_dit \
+    --GPU_memory_mode="model_full_load_and_qfloat8" --ulysses_degree=1 --ring_degree=1 --fsdp_text_encoder --compile_dit \
     --enable_teacache --teacache_threshold=0.30 --num_skip_start_steps=2 --cfg_skip_ratio=0.25 --shift=5 \
     --sample_size 720 1280 --num_inference_steps=40 
 

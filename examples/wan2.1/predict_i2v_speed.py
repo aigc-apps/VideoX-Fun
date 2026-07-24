@@ -23,7 +23,7 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, r
                                               convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                   save_videos_grid)
+                                   save_videos_grid, timer_record)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 

@@ -246,7 +246,7 @@ for i in range(2):
             coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
         )
 
-    if cfg_skip_ratio is not None:
+    if cfg_skip_ratio is not None and cfg_skip_ratio > 0:
         print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
         pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
 
