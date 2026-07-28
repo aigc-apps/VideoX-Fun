@@ -642,3 +642,102 @@ def prepare_lingbot_dit_cond_dict(
 
     dit_cond_dict = {"c2ws_plucker_emb": (c2ws_plucker_emb,)}
     return dit_cond_dict, frame_num
+
+
+def prepare_lingbot_dit_cond_dict_from_c2ws(
+    c2ws,
+    intrinsics,
+    frame_num,
+    height,
+    width,
+    device,
+    dtype=torch.bfloat16,
+    control_type='cam',
+    vae_stride=(4, 8, 8),
+    patch_size=(1, 2, 2),
+    intrinsics_org_height=480,
+    intrinsics_org_width=832,
+):
+    """Training-time variant of :func:`prepare_lingbot_dit_cond_dict`.
+
+    Same as :func:`prepare_lingbot_dit_cond_dict` but takes already loaded /
+    sampled ``c2ws`` (poses) and ``intrinsics`` tensors instead of a directory
+    path. The camera trajectory is expected to correspond one-to-one with the
+    ``frame_num`` sampled RGB frames used for training, so it can be fed to
+    :class:`WanTransformer3DModel_LingbotWorld` alongside the noisy video
+    latents.
+
+    Args:
+        c2ws (`np.ndarray` or `torch.Tensor`): shape ``[frame_num, 4, 4]``,
+            per-frame camera-to-world matrices in the opencv convention.
+        intrinsics (`np.ndarray` or `torch.Tensor`): shape ``[N, 4]`` or
+            ``[4]``, ``(fx, fy, cx, cy)`` intrinsics matching the original
+            capture resolution ``(intrinsics_org_height, intrinsics_org_width)``.
+            Only the first row is used (same as inference).
+        frame_num (`int`): number of sampled frames (must be ``4n+1``).
+        height (`int`), width (`int`): target training resolution in pixels.
+        device: torch device for the produced tensors.
+
+    Returns:
+        (dict, int): ``({"c2ws_plucker_emb": (tensor[1, C, lat_f, lat_h, lat_w],)}, frame_num)``.
+    """
+    assert control_type == 'cam', "Only 'cam' control_type is currently supported."
+
+    if isinstance(c2ws, torch.Tensor):
+        c2ws = c2ws.detach().cpu().numpy()
+    c2ws = np.asarray(c2ws, dtype=np.float64)
+
+    # Enforce the 4n+1 constraint expected by the VAE temporal compression.
+    len_c2ws = ((len(c2ws) - 1) // vae_stride[0]) * vae_stride[0] + 1
+    frame_num = min(frame_num, len_c2ws)
+    c2ws = c2ws[:frame_num]
+
+    lat_h = height // vae_stride[1]
+    lat_w = width // vae_stride[2]
+    lat_f = (frame_num - 1) // vae_stride[0] + 1
+
+    if isinstance(intrinsics, torch.Tensor):
+        Ks = intrinsics.detach().cpu().float()
+    else:
+        Ks = torch.from_numpy(np.asarray(intrinsics)).float()
+    if Ks.dim() == 1:
+        Ks = Ks[None, :]
+    # Intrinsics are provided for the original capture size; transform to (h, w).
+    Ks = get_Ks_transformed(
+        Ks,
+        height_org=intrinsics_org_height,
+        width_org=intrinsics_org_width,
+        height_resize=height,
+        width_resize=width,
+        height_final=height,
+        width_final=width,
+    )
+    Ks = Ks[0]
+
+    len_c2ws = len(c2ws)
+    c2ws_infer = interpolate_camera_poses(
+        src_indices=np.linspace(0, len_c2ws - 1, len_c2ws),
+        src_rot_mat=c2ws[:, :3, :3],
+        src_trans_vec=c2ws[:, :3, 3],
+        tgt_indices=np.linspace(0, len_c2ws - 1, int((len_c2ws - 1) // vae_stride[0]) + 1),
+    )
+    c2ws_infer = compute_relative_poses(c2ws_infer, framewise=True)
+    Ks = Ks.repeat(len(c2ws_infer), 1)
+
+    c2ws_infer = c2ws_infer.to(device)
+    Ks = Ks.to(device)
+
+    c2ws_plucker_emb = get_plucker_embeddings(c2ws_infer, Ks, height, width, only_rays_d=False)
+    c2ws_plucker_emb = rearrange(
+        c2ws_plucker_emb,
+        'f (h c1) (w c2) c -> (f h w) (c c1 c2)',
+        c1=int(height // lat_h),
+        c2=int(width // lat_w),
+    )
+    c2ws_plucker_emb = c2ws_plucker_emb[None, ...]  # [b, f*h*w, c]
+    c2ws_plucker_emb = rearrange(
+        c2ws_plucker_emb, 'b (f h w) c -> b c f h w', f=lat_f, h=lat_h, w=lat_w
+    ).to(dtype)
+
+    dit_cond_dict = {"c2ws_plucker_emb": (c2ws_plucker_emb,)}
+    return dit_cond_dict, frame_num

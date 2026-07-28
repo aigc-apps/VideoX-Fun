@@ -18,6 +18,26 @@ from torch import nn
 from .wan_transformer3d import Wan2_2Transformer3DModel, WanAttentionBlock
 
 
+def unwrap_block_module(module):
+    r"""
+    Return the module wrapped by FSDP / activation-checkpoint wrappers.
+
+    When accelerate auto-wraps the attention blocks (e.g. FSDP
+    ``TRANSFORMER_BASED_WRAP`` on ``LingbotWorldWanAttentionBlock``),
+    ``self.blocks`` holds wrapper modules. A plain ``setattr`` on the wrapper
+    would NOT reach the wrapped block: the block keeps reading its own
+    ``_cam_hidden`` attribute (initialized to None), silently disabling the
+    camera injection. Attributes therefore must be set on the unwrapped module.
+    """
+    while True:
+        if hasattr(module, "_fsdp_wrapped_module"):
+            module = module._fsdp_wrapped_module
+        elif hasattr(module, "_checkpoint_wrapped_module"):
+            module = module._checkpoint_wrapped_module
+        else:
+            return module
+
+
 class LingbotWorldWanAttentionBlock(WanAttentionBlock):
     """Wan transformer block with per-block camera (plücker) injection."""
 
@@ -325,28 +345,29 @@ class WanTransformer3DModel_LingbotWorld(Wan2_2Transformer3DModel):
         if dit_cond_dict is None:
             dit_cond_dict = getattr(self, "dit_cond_dict", None)
 
-        # Prepare the per-token camera hidden states and share them with the blocks
+        # Prepare the per-token camera hidden states and share them with the
+        # blocks. The attribute must be set on the *unwrapped* blocks (see
+        # ``unwrap_block_module``) so it survives FSDP auto-wrapping, and it is
+        # intentionally NOT cleared after forward: with ``use_reentrant=False``
+        # gradient checkpointing the block forwards are re-run during backward
+        # and must still see the same condition. Every forward overwrites the
+        # value (with None when no condition is given), so nothing goes stale.
         cam_hidden = None
         if dit_cond_dict is not None and "c2ws_plucker_emb" in dit_cond_dict:
             cam_hidden = self._prepare_cam_hidden(dit_cond_dict, device=x.device)
         for block in self.blocks:
-            block._cam_hidden = cam_hidden
+            unwrap_block_module(block)._cam_hidden = cam_hidden
 
-        # Delegate to the Wan2.2 backbone, always clearing the shared condition
-        try:
-            out = super().forward(
-                x=x,
-                t=t,
-                context=context,
-                seq_len=seq_len,
-                clip_fea=clip_fea,
-                y=y,
-                y_camera=y_camera,
-                full_ref=full_ref,
-                subject_ref=subject_ref,
-                **kwargs,
-            )
-        finally:
-            for block in self.blocks:
-                block._cam_hidden = None
-        return out
+        # Delegate to the Wan2.2 backbone
+        return super().forward(
+            x=x,
+            t=t,
+            context=context,
+            seq_len=seq_len,
+            clip_fea=clip_fea,
+            y=y,
+            y_camera=y_camera,
+            full_ref=full_ref,
+            subject_ref=subject_ref,
+            **kwargs,
+        )

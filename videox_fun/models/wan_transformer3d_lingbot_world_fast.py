@@ -16,6 +16,7 @@ from diffusers.configuration_utils import register_to_config
 from einops import rearrange
 
 from .wan_transformer3d import sinusoidal_embedding_1d
+from .wan_transformer3d_lingbot_world import unwrap_block_module
 from .wan_transformer3d_self_forcing import (
     CasualWanAttentionBlock,
     CausalHead,
@@ -506,13 +507,11 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
                 for u in context
             ]))
 
-        # Camera condition: prepare per-token hidden states and set on blocks
+        # Camera condition: prepare per-token hidden states.
         cam_hidden = None
         if dit_cond_dict is not None and "c2ws_plucker_emb" in dit_cond_dict:
             cam_hidden = self._prepare_cam_hidden(
                 dit_cond_dict, grid_sizes, current_start, device)
-        for block in self.blocks:
-            block._cam_hidden = cam_hidden
 
         # Context Parallel: split input across GPUs
         if self.sp_world_size > 1:
@@ -523,6 +522,23 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
                 e0 = e0.repeat_interleave(frame_seqlen_e0, dim=1)
                 e0 = torch.chunk(e0, self.sp_world_size, dim=1)[self.sp_world_rank]
             x = torch.chunk(x, self.sp_world_size, dim=1)[self.sp_world_rank]
+            # Shard the camera hidden states with the SAME chunking as x so each
+            # rank injects the plucker tokens for its own sequence slice. Without
+            # this the per-block injection would fall back to cam[:, :x.shape[1]]
+            # (the first slice) on every rank, misaligning camera control on all
+            # ranks except rank 0.
+            if cam_hidden is not None:
+                cam_hidden = torch.chunk(cam_hidden, self.sp_world_size, dim=1)[self.sp_world_rank]
+
+        # Share the (possibly sharded) camera condition with every block. The
+        # attribute is set on the *unwrapped* blocks so it survives FSDP /
+        # activation-checkpoint auto-wrapping, and it is intentionally NOT
+        # cleared after forward: with ``use_reentrant=False`` gradient
+        # checkpointing the block forwards are re-run during backward and must
+        # still see the same condition. Every forward overwrites the value
+        # (with None when no condition is given), so nothing goes stale.
+        for block in self.blocks:
+            unwrap_block_module(block)._cam_hidden = cam_hidden
 
         # Arguments
         kwargs = dict(
@@ -540,31 +556,26 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        try:
-            for block_index, block in enumerate(self.blocks):
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    kwargs.update({
-                        "kv_cache": kv_cache[block_index] if kv_cache else None,
-                        "current_start": current_start,
-                        "cache_start": cache_start
-                    })
-                    x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        x, **kwargs,
-                        use_reentrant=False,
-                    )
-                else:
-                    kwargs.update({
-                        "kv_cache": kv_cache[block_index] if kv_cache else None,
-                        "crossattn_cache": crossattn_cache[block_index] if crossattn_cache else None,
-                        "current_start": current_start,
-                        "cache_start": cache_start
-                    })
-                    x = block(x, **kwargs)
-        finally:
-            # Always clear camera condition from blocks
-            for block in self.blocks:
-                block._cam_hidden = None
+        for block_index, block in enumerate(self.blocks):
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                kwargs.update({
+                    "kv_cache": kv_cache[block_index] if kv_cache else None,
+                    "current_start": current_start,
+                    "cache_start": cache_start
+                })
+                x = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    x, **kwargs,
+                    use_reentrant=False,
+                )
+            else:
+                kwargs.update({
+                    "kv_cache": kv_cache[block_index] if kv_cache else None,
+                    "crossattn_cache": crossattn_cache[block_index] if crossattn_cache else None,
+                    "current_start": current_start,
+                    "cache_start": cache_start
+                })
+                x = block(x, **kwargs)
 
         # Remove clean part for teacher forcing output
         if clean_x is not None:
