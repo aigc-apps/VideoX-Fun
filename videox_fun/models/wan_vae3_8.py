@@ -1098,10 +1098,13 @@ class AutoencoderKLWan3_8(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         tmp_state_dict = {} 
         for key in state_dict:
-            tmp_state_dict["model." + key] = state_dict[key]
+            if not key.startswith("model."):
+                tmp_state_dict["model." + key] = state_dict[key]
+            else:
+                tmp_state_dict[key] = state_dict[key]
         state_dict = tmp_state_dict
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")

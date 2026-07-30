@@ -3,8 +3,8 @@
 # LingBot-World (camera-pose controlled) causal streaming inference pipeline.
 # Reference: repo/lingbot-world/wan/image2video_fast.py
 #
-# Mirrors the lingbot-world fast (Self-Forcing distilled) I2V flow: chunk-wise
-# autoregressive denoising with a KV-cache, per-chunk plücker camera injection,
+# Mirrors the lingbot-world fast (Self-Forcing distilled) I2V flow: block-wise
+# autoregressive denoising with a KV-cache, per-block plücker camera injection,
 # and a flow-matching x0 resample schedule. Reuses WanSelfForcingPipeline
 # helpers (T5 encode, KV/cross-attn cache init, VAE decode).
 
@@ -78,11 +78,11 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
 
     This pipeline inherits from [`WanSelfForcingPipeline`] and reuses its helpers
     (T5 prompt encode, KV / cross-attention cache init, VAE decode). Generation
-    proceeds chunk by chunk (``chunk_size`` latent frames per block). For each
-    chunk, a short flow-matching schedule denoises the noise
-    to an ``x0`` prediction; the per-chunk plücker camera embedding is injected via
-    ``dit_cond_dict`` and the clean chunk is written into the KV cache for the next
-    chunk to attend to.
+    proceeds block by block (``num_frame_per_block`` latent frames per block). For each
+    block, a short flow-matching schedule denoises the noise
+    to an ``x0`` prediction; the per-block plücker camera embedding is injected via
+    ``dit_cond_dict`` and the clean block is written into the KV cache for the next
+    block to attend to.
     """
 
     def _prepare_generic_timesteps(self, num_inference_steps, shift, device):
@@ -90,9 +90,9 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
         the non-stochastic fallback path.
 
         Dispatches by scheduler type exactly like the standard Wan pipelines.
-        Re-invoked at the start of each causal chunk so the multistep solvers
+        Re-invoked at the start of each causal block so the multistep solvers
         (UniPC / DPM++) restart their ``step_index`` and model-output history
-        for every independent chunk denoise.
+        for every independent block denoise.
         """
         if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
             timesteps, _ = retrieve_timesteps(
@@ -177,7 +177,7 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
         height: int = 480,
         width: int = 832,
         num_frames: int = 81,
-        chunk_size: int = 3,
+        num_frame_per_block: int = 3,
         num_inference_steps: int = 4,
         guidance_scale: float = 1.0,
         stochastic_sampling: bool = True,
@@ -215,7 +215,7 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
                 The width in pixels of the generated video.
             num_frames (`int`, *optional*, defaults to 81):
                 The number of frames to generate (4n + 1).
-            chunk_size (`int`, *optional*, defaults to 3):
+            num_frame_per_block (`int`, *optional*, defaults to 3):
                 The number of latent frames generated per causal block.
             num_inference_steps (`int`, *optional*, defaults to 4):
                 Number of denoising steps for the generic scheduler path
@@ -280,7 +280,7 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
         # 2. Preprocess the reference image to [3, H, W] in [-1, 1]
         img = TF.to_tensor(image).sub_(0.5).div_(0.5).to(device)
 
-        # 3. Derive the latent shape; trim latent frames to a multiple of chunk_size
+        # 3. Derive the latent shape; trim latent frames to a multiple of num_frame_per_block
         vae_stride = (
             self.vae.temporal_compression_ratio,
             self.vae.spatial_compression_ratio,
@@ -296,13 +296,13 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
         lat_h = height // vae_stride[1]
         lat_w = width // vae_stride[2]
         lat_f = (frame_num - 1) // vae_stride[0] + 1
-        lat_f = int(lat_f - (lat_f % chunk_size))
-        assert lat_f >= chunk_size, \
-            f"latent frames ({lat_f}) < chunk_size ({chunk_size}); increase num_frames"
+        lat_f = int(lat_f - (lat_f % num_frame_per_block))
+        assert lat_f >= num_frame_per_block, \
+            f"latent frames ({lat_f}) < num_frame_per_block ({num_frame_per_block}); increase num_frames"
         frame_num = (lat_f - 1) * vae_stride[0] + 1
 
         frame_seq_length = (lat_h * lat_w) // (patch_size[1] * patch_size[2])
-        max_seq_len = chunk_size * frame_seq_length
+        max_seq_len = num_frame_per_block * frame_seq_length
 
         # 4. Prepare noise (only for the frames to generate)
         noise = randn_tensor(
@@ -366,32 +366,32 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
             frame_seq_length=frame_seq_length, num_latent_frames=num_latent_frames)
         self._initialize_crossattn_cache(batch_size=1, dtype=param_dtype, device=device)
 
-        # 9. Causal generation loop - chunk by chunk
-        latents_chunk = noise.split(chunk_size, dim=1)
-        condition_chunk = y.split(chunk_size, dim=1)
-        cam_chunk = (c2ws_plucker_emb.split(chunk_size, dim=2)
-                     if c2ws_plucker_emb is not None else [None] * len(latents_chunk))
-        num_chunks = len(latents_chunk)
+        # 9. Causal generation loop - block by block
+        latents_block = noise.split(num_frame_per_block, dim=1)
+        condition_block = y.split(num_frame_per_block, dim=1)
+        cam_block = (c2ws_plucker_emb.split(num_frame_per_block, dim=2)
+                     if c2ws_plucker_emb is not None else [None] * len(latents_block))
+        num_blocks = len(latents_block)
 
-        pred_latent_chunks = []
-        for chunk_id in range(num_chunks):
-            current_latent = latents_chunk[chunk_id].to(device)
-            current_condition = condition_chunk[chunk_id]
+        pred_latent_blocks = []
+        for block_index in range(num_blocks):
+            current_latent = latents_block[block_index].to(device)
+            current_condition = condition_block[block_index]
             current_num_frames = current_latent.shape[1]
 
-            # Camera condition for the current chunk
+            # Camera condition for the current block
             dit_cond_dict = None
-            if cam_chunk[chunk_id] is not None:
-                dit_cond_dict = {"c2ws_plucker_emb": (cam_chunk[chunk_id],)}
-            current_start = chunk_id * chunk_size * frame_seq_length
+            if cam_block[block_index] is not None:
+                dit_cond_dict = {"c2ws_plucker_emb": (cam_block[block_index],)}
+            current_start = block_index * num_frame_per_block * frame_seq_length
 
             # For the generic (non-stochastic) fallback, restart the scheduler's
-            # internal step_index / multistep history so each causal chunk
+            # internal step_index / multistep history so each causal block
             # denoises from a fresh state (the stochastic path is stateless).
             if not stochastic_sampling:
                 self._prepare_generic_timesteps(num_inference_steps, shift, device)
 
-            # Denoise the chunk with the few-step schedule.
+            # Denoise the block with the few-step schedule.
             denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
             with self.progress_bar(total=len(denoise_timesteps)) as progress_bar:
                 for step_idx in range(len(denoise_timesteps)):
@@ -452,11 +452,11 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
                         current_latent = x0
                     progress_bar.update()
 
-            pred_latent_chunks.append(x0)
+            pred_latent_blocks.append(x0)
 
-            # Write the clean chunk into the KV cache (context timestep = 0) so the
-            # next chunk can attend to it
-            if chunk_id < num_chunks - 1:
+            # Write the clean block into the KV cache (context timestep = 0) so the
+            # next block can attend to it
+            if block_index < num_blocks - 1:
                 context_timestep = torch.zeros([1, current_num_frames], device=device,
                                                dtype=torch.float32)
                 with torch.cuda.amp.autocast(dtype=param_dtype):
@@ -473,7 +473,7 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
                         cache_start=None,
                     )
                     if do_classifier_free_guidance:
-                        # Mirror the clean chunk into the unconditional caches too.
+                        # Mirror the clean block into the unconditional caches too.
                         self.transformer(
                             x=[x0],
                             t=context_timestep,
@@ -487,7 +487,7 @@ class WanFunLingbotWorldFastPipeline(WanSelfForcingPipeline):
                             cache_start=None,
                         )
 
-        pred_latents = torch.cat(pred_latent_chunks, dim=1)[None]
+        pred_latents = torch.cat(pred_latent_blocks, dim=1)[None]
 
         # 10. Decode the latents to frames
         if output_type == "pil":

@@ -304,7 +304,7 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
                 of tensors) with shape [1, C, F, H, W]
             grid_sizes (Tensor):
                 Shape [B, 3], the second dimension contains (F, H, W) of the
-                current chunk's patch-embedded latent
+                current block's patch-embedded latent
             current_start (`int`):
                 Token offset in the full sequence (for temporal slice computation)
             device (`torch.device`):
@@ -312,13 +312,13 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
 
         Returns:
             Tensor:
-                Camera hidden states with shape [1, L_chunk, dim], where
-                L_chunk = f_chunk * h_grid * w_grid matches current x tokens
+                Camera hidden states with shape [1, L_block, dim], where
+                L_block = f_block * h_grid * w_grid matches current x tokens
         """
         emb = dit_cond_dict["c2ws_plucker_emb"]
         emb_list = list(emb) if isinstance(emb, (list, tuple)) else [emb]
 
-        # Current chunk dimensions from grid_sizes
+        # Current block dimensions from grid_sizes
         f_current = grid_sizes[0, 0].item()
         h_grid = grid_sizes[0, 1].item()
         w_grid = grid_sizes[0, 2].item()
@@ -388,7 +388,7 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
             crossattn_cache (`list[dict]`, *optional*):
                 Per-layer cross-attention KV cache
             current_start (`int`, *optional*, defaults to 0):
-                Token offset of the current chunk in the full sequence
+                Token offset of the current block in the full sequence
             cache_start (`int`, *optional*, defaults to 0):
                 Cache starting position
             clean_x (List[Tensor], *optional*):

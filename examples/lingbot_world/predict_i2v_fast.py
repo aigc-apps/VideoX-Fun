@@ -95,8 +95,9 @@ lora_path           = None
 control_type        = "cam"
 
 # Self-Forcing causal inference config.
-# Number of latent frames generated per chunk.
-chunk_size          = 3
+# `num_frame_per_block`: 3 = chunk-wise: 
+#                        1 = frame-wise: 
+num_frame_per_block = 3
 # Local attention window size (-1 for global attention).
 local_attn_size     = -1
 sink_size           = 0
@@ -289,7 +290,7 @@ with torch.no_grad():
         height      = height,
         width       = width,
         num_frames  = video_length,
-        chunk_size  = chunk_size,
+        num_frame_per_block = num_frame_per_block,
         num_inference_steps = num_inference_steps,
         guidance_scale = guidance_scale,
         stochastic_sampling = stochastic_sampling,

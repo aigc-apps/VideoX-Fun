@@ -317,7 +317,8 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                if diffusers_version >= "0.33.0":
+                from packaging import version as pkg_version
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     from diffusers.models.model_loading_utils import \
                         load_model_dict_into_meta
                 else:
@@ -336,9 +337,9 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     from safetensors.torch import load_file
                     state_dict = load_file(pretrained_model_path)
                 else:
-                    state_dict = torch.load(pretrained_model_path, map_location="cpu")
+                    state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
 
-                if diffusers_version >= "0.33.0":
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
                     # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
                     load_model_dict_into_meta(
@@ -377,6 +378,8 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 
                 return model
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(
                     f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
                 )
@@ -386,7 +389,7 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
         print(m, u)
