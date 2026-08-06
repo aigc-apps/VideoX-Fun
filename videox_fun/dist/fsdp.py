@@ -113,6 +113,13 @@ def shard_model(
             lambda_fn=lambda m: m in (model.blocks if module_to_wrapper is None else module_to_wrapper)
         )
 
+    # FSDP flattens each wrap unit's parameters into one flat buffer and requires a uniform dtype inside it.
+    # Models that pin a few modules to fp32 for numerical precision (e.g. MiniMax-H3's embedders/output heads)
+    # would otherwise fail with "Must flatten tensors with uniform dtype"; MixedPrecision computes in
+    # `param_dtype` anyway, so cast up front.
+    if param_dtype is not None and any(p.dtype != param_dtype for p in model.parameters()):
+        model.to(param_dtype)
+
     model = FSDP(
         module=model,
         process_group=process_group,

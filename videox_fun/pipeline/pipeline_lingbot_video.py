@@ -399,6 +399,14 @@ class LingBotVideoPipeline(DiffusionPipeline):
         frames = (frames + 1.0) / 2.0
         return frames.cpu()  # (B, C, T, H, W) in [0, 1]
 
+    @property
+    def guidance_scale(self):
+        return self._guidance_scale
+
+    @property
+    def interrupt(self):
+        return self._interrupt
+
     @torch.no_grad()
     def __call__(
         self,
@@ -476,9 +484,15 @@ class LingBotVideoPipeline(DiffusionPipeline):
         if self.transformer is None or self.scheduler is None:
             raise ValueError("`transformer` and `scheduler` are required for generation.")
 
-        # 2. Define call parameters
+        # 2. Default call parameters
         device = self._execution_device
-        do_cfg = guidance_scale > 1.0
+        self._guidance_scale = guidance_scale
+        self._interrupt = False
+
+        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # corresponds to doing no classifier free guidance.
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         if prompt_embeds is not None:
             if prompt_mask is None:
@@ -496,20 +510,13 @@ class LingBotVideoPipeline(DiffusionPipeline):
         # 3. Encode input prompt
         if prompt_embeds is None:
             prompt_embeds, prompt_mask = self.encode_prompt(prompt, device=device)
-        if do_cfg:
+        if do_classifier_free_guidance:
             if negative_prompt_embeds is not None:
                 negative_embeds, negative_mask = negative_prompt_embeds, negative_prompt_mask
             else:
                 negative_embeds, negative_mask = self.encode_prompt(negative_prompt, device=device)
 
-        # 4. Prepare timesteps and latents
-        latents = self.prepare_latents(num_frames, height, width, generator, latents, device)
-        # Clean temporal-prefix condition (e.g. the ti2v first-frame latent): written
-        # into the latent before sampling and after every scheduler step, so the fixed
-        # frames stay clean while the rest denoise against them through attention.
-        if cond_latent is not None:
-            cond_latent = cond_latent.to(device=device, dtype=torch.float32)
-            latents = self._apply_inpainting(latents, cond_latent)
+        # 4. Prepare timesteps
         sigmas = compute_refiner_sigmas(
             sigma_max=float(self.scheduler.sigma_max),
             sigma_min=float(self.scheduler.sigma_min),
@@ -529,50 +536,73 @@ class LingBotVideoPipeline(DiffusionPipeline):
             )
         transformer_dtype = _module_dtype(self.transformer)
 
-        # 5. Denoising loop
-        for i, timestep in enumerate(self.progress_bar(self.scheduler.timesteps)):
-            timestep_batch = _transformer_timestep(timestep, transformer_dtype).expand(1).to(device)
-            latent_model_input = latents
+        # 5. Prepare latents
+        latents = self.prepare_latents(num_frames, height, width, generator, latents, device)
+        # Clean temporal-prefix condition latent: written into the latent before
+        # sampling and after every scheduler step, so the fixed frames stay clean
+        # while the rest denoise against them through attention.
+        if cond_latent is not None:
+            cond_latent = cond_latent.to(device=device, dtype=torch.float32)
+            latents = self._apply_inpainting(latents, cond_latent)
 
-            prompt_model_input = prompt_embeds.to(transformer_dtype)
-            with _transformer_autocast(device, transformer_dtype):
-                noise_pred = self.transformer(
-                    latent_model_input,
-                    timestep_batch,
-                    prompt_model_input,
-                    encoder_attention_mask=prompt_mask,
-                    return_dict=False,
-                )[0].float()
+        # 6. Denoising loop
+        with self.progress_bar(total=len(self.scheduler.timesteps)) as progress_bar:
+            for i, t in enumerate(self.scheduler.timesteps):
+                if self.interrupt:
+                    continue
 
-            if do_cfg:
-                negative_model_input = negative_embeds.to(transformer_dtype)
+                latent_model_input = latents
+
+                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+                timestep = _transformer_timestep(t, transformer_dtype).expand(latent_model_input.shape[0]).to(device)
+
+                # predict noise model_output
+                prompt_model_input = prompt_embeds.to(transformer_dtype)
                 with _transformer_autocast(device, transformer_dtype):
-                    noise_pred_uncond = self.transformer(
+                    noise_pred = self.transformer(
                         latent_model_input,
-                        timestep_batch,
-                        negative_model_input,
-                        encoder_attention_mask=negative_mask,
+                        timestep,
+                        prompt_model_input,
+                        encoder_attention_mask=prompt_mask,
                         return_dict=False,
                     )[0].float()
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred - noise_pred_uncond)
 
-            latents = self.scheduler.step(
-                noise_pred,
-                timestep,
-                latents,
-                return_dict=False,
-                generator=generator,
-            )[0]
-            if cond_latent is not None:
-                latents = self._apply_inpainting(latents, cond_latent)
+                # perform guidance
+                if do_classifier_free_guidance:
+                    negative_model_input = negative_embeds.to(transformer_dtype)
+                    with _transformer_autocast(device, transformer_dtype):
+                        noise_pred_uncond = self.transformer(
+                            latent_model_input,
+                            timestep,
+                            negative_model_input,
+                            encoder_attention_mask=negative_mask,
+                            return_dict=False,
+                        )[0].float()
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred - noise_pred_uncond)
 
-        # 6. Decode latents
+                # compute the previous noisy sample x_t -> x_t-1
+                latents = self.scheduler.step(
+                    noise_pred,
+                    t,
+                    latents,
+                    return_dict=False,
+                    generator=generator,
+                )[0]
+                if cond_latent is not None:
+                    latents = self._apply_inpainting(latents, cond_latent)
+
+                progress_bar.update()
+
+        # 7. Decode latents
         if output_type == "latent":
-            videos = latents
+            video = latents
         else:
-            videos = self.decode_latents(latents)
+            video = self.decode_latents(latents)
 
+        # Offload all models
         self.maybe_free_model_hooks()
+
         if not return_dict:
-            return (videos,)
-        return LingBotVideoPipelineOutput(videos=videos)
+            return video
+
+        return LingBotVideoPipelineOutput(videos=video)
