@@ -1,6 +1,6 @@
 export MODEL_NAME="models/Diffusion_Transformer/lingbot-video-moe-30b-a3b"
-export DATASET_NAME="datasets/lingbot_video"
-export DATASET_META_NAME="datasets/lingbot_video/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_lingbot_video_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

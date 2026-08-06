@@ -199,7 +199,7 @@ modelscope download --model your-org/lingbot-world-base-cam --local_dir models/D
 
 在按 **2.1 数据集结构** 准备好数据（或直接下载演示数据集 `PAI/X-Fun-Videos-Lingbot-Demo`）、按 **3.1 下载预训练模型** 下载好权重后，直接复制以下启动指令即可运行。
 
-LingBot-World 推荐使用 FSDP 训练（`scripts/lingbotworld/train.sh` 默认就是这个方案）。因为 LingBot 用 `LingbotWorldWanAttentionBlock` 替换了 `WanAttentionBlock`（增加了 4 个 `cam_*` linear），FSDP 的 transformer 包装类需要设成 LingBot 的 block，以保证相机注入参数与本 block 的注意力 / FFN 处于同一个 FSDP 单元。
+LingBot-World 推荐使用 FSDP 训练。因为 LingBot 用 `LingbotWorldWanAttentionBlock` 替换了 `WanAttentionBlock`（增加了 4 个 `cam_*` linear），FSDP 的 transformer 包装类需要设成 LingBot 的 block，以保证相机注入参数与本 block 的注意力 / FFN 处于同一个 FSDP 单元。仓库自带的 `scripts/lingbot_world/train.sh` 用的是普通 `accelerate launch`（未开 FSDP），训练**高噪声**分支、分辨率 640 —— 显存不够时可改用下方的 FSDP 参数。
 
 **LingBot-World I2V 训练示例**（低噪声分支）：
 
@@ -212,7 +212,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Lingbot-Demo/metadata_add_width_
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=LingbotWorldWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/lingbotworld/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=LingbotWorldWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/lingbot_world/train.py \
   --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -262,7 +262,7 @@ LingBot-World 继承了 `scripts/wan2.2/train.py` 的所有参数，此处只列
 
 **说明**：
 - `train_batch_size=1` 是当前推荐（且经过验证的）配置。相机轨迹长度可能因样本而异，batch 字典里以 python 列表形式携带，训练循环消费的是 index 0。如需更大的等效 batch，请调大 `--gradient_accumulation_steps`。
-- 不开启 `--enable_camera_control` 时，`scripts/lingbotworld/train.py` 的行为与 `scripts/wan2.2/train.py` 完全一致。
+- 不开启 `--enable_camera_control` 时，`scripts/lingbot_world/train.py` 的行为与 `scripts/wan2.2/train.py` 完全一致。
 
 ### 3.4 可训练模块选择
 
@@ -290,8 +290,8 @@ LingBot-World 继承了 `scripts/wan2.2/train.py` 的所有参数，此处只列
 
 Wan2.2 采用双 Transformer 结构：**高噪声** transformer 生成粗结构，**低噪声** transformer 细化细节，在 `boundary`（默认 0.900）处切分。
 
-- `--boundary_type=low`（`train.sh` 默认）：训练低噪声分支，timestep 采样于 `[0, boundary * T]`。
-- `--boundary_type=high`：训练高噪声分支，timestep 采样于 `[boundary * T, T]`。
+- `--boundary_type=low`：训练低噪声分支，timestep 采样于 `[0, boundary * T]`。
+- `--boundary_type=high`（`train.sh` 自带的配置）：训练高噪声分支，timestep 采样于 `[boundary * T, T]`。
 - `--boundary_type=full`：训练单个 transformer 覆盖 `[0, T]`（LingBot 一般不用）。
 
 要覆盖完整流水线，分别用 `--boundary_type=low` 和 `--boundary_type=high` 各跑一次。推理时通过 `transformer_path`（低）和 `transformer_high_path`（高）分别喂给推理脚本，或者把 `model_name` 指向按 `config/wan2.2/wan_civitai_i2v.yaml` 布局保存两个子目录的目录。
@@ -300,7 +300,7 @@ Wan2.2 采用双 Transformer 结构：**高噪声** transformer 生成粗结构�
 
 相对于原生 Wan2.2 I2V trainer，训练脚本只在以下四处做了改动：
 
-1. **模型类切换** —— `scripts/lingbotworld/train.py` 在 `--enable_camera_control` 打开时选择 `WanTransformer3DModel_LingbotWorld`。该类继承自 `Wan2_2Transformer3DModel`，追加了 `patch_embedding_wancamctrl` / `c2ws_hidden_states_layer{1,2}`（全局 plücker → hidden state 映射），以及 `LingbotWorldWanAttentionBlock` 内的 `cam_injector_layer{1,2}` / `cam_scale_layer` / `cam_shift_layer`。
+1. **模型类切换** —— `scripts/lingbot_world/train.py` 在 `--enable_camera_control` 打开时选择 `WanTransformer3DModel_LingbotWorld`。该类继承自 `Wan2_2Transformer3DModel`，追加了 `patch_embedding_wancamctrl` / `c2ws_hidden_states_layer{1,2}`（全局 plücker → hidden state 映射），以及 `LingbotWorldWanAttentionBlock` 内的 `cam_injector_layer{1,2}` / `cam_scale_layer` / `cam_shift_layer`。
 2. **数据集扩展** —— `LingbotImageVideoDataset` 是 `ImageVideoDataset` 的直接子类，从样本的 `action_path` 读入 `poses.npy` / `intrinsics.npy`，用**相同**的帧索引切片位姿数组，并将结果写入 `sample["action_c2ws"]` / `sample["action_intrinsics"]`。
 3. **相机条件构造** —— 训练循环中对每个含轨迹的样本调用 `prepare_lingbot_dit_cond_dict_from_c2ws(...)`。这个函数镜像了推理路径中 `prepare_lingbot_dit_cond_dict` 的所有步骤：位姿插值到 `lat_f = (frame_num - 1) // vae_temporal_ratio + 1` 帧、逐帧相对位姿、按 bucket 尺寸缩放内参、生成 plücker embedding、并打包为 `[1, C, lat_f, lat_h, lat_w]` 张量。
 4. **Forward** —— 生成的 `dit_cond_dict` 通过 `transformer3d(..., dit_cond_dict=dit_cond_dict)` 传入模型。`WanTransformer3DModel_LingbotWorld.forward` 把 plücker 张量投影为每个 token 的相机隐状态，广播给每个 `LingbotWorldWanAttentionBlock`，后者在自注意力和交叉注意力之间执行 `(1 + cam_scale) * x + cam_shift` 调制。

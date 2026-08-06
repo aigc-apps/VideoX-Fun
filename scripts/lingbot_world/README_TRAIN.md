@@ -84,12 +84,6 @@ You can also download the ready-to-use demo dataset from ModelScope (7 videos at
 modelscope download --dataset PAI/X-Fun-Videos-Lingbot-Demo --local_dir datasets/X-Fun-Videos-Lingbot-Demo
 ```
 
-You can also download the ready-to-use demo dataset from ModelScope (7 videos at 832x480 with paired camera trajectories, suitable for smoke-testing the training loop):
-
-```bash
-modelscope download --dataset PAI/X-Fun-Videos-Lingbot-Demo --local_dir datasets/X-Fun-Videos-Lingbot-Demo
-```
-
 ### 2.2 metadata.json Format
 
 The annotation file adds one new field on top of the standard Wan2.2 schema — `action_path`.
@@ -205,7 +199,7 @@ The config file remains `config/wan2.2/wan_civitai_i2v.yaml` because LingBot-Wor
 
 After downloading the dataset as in **2.1 Dataset Structure** (or simply downloading the demo dataset `PAI/X-Fun-Videos-Lingbot-Demo`) and the pretrained model as in **3.1 Download Pretrained Model**, you can directly copy and run the quick start command.
 
-We recommend FSDP for LingBot-World training (`scripts/lingbotworld/train.sh` uses this by default). Because LingBot replaces `WanAttentionBlock` with `LingbotWorldWanAttentionBlock` (which adds four `cam_*` linear layers), the FSDP transformer-wrap class is set to the LingBot block so its parameters stay in the same FSDP unit as attention/FFN.
+We recommend FSDP for LingBot-World training. Because LingBot replaces `WanAttentionBlock` with `LingbotWorldWanAttentionBlock` (which adds four `cam_*` linear layers), the FSDP transformer-wrap class is set to the LingBot block so its parameters stay in the same FSDP unit as attention/FFN. The shipped `scripts/lingbot_world/train.sh` uses a plain `accelerate launch` (no FSDP) on the **high-noise** branch at 640 resolution — add the FSDP flags below when the model does not fit.
 
 **LingBot-World I2V Training Example** (low-noise branch):
 
@@ -218,7 +212,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Lingbot-Demo/metadata_add_width_
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=LingbotWorldWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/lingbotworld/train.py \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=LingbotWorldWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/lingbot_world/train.py \
   --config_path="config/wan2.2/wan_civitai_i2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -268,7 +262,7 @@ LingBot-World inherits every argument from `scripts/wan2.2/train.py`. Only the L
 
 **Notes**:
 - `train_batch_size=1` is the recommended (and validated) setting. Camera trajectories can have different lengths per sample so they are carried through the batch as a python list; the training loop currently consumes trajectory index 0. Use `--gradient_accumulation_steps` to raise the effective batch size.
-- Without `--enable_camera_control`, `scripts/lingbotworld/train.py` behaves exactly like `scripts/wan2.2/train.py`.
+- Without `--enable_camera_control`, `scripts/lingbot_world/train.py` behaves exactly like `scripts/wan2.2/train.py`.
 
 ### 3.4 Trainable Modules
 
@@ -296,8 +290,8 @@ Combine with FSDP for memory.
 
 Wan2.2 uses a dual-Transformer setup: a **high-noise** transformer denoises the coarse structure and a **low-noise** transformer refines the details, split at `boundary` (default 0.900).
 
-- `--boundary_type=low` (default in `train.sh`): Train the low-noise transformer, sample timesteps from `[0, boundary * T]`.
-- `--boundary_type=high`: Train the high-noise transformer, sample timesteps from `[boundary * T, T]`.
+- `--boundary_type=low`: Train the low-noise transformer, sample timesteps from `[0, boundary * T]`.
+- `--boundary_type=high` (what `train.sh` ships with): Train the high-noise transformer, sample timesteps from `[boundary * T, T]`.
 - `--boundary_type=full`: Train a single transformer over the whole `[0, T]` range (rarely used for LingBot).
 
 To cover the full pipeline, run the script twice — once with `--boundary_type=low` and once with `--boundary_type=high`. At inference time, pass both trained checkpoints via `transformer_path` (low) and `transformer_high_path` (high), or point `model_name` at a directory that holds both under the sub-paths defined in `config/wan2.2/wan_civitai_i2v.yaml`.
@@ -306,7 +300,7 @@ To cover the full pipeline, run the script twice — once with `--boundary_type=
 
 The training script differs from the plain Wan2.2 I2V trainer in exactly four places:
 
-1. **Model class swap** — `scripts/lingbotworld/train.py` selects `WanTransformer3DModel_LingbotWorld` when `--enable_camera_control` is set. The class inherits from `Wan2_2Transformer3DModel` and adds `patch_embedding_wancamctrl` / `c2ws_hidden_states_layer{1,2}` (global plücker → hidden-state projection) and per-block `cam_injector_layer{1,2}` / `cam_scale_layer` / `cam_shift_layer` inside `LingbotWorldWanAttentionBlock`.
+1. **Model class swap** — `scripts/lingbot_world/train.py` selects `WanTransformer3DModel_LingbotWorld` when `--enable_camera_control` is set. The class inherits from `Wan2_2Transformer3DModel` and adds `patch_embedding_wancamctrl` / `c2ws_hidden_states_layer{1,2}` (global plücker → hidden-state projection) and per-block `cam_injector_layer{1,2}` / `cam_scale_layer` / `cam_shift_layer` inside `LingbotWorldWanAttentionBlock`.
 2. **Dataset extension** — `LingbotImageVideoDataset` is a drop-in subclass of `ImageVideoDataset`. It reads `poses.npy` / `intrinsics.npy` from the sample's `action_path`, slices `poses.npy` at the same frame indices used for the RGB clip, and stores the result in `sample["action_c2ws"]` / `sample["action_intrinsics"]`.
 3. **Camera condition preparation** — inside the training step, `prepare_lingbot_dit_cond_dict_from_c2ws(...)` is called per sample. This mirrors `prepare_lingbot_dit_cond_dict` from the inference path: interpolate the sampled poses to `lat_f = (frame_num - 1) // vae_temporal_ratio + 1` frames, compute framewise relative poses, scale intrinsics to the current bucket size, build the plücker embedding, and pack it into a `[1, C, lat_f, lat_h, lat_w]` tensor.
 4. **Forward pass** — the produced `dit_cond_dict` is passed to `transformer3d(..., dit_cond_dict=dit_cond_dict)`. `WanTransformer3DModel_LingbotWorld.forward` embeds the plücker tensor into per-token camera hidden states and shares them with every `LingbotWorldWanAttentionBlock`, which applies the `(1 + cam_scale) * x + cam_shift` modulation between self-attention and cross-attention.

@@ -9,13 +9,13 @@ BEFORE training to rewrite the "text" field of the dataset metadata:
     #   REWRITER_BASE_MODEL  -> Qwen3.6-27B VLM (or --base)
     #   REWRITER_ADAPTER     -> step2 LoRA adapter, peft format (or --adapter)
     python scripts/lingbot_video/prepare_captions.py \
-        --metadata datasets/lingbot_video/metadata.json \
-        --data_root datasets/lingbot_video \
-        --output datasets/lingbot_video/metadata_json.json \
+        --metadata datasets/my_dataset/metadata.json \
+        --data_root datasets/my_dataset \
+        --output datasets/my_dataset/metadata_json.json \
         --mode ti2v --duration 3.3
 
 Then point train.sh at the rewritten metadata
-(DATASET_META_NAME=datasets/lingbot_video/metadata_json.json).
+(DATASET_META_NAME=datasets/my_dataset/metadata_json.json).
 
 Behaviour:
   - entries whose "text" is already a valid structured JSON caption are kept
@@ -121,7 +121,7 @@ def main():
     print(f"\nDONE: rewritten={n_done}, already-valid={n_kept}, failed={n_fail}\noutput: {args.output}")
     if n_fail:
         print("NOTE: failed entries still carry their original natural-language text; "
-              "fix them manually (see videox_fun/models/lingbot_video_rewriter.py) "
+              "fix them manually (see videox_fun/pipeline/lingbot_video_caption.py) "
               "or re-run this script.")
 
 

@@ -65,7 +65,7 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
         x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
         if rescale:
             x = (x + 1.0) / 2.0  # -1,1 -> 0,1
-        x = (x * 255).numpy().astype(np.uint8)
+        x = (x * 255).cpu().numpy().astype(np.uint8)
         outputs.append(Image.fromarray(x))
 
     if color_transfer_post_process:
@@ -186,7 +186,7 @@ def save_videos_with_audio_grid(
         x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
         if rescale:
             x = (x + 1.0) / 2.0  # -1,1 -> 0,1
-        x = (x * 255).numpy().astype(np.uint8)
+        x = (x * 255).cpu().numpy().astype(np.uint8)
         frame_list.append(x)
     
     # Handle single frame case (save as image)

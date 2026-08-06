@@ -20,9 +20,9 @@ resident across all its rewrite/auto_negative calls; ``close()`` frees it (call
 before loading the DiT pipeline so the two never share the GPU at once).
 
 Weights (set via args or environment):
-    REWRITER_BASE_MODEL -> Qwen/Qwen3.6-27B (default /root/models/Rewriter/Qwen3.6-27B)
+    REWRITER_BASE_MODEL -> Qwen/Qwen3.6-27B (default models/Diffusion_Transformer/Qwen3.6-27B)
     REWRITER_ADAPTER    -> Robbyant/lingbot-video-rewriter-lora
-                           (default /root/models/Rewriter/lingbot-video-rewriter-lora)
+                           (default models/Diffusion_Transformer/lingbot-video-rewriter-lora)
 
 The structured-caption schema helpers (CAMERA_CHOICES / build_caption / element /
 cam / load_caption / is_valid_caption) are co-located here as the single source
@@ -177,9 +177,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 REWRITER_PKG_DIR = os.path.join(_REPO_ROOT, "repo", "lingbot-video", "rewriter")
 
 DEFAULT_REWRITER_BASE = os.environ.get(
-    "REWRITER_BASE_MODEL", "/root/models/Rewriter/Qwen3.6-27B")
+    "REWRITER_BASE_MODEL", "models/Diffusion_Transformer/Qwen3.6-27B")
 DEFAULT_REWRITER_ADAPTER = os.environ.get(
-    "REWRITER_ADAPTER", "/root/models/Rewriter/lingbot-video-rewriter-lora")
+    "REWRITER_ADAPTER", "models/Diffusion_Transformer/lingbot-video-rewriter-lora")
 
 _WEIGHT_HELP = (
     "Rewriter weights missing. Download them first:\n"

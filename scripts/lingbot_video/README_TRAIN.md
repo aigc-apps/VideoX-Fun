@@ -15,8 +15,8 @@ This document provides the complete **ti2v (first-frame image + text to video) f
 ## Table of Contents
 - [1. Environment Setup](#1-environment-setup)
 - [2. Data Preparation](#2-data-preparation)
-  - [2.1 Dataset Structure](#21-dataset-structure)
-  - [2.2 metadata.json Format](#22-metadatajson-format)
+  - [2.1 Quick-test Dataset](#21-quick-test-dataset)
+  - [2.2 metadata_lingbot_video_add_width_height.json Format](#22-metadata_lingbot_video_add_width_heightjson-format)
   - [2.3 Captions must be structured JSON captions](#23-captions-must-be-structured-json-captions)
 - [3. Full-Parameter Training](#3-full-parameter-training)
   - [3.1 Download Pretrained Models](#31-download-pretrained-models)
@@ -49,7 +49,7 @@ pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
 ```
 
-> **Note**: the Qwen3-VL text encoder requires a recent `transformers` (with `Qwen3VLForConditionalGeneration`). If you see `KeyError: 'qwen3_vl'`, upgrade transformers.
+> **Note**: the Qwen3-VL text encoder requires a recent `transformers` — `videox_fun/models/__init__.py` imports `Qwen3VLForConditionalGeneration` from transformers and falls back to `None` when it is missing, printing `Your transformers version is too old to load Qwen3VLForConditionalGeneration`. If you see that line (or `KeyError: 'qwen3_vl'` while reading the config), upgrade transformers.
 >
 > **Note**: the optional prompt rewriter (see [2.3](#23-captions-must-be-structured-json-captions)) needs an even newer stack (`transformers>=5.x` with the `qwen3_5` module) plus the official rewriter package under `repo/lingbot-video/rewriter`; run it from a dedicated venv so the training environment stays untouched.
 
@@ -57,40 +57,35 @@ pip install opencv-python-headless
 
 ## 2. Data Preparation
 
-### 2.1 Dataset Structure
+### 2.1 Quick-test Dataset
 
-LingBot-Video training requires **no camera trajectory / action files** — only videos with text captions:
+We provide a demo dataset that ships a handful of ready-to-train samples.
 
-```
-📦 datasets/
-├── 📂 lingbot_video/
-│   ├── 📂 videos/
-│   │   ├── 📄 clip_000001.mp4
-│   │   ├── 📄 clip_000002.mp4
-│   │   └── 📄 ...
-│   └── 📄 metadata.json
+```bash
+# Download the official demo dataset
+modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun-Videos-Demo
 ```
 
-The first-frame condition is taken **automatically from the first frame of each video** at training time (used both as the Qwen3-VL visual input and as the VAE cond_latent), so no separate image files are needed.
+It contains 16 videos at 832x480 under `train/` plus `metadata_lingbot_video_add_width_height.json`, whose `text` fields are already LingBot-Video structured JSON captions (see [2.3](#23-captions-must-be-structured-json-captions)), so it can be used for training as-is. LingBot-Video needs **no camera trajectory / action files**, and the ti2v condition frame is taken **automatically from the first frame of each video** (used both as the Qwen3-VL visual input and as the VAE cond_latent), so no separate image files are needed either.
 
-### 2.2 metadata.json Format
+### 2.2 metadata_lingbot_video_add_width_height.json Format
 
 Standard VideoX-Fun format, one entry per video:
 
 ```json
 [
     {
-        "file_path": "videos/clip_000001.mp4",
+        "file_path": "train/00000000.mp4",
         "text": "{\"comprehensive_description\": {...}, \"prominent_elements\": [...], \"camera_info\": {...}}",
-        "width": 1280,
-        "height": 720,
+        "width": 832,
+        "height": 480,
         "type": "video"
     },
     {
-        "file_path": "videos/clip_000002.mp4",
+        "file_path": "train/00000001.mp4",
         "text": "{\"comprehensive_description\": {...}, \"prominent_elements\": [...], \"camera_info\": {...}}",
-        "width": 1280,
-        "height": 720,
+        "width": 832,
+        "height": 480,
         "type": "video"
     }
 ]
@@ -102,6 +97,14 @@ Standard VideoX-Fun format, one entry per video:
 - `type`: must be `"video"` (entries without it are treated as images and use `--image_sample_size`).
 
 ### 2.3 Captions must be structured JSON captions
+
+The rewriter weights default to `models/Diffusion_Transformer/Qwen3.6-27B` and
+`models/Diffusion_Transformer/lingbot-video-rewriter-lora`:
+
+```bash
+modelscope download --model Qwen/Qwen3.6-27B --local_dir models/Diffusion_Transformer/Qwen3.6-27B
+modelscope download --model Robbyant/lingbot-video-rewriter-lora --local_dir models/Diffusion_Transformer/lingbot-video-rewriter-lora
+```
 
 A valid caption is a JSON object carrying the three top-level keys checked by
 `is_valid_caption` (`videox_fun/models/lingbot_video_rewriter.py`, the single
@@ -153,14 +156,14 @@ BEFORE training with the official prompt rewriter (needs the rewriter base VLM +
 LoRA adapter):
 
 ```bash
-export REWRITER_BASE_MODEL=/path/to/qwen3.6-27b-vlm
-export REWRITER_ADAPTER=/path/to/rewriter-lora
+export REWRITER_BASE_MODEL=models/Diffusion_Transformer/Qwen3.6-27B
+export REWRITER_ADAPTER=models/Diffusion_Transformer/lingbot-video-rewriter-lora
 python scripts/lingbot_video/prepare_captions.py \
-    --metadata datasets/lingbot_video/metadata.json \
-    --data_root datasets/lingbot_video \
-    --output datasets/lingbot_video/metadata_json.json \
+    --metadata datasets/my_dataset/metadata.json \
+    --data_root datasets/my_dataset \
+    --output datasets/my_dataset/metadata_json.json \
     --mode ti2v --duration 3.3
-# then in train.sh: DATASET_META_NAME="datasets/lingbot_video/metadata_json.json"
+# then in train.sh: DATASET_META_NAME="datasets/my_dataset/metadata_json.json"
 ```
 
 - `--mode`: `t2v` / `ti2v` / `t2i`; with `ti2v` the video's first frame is read (decord, OpenCV fallback) and fed to the rewriter, so use the same mode you train with;
@@ -183,14 +186,6 @@ caption = ensure_json_caption(
     first_frame=Image.open("asset/1.png").convert("RGB"),   # ti2v only
     cache_file="samples/caption_cache.json",
 )
-```
-
-The rewriter weights default to `/root/models/Rewriter/Qwen3.6-27B` and
-`/root/models/Rewriter/lingbot-video-rewriter-lora`:
-
-```bash
-modelscope download --model Qwen/Qwen3.6-27B --local_dir /root/models/Rewriter/Qwen3.6-27B
-modelscope download --model Robbyant/lingbot-video-rewriter-lora --local_dir /root/models/Rewriter/lingbot-video-rewriter-lora
 ```
 
 ---
@@ -225,8 +220,8 @@ Edit the three environment variables at the top of `scripts/lingbot_video/train.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/lingbot-video-dense-1.3b"
-export DATASET_NAME="datasets/lingbot_video"
-export DATASET_META_NAME="datasets/lingbot_video/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_lingbot_video_add_width_height.json"
 
 sh scripts/lingbot_video/train.sh
 ```
@@ -246,9 +241,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=832 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -277,11 +272,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --resume_from_checkpoint=latest
 ```
 
-`train_moe.sh` is the same command with `MODEL_NAME=models/Diffusion_Transformer/lingbot-video-moe-30b-a3b`, `--image_sample_size` / `--video_sample_size` / `--token_sample_size` all set to 640 and `--output_dir="output_dir_lingbot_video_moe_ti2v"`.
+`train_moe.sh` is the same command with `MODEL_NAME=models/Diffusion_Transformer/lingbot-video-moe-30b-a3b` and `--output_dir="output_dir_lingbot_video_moe_ti2v"`; every other argument (including the 640 sample sizes) is identical.
 
 > **Note**: `--use_fsdp` is not passed on the command line — `train.py` detects the accelerate FSDP plugin, derives the FSDP stage from the sharding strategy and switches to sharded checkpoint saving on its own. Neither script sets `--validation_prompts`, so periodic sampling is off by default (see [3.3](#33-key-training-arguments)).
 
-> **VRAM tips**: with `--train_batch_size=1` + `--gradient_checkpointing`, dense 1.3B trains 81-frame 480p clips on 2×H20 (97GB); MoE 30B is recommended on ≥8×80GB. The frozen bf16 Qwen3-VL text encoder is encoded online every step and is also FSDP-sharded (its `Qwen3VLTextDecoderLayer` / `Qwen3VLVisionBlock` layers are wrapped).
+> **VRAM tips**: with `--train_batch_size=1` + `--gradient_checkpointing`, dense 1.3B fits 81-frame 480p clips on 2×H20 (97GB); both scripts ship with 640 sample sizes, which needs correspondingly more — lower `--video_sample_size` / `--token_sample_size` if you OOM. MoE 30B is recommended on ≥8×80GB. The frozen bf16 Qwen3-VL text encoder is encoded online every step and is also FSDP-sharded (its `Qwen3VLTextDecoderLayer` / `Qwen3VLVisionBlock` layers are wrapped).
 
 Monitor with tensorboard:
 
@@ -298,9 +293,9 @@ tensorboard --logdir=output_dir_lingbot_video_ti2v
 | `--train_batch_size=1` | **Keep it 1.** Qwen3-VL has variable-length text; batch>1 triggers the padding + attention_mask path, which works but is inefficient. Raise the effective batch with `--gradient_accumulation_steps` |
 | `--video_sample_n_frames=81` | Sampled frames; the collate function rounds the batch length down to `4n+1` (VAE temporal ratio 4) |
 | `--video_sample_stride=1` | Frame stride inside the sampled clip |
-| `--video_repeat=1` | Duplicates video entries this many times per epoch (balances mixed image/video datasets) |
-| `--video_sample_size=480` / `--image_sample_size=832` | Short-side bucket size for video / image entries (`train_moe.sh` uses 640 / 640) |
-| `--token_sample_size=480` | Reference resolution of the token budget `video_sample_n_frames × token_sample_size²` used by `--training_with_video_token_length` |
+| `--video_repeat=1` | Repeats every video entry this many times in the dataset list (balances mixed image/video datasets) |
+| `--video_sample_size=640` / `--image_sample_size=640` | Short-side bucket size for video / image entries (both launch scripts use 640) |
+| `--token_sample_size=640` | Reference resolution of the token budget `video_sample_n_frames × token_sample_size²` used by `--training_with_video_token_length` |
 | `--enable_bucket` + `--random_hw_adapt` | Aspect-ratio bucketing + random resolution per batch |
 | `--training_with_video_token_length` | Keeps the total video token count constant while adapting H/W (fewer frames at higher resolution) |
 | `--fix_sample_size H W` | Forces one fixed bucket size; it also disables `--random_hw_adapt` / `--training_with_video_token_length` |
@@ -354,7 +349,7 @@ Anything matched by `--trainable_modules_low_learning_rate` instead is trained a
 Each training step (strictly aligned with the inference path):
 
 1. **Data**: the DataLoader yields `(B, C, T, H, W) ∈ [-1, 1]` (resize + center-crop to the bucket size, then normalized with mean/std 0.5); the first frame `[:, :, 0]` is used as the condition image automatically. The first batch of the run is dumped to `output_dir/sanity_check/` for inspection. The dataset applies the default 10% text dropout (`text_drop_ratio=0.1`), i.e. some samples train with an empty prompt for classifier-free guidance;
-2. **VAE encoding** (frozen, fp32 math):
+2. **VAE encoding** (frozen, bf16; only the `latents_mean/std` normalization is computed in fp32):
    - full video → `latents` (normalized into DiT space via `latents_mean/std`);
    - first frame encoded separately → `cond_latent` (1 temporal frame);
 3. **Qwen3-VL encoding** (frozen, bf16, no_grad): the prompt is wrapped with the chat template; the first frame is `smart_resize`d (aligned to `patch_size×merge_size`) and encoded as image tokens, producing `prompt_embeds` and `prompt_mask`;
@@ -386,7 +381,9 @@ Then:
 python examples/lingbot_video/predict_i2v.py
 ```
 
-The script loads the fine-tuned weights on top of the base model (`load_state_dict(..., strict=False)`) and runs ti2v sampling; `predict_t2v.py` / `predict_t2v_refine.py` work the same way (the latter additionally needs the refiner weights).
+The script loads the fine-tuned weights on top of the base model (`load_state_dict(..., strict=False)`) and runs ti2v sampling; `predict_t2v.py` / `predict_t2v_refine.py` work the same way (the latter additionally needs the refiner weights, which only ship with the MoE model as its `refiner` subfolder).
+
+`predict_i2v.py` also turns its plain `prompt` into a JSON caption on its own: before any generation model is loaded it calls `ensure_json_caption(..., mode="ti2v", duration=round(video_length / fps, 2), first_frame=validation_image, base=rewriter_base_model, adapter=rewriter_lora_path)` and caches the result in `save_path/caption_cache.json`. `rewriter_base_model` / `rewriter_lora_path` already point at the weights from [2.3](#23-captions-must-be-structured-json-captions); passing an already-valid JSON caption skips the rewriter entirely.
 
 ---
 

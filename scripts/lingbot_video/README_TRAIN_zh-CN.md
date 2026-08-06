@@ -15,8 +15,8 @@
 ## 目录
 - [一、环境配置](#一环境配置)
 - [二、数据准备](#二数据准备)
-  - [2.1 数据集结构](#21-数据集结构)
-  - [2.2 metadata.json 格式](#22-metadatajson-格式)
+  - [2.1 快速测试数据集](#21-快速测试数据集)
+  - [2.2 metadata_lingbot_video_add_width_height.json 格式](#22-metadata_lingbot_video_add_width_heightjson-格式)
   - [2.3 caption 必须是结构化 JSON caption](#23-caption-必须是结构化-json-caption)
 - [三、全量参数训练](#三全量参数训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
@@ -49,7 +49,7 @@ pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
 pip install opencv-python-headless
 ```
 
-> **说明**：Qwen3-VL 文本编码器要求较新的 `transformers`（含 `Qwen3VLForConditionalGeneration`），若加载报 `KeyError: 'qwen3_vl'` 请升级 transformers。
+> **说明**：Qwen3-VL 文本编码器要求较新的 `transformers` —— `videox_fun/models/__init__.py` 从 transformers 导入 `Qwen3VLForConditionalGeneration`，导入失败时会退化为 `None` 并打印 `Your transformers version is too old to load Qwen3VLForConditionalGeneration`。看到该提示（或读取 config 时报 `KeyError: 'qwen3_vl'`）请升级 transformers。
 >
 > **说明**：可选的 prompt rewriter（见 [2.3](#23-caption-必须是结构化-json-caption)）要求更新的依赖栈（`transformers>=5.x`，含 `qwen3_5` 模块）以及位于 `repo/lingbot-video/rewriter` 的官方 rewriter 代码包，建议在独立 venv 中运行，避免污染训练环境。
 
@@ -57,40 +57,35 @@ pip install opencv-python-headless
 
 ## 二、数据准备
 
-### 2.1 数据集结构
+### 2.1 快速测试数据集
 
-LingBot-Video 训练**不需要任何相机轨迹 / action 文件**，只需视频 + 文本标注：
+我们提供了一个测试的数据集，其中包含若干训练数据。
 
-```
-📦 datasets/
-├── 📂 lingbot_video/
-│   ├── 📂 videos/
-│   │   ├── 📄 clip_000001.mp4
-│   │   ├── 📄 clip_000002.mp4
-│   │   └── 📄 ...
-│   └── 📄 metadata.json
+```bash
+# 下载官方示例数据集
+modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun-Videos-Demo
 ```
 
-首帧条件在训练时**自动从每条视频的第一帧取**（同时作为 Qwen3-VL 视觉输入与 VAE cond_latent），无需单独准备图片文件。
+该数据集包含 `train/` 下 16 个 832x480 视频，以及 `metadata_lingbot_video_add_width_height.json`，其 `text` 字段已经是 LingBot-Video 结构化 JSON caption（见 [2.3](#23-caption-必须是结构化-json-caption)），可直接用于训练。LingBot-Video 训练**不需要任何相机轨迹 / action 文件**，ti2v 的条件帧也会**自动从每条视频的第一帧取**（同时作为 Qwen3-VL 视觉输入与 VAE cond_latent），无需单独准备图片文件。
 
-### 2.2 metadata.json 格式
+### 2.2 metadata_lingbot_video_add_width_height.json 格式
 
 标准 VideoX-Fun 格式，每个视频一个条目：
 
 ```json
 [
     {
-        "file_path": "videos/clip_000001.mp4",
+        "file_path": "train/00000000.mp4",
         "text": "{\"comprehensive_description\": {...}, \"prominent_elements\": [...], \"camera_info\": {...}}",
-        "width": 1280,
-        "height": 720,
+        "width": 832,
+        "height": 480,
         "type": "video"
     },
     {
-        "file_path": "videos/clip_000002.mp4",
+        "file_path": "train/00000001.mp4",
         "text": "{\"comprehensive_description\": {...}, \"prominent_elements\": [...], \"camera_info\": {...}}",
-        "width": 1280,
-        "height": 720,
+        "width": 832,
+        "height": 480,
         "type": "video"
     }
 ]
@@ -102,6 +97,14 @@ LingBot-Video 训练**不需要任何相机轨迹 / action 文件**，只需视�
 - `type`：必须为 `"video"`（缺省按图片处理，使用 `--image_sample_size`）。
 
 ### 2.3 caption 必须是结构化 JSON caption
+
+rewriter 权重默认路径为 `models/Diffusion_Transformer/Qwen3.6-27B` 和
+`models/Diffusion_Transformer/lingbot-video-rewriter-lora`：
+
+```bash
+modelscope download --model Qwen/Qwen3.6-27B --local_dir models/Diffusion_Transformer/Qwen3.6-27B
+modelscope download --model Robbyant/lingbot-video-rewriter-lora --local_dir models/Diffusion_Transformer/lingbot-video-rewriter-lora
+```
 
 合法 caption 是一个 JSON 对象，必须含有 `is_valid_caption` 校验的三个顶层字段
 （定义于 `videox_fun/models/lingbot_video_rewriter.py`，也是该 schema 的单一权威来源）：
@@ -150,14 +153,14 @@ LingBot-Video 训练**不需要任何相机轨迹 / action 文件**，只需视�
 （需要 rewriter 基座 VLM + LoRA adapter 权重）：
 
 ```bash
-export REWRITER_BASE_MODEL=/path/to/qwen3.6-27b-vlm
-export REWRITER_ADAPTER=/path/to/rewriter-lora
+export REWRITER_BASE_MODEL=models/Diffusion_Transformer/Qwen3.6-27B
+export REWRITER_ADAPTER=models/Diffusion_Transformer/lingbot-video-rewriter-lora
 python scripts/lingbot_video/prepare_captions.py \
-    --metadata datasets/lingbot_video/metadata.json \
-    --data_root datasets/lingbot_video \
-    --output datasets/lingbot_video/metadata_json.json \
+    --metadata datasets/my_dataset/metadata.json \
+    --data_root datasets/my_dataset \
+    --output datasets/my_dataset/metadata_json.json \
     --mode ti2v --duration 3.3
-# 然后在 train.sh 中：DATASET_META_NAME="datasets/lingbot_video/metadata_json.json"
+# 然后在 train.sh 中：DATASET_META_NAME="datasets/my_dataset/metadata_json.json"
 ```
 
 - `--mode`：`t2v` / `ti2v` / `t2i`；`ti2v` 下会读取视频首帧（decord，失败时回退 OpenCV）并送入 rewriter，建议与训练任务保持一致；
@@ -179,14 +182,6 @@ caption = ensure_json_caption(
     first_frame=Image.open("asset/1.png").convert("RGB"),   # 仅 ti2v 需要
     cache_file="samples/caption_cache.json",
 )
-```
-
-rewriter 权重默认路径为 `/root/models/Rewriter/Qwen3.6-27B` 和
-`/root/models/Rewriter/lingbot-video-rewriter-lora`：
-
-```bash
-modelscope download --model Qwen/Qwen3.6-27B --local_dir /root/models/Rewriter/Qwen3.6-27B
-modelscope download --model Robbyant/lingbot-video-rewriter-lora --local_dir /root/models/Rewriter/lingbot-video-rewriter-lora
 ```
 
 ---
@@ -221,8 +216,8 @@ MoE 模型额外附带一个 `refiner` DiT，训练不使用它（仅 `examples/
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/lingbot-video-dense-1.3b"
-export DATASET_NAME="datasets/lingbot_video"
-export DATASET_META_NAME="datasets/lingbot_video/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_lingbot_video_add_width_height.json"
 
 sh scripts/lingbot_video/train.sh
 ```
@@ -242,9 +237,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=832 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
@@ -273,11 +268,11 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --resume_from_checkpoint=latest
 ```
 
-`train_moe.sh` 与上述命令的差异仅在于：`MODEL_NAME=models/Diffusion_Transformer/lingbot-video-moe-30b-a3b`，`--image_sample_size` / `--video_sample_size` / `--token_sample_size` 均为 640，`--output_dir="output_dir_lingbot_video_moe_ti2v"`。
+`train_moe.sh` 与上述命令的差异仅在于：`MODEL_NAME=models/Diffusion_Transformer/lingbot-video-moe-30b-a3b`、`--output_dir="output_dir_lingbot_video_moe_ti2v"`，其余参数（包括 640 的采样尺寸）完全相同。
 
 > **说明**：命令行未传 `--use_fsdp` —— `train.py` 会自行检测 accelerate 的 FSDP plugin，根据 sharding strategy 推导 FSDP stage 并切到分片保存流程。两个脚本均未设置 `--validation_prompts`，因此默认不做周期验证采样（见 [3.3](#33-训练常用参数解析)）。
 
-> **显存建议**：`--train_batch_size=1` + `--gradient_checkpointing` 下，dense 1.3B 在 2×H20（97GB）可训 81 帧 480p；MoE 30B 建议 ≥8×80GB。Qwen3-VL 文本编码器每步在线编码（冻结 bf16），本身也通过 FSDP 分片（包裹其 `Qwen3VLTextDecoderLayer` / `Qwen3VLVisionBlock` 层）。
+> **显存建议**：`--train_batch_size=1` + `--gradient_checkpointing` 下，dense 1.3B 在 2×H20（97GB）可训 81 帧 480p；两个脚本自带的采样尺寸是 640，显存开销相应更高 —— OOM 时可调低 `--video_sample_size` / `--token_sample_size`。MoE 30B 建议 ≥8×80GB。Qwen3-VL 文本编码器每步在线编码（冻结 bf16），本身也通过 FSDP 分片（包裹其 `Qwen3VLTextDecoderLayer` / `Qwen3VLVisionBlock` 层）。
 
 训练中可用 tensorboard 观察：
 
@@ -294,9 +289,9 @@ tensorboard --logdir=output_dir_lingbot_video_ti2v
 | `--train_batch_size=1` | **推荐恒为 1**。Qwen3-VL 变长文本，batch>1 会触发 padding + attention_mask 路径，可用但低效；提升等效 batch 请用 `--gradient_accumulation_steps` |
 | `--video_sample_n_frames=81` | 采样帧数；collate 会将本批帧数向下对齐到 `4n+1`（VAE 时间压缩率 4） |
 | `--video_sample_stride=1` | 采样片段内的帧间隔 |
-| `--video_repeat=1` | 将视频条目重复这么多次（用于平衡图片/视频混合数据集） |
-| `--video_sample_size=480` / `--image_sample_size=832` | 视频/图像条目的短边分桶尺寸（`train_moe.sh` 为 640 / 640） |
-| `--token_sample_size=480` | `--training_with_video_token_length` 所用 token 预算 `video_sample_n_frames × token_sample_size²` 的参考分辨率 |
+| `--video_repeat=1` | 在数据集列表中把每个视频条目重复这么多次（用于平衡图片/视频混合数据集） |
+| `--video_sample_size=640` / `--image_sample_size=640` | 视频/图像条目的短边分桶尺寸（两个启动脚本均为 640） |
+| `--token_sample_size=640` | `--training_with_video_token_length` 所用 token 预算 `video_sample_n_frames × token_sample_size²` 的参考分辨率 |
 | `--enable_bucket` + `--random_hw_adapt` | 宽高比分桶 + 逐批随机分辨率 |
 | `--training_with_video_token_length` | 保持视频 token 总量恒定的同时自适应 H/W（分辨率高时帧数变少） |
 | `--fix_sample_size H W` | 强制固定分桶尺寸，同时会禁用 `--random_hw_adapt` / `--training_with_video_token_length` |
@@ -350,7 +345,7 @@ tensorboard --logdir=output_dir_lingbot_video_ti2v
 每个训练步（与推理路径严格对齐）：
 
 1. **数据**：DataLoader 取到 `(B, C, T, H, W) ∈ [-1, 1]`（先 resize + 中心裁剪到分桶尺寸，再按 mean/std 0.5 归一化），首帧 `[:, :, 0]` 自动作为条件图；本次训练的第一个 batch 会写到 `output_dir/sanity_check/` 供核对。数据集默认带 10% 文本 dropout（`text_drop_ratio=0.1`），即部分样本以空 prompt 训练以支持 classifier-free guidance；
-2. **VAE 编码**（冻结、fp32 计算）：
+2. **VAE 编码**（冻结、bf16；仅 `latents_mean/std` 归一化在 fp32 下计算）：
    - 整段视频 → `latents`（经 `latents_mean/std` 归一化到 DiT 空间）；
    - 首帧单独编码 → `cond_latent`（时间维 1 帧）；
 3. **Qwen3-VL 编码**（冻结、bf16、no_grad）：prompt 套 chat 模板，首帧经 `smart_resize`（对齐到 `patch_size×merge_size`）作为图像 token 一并编码，得到 `prompt_embeds` 与 `prompt_mask`；
@@ -382,7 +377,9 @@ shift            = 3.0     # 与训练的 --train_shift 保持一致
 python examples/lingbot_video/predict_i2v.py
 ```
 
-脚本会把微调权重加载到 base 模型上（`load_state_dict(..., strict=False)`）做 ti2v 采样；`predict_t2v.py` / `predict_t2v_refine.py` 同理（后者需配套 refiner 权重）。
+脚本会把微调权重加载到 base 模型上（`load_state_dict(..., strict=False)`）做 ti2v 采样；`predict_t2v.py` / `predict_t2v_refine.py` 同理（后者需配套 refiner 权重，而 refiner 只随 MoE 模型以其 `refiner` 子目录提供）。
+
+`predict_i2v.py` 自身也会先把普通 `prompt` 改写为 JSON caption：在加载任何生成模型之前调用 `ensure_json_caption(..., mode="ti2v", duration=round(video_length / fps, 2), first_frame=validation_image, base=rewriter_base_model, adapter=rewriter_lora_path)`，并将结果缓存到 `save_path/caption_cache.json`。脚本中的 `rewriter_base_model` / `rewriter_lora_path` 已经指向 [2.3](#23-caption-必须是结构化-json-caption) 的权重路径；直接传入合法 JSON caption 则会跳过 rewriter。
 
 ---
 

@@ -1,6 +1,6 @@
 export MODEL_NAME="models/Diffusion_Transformer/lingbot-video-dense-1.3b"
-export DATASET_NAME="datasets/lingbot_video"
-export DATASET_META_NAME="datasets/lingbot_video/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_lingbot_video_add_width_height.json"
 
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
@@ -16,9 +16,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
-  --image_sample_size=832 \
-  --video_sample_size=480 \
-  --token_sample_size=480 \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
   --video_sample_stride=1 \
   --video_sample_n_frames=81 \
   --train_batch_size=1 \
