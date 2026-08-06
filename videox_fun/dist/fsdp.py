@@ -60,14 +60,12 @@ def create_transformer_auto_wrap_policy(
             "Please check the class names or the model structure."
         )
     
-    def transformer_policy(module, recurse, unwrapped_params):
+    def transformer_policy(module, recurse, nonwrapped_numel=None, **kwargs):
         # Use the standard transformer auto wrap policy with the discovered classes
-        return transformer_auto_wrap_policy(
-            module=module,
-            recurse=recurse,
-            unwrapped_params=unwrapped_params,
-            transformer_layer_cls=transformer_classes,
-        )
+        policy_kwargs = dict(module=module, recurse=recurse, transformer_layer_cls=transformer_classes)
+        if nonwrapped_numel is not None:
+            policy_kwargs["nonwrapped_numel"] = nonwrapped_numel
+        return transformer_auto_wrap_policy(**policy_kwargs)
     
     return transformer_policy
 

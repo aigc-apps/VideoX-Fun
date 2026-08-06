@@ -20,9 +20,12 @@ except Exception:
     print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
 try:
-    from transformers import Qwen3VLForConditionalGeneration
+    from transformers import (Qwen2TokenizerFast,
+                              Qwen3VLForConditionalGeneration,
+                              Qwen3VLProcessor)
 except:
     Qwen3VLForConditionalGeneration = None
+    Qwen2TokenizerFast, Qwen3VLProcessor = None, None
     print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use Qwen3VLForConditionalGeneration, please upgrade your transformers package to the latest version.")
 
 try:
@@ -56,6 +59,7 @@ from .infinitetalk_audio_encoder import InfiniteTalkAudioEncoder
 from .infinitetalk_transformer3d import InfiniteTalkTransformer3DModel
 from .lens_reasoner import LensPromptReasoner
 from .lens_transformer2d import LensTransformer2DModel
+from .lingbot_video_transformer3d import LingBotVideoTransformer3DModel
 from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
                                          Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel

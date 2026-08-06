@@ -11,6 +11,8 @@ from .pipeline_hunyuanvideo import HunyuanVideoPipeline
 from .pipeline_hunyuanvideo_i2v import HunyuanVideoI2VPipeline
 from .pipeline_infinitetalk import InfiniteTalkPipeline
 from .pipeline_lens import LensPipeline
+from .pipeline_lingbot_video import LingBotVideoPipeline
+from .pipeline_lingbot_video_i2v import LingBotVideoI2VPipeline
 from .pipeline_longcatvideo import LongCatVideoPipeline
 from .pipeline_longcatvideo_avatar import LongCatVideoAvatarPipeline
 from .pipeline_ltx2 import LTX2Pipeline
