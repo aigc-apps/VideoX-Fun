@@ -72,6 +72,9 @@ from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
 from .ltx2_vocoder import LTX2Vocoder, LTX2VocoderWithBWE
+from .minimax_h3_transformer3d import MiniMaxH3Transformer3DModel
+from .minimax_h3_vae import AutoencoderKLMiniMaxH3
+from .minimax_h3_vae_audio import AutoencoderKLMiniMaxH3Audio
 from .mova_audio_transformer3d import WanAudioTransformer3DModel
 from .mova_interactionv2 import MOVADualTowerConditionalBridge
 from .mova_model import MOVAModel

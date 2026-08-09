@@ -23,6 +23,24 @@ from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, resize_frame)
 
 
+def load_audio(path, sr):
+    """Load a mono float32 waveform at `sr` from an audio *or* video file.
+
+    librosa covers plain audio files, but its support for video containers (mp4/mov/...) rides on the audioread
+    fallback which is deprecated and removed in librosa 1.0, so any failure falls back to torchaudio's ffmpeg
+    backend, which decodes the audio stream of every container ffmpeg understands.
+    """
+    try:
+        waveform, _ = librosa.load(path, sr=sr)
+        return waveform, sr
+    except Exception:
+        import torchaudio
+        waveform, source_sr = torchaudio.load(path)
+        waveform = torchaudio.functional.resample(waveform, source_sr, sr)
+        # Channels -> mono, matching librosa.load's default mono mixdown.
+        return waveform.mean(0).numpy().astype(np.float32), sr
+
+
 class WebVid10M(Dataset):
     def __init__(
         self,
@@ -375,7 +393,7 @@ class VideoSpeechDataset(Dataset):
         duration = end_time - start_time
 
         # Load entire audio and resample to target sample rate
-        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)
+        audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
 
         # Convert time to sample indices
         start_sample = round(start_time * self.audio_sr)
@@ -487,20 +505,21 @@ class VideoSpeechControlDataset(Dataset):
         """Load and preprocess a single video sample with control and audio."""
         video_dict = self.dataset[idx]
         video_id, text = video_dict['file_path'], video_dict['text']
-        audio_id = video_dict['audio_path']
+        audio_id = video_dict.get('audio_path')
         control_video_id = video_dict['control_file_path']
 
-        # Resolve video, audio, and control paths
+        # Resolve video, audio, and control paths. When the annotation has no audio entry, the audio track is
+        # decoded from the video container itself (`load_audio` falls back to torchaudio's ffmpeg backend).
         if self.data_root is None:
             video_path = video_id
-            audio_path = audio_id
+            audio_path = audio_id if audio_id else video_id
             control_path = control_video_id
         else:
             video_path = os.path.join(self.data_root, video_id)
-            audio_path = os.path.join(self.data_root, audio_id)
+            audio_path = os.path.join(self.data_root, audio_id) if audio_id else video_path
             control_path = os.path.join(self.data_root, control_video_id)
 
-        if not os.path.exists(audio_path):
+        if audio_id and not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found for {video_path}")
 
         # Video information
@@ -616,7 +635,7 @@ class VideoSpeechControlDataset(Dataset):
         duration = end_time - start_time
 
         # Load entire audio and resample to target sample rate
-        audio_input, sample_rate = librosa.load(audio_path, sr=self.audio_sr)
+        audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
 
         # Convert time to sample indices
         start_sample = round(start_time * self.audio_sr)

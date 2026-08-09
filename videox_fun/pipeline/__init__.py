@@ -28,6 +28,7 @@ from .pipeline_qwenimage_layered import QwenImageLayeredPipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_animate import Wan2_2AnimatePipeline
+from .pipeline_minimax_h3 import MiniMaxH3Pipeline
 from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline
 from .pipeline_wan2_2_fun_inpaint import Wan2_2FunInpaintPipeline
 from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
