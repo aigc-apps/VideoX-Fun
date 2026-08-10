@@ -261,6 +261,10 @@ class VideoSpeechDataset(Dataset):
         enable_motion_info=False,
         motion_frames=73,
         return_file_name=False,
+        min_video_sample_n_frames=1,
+        target_video_sample_fps=None,
+        video_sample_fps_tolerance=0.5,
+        resample_to_target_fps=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -281,6 +285,22 @@ class VideoSpeechDataset(Dataset):
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride = video_sample_stride
         self.video_sample_n_frames = video_sample_n_frames
+        # Fewest sampled frames a clip has to yield to be usable. A model whose VAE only encodes certain frame
+        # counts (MiniMax-H3 needs `17n + 5`, so at least 5) raises this so that clips which cannot fill one chunk
+        # are skipped by `__getitem__`'s retry instead of reaching the collate as a short batch. The default of 1 is
+        # the previous behaviour: only a clip yielding no frame at all is rejected.
+        self.min_video_sample_n_frames = max(1, int(min_video_sample_n_frames))
+        # Frame rate the sampled clip has to land on, within `video_sample_fps_tolerance`. A model that reads its
+        # frames on a fixed timeline (MiniMax-H3 has no fps input: both its temporal rotary grid and its 40 latents/s
+        # audio grid assume 24 fps) sets this so that clips at another rate are skipped by `__getitem__`'s retry
+        # instead of training the model on video that plays at the wrong speed against its own soundtrack. The check
+        # uses the *unrounded* rate, which matters: the common 23.976 fps is within a tolerance of 24 while
+        # `new_fps` floors it to 23 and loses that. `None` disables the check, which is the previous behaviour.
+        self.target_video_sample_fps = target_video_sample_fps
+        self.video_sample_fps_tolerance = video_sample_fps_tolerance
+        # Whether a clip at another rate is resampled onto the target instead of being skipped; see
+        # `VideoSpeechDataset.target_video_sample_fps` above for what that trades off.
+        self.resample_to_target_fps = resample_to_target_fps
         self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
@@ -318,16 +338,42 @@ class VideoSpeechDataset(Dataset):
                 local_video_sample_stride = local_video_sample_stride + 1
                 new_fps = int(fps // local_video_sample_stride)
 
+            # Compared on the unrounded rate: 23.976 fps passes a tolerance around 24 while `new_fps` floors it to 23.
+            # `frame_step` is how many source frames one sampled frame advances, kept as a float so a target rate that
+            # does not divide the source rate is still hit exactly. For an integer stride it is the stride itself, so
+            # the arithmetic below is unchanged when no target rate is asked for.
+            frame_step = float(local_video_sample_stride)
+            if self.target_video_sample_fps is not None:
+                effective_fps = fps / local_video_sample_stride
+                if self.resample_to_target_fps:
+                    frame_step = fps / self.target_video_sample_fps
+                    new_fps = int(round(self.target_video_sample_fps))
+                elif abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
+                    raise ValueError(
+                        f"Frame rate mismatch: {video_path} samples at {effective_fps:.3f} fps (source {fps:.3f} fps "
+                        f"at stride {local_video_sample_stride}), outside "
+                        f"{self.target_video_sample_fps} +/- {self.video_sample_fps_tolerance} fps that this training "
+                        "run reads its frames on; skipping."
+                    )
+
             # Calculate the actual number of sampled frames (considering boundaries)
-            max_possible_frames = (total_frames - 1) // local_video_sample_stride + 1
+            max_possible_frames = int((total_frames - 1) / frame_step) + 1
             actual_n_frames = min(self.video_sample_n_frames, max_possible_frames)
-            if actual_n_frames <= 0:
-                raise ValueError(f"Video too short: {video_path}")
+            if actual_n_frames < self.min_video_sample_n_frames:
+                raise ValueError(
+                    f"Video too short: {video_path} yields {actual_n_frames} sampled frame(s) at stride "
+                    f"{local_video_sample_stride}, fewer than the {self.min_video_sample_n_frames} this training "
+                    "run needs; skipping."
+                )
 
             # Randomly select the starting frame
-            max_start = total_frames - (actual_n_frames - 1) * local_video_sample_stride - 1
+            frame_span = (actual_n_frames - 1) * frame_step
+            max_start = total_frames - 1 - int(math.ceil(frame_span))
             start_frame = random.randint(0, max_start) if max_start > 0 else 0
-            frame_indices = [start_frame + i * local_video_sample_stride for i in range(actual_n_frames)]
+            frame_indices = [
+                min(total_frames - 1, int(round(start_frame + index * frame_step)))
+                for index in range(actual_n_frames)
+            ]
 
             # Read video frames
             try:
@@ -389,8 +435,11 @@ class VideoSpeechDataset(Dataset):
         # Load and extract the corresponding audio segment
         # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
-        end_time = (start_frame + (actual_n_frames - 1) * local_video_sample_stride) / fps
-        duration = end_time - start_time
+        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, which on a resampled clip is
+        # exactly `(actual_n_frames - 1) / target_fps` seconds, so the waveform follows the frames onto the target
+        # timeline rather than the source one.
+        duration = (actual_n_frames - 1) * frame_step / fps
+        end_time = start_time + duration
 
         # Load entire audio and resample to target sample rate
         audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
@@ -472,6 +521,10 @@ class VideoSpeechControlDataset(Dataset):
         enable_motion_info=False,
         motion_frames=73,
         return_file_name=False,
+        min_video_sample_n_frames=1,
+        target_video_sample_fps=None,
+        video_sample_fps_tolerance=0.5,
+        resample_to_target_fps=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -492,6 +545,14 @@ class VideoSpeechControlDataset(Dataset):
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride = video_sample_stride
         self.video_sample_n_frames = video_sample_n_frames
+        # Fewest sampled frames a clip has to yield to be usable; see `VideoSpeechDataset` for the rationale.
+        self.min_video_sample_n_frames = max(1, int(min_video_sample_n_frames))
+        # Frame rate the sampled clip has to land on; see `VideoSpeechDataset` for the rationale.
+        self.target_video_sample_fps = target_video_sample_fps
+        self.video_sample_fps_tolerance = video_sample_fps_tolerance
+        # Whether a clip at another rate is resampled onto the target instead of being skipped; see
+        # `VideoSpeechDataset.target_video_sample_fps` above for what that trades off.
+        self.resample_to_target_fps = resample_to_target_fps
         self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
@@ -536,16 +597,42 @@ class VideoSpeechControlDataset(Dataset):
                 local_video_sample_stride = local_video_sample_stride + 1
                 new_fps = int(fps // local_video_sample_stride)
 
+            # Compared on the unrounded rate: 23.976 fps passes a tolerance around 24 while `new_fps` floors it to 23.
+            # `frame_step` is how many source frames one sampled frame advances, kept as a float so a target rate that
+            # does not divide the source rate is still hit exactly. For an integer stride it is the stride itself, so
+            # the arithmetic below is unchanged when no target rate is asked for.
+            frame_step = float(local_video_sample_stride)
+            if self.target_video_sample_fps is not None:
+                effective_fps = fps / local_video_sample_stride
+                if self.resample_to_target_fps:
+                    frame_step = fps / self.target_video_sample_fps
+                    new_fps = int(round(self.target_video_sample_fps))
+                elif abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
+                    raise ValueError(
+                        f"Frame rate mismatch: {video_path} samples at {effective_fps:.3f} fps (source {fps:.3f} fps "
+                        f"at stride {local_video_sample_stride}), outside "
+                        f"{self.target_video_sample_fps} +/- {self.video_sample_fps_tolerance} fps that this training "
+                        "run reads its frames on; skipping."
+                    )
+
             # Calculate the actual number of sampled video frames (considering boundaries)
-            max_possible_frames = (total_frames - 1) // local_video_sample_stride + 1
+            max_possible_frames = int((total_frames - 1) / frame_step) + 1
             actual_n_frames = min(self.video_sample_n_frames, max_possible_frames)
-            if actual_n_frames <= 0:
-                raise ValueError(f"Video too short: {video_path}")
+            if actual_n_frames < self.min_video_sample_n_frames:
+                raise ValueError(
+                    f"Video too short: {video_path} yields {actual_n_frames} sampled frame(s) at stride "
+                    f"{local_video_sample_stride}, fewer than the {self.min_video_sample_n_frames} this training "
+                    "run needs; skipping."
+                )
 
             # Randomly select the starting frame
-            max_start = total_frames - (actual_n_frames - 1) * local_video_sample_stride - 1
+            frame_span = (actual_n_frames - 1) * frame_step
+            max_start = total_frames - 1 - int(math.ceil(frame_span))
             start_frame = random.randint(0, max_start) if max_start > 0 else 0
-            frame_indices = [start_frame + i * local_video_sample_stride for i in range(actual_n_frames)]
+            frame_indices = [
+                min(total_frames - 1, int(round(start_frame + index * frame_step)))
+                for index in range(actual_n_frames)
+            ]
 
             # Read video frames
             try:
@@ -631,8 +718,11 @@ class VideoSpeechControlDataset(Dataset):
         # Load and extract the corresponding audio segment
         # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
-        end_time = (start_frame + (actual_n_frames - 1) * local_video_sample_stride) / fps
-        duration = end_time - start_time
+        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, which on a resampled clip is
+        # exactly `(actual_n_frames - 1) / target_fps` seconds, so the waveform follows the frames onto the target
+        # timeline rather than the source one.
+        duration = (actual_n_frames - 1) * frame_step / fps
+        end_time = start_time + duration
 
         # Load entire audio and resample to target sample rate
         audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
