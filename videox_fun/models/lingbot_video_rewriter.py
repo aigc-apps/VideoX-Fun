@@ -1,3 +1,10 @@
+# Modified from https://github.com/Robbyant/lingbot-video/blob/main/lingbot_video/rewriter
+# Copyright 2025 The LingBot-Video Team and The HuggingFace Team. All rights reserved.
+#
+# Prompt-rewriter integration for LingBot-Video: wraps the official two-step (EXPAND -> MAP)
+# rewriter pipeline and provides the structured-caption JSON schema helpers.
+# Reference: https://github.com/Robbyant/lingbot-video/tree/main/lingbot_video/rewriter
+#
 """Official prompt-rewriter integration for LingBot-Video (in-process).
 
 ALL prompt input for LingBot-Video must go through the official rewriter:

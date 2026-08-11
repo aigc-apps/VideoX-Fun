@@ -86,6 +86,7 @@ from .qwenimage_vae import AutoencoderKLQwenImage
 from .turbowan_transformer3d import TurboWanTransformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
+from .wan_latent_upsampler import WanLatentUpsamplerModel
 from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)

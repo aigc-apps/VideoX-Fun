@@ -18,6 +18,7 @@ from .pipeline_longcatvideo_avatar import LongCatVideoAvatarPipeline
 from .pipeline_ltx2 import LTX2Pipeline
 from .pipeline_ltx2_i2v import LTX2I2VPipeline
 from .pipeline_ltx2_latent_upsample import LTX2LatentUpsamplePipeline
+from .pipeline_minimax_h3 import MiniMaxH3Pipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_control import QwenImageControlPipeline
@@ -28,7 +29,6 @@ from .pipeline_qwenimage_layered import QwenImageLayeredPipeline
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_animate import Wan2_2AnimatePipeline
-from .pipeline_minimax_h3 import MiniMaxH3Pipeline
 from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline
 from .pipeline_wan2_2_fun_inpaint import Wan2_2FunInpaintPipeline
 from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
@@ -36,6 +36,7 @@ from .pipeline_wan2_2_ti2v import Wan2_2TI2VPipeline
 from .pipeline_wan2_2_vace_fun import Wan2_2VaceFunPipeline
 from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
+from .pipeline_wan_latent_upsample import WanLatentUpsamplePipeline
 from .pipeline_wan_lingbot_world_fast import WanFunLingbotWorldFastPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
 from .pipeline_wan_self_forcing import WanSelfForcingPipeline
