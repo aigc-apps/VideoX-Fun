@@ -21,6 +21,7 @@ This document provides a complete workflow for distilling Wan2.1 including envir
   - [3.5 Training with FSDP](#35-training-with-fsdp)
   - [3.6 Other Backends](#36-other-backends)
   - [3.7 Multi-Node Distributed Training](#37-multi-node-distributed-training)
+  - [3.8 DFD Post-training](#38-dfd-post-training)
 - [4. Inference Testing](#4-inference-testing)
   - [4.1 Inference Parameters](#41-inference-parameters)
   - [4.2 Text-to-Video (T2V) Inference](#42-text-to-video-t2v-inference)
@@ -578,6 +579,140 @@ NCCL_DEBUG=INFO
      ```
 
 - **Data Synchronization**: All machines must be able to access the same data paths (NFS/shared storage)
+
+### 3.8 DFD Post-training
+
+DFD is a post-training scheme on top of a DMD-pretrained generator. It encodes the paired real videos with the VAE as student anchors: the student denoises the noised real latents at the few-step student timesteps derived from `--denoising_step_indices_list`, and with probability `--dfd_teacher_replace_prob` the input of the teacher (real score) is replaced by the noised real latents, which can further improve the quality of few-step generation.
+
+You can either warm start from a finished DMD checkpoint via `--generator_transformer_path`, or run a single training job that executes plain DMD first and switches on DFD from `--dfd_start_step` onward.
+
+**Usage Constraints**:
+- DFD currently only supports T2V training with `--train_mode normal`.
+- DFD does not support `--enable_text_encoder_in_dataloader`.
+- DFD requires an explicit `--seed` for reproducible post-training.
+- `--dfd_start_step` must be non-negative, `--dfd_teacher_replace_prob` must be in `[0, 1]`, and `--gen_update_interval` must be greater than zero.
+
+**Data Requirements**:
+- DFD needs paired real videos, so the dataset must contain real video files. The dataset structure and metadata.json format are the same as **2.3 metadata.json Format**.
+
+**DFD-Specific Parameters**:
+
+| Parameter | Description | Example Value |
+|-----|------|-------|
+| `--dfd` | Whether to use DFD post-training on a DMD-pretrained generator | - |
+| `--dfd_teacher_replace_prob` | Probability of replacing the teacher-score input with paired real data | 0.5 |
+| `--dfd_start_step` | Switch on DFD from this global_step onward; earlier steps run plain DMD | 0 |
+| `--generator_transformer_path` | Warm start the generator and fake score from a DMD weight | `output_dir_wan2.1_distill/checkpoint-xxx/diffusion_pytorch_model.safetensors` |
+| `--fake_score_transformer_path` | Warm start only the fake score from a weight | None |
+
+**Usage 1: DFD Post-training from a DMD Checkpoint** (warm start the generator and fake score from a finished DMD weight):
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_distill_dfd" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --trainable_modules "." \
+  --low_vram \
+  --generator_transformer_path="output_dir_wan2.1_distill/checkpoint-xxx/diffusion_pytorch_model.safetensors" \
+  --dfd \
+  --dfd_teacher_replace_prob=0.5 \
+  --dfd_start_step=0
+```
+
+**Usage 2: Switch from DMD to DFD in a Single Training Run** (plain DMD before `--dfd_start_step`, DFD afterwards):
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_distill_dfd" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --trainable_modules "." \
+  --low_vram \
+  --dfd \
+  --dfd_teacher_replace_prob=0.5 \
+  --dfd_start_step=500
+```
+
+**Training Monitoring**:
+- When DFD is enabled, an additional metric `train_dfd_real_replace` is logged, which counts the steps whose teacher-score input is replaced by paired real data.
+
+**Inference**:
+- The DFD output is used in the same way as the DMD output. Please refer to **4. Inference Testing** (typically 4 steps with `guidance_scale=1.0`).
 
 ---
 

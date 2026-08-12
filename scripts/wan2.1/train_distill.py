@@ -790,14 +790,10 @@ def main():
             raise ValueError("DFD requires an explicit --seed for reproducible post-training.")
         if args.dfd_start_step < 0:
             raise ValueError("--dfd_start_step must be non-negative.")
-        if args.dfd_start_step == 0 and args.generator_transformer_path is None and args.resume_from_checkpoint is None:
-            raise ValueError("A new DFD run requires --generator_transformer_path.")
         if not 0 <= args.dfd_teacher_replace_prob <= 1:
             raise ValueError("--dfd_teacher_replace_prob must be in [0, 1].")
         if args.gen_update_interval <= 0:
             raise ValueError("--gen_update_interval must be greater than zero.")
-        if args.transformer_path is not None:
-            raise ValueError("Use --generator_transformer_path instead of --transformer_path for DFD.")
         if args.trainable_modules is None:
             args.trainable_modules = [""]
 
