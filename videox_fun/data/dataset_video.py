@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import warnings
 
 import cv2
 import librosa
@@ -31,7 +32,13 @@ def load_audio(path, sr):
     backend, which decodes the audio stream of every container ffmpeg understands.
     """
     try:
-        waveform, _ = librosa.load(path, sr=sr)
+        # Video containers miss PySoundFile and ride the deprecated audioread fallback, whose per-file "PySoundFile
+        # failed" notice would otherwise flood the dataloader workers; the torchaudio fallback below still covers
+        # real decode failures.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", module="librosa")
+            warnings.filterwarnings("ignore", message="PySoundFile failed")
+            waveform, _ = librosa.load(path, sr=sr)
         return waveform, sr
     except Exception:
         import torchaudio
@@ -457,6 +464,22 @@ class VideoSpeechDataset(Dataset):
             if len(audio_segment) < target_len:
                 raise ValueError(f"Audio file too short: {audio_path}")
 
+        # The sliced waveform must cover the same real-time span that the sampled frames play on the target
+        # timeline: `(actual_n_frames - 1) / target_fps` seconds. A container whose metadata fps disagrees with its
+        # real frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field
+        # alone, which the flooring above corrupts further — and surfaces much later as an audio-latent window
+        # failure in the training loop. Raise here so the retry of `__getitem__` draws another sample. The
+        # tolerance is one frame period plus rounding slack for the waveform-to-latent encoder.
+        if self.target_video_sample_fps is not None:
+            target_span = (actual_n_frames - 1) / self.target_video_sample_fps
+            audio_span = len(audio_segment) / self.audio_sr
+            if abs(audio_span - target_span) > 1.0 / self.target_video_sample_fps + 0.03:
+                raise ValueError(
+                    f"Audio span mismatch: {video_path} plays {target_span:.3f}s on the "
+                    f"{self.target_video_sample_fps} fps timeline but its waveform covers {audio_span:.3f}s, so the "
+                    "clip's real frame rate disagrees with its metadata fps; skipping."
+                )
+
         # Random text dropout for classifier-free guidance
         if random.random() < self.text_drop_ratio:
             text = ''
@@ -739,6 +762,22 @@ class VideoSpeechControlDataset(Dataset):
             audio_segment = audio_input[start_sample:end_sample]
             if len(audio_segment) < target_len:
                 raise ValueError(f"Audio file too short: {audio_path}")
+
+        # The sliced waveform must cover the same real-time span that the sampled frames play on the target
+        # timeline: `(actual_n_frames - 1) / target_fps` seconds. A container whose metadata fps disagrees with its
+        # real frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field
+        # alone, which the flooring above corrupts further — and surfaces much later as an audio-latent window
+        # failure in the training loop. Raise here so the retry of `__getitem__` draws another sample. The
+        # tolerance is one frame period plus rounding slack for the waveform-to-latent encoder.
+        if self.target_video_sample_fps is not None:
+            target_span = (actual_n_frames - 1) / self.target_video_sample_fps
+            audio_span = len(audio_segment) / self.audio_sr
+            if abs(audio_span - target_span) > 1.0 / self.target_video_sample_fps + 0.03:
+                raise ValueError(
+                    f"Audio span mismatch: {video_path} plays {target_span:.3f}s on the "
+                    f"{self.target_video_sample_fps} fps timeline but its waveform covers {audio_span:.3f}s, so the "
+                    "clip's real frame rate disagrees with its metadata fps; skipping."
+                )
 
         # Random text dropout for classifier-free guidance
         if random.random() < self.text_drop_ratio:
