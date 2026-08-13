@@ -201,7 +201,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             
             if args.train_mode == "ti2v":
                 pipeline = Wan2_2TI2VPipeline(
-                    vae=vae,
+                    vae=vae, 
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
                     transformer=transformer3d_1,
@@ -246,7 +246,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = video_length,
-                        negative_prompt = args.negative_prompt,
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = height,
                         width       = width,
                         generator   = generator,
@@ -270,7 +270,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
-                        negative_prompt = args.negative_prompt,
+                        negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
@@ -291,10 +291,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             gc.collect()
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
-            vae.to(
-                accelerator.device if not args.low_vram else "cpu",
-                dtype=torch.float32 if args.dfd else weight_dtype,
-            )
+            vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
             if not args.enable_text_encoder_in_dataloader:
                 text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
         if is_deepspeed:
@@ -304,10 +301,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         print(f"Eval error on rank {accelerator.process_index} with info {e}")
-        vae.to(
-            accelerator.device if not args.low_vram else "cpu",
-            dtype=torch.float32 if args.dfd else weight_dtype,
-        )
+        vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
         if not args.enable_text_encoder_in_dataloader:
             text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
@@ -393,7 +387,7 @@ def parse_args():
         "--negative_prompt",
         type=str,
         default="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
-        help="Shared negative-prompt option used by the DFD teacher CFG branch.",
+        help=("The negative prompt of cfg distill"),
     )
     parser.add_argument(
         "--output_dir",
@@ -705,21 +699,6 @@ def parse_args():
         help=("If you want to load the weight from other transformers, input its path."),
     )
     parser.add_argument(
-        "--generator_transformer_path",
-        type=str,
-        default=None,
-        help="Warm-start the generator and fake score from one DMD weight file for DFD "
-             "post-training; the real-score teacher keeps the base weights. Unlike "
-             "--transformer_path this does not overwrite the teacher.",
-    )
-    parser.add_argument(
-        "--fake_score_transformer_path",
-        type=str,
-        default=None,
-        help="Optionally override only the fake-score warm-start from one weight file; "
-             "the generator and real-score teacher stay unchanged.",
-    )
-    parser.add_argument(
         "--vae_path",
         type=str,
         default=None,
@@ -804,17 +783,22 @@ def parse_args():
     parser.add_argument(
         "--dfd",
         action="store_true",
-        help="Post-train a DMD-pretrained generator with data forcing.",
+        help="whether to use DFD post-training on a DMD-pretrained generator.",
     )
     parser.add_argument(
         "--dfd_teacher_replace_prob",
         type=float,
         default=0.5,
-        help="Probability of replacing only the teacher-score input with paired real data.",
+        help="Probability of replacing the teacher-score input with paired real data.",
     )
+    parser.add_argument(
+        "--dfd_start_step",
+        type=int,
+        default=0,
+        help="Switch on DFD from this global_step onward; earlier steps run plain DMD.",
+    )
+
     args = parser.parse_args()
-    if isinstance(args.report_to, str) and args.report_to.lower() == "none":
-        args.report_to = None
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -826,43 +810,22 @@ def parse_args():
     return args
 
 
-class _DFDResizeCenterCrop:
-    def __init__(self, size):
-        self.height, self.width = size
-
-    def __call__(self, video):
-        _, _, height, width = video.shape
-        scale = max(self.height / height, self.width / width)
-        resized_height = max(self.height, int(round(height * scale)))
-        resized_width = max(self.width, int(round(width * scale)))
-        video = F.interpolate(
-            video, size=(resized_height, resized_width), mode="bilinear", align_corners=False
-        )
-        top = (resized_height - self.height) // 2
-        left = (resized_width - self.width) // 2
-        return video[:, :, top:top + self.height, left:left + self.width].sub_(0.5).div_(0.5)
-
-
 def main():
     args = parse_args()
 
     if args.dfd:
         if args.train_mode != "normal":
-            raise ValueError("DFD currently supports Wan2.2 T2V training with --train_mode normal.")
-        if args.train_data_meta is None or not args.train_data_meta.endswith(".jsonl"):
-            raise ValueError("DFD requires --train_data_meta in VideoX-Fun JSONL format.")
+            raise ValueError("DFD currently supports T2V training with --train_mode normal.")
         if args.enable_text_encoder_in_dataloader:
             raise ValueError("DFD does not support --enable_text_encoder_in_dataloader.")
         if args.seed is None:
             raise ValueError("DFD requires an explicit --seed for reproducible post-training.")
-        if args.generator_transformer_path is None and args.resume_from_checkpoint is None:
-            raise ValueError("A new DFD run requires --generator_transformer_path.")
+        if args.dfd_start_step < 0:
+            raise ValueError("--dfd_start_step must be non-negative.")
         if not 0 <= args.dfd_teacher_replace_prob <= 1:
             raise ValueError("--dfd_teacher_replace_prob must be in [0, 1].")
         if args.gen_update_interval <= 0:
             raise ValueError("--gen_update_interval must be greater than zero.")
-        if args.transformer_path is not None:
-            raise ValueError("Use --generator_transformer_path instead of --transformer_path for DFD.")
         if args.trainable_modules is None:
             args.trainable_modules = [""]
 
@@ -898,6 +861,7 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
     if deepspeed_plugin is not None:
@@ -1052,8 +1016,6 @@ def main():
     generator_transformer3d.requires_grad_(False)
     real_score_transformer3d.requires_grad_(False)
     fake_score_transformer3d.requires_grad_(False)
-    if args.dfd:
-        real_score_transformer3d.eval()
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -1075,12 +1037,9 @@ def main():
         assert len(u) == 0
 
     if args.generator_transformer_path is not None:
-        # DFD is a short post-training stage on top of a DMD student. Warm-starting
-        # fake score together with the generator avoids resetting its estimate of
-        # the student distribution to the base model; the real-score teacher stays base.
-        print(f"Generator/fake-score checkpoint: {args.generator_transformer_path}")
+        print(f"From generator/fake-score checkpoint: {args.generator_transformer_path}")
         if args.generator_transformer_path.endswith("safetensors"):
-            from safetensors.torch import load_file
+            from safetensors.torch import load_file, safe_open
             state_dict = load_file(args.generator_transformer_path)
         else:
             state_dict = torch.load(args.generator_transformer_path, map_location="cpu")
@@ -1092,12 +1051,11 @@ def main():
         m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
         print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
-        del state_dict
 
     if args.fake_score_transformer_path is not None:
-        print(f"Fake-score checkpoint: {args.fake_score_transformer_path}")
+        print(f"From fake-score checkpoint: {args.fake_score_transformer_path}")
         if args.fake_score_transformer_path.endswith("safetensors"):
-            from safetensors.torch import load_file
+            from safetensors.torch import load_file, safe_open
             state_dict = load_file(args.fake_score_transformer_path)
         else:
             state_dict = torch.load(args.fake_score_transformer_path, map_location="cpu")
@@ -1106,7 +1064,6 @@ def main():
         m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
         print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
-        del state_dict
 
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
@@ -1334,28 +1291,18 @@ def main():
         args.training_with_video_token_length = False
         args.random_hw_adapt = False
 
-    # DFD keeps the normal T2V model path but needs paired videos for the
-    # teacher-score input. Everything else reuses the existing DMD data path.
+    # Get the dataset
+    # DFD needs paired videos for the teacher-score input, everything else reuses the DMD data path.
     need_real_video = args.train_mode != "normal" or args.dfd
     if need_real_video:
-        dfd_sample_size = tuple(
-            args.fix_sample_size or (args.video_sample_size, args.video_sample_size)
-        ) if args.dfd else args.video_sample_size
         train_dataset = ImageVideoDataset(
-            args.train_data_meta,
-            args.train_data_dir,
-            video_sample_size=dfd_sample_size,
-            video_sample_stride=args.video_sample_stride,
-            video_sample_n_frames=args.video_sample_n_frames,
-            video_repeat=args.video_repeat,
-            image_sample_size=dfd_sample_size if args.dfd else args.image_sample_size,
-            text_drop_ratio=0.0 if args.dfd else 0.1,
-            enable_bucket=args.enable_bucket,
-            enable_inpaint=args.train_mode != "normal",
+            args.train_data_meta, args.train_data_dir,
+            video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+            video_repeat=args.video_repeat, 
+            image_sample_size=args.image_sample_size,
+            text_drop_ratio=0.0,
+            enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
         )
-        if args.dfd:
-            train_dataset.video_transforms = _DFDResizeCenterCrop(dfd_sample_size)
-            train_dataset.larger_side_of_image_and_video = max(dfd_sample_size)
     else:
         train_dataset = TextDataset(
             args.train_data_meta
@@ -1557,7 +1504,9 @@ def main():
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
         
-                neg_txt = [args.negative_prompt for _ in new_examples['text']]
+                neg_txt = [
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                ]
                 neg_prompt_ids = tokenizer(
                     neg_txt, 
                     max_length=args.tokenizer_max_length, 
@@ -1613,7 +1562,9 @@ def main():
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
         
-                neg_txt = [args.negative_prompt for _ in new_examples['text']]
+                neg_txt = [
+                    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                ]
                 neg_prompt_ids = tokenizer(
                     neg_txt, 
                     max_length=args.tokenizer_max_length, 
@@ -1675,6 +1626,7 @@ def main():
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
+
     # Prepare everything with our `accelerator`.
     generator_transformer3d, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         generator_transformer3d, optimizer, train_dataloader, lr_scheduler
@@ -1695,12 +1647,8 @@ def main():
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         text_encoder = shard_fn(text_encoder)
 
-    # The official Wan DFD recipe samples and normalizes paired-real posteriors
-    # in FP32; the transformer autocast handles its compute precision.
-    vae.to(
-        accelerator.device if not args.low_vram else "cpu",
-        dtype=torch.float32 if args.dfd else weight_dtype,
-    )
+    # Move text_encode and vae to gpu and cast to weight_dtype
+    vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     real_score_transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu")
@@ -1753,11 +1701,6 @@ def main():
             path = dirs[-1] if len(dirs) > 0 else None
 
         if path is None:
-            if args.dfd:
-                raise FileNotFoundError(
-                    f"DFD checkpoint '{args.resume_from_checkpoint}' does not exist; "
-                    "refusing to restart from the base model."
-                )
             accelerator.print(
                 f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
             )
@@ -1780,19 +1723,6 @@ def main():
             fake_score_path = os.path.join(path, "fake_score")
             accelerator.load_state(os.path.join(args.output_dir, path))
             accelerator_fake_score_transformer3d.load_state(os.path.join(args.output_dir, fake_score_path))
-            if args.dfd:
-                dfd_rng_path = os.path.join(
-                    args.output_dir,
-                    path,
-                    f"dfd_rng_state_{accelerator.process_index}.pt",
-                )
-                if os.path.exists(dfd_rng_path):
-                    torch_rng.set_state(torch.load(dfd_rng_path, map_location="cpu"))
-                else:
-                    logger.warning(
-                        "DFD RNG state is absent from %s; resume will not be bitwise continuous.",
-                        dfd_rng_path,
-                    )
     else:
         initial_global_step = 0
 
@@ -1830,6 +1760,9 @@ def main():
         train_sampling_steps = args.train_sampling_steps
 
     idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
+    if args.dfd:
+        # The student timesteps are the denoising-step sigmas of the shift schedule (normalized RF times).
+        dfd_student_timesteps = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)].to(accelerator.device) / 1000
 
     def randomize_denoising_step_indices(
         denoising_step_indices_list,
@@ -1880,53 +1813,18 @@ def main():
             result = result.cpu()
         return result
 
-    def save_training_state(step):
-        save_path = os.path.join(args.output_dir, f"checkpoint-{step}")
-        if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            accelerator.save_state(save_path)
-            accelerator_fake_score_transformer3d.save_state(
-                os.path.join(save_path, "fake_score")
-            )
-        if args.dfd:
-            accelerator.wait_for_everyone()
-            torch.save(
-                torch_rng.get_state(),
-                os.path.join(
-                    save_path,
-                    f"dfd_rng_state_{accelerator.process_index}.pt",
-                ),
-            )
-            accelerator.wait_for_everyone()
-        logger.info(f"Saved state to {save_path}")
-
-    last_saved_step = None
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
         train_denoising_loss = 0.0
         train_dfd_real_replace = 0.0
+        dfd_real_replace_now = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
-            if args.dfd:
-                # Keep one DFD phase fixed across the whole accumulation window:
-                # outer steps 1-4 update fake score and step 5 updates generator.
-                generator_update = (global_step + 1) % args.gen_update_interval == 0
-                fake_score_update = not generator_update
-                active_accelerator = (
-                    accelerator
-                    if generator_update
-                    else accelerator_fake_score_transformer3d
-                )
-            else:
-                # Preserve the original VideoX-Fun DMD micro-batch schedule.
-                generator_update = step % args.gen_update_interval == 0
-                fake_score_update = True
-                active_accelerator = accelerator
+            generator_update = step % args.gen_update_interval == 0
+            dfd_active = args.dfd and global_step >= args.dfd_start_step
 
             # Data batch sanity check
-            if need_real_video and epoch == first_epoch and step == 0:
+            if args.train_mode != "normal" and epoch == first_epoch and step == 0:
                 pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
                 pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
@@ -1935,24 +1833,12 @@ def main():
                     gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
 
-                if args.train_mode != "normal":
-                    clip_pixel_values = batch['clip_pixel_values'].cpu()
-                    mask_pixel_values = rearrange(
-                        batch['mask_pixel_values'].cpu(), "b f c h w -> b c f h w"
-                    )
-                    for idx, (clip_pixel_value, pixel_value, text) in enumerate(
-                        zip(clip_pixel_values, mask_pixel_values, texts)
-                    ):
-                        pixel_value = pixel_value[None, ...]
-                        image_name = gif_name[:10] if text != '' else f'{global_step}-{idx}'
-                        Image.fromarray(np.uint8(clip_pixel_value)).save(
-                            f"{args.output_dir}/sanity_check/clip_{image_name}.png"
-                        )
-                        save_videos_grid(
-                            pixel_value,
-                            f"{args.output_dir}/sanity_check/mask_{image_name}.mp4",
-                            rescale=True,
-                        )
+                clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
+                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
+                for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
+                    pixel_value = pixel_value[None, ...]
+                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                 real_latents = None
@@ -2135,33 +2021,14 @@ def main():
                         int(local_sample_size[1] // vae.spatial_compression_ratio), 
                     )
 
-                    # Both DFD phases use the paired real latent as the student anchor.
-                    if args.dfd:
-                        pixel_values = rearrange(
-                            batch["pixel_values"].to(
-                                accelerator.device, dtype=torch.float32, non_blocking=True
-                            ),
-                            "b f c h w -> b c f h w",
-                        )
-                        expected_shape = (
-                            args.video_sample_n_frames,
-                            dfd_sample_size[0],
-                            dfd_sample_size[1],
-                        )
-                        if pixel_values.shape[2:] != expected_shape:
-                            raise ValueError(
-                                f"Unexpected DFD training clip shape: {tuple(pixel_values.shape)}"
-                            )
+                    # DFD encodes the paired real video as the student anchor.
+                    if dfd_active:
                         if args.low_vram:
+                            torch.cuda.empty_cache()
                             vae.to(accelerator.device)
-                        with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
-                            posterior = vae.encode(pixel_values)[0]
-                            mode = posterior.mode()
-                            sample = posterior.sample(generator=torch_rng)
-                            latent_scale = vae.scale[1].to(
-                                sample.device, sample.dtype
-                            ).view(1, -1, 1, 1, 1)
-                            real_latents = mode + (sample - mode) * latent_scale
+                        pixel_values = rearrange(batch["pixel_values"].to(accelerator.device, dtype=weight_dtype, non_blocking=True), "b f c h w -> b c f h w")
+                        with torch.no_grad():
+                            real_latents = vae.encode(pixel_values)[0].sample()
                         target_shape = real_latents.size()
 
                 if args.low_vram:
@@ -2191,7 +2058,9 @@ def main():
                         prompt_embeds = text_encoder(text_input_ids.to(accelerator.device), attention_mask=prompt_attention_mask.to(accelerator.device))[0]
                         prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
 
-                        neg_txt = [args.negative_prompt for _ in batch['text']]
+                        neg_txt = [
+                            "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                        ]
                         neg_prompt_ids = tokenizer(
                             neg_txt, 
                             padding="max_length", 
@@ -2221,12 +2090,7 @@ def main():
                 else:
                     i2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
 
-            generator_accumulate_context = (
-                accelerator.accumulate(generator_transformer3d)
-                if not args.dfd or generator_update
-                else contextlib.nullcontext()
-            )
-            with generator_accumulate_context:
+            with accelerator.accumulate(generator_transformer3d):
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2243,24 +2107,7 @@ def main():
                         sigma = sigma.unsqueeze(-1)
                     return sigma
 
-                def add_noise(
-                    latents, noise, timesteps, normalized_timesteps=None
-                ):
-                    if args.dfd:
-                        # DFD samples continuous normalized RF times. Avoid
-                        # quantizing them back through the scheduler table.
-                        if normalized_timesteps is None:
-                            raise ValueError(
-                                "DFD RF coefficients require FP64 normalized timesteps."
-                            )
-                        sigmas = normalized_timesteps.double().view(
-                            timesteps.shape[0], *([1] * (latents.ndim - 1))
-                        )
-                        noised = (
-                            (1.0 - sigmas) * latents.double()
-                            + sigmas * noise.double()
-                        )
-                        return noised.to(latents.dtype)
+                def add_noise(latents, noise, timesteps):
                     sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
                     return (1.0 - sigmas) * latents + sigmas * noise
 
@@ -2274,25 +2121,12 @@ def main():
                     scheduler,
                     flow_pred: torch.Tensor,
                     xt: torch.Tensor,
-                    timestep: torch.Tensor,
-                    normalized_timestep: torch.Tensor = None,
+                    timestep: torch.Tensor
                 ) -> torch.Tensor:
                     """
                     Convert flow matching's prediction to x0 prediction.
                     Supports both 4D [B, C, H, W] and 5D [B, C, F, H, W] inputs.
                     """
-                    if args.dfd:
-                        if normalized_timestep is None:
-                            raise ValueError(
-                                "DFD x0 conversion requires an FP64 normalized timestep."
-                            )
-                        sigma_t = normalized_timestep.double().view(
-                            timestep.shape[0], *([1] * (xt.ndim - 1))
-                        )
-                        return (
-                            xt.double() - sigma_t * flow_pred.double()
-                        ).to(xt.dtype)
-
                     original_dtype = flow_pred.dtype
                     device = flow_pred.device
 
@@ -2316,7 +2150,40 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
-                if not args.dfd:
+                # --- Main Training Logic ---
+                bsz, channel, num_frames, height, width = target_shape
+                # Precompute seq_len once (same for all steps)
+                patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+
+                if dfd_active:
+                    # Sample one shared shifted RF timestep for both phases of this step.
+                    score_indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                    dfd_score_timestep = noise_scheduler.timesteps[score_indices].to(device=accelerator.device)
+                    dfd_score_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=real_latents.dtype)
+
+                    # Noise the paired real latent to one of the 4-step student timesteps and denoise it.
+                    student_timestep_indices = torch.randint(0, dfd_student_timesteps.numel(), (bsz,), device=accelerator.device, generator=torch_rng)
+                    student_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=real_latents.dtype)
+                    student_timestep = dfd_student_timesteps[student_timestep_indices] * 1000
+                    student_input = add_noise(real_latents, student_noise, student_timestep)
+                    student_forward_context = contextlib.nullcontext() if generator_update else torch.no_grad()
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), student_forward_context:
+                        dfd_student_flow = generator_transformer3d(
+                            x=student_input,
+                            context=prompt_embeds,
+                            t=student_timestep,
+                            seq_len=seq_len,
+                            y=None,
+                        )
+                        dfd_student_pred = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=dfd_student_flow,
+                            xt=student_input,
+                            timestep=student_timestep,
+                        )
+                else:
+                    # Create discrete denoising steps (per-step, with optional randomization)
                     # Preserve the original DMD multistep self-rollout unchanged.
                     if getattr(args, 'randomize_step_indices', False):
                         random_indices = randomize_denoising_step_indices(
@@ -2331,191 +2198,86 @@ def main():
 
                     denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
 
-                # --- Main Training Logic ---
-                bsz, channel, num_frames, height, width = target_shape
-                if args.dfd:
-                    # The official Wan2.2 recipe samples one already-shifted
-                    # normalized RF timestep for a paired-real student anchor.
-                    patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-                    seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
-                    official_student_timesteps = torch.tensor(
-                        [0.999, 0.937, 0.833, 0.624],
-                        device=accelerator.device,
-                        dtype=torch.float64,
-                    )
-                    student_timestep_indices = torch.randint(
-                        0,
-                        official_student_timesteps.numel(),
-                        (bsz,),
-                        device=accelerator.device,
-                        generator=torch_rng,
-                    )
-                    student_noise = torch.randn(
-                        target_shape,
-                        device=accelerator.device,
-                        generator=torch_rng,
-                        dtype=real_latents.dtype,
-                    )
-                    score_uniform = (
-                        torch.rand(
-                            bsz,
-                            device=accelerator.device,
-                            dtype=torch.float64,
-                            generator=torch_rng,
-                        )
-                        * 0.998
-                        + 0.001
-                    )
-                    dfd_score_timestep_normalized = (
-                        5.0 * score_uniform / (1.0 + 4.0 * score_uniform)
-                    ).clamp_(0.001, 0.999)
-                    dfd_score_timestep = (
-                        dfd_score_timestep_normalized * 1000
-                    ).float()
-                    dfd_score_noise = torch.randn(
-                        target_shape,
-                        device=accelerator.device,
-                        generator=torch_rng,
-                        dtype=real_latents.dtype,
-                    )
-                    student_timestep_normalized = official_student_timesteps[
-                        student_timestep_indices
-                    ]
-                    student_sigma = student_timestep_normalized.view(
-                        bsz, *([1] * (real_latents.ndim - 1))
-                    )
-                    student_input = (
-                        (1.0 - student_sigma) * real_latents.double()
-                        + student_sigma * student_noise.double()
-                    ).to(real_latents.dtype)
-                    # Wan embeds timesteps on the 0..1000 model scale; the RF
-                    # coefficients above and below remain normalized.
-                    student_timestep = (student_timestep_normalized * 1000).float()
-                    student_forward_context = (
-                        contextlib.nullcontext() if generator_update else torch.no_grad()
-                    )
-                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), student_forward_context:
-                        dfd_student_flow = generator_transformer3d(
-                            x=student_input,
-                            context=prompt_embeds,
-                            t=student_timestep,
-                            seq_len=seq_len,
-                            y=None,
-                        )
-                        dfd_student_pred = (
-                            student_input.double()
-                            - student_sigma * dfd_student_flow.double()
-                        ).to(student_input.dtype)
-
                 if generator_update:
-                    if args.dfd:
+                    if dfd_active:
                         generator_pred = dfd_student_pred
-                        generator_denoising_step_list = ()
+                        generator_timestep = dfd_score_timestep
+                        dmd_noise = dfd_score_noise
                     else:
                         generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
-                        generator_denoising_step_list = denoising_step_list
 
-                    # Precompute seq_len once (same for all steps)
-                    patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-                    seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+                        for index, current_timestep in enumerate(denoising_step_list):
+                            is_final_step = (index == final_step_index)
+                            timestep = torch.full(
+                                generator_noise.shape[:1],
+                                current_timestep,
+                                device=generator_noise.device,
+                                dtype=torch.int64
+                            )
 
-                    for index, current_timestep in enumerate(generator_denoising_step_list):
-                        is_final_step = (index == final_step_index)
-                        timestep = torch.full(
-                            generator_noise.shape[:1],
-                            current_timestep,
-                            device=generator_noise.device,
-                            dtype=torch.int64
-                        )
+                            with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                                context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
 
-                        with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                            context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
+                                with context_manager:
+                                    if args.train_mode == "ti2v":
+                                        mask_bs = mask.size()[0]
+                                        if i2v_in_ti2v:
+                                            _generator_noise = (1 - mask) * inpaint_latents + mask * generator_noise
 
-                            with context_manager:
-                                if args.train_mode == "ti2v":
-                                    mask_bs = mask.size()[0]
-                                    if i2v_in_ti2v:
-                                        _generator_noise = (1 - mask) * inpaint_latents + mask * generator_noise
-
-                                        temp_ts = (mask[:, 0, :, ::2, ::2] * timestep[:, None, None, None]).flatten(1)
-                                        _timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * timestep[:, None,]], dim = 1)
+                                            temp_ts = (mask[:, 0, :, ::2, ::2] * timestep[:, None, None, None]).flatten(1)
+                                            _timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * timestep[:, None,]], dim = 1)
+                                        else:
+                                            _timestep = mask.new_ones(mask_bs, seq_len) * timestep[:, None,]
+                                            _generator_noise = generator_noise
                                     else:
-                                        _timestep = mask.new_ones(mask_bs, seq_len) * timestep[:, None,]
+                                        _timestep = timestep
                                         _generator_noise = generator_noise
-                                else:
-                                    _timestep = timestep
-                                    _generator_noise = generator_noise
-                                generator_pred = generator_transformer3d(
-                                    x=_generator_noise,
-                                    context=prompt_embeds,
-                                    t=_timestep,
-                                    seq_len=seq_len,
-                                    y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
+                                    generator_pred = generator_transformer3d(
+                                        x=_generator_noise,
+                                        context=prompt_embeds,
+                                        t=_timestep,
+                                        seq_len=seq_len,
+                                        y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
+                                    )
+                                    generator_pred = convert_flow_pred_to_x0(
+                                        scheduler=noise_scheduler,
+                                        flow_pred=generator_pred,
+                                        xt=_generator_noise,
+                                        timestep=timestep
+                                    )
+
+                                if is_final_step:
+                                    break
+
+                                next_timestep = denoising_step_list[index + 1] * torch.ones(
+                                    generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
                                 )
-                                generator_pred = convert_flow_pred_to_x0(
-                                    scheduler=noise_scheduler,
-                                    flow_pred=generator_pred,
-                                    xt=_generator_noise,
-                                    timestep=timestep
+                                generator_noise = add_noise(
+                                    generator_pred,
+                                    torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                    next_timestep
                                 )
 
-                            if is_final_step:
-                                break
-
-                            next_timestep = denoising_step_list[index + 1] * torch.ones(
-                                generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
-                            )
-                            generator_noise = add_noise(
-                                generator_pred,
-                                torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                                next_timestep
-                            )
-
-                    if args.dfd:
-                        generator_timestep = dfd_score_timestep
-                        dmd_noise = dfd_score_noise
-                    else:
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
-                        dmd_noise = torch.randn(
-                            generator_pred.shape,
-                            dtype=generator_pred.dtype,
-                            device=generator_pred.device,
-                            generator=torch_rng,
-                        )
+                        dmd_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
                     generator_denoised_input = add_noise(
                         generator_pred,
                         dmd_noise,
-                        generator_timestep,
-                        normalized_timesteps=(
-                            dfd_score_timestep_normalized if args.dfd else None
-                        ),
-                    ).detach().to(
-                        accelerator.device,
-                        dtype=generator_pred.dtype if args.dfd else weight_dtype,
-                    )
+                        generator_timestep
+                    ).detach().to(accelerator.device, dtype=weight_dtype)
 
-                    # DFD changes only the frozen teacher's input. The fake score
-                    # continues to observe the perturbed generator prediction.
+                    # DFD may feed the frozen teacher the paired real latent instead.
                     real_score_input = generator_denoised_input
-                    use_dfd_real = (
-                        real_latents is not None
-                        and torch.rand(
-                            (), device=accelerator.device, generator=torch_rng
-                        ).item() < args.dfd_teacher_replace_prob
-                    )
+                    use_dfd_real = dfd_active and real_latents is not None and torch.rand((), device=accelerator.device, generator=torch_rng).item() < args.dfd_teacher_replace_prob
                     if use_dfd_real:
                         real_score_input = add_noise(
                             real_latents.to(generator_pred.dtype),
                             dmd_noise,
-                            generator_timestep,
-                            normalized_timesteps=dfd_score_timestep_normalized,
-                        ).detach().to(
-                            accelerator.device,
-                            dtype=generator_pred.dtype if args.dfd else weight_dtype,
-                        )
+                            generator_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
                         train_dfd_real_replace += 1.0
 
                     # Compute fake score
@@ -2524,7 +2286,7 @@ def main():
                             mask_bs = mask.size()[0]
                             if i2v_in_ti2v:
                                 _generator_denoised_input = (1 - mask) * generator_pred + mask * generator_denoised_input
-
+                                
                                 temp_ts = (mask[:, 0, :, ::2, ::2] * generator_timestep[:, None, None, None]).flatten(1)
                                 _generator_timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * generator_timestep[:, None,]], dim = 1)
                             else:
@@ -2533,9 +2295,6 @@ def main():
                         else:
                             _generator_timestep = generator_timestep
                             _generator_denoised_input = generator_denoised_input
-                        _real_score_input = (
-                            real_score_input if use_dfd_real else _generator_denoised_input
-                        )
                         fake_score_main_cond = fake_score_transformer3d(
                             x=_generator_denoised_input,
                             context=prompt_embeds,
@@ -2548,9 +2307,6 @@ def main():
                             flow_pred=fake_score_main_cond,
                             xt=_generator_denoised_input,
                             timestep=generator_timestep,
-                            normalized_timestep=(
-                                dfd_score_timestep_normalized if args.dfd else None
-                            ),
                         )
 
                         if args.fake_guidance_scale != 0.0:
@@ -2566,9 +2322,6 @@ def main():
                                 flow_pred=fake_score_main_uncond,
                                 xt=_generator_denoised_input,
                                 timestep=generator_timestep,
-                                normalized_timestep=(
-                                    dfd_score_timestep_normalized if args.dfd else None
-                                ),
                             )
                             fake_score_main = fake_score_main_uncond + (
                                 fake_score_main_cond - fake_score_main_uncond
@@ -2577,10 +2330,16 @@ def main():
                             fake_score_main = fake_score_main_cond
 
                         # Compute real score
+                        if args.train_mode == "ti2v":
+                            _real_score_input = _generator_denoised_input
+                            _real_score_timestep = _generator_timestep
+                        else:
+                            _real_score_input = real_score_input
+                            _real_score_timestep = generator_timestep
                         real_score_main_cond = real_score_transformer3d(
                             x=_real_score_input,
                             context=prompt_embeds,
-                            t=_generator_timestep,
+                            t=_real_score_timestep,
                             seq_len=seq_len,
                             y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
                         )
@@ -2588,16 +2347,13 @@ def main():
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_cond,
                             xt=_real_score_input,
-                            timestep=generator_timestep,
-                            normalized_timestep=(
-                                dfd_score_timestep_normalized if args.dfd else None
-                            ),
+                            timestep=_real_score_timestep,
                         )
 
                         real_score_main_uncond = real_score_transformer3d(
                             x=_real_score_input,
                             context=neg_prompt_embeds,
-                            t=_generator_timestep,
+                            t=_real_score_timestep,
                             seq_len=seq_len,
                             y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
                         )
@@ -2605,10 +2361,7 @@ def main():
                             scheduler=noise_scheduler,
                             flow_pred=real_score_main_uncond,
                             xt=_real_score_input,
-                            timestep=generator_timestep,
-                            normalized_timestep=(
-                                dfd_score_timestep_normalized if args.dfd else None
-                            ),
+                            timestep=_real_score_timestep,
                         )
 
                         real_score_main = real_score_main_uncond + (
@@ -2617,23 +2370,14 @@ def main():
 
                     # DMD loss
                     fake_to_real_grad = fake_score_main - real_score_main
-                    if args.dfd:
-                        normalizer = 1.0 / (
-                            (
-                                generator_pred.float()
-                                - real_score_main.float()
-                            )
-                            .abs()
-                            .mean(dim=[1, 2, 3, 4], keepdim=True)
-                            + 1e-6
-                        )
-                        fake_to_real_grad = fake_to_real_grad * normalizer.to(
-                            fake_to_real_grad.dtype
-                        )
+                    if dfd_active:
+                        normalizer = 1.0 / ((generator_pred.float() - real_score_main.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
+                        fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
+
                         dmd_loss = 0.5 * F.mse_loss(
                             generator_pred,
                             (generator_pred - fake_to_real_grad).detach(),
-                            reduction="mean",
+                            reduction="mean"
                         )
                     else:
                         generator_to_real_norm = generator_pred - real_score_main
@@ -2656,35 +2400,28 @@ def main():
 
                     accelerator.backward(dmd_loss)
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            trainable_params,
-                            10.0 if args.dfd else args.max_grad_norm,
-                        )
+                        accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-
+                    
                     if args.low_vram:
                         fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                         torch.cuda.empty_cache()
 
-            if fake_score_update:
-                with accelerator_fake_score_transformer3d.accumulate(fake_score_transformer3d):
-                    # --- Fake Critic Denoising Loss ---
-                    with torch.no_grad():
-                        if args.dfd:
-                            fake_score_denoised_pred = dfd_student_pred.detach()
-                            fake_score_denoising_step_list = ()
-                        else:
-                            fake_score_critic_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
-                            num_denoising_steps = len(denoising_step_list)
-                            final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
-                            fake_score_denoising_step_list = denoising_step_list
+            with accelerator_fake_score_transformer3d.accumulate(fake_score_transformer3d):
+                # --- Fake Critic Denoising Loss ---
+                with torch.no_grad():
+                    if dfd_active:
+                        fake_score_denoised_pred = dfd_student_pred.detach()
+                        critic_timestep = dfd_score_timestep
+                        critic_noise = dfd_score_noise
+                    else:
+                        fake_score_critic_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
+                        num_denoising_steps = len(denoising_step_list)
+                        final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
 
-                        patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-                        seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
-
-                        for index, current_timestep in enumerate(fake_score_denoising_step_list):
+                        for index, current_timestep in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
                             timestep = torch.full(
                                 fake_score_critic_noise.shape[:1],
@@ -2736,97 +2473,86 @@ def main():
                                     next_timestep
                                 )
 
-                    if args.dfd:
-                        critic_timestep = dfd_score_timestep
-                        critic_noise = dfd_score_noise
-                    else:
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
                         critic_noise = torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng)
 
-                    fake_score_denoised_input = add_noise(
-                        fake_score_denoised_pred,
-                        critic_noise,
-                        critic_timestep,
-                        normalized_timesteps=(
-                            dfd_score_timestep_normalized if args.dfd else None
-                        ),
+                fake_score_denoised_input = add_noise(
+                    fake_score_denoised_pred,
+                    critic_noise,
+                    critic_timestep
+                )
+                if args.train_mode == "ti2v":
+                    mask_bs = mask.size()[0]
+                    if i2v_in_ti2v:
+                        fake_score_denoised_input = (1 - mask) * fake_score_denoised_pred + mask * fake_score_denoised_input
+                        
+                        temp_ts = (mask[:, 0, :, ::2, ::2] * critic_timestep[:, None, None, None]).flatten(1)
+                        _critic_timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * critic_timestep[:, None,]], dim = 1)
+                    else:
+                        _critic_timestep = mask.new_ones(mask_bs, seq_len) * critic_timestep[:, None,]
+                else:
+                    _critic_timestep = critic_timestep
+
+                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                    fake_score_denoised_output = fake_score_transformer3d(
+                        x=fake_score_denoised_input,
+                        context=prompt_embeds,
+                        t=_critic_timestep,
+                        seq_len=seq_len,
+                        y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
                     )
-                    if args.train_mode == "ti2v":
-                        mask_bs = mask.size()[0]
-                        if i2v_in_ti2v:
-                            fake_score_denoised_input = (1 - mask) * fake_score_denoised_pred + mask * fake_score_denoised_input
 
-                            temp_ts = (mask[:, 0, :, ::2, ::2] * critic_timestep[:, None, None, None]).flatten(1)
-                            _critic_timestep = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * critic_timestep[:, None,]], dim = 1)
-                        else:
-                            _critic_timestep = mask.new_ones(mask_bs, seq_len) * critic_timestep[:, None,]
-                    else:
-                        _critic_timestep = critic_timestep
+                def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
+                    noise_pred = noise_pred.float()
+                    target = target.float()
+                    diff = noise_pred - target
+                    mse_loss = F.mse_loss(noise_pred, target, reduction='none')
+                    mask = (diff.abs() <= threshold).float()
+                    masked_loss = mse_loss * mask
+                    if weighting is not None:
+                        masked_loss = masked_loss * weighting
+                    final_loss = masked_loss.mean()
+                    return final_loss
 
-                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                        fake_score_denoised_output = fake_score_transformer3d(
-                            x=fake_score_denoised_input,
-                            context=prompt_embeds,
-                            t=_critic_timestep,
-                            seq_len=seq_len,
-                            y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
-                        )
+                if dfd_active:
+                    # DFD critic regresses the fake score's x0 prediction onto the student anchor prediction.
+                    fake_score_denoised_output_x0 = convert_flow_pred_to_x0(
+                        scheduler=noise_scheduler,
+                        flow_pred=fake_score_denoised_output,
+                        xt=fake_score_denoised_input,
+                        timestep=critic_timestep,
+                    )
+                    denoising_loss = F.mse_loss(
+                        fake_score_denoised_output_x0.float(),
+                        fake_score_denoised_pred.detach().float(),
+                        reduction="mean",
+                    )
+                else:
+                    denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+                
+                accelerator_fake_score_transformer3d.backward(denoising_loss)
+                if accelerator_fake_score_transformer3d.sync_gradients:
+                    accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
+                critic_optimizer.step()
+                fake_score_lr_scheduler.step()
+                critic_optimizer.zero_grad()
 
-                    def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
-                        noise_pred = noise_pred.float()
-                        target = target.float()
-                        diff = noise_pred - target
-                        mse_loss = F.mse_loss(noise_pred, target, reduction='none')
-                        mask = (diff.abs() <= threshold).float()
-                        masked_loss = mse_loss * mask
-                        if weighting is not None:
-                            masked_loss = masked_loss * weighting
-                        final_loss = masked_loss.mean()
-                        return final_loss
+                if args.low_vram:
+                    fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                    generator_transformer3d = generator_transformer3d.to(accelerator.device)
 
-                    if args.dfd:
-                        fake_score_denoised_output_x0 = convert_flow_pred_to_x0(
-                            scheduler=noise_scheduler,
-                            flow_pred=fake_score_denoised_output,
-                            xt=fake_score_denoised_input,
-                            timestep=critic_timestep,
-                            normalized_timestep=dfd_score_timestep_normalized,
-                        )
-                        denoising_loss = F.mse_loss(
-                            fake_score_denoised_output_x0.float(),
-                            fake_score_denoised_pred.detach().float(),
-                            reduction="mean",
-                        )
-                    else:
-                        denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
-                    avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
-                    train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
-
-                    accelerator_fake_score_transformer3d.backward(denoising_loss)
-                    if (
-                        accelerator_fake_score_transformer3d.sync_gradients
-                        and not args.dfd
-                    ):
-                        accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
-                    critic_optimizer.step()
-                    fake_score_lr_scheduler.step()
-                    critic_optimizer.zero_grad()
-
-                    if args.low_vram:
-                        fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
-                        generator_transformer3d = generator_transformer3d.to(accelerator.device)
-
-            if active_accelerator.sync_gradients:
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
 
                 progress_bar.update(1)
                 global_step += 1
-                tracker_logs = {
-                    "train_denoising_loss": train_denoising_loss,
-                    "train_dmd_loss": train_dmd_loss,
-                }
+                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}
                 if args.dfd:
                     tracker_logs["train_dfd_real_replace"] = train_dfd_real_replace
+                    dfd_real_replace_now = train_dfd_real_replace
                 accelerator.log(tracker_logs, step=global_step)
                 train_dmd_loss = 0.0
                 train_denoising_loss = 0.0
@@ -2854,8 +2580,14 @@ def main():
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                    save_training_state(global_step)
-                    last_saved_step = global_step
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        fake_score_save_path = os.path.join(save_path, "fake_score")
+                        accelerator.save_state(save_path)
+                        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                        logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
                     log_validation(
@@ -2871,22 +2603,12 @@ def main():
                     )
 
             if args.dfd:
-                logs = {
-                    "lr": (
-                        lr_scheduler if generator_update else fake_score_lr_scheduler
-                    ).get_last_lr()[0],
-                }
+                logs = {"lr": (lr_scheduler if generator_update else fake_score_lr_scheduler).get_last_lr()[0], "denoising_loss": denoising_loss.detach().item()}
                 if generator_update:
                     logs["dmd_loss"] = dmd_loss.detach().item()
-                else:
-                    logs["denoising_loss"] = denoising_loss.detach().item()
-                logs["dfd_real_replace"] = train_dfd_real_replace
+                logs["dfd_real_replace"] = dfd_real_replace_now
             else:
-                logs = {
-                    "denoising_loss": denoising_loss.detach().item(),
-                    "dmd_loss": dmd_loss.detach().item(),
-                    "lr": lr_scheduler.get_last_lr()[0],
-                }
+                logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
@@ -2910,8 +2632,15 @@ def main():
     if accelerator.is_main_process:
         generator_transformer3d = unwrap_model(generator_transformer3d)
 
-    if global_step != last_saved_step:
-        save_training_state(global_step)
+    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        fake_score_save_path = os.path.join(save_path, "fake_score")
+        accelerator.save_state(save_path)
+        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

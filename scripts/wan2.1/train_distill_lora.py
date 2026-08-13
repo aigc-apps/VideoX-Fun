@@ -1050,6 +1050,18 @@ def main():
         )
         fake_score_network.apply_to(None, fake_score_transformer3d, False, True)
 
+    def _load_warm_start_weights(model, state_dict, name):
+        m, u = model.load_state_dict(state_dict, strict=False)
+        if len(u) > 0:
+            # peft inject_adapter_in_model nests base weights under `.base_layer`; retry with remapped keys.
+            remapped_state_dict = {
+                k[: -len(".weight")] + ".base_layer.weight" if k.endswith(".weight") else k: v
+                for k, v in state_dict.items()
+            }
+            m, u = model.load_state_dict(remapped_state_dict, strict=False)
+        print(f"{name} missing keys: {len(m)}, unexpected keys: {len(u)}")
+        assert len(u) == 0
+
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
         if args.transformer_path.endswith("safetensors"):
@@ -1059,11 +1071,9 @@ def main():
             state_dict = torch.load(args.transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
-        m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
-        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
+        _load_warm_start_weights(generator_transformer3d, state_dict, "generator")
+        _load_warm_start_weights(real_score_transformer3d, state_dict, "real_score")
+        _load_warm_start_weights(fake_score_transformer3d, state_dict, "fake_score")
 
     if args.generator_transformer_path is not None:
         print(f"From generator/fake-score checkpoint: {args.generator_transformer_path}")
@@ -1074,12 +1084,8 @@ def main():
             state_dict = torch.load(args.generator_transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-        m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"generator missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
-        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
+        _load_warm_start_weights(generator_transformer3d, state_dict, "generator")
+        _load_warm_start_weights(fake_score_transformer3d, state_dict, "fake_score")
 
     if args.fake_score_transformer_path is not None:
         print(f"From fake-score checkpoint: {args.fake_score_transformer_path}")
@@ -1090,9 +1096,7 @@ def main():
             state_dict = torch.load(args.fake_score_transformer_path, map_location="cpu")
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
+        _load_warm_start_weights(fake_score_transformer3d, state_dict, "fake_score")
 
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
