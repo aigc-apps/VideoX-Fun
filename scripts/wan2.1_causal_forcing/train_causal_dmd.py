@@ -1762,42 +1762,45 @@ def main():
         torch_rng,
         accelerator,
         jitter_ratio=0.3,
+        tail_margin=1,
     ):
         indices = list(denoising_step_indices_list)
         n = len(indices)
+        tail_margin = max(int(tail_margin), 1)
 
-        if n <= 2:
-            low = indices[1]
-            high = indices[0] - 1
-            random_tail = torch.randint(low, high + 1, (1,)).item()
-
-            result = torch.tensor([indices[0], random_tail])
-        else:
-            result = [0] * n
-            result[0] = indices[0]
-            result[-1] = indices[-1]
-
-            for i in range(1, n - 1):
-                gap_upper = indices[i - 1] - indices[i]
+        # The head stays fixed at the pure-noise start; the remaining steps jitter
+        # symmetrically around their base values so the expected schedule is unchanged.
+        result = [indices[0]]
+        for i in range(1, n):
+            gap_upper = indices[i - 1] - indices[i]
+            if i + 1 < n:
                 gap_lower = indices[i] - indices[i + 1]
-
                 max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+            else:
+                # Tail step: no lower neighbor (the base value sits at the clean end),
+                # so the jitter budget comes from the upward gap and the downward side
+                # is clamped by tail_margin. Keeping the tail off the schedule's cleanest
+                # position guarantees Decoupled DMD's tau_CA always has a cleaner slot.
+                max_jitter = int(gap_upper * jitter_ratio)
 
-                if max_jitter > 0:
-                    jitter = torch.randint(
-                        -max_jitter, max_jitter + 1, (1,)
-                    ).item()
-                else:
-                    jitter = 0
+            if max_jitter > 0:
+                # NB: torch_rng may live on CUDA while randint's default output is CPU;
+                # use the global CPU RNG here, the result is broadcast from rank 0 anyway.
+                jitter = torch.randint(
+                    -max_jitter, max_jitter + 1, (1,)
+                ).item()
+            else:
+                jitter = 0
 
-                result[i] = indices[i] + jitter
+            value = indices[i] + jitter
+            # Strict monotonicity by construction (no post-hoc clamp repair).
+            value = min(value, result[i - 1] - 1)
+            if i == n - 1:
+                value = max(value, tail_margin)
+            result.append(value)
 
-            for i in range(1, n):
-                if result[i] >= result[i - 1]:
-                    result[i] = result[i - 1] - 1
-
-            result = [max(1, min(train_sampling_steps, x)) for x in result]
-            result = torch.tensor(result)
+        result = [max(1, min(train_sampling_steps, x)) for x in result]
+        result = torch.tensor(result)
 
         if dist.is_initialized():
             result = result.to(accelerator.device)
