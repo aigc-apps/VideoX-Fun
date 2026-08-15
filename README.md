@@ -79,7 +79,7 @@ cd VideoX-Fun
 mkdir models/Diffusion_Transformer
 mkdir models/Personalized_Model
 
-# Please use the hugginface link or modelscope link to download the model.
+# Please use the Hugging Face link or ModelScope link to download the model.
 # CogVideoX-Fun
 # https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP
 # https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
@@ -112,7 +112,7 @@ The detailed of Linux:
 We need about 60GB available on disk (for saving weights), please check!
 
 #### b. Weights
-We'd better place the [weights](#model-zoo) along the specified path:
+We recommend placing the [weights](#model-zoo) along the specified path:
 
 **Via ComfyUI**:
 Put the models into the ComfyUI weights folder `ComfyUI/models/Fun_Models/`:
