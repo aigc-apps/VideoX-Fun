@@ -2,6 +2,7 @@
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 FLOAT8_DTYPE = torch.float8_e4m3fn
 FLOAT8_MAX = torch.finfo(FLOAT8_DTYPE).max
@@ -97,17 +98,55 @@ def autocast_model_forward(cls, origin_dtype, *inputs, **kwargs):
     _requantize_float8_weights(cls, storage_dtype)
     return out
 
-def convert_weight_dtype_wrapper(module, origin_dtype):
-    for name, module in module.named_modules():
-        if name == "" or "embed_tokens" in name:
-            continue
-        original_forward = module.forward
-        if hasattr(module, "weight") and module.weight is not None:
-            setattr(module, "original_forward", original_forward)
-            setattr(
-                module,
-                "forward",
-                lambda *inputs, m=module, **kwargs: autocast_model_forward(m, origin_dtype, *inputs, **kwargs)
+def _is_fsdp_managed(module):
+    # FSDP1 wraps modules in `FullyShardedDataParallel`; FSDP2 (`fully_shard`) instead turns the managed
+    # parameters into DTensors without any wrapper class.
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        if isinstance(module, FullyShardedDataParallel) or any(
+                isinstance(m, FullyShardedDataParallel) for m in module.modules()):
+            return True
+    except ImportError:
+        pass
+    try:
+        from torch.distributed.tensor import DTensor
+        return any(isinstance(p, DTensor) for p in module.parameters())
+    except ImportError:
+        return False
+
+def convert_weight_dtype_wrapper(module, origin_dtype, fsdp=None):
+    # `fsdp` defaults to detecting the sharding from the module itself, so pass it explicitly only when
+    # installing on a not-yet-wrapped module that is going to be FSDP-sharded afterwards.
+    if fsdp is None:
+        fsdp = _is_fsdp_managed(module)
+    if not fsdp:
+        for name, module in module.named_modules():
+            if name == "" or "embed_tokens" in name:
+                continue
+            original_forward = module.forward
+            if hasattr(module, "weight") and module.weight is not None:
+                setattr(module, "original_forward", original_forward)
+                setattr(
+                    module,
+                    "forward",
+                    lambda *inputs, m=module, **kwargs: autocast_model_forward(m, origin_dtype, *inputs, **kwargs)
+                )
+        return
+    # Under FSDP the dequant must never rewrite `param.data` (the params are flat-storage views), so replace
+    # only the forwards of the module types the DiT blocks quantize (`nn.Linear` and RMSNorm) and read
+    # `self.weight` / the scale buffer at call time, which stays valid inside the FSDP forward while the
+    # unit's parameters are unsharded.
+    for _, child in module.named_modules():
+        if isinstance(child, nn.Linear) and child.weight.dtype == FLOAT8_DTYPE:
+            child.original_forward = child.forward
+            child.forward = (
+                lambda *inputs, m=child, **kwargs: _fsdp_dequant_linear_forward(m, origin_dtype, *inputs, **kwargs)
+            )
+        elif hasattr(child, "normalized_shape") and getattr(child, "weight", None) is not None \
+                and child.weight.dtype == FLOAT8_DTYPE:
+            child.original_forward = child.forward
+            child.forward = (
+                lambda *inputs, m=child, **kwargs: _fsdp_dequant_rmsnorm_forward(m, origin_dtype, *inputs, **kwargs)
             )
 
 def undo_convert_weight_dtype_wrapper(module):
@@ -115,3 +154,34 @@ def undo_convert_weight_dtype_wrapper(module):
         if hasattr(module, "original_forward") and module.weight is not None:
             setattr(module, "forward", module.original_forward)
             delattr(module, "original_forward")
+
+
+def _fsdp_dequant_linear_forward(module, origin_dtype, *inputs, **kwargs):
+    # Non-mutating dequant for FSDP-sharded models: the scale-aware storage holds `w / scale` in fp8 and the
+    # dequant must never rewrite `param.data` (FSDP flat-storage views), so the per-row scale is applied on
+    # the output side instead — the scale indexes the output channels of the matmul, which makes
+    # `(w / scale).to(dtype) @ x * scale` equivalent to dequantizing the weight first.
+    weight = module.weight
+    scale = getattr(module, _float8_scale_name("weight"), None)
+    inputs = [input.to(origin_dtype) if torch.is_tensor(input) else input for input in inputs]
+    out = F.linear(inputs[0], weight.to(origin_dtype))
+    if scale is not None:
+        # The per-row scale is stored as `(out_features, 1...)`; flatten it so it broadcasts over the output's
+        # last (channel) dim regardless of the leading batch / sequence dims.
+        out = out * scale.flatten().to(out.device, out.dtype)
+    if module.bias is not None:
+        bias = module.bias.to(origin_dtype)
+        bias_scale = getattr(module, _float8_scale_name("bias"), None)
+        if bias_scale is not None:
+            bias = bias * bias_scale.to(bias.device, bias.dtype)
+        out = out + bias
+    return out
+
+def _fsdp_dequant_rmsnorm_forward(module, origin_dtype, *inputs, **kwargs):
+    # RMSNorm has no bias or additive term, so `norm(x) * (w / scale) * scale` folds the scale out exactly.
+    hidden_states = inputs[0]
+    weight = module.weight.to(origin_dtype)
+    scale = getattr(module, _float8_scale_name("weight"), None)
+    if scale is not None:
+        weight = weight * scale.to(weight.device, weight.dtype)
+    return F.rms_norm(hidden_states, module.normalized_shape, weight, module.eps)

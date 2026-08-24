@@ -1,9 +1,7 @@
 import os
 import sys
 
-import numpy as np
 import torch
-from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,10 +11,14 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
-                               MiniMaxH3Transformer3DModel, Qwen2TokenizerFast,
+                               MiniMaxH3Transformer3DModel,
+                               Qwen2TokenizerFast,
                                Qwen3VLForConditionalGeneration,
                                Qwen3VLProcessor)
-from videox_fun.pipeline import MiniMaxH3Pipeline
+from videox_fun.pipeline import (MiniMaxH3AudioReference,
+                                 MiniMaxH3ImageReference,
+                                 MiniMaxH3Pipeline,
+                                 MiniMaxH3VideoReference)
 from videox_fun.utils import (MiniMaxH3Scheduler, register_auto_device_hook,
                               safe_enable_group_offload)
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -39,6 +41,7 @@ from videox_fun.utils.utils import save_videos_with_audio_grid
 # balancing memory efficiency and speed between full-module and leaf-level offloading methods.
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
+# resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
@@ -59,45 +62,56 @@ compile_dit         = False
 model_name          = "models/Diffusion_Transformer/MiniMax-H3"
 
 # Load pretrained model if need
-# A full finetune goes in `transformer_path`, either as the `transformer` folder a training checkpoint writes
-# (`output_dir_minimax_h3/checkpoint-N/transformer`, config.json included) or as a single safetensors file. A LoRA
-# goes in `lora_path`: handed to `transformer_path` it would match no key at all and load nothing.
+# The `ref2va` weights ship in their own subfolder, same architecture as the base transformer. A full finetune goes
+# in `transformer_path`, either as the `transformer` folder a training checkpoint writes (config.json included) or
+# as a single safetensors file, overriding the `transformer_ref` subfolder. A LoRA goes in `lora_path`: handed to
+# `transformer_path` it would match no key at all and load nothing.
+transformer_subfolder = "transformer_ref"
 transformer_path    = None
 vae_path            = None
 lora_path           = None
 
 # Other params
 # MiniMax-H3 generates at a fixed 24 fps, only accepts multiples of 32 as height / width, and snaps video_length up
-# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 5 and 15 seconds).
-# Leave sample_size as None to use MiniMax-H3's own 16:9 canvas (768x1344).
-sample_size         = [704, 1280]
+# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 5 and 15 seconds). References
+# never bind the generated geometry: leaving height / width unset resolves MiniMax-H3's own 16:9 canvas.
+sample_size         = [1280, 704]
 video_length        = 124
 fps                 = 24
+
+# The references to condition on, **in the order the model should read them**: the order labels them in the prompt
+# presentation and lays them out on the shared rotary clock. One entry per reference, `image=path`, `video=path` or
+# `audio=path`; a video's own soundtrack is conditioned on with it. Budgets of the released checkpoint: at most 9
+# images, 3 videos, 3 audios and 12 references in total, and an audio reference cannot stand alone.
+references          = [
+    "video=asset/ref2va_video.mp4",
+    "audio=asset/ref2va_audio.wav",
+]
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-prompt              = "A red fox trotting through a snowy pine forest, snow crunching underfoot"
+prompt              = "参考视频中的角色与场景，生成一段动作连贯、镜头流畅的续写视频，环境音与画面同步。"
 seed                = 43
-# Number of denoising steps, i.e. of model evaluations: num_inference_steps = 40 runs 40 of them.
-num_inference_steps = 40
-# The released checkpoint is guidance-distilled: leave guidance_scale at 1 to run one forward pass per step
-# with no CFG. A value above 1 enables classifier-free guidance with a negative_prompt, running two passes.
-guidance_scale      = 1
+# Number of denoising steps, i.e. of model evaluations: num_inference_steps = 50 runs 50 of them.
+num_inference_steps = 50
+# The released `ref2va` checkpoint is guidance-distilled with no unconditional branch, so `references` runs one
+# forward pass per step and needs guidance_scale of 1 — the pipeline raises on anything above.
+guidance_scale      = 1.0
 # The exponential sigma shifts of the two schedules. None keeps the ones of the checkpoint (12.0 video, 3.0 audio).
 flow_shift          = None
 audio_flow_shift    = None
 lora_weight         = 0.55
-save_path           = "samples/minimax-h3-videos-t2v"
+save_path           = "samples/minimax-h3-videos-ref2va"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
-# `model_name` may point either at a converted diffusers layout or at an *original* MiniMax-H3 partition (e.g.
-# `MiniMax-H3/FL2VA`); the original shards are converted on the fly while loading, no intermediate copy on disk.
-# Transformer
+# `model_name` may point either at a converted diffusers layout or at an *original* MiniMax-H3 partition; the
+# original shards are converted on the fly while loading, no intermediate copy on disk. The transformer comes from
+# the `transformer_ref` subfolder — the released `ref2va` weights, same architecture as the base model.
 transformer = MiniMaxH3Transformer3DModel.from_pretrained(
     model_name,
-    subfolder="transformer",
+    subfolder=transformer_subfolder,
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
@@ -235,9 +249,29 @@ generator = torch.Generator(device=device).manual_seed(seed)
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
+
+def parse_reference(entry: str):
+    kind, _, media = entry.partition("=")
+    kind, media = kind.strip().lower(), media.strip()
+    if not media:
+        raise ValueError(f"A reference entry must be `image=path`, `video=path` or `audio=path`, got {entry!r}.")
+    if kind == "image":
+        return MiniMaxH3ImageReference.from_file(media)
+    if kind == "video":
+        return MiniMaxH3VideoReference.from_file(media)
+    if kind == "audio":
+        return MiniMaxH3AudioReference.from_file(media)
+    raise ValueError(f"A reference entry must start with `image=`, `video=` or `audio=`, got {entry!r}.")
+
+
+# Decode every reference at the rate its container carries, which the pipeline's setup resamples onto MiniMax-H3's
+# own 24 fps and the audio VAE's sample rate.
+parsed_references = [parse_reference(entry) for entry in references]
+
 with torch.no_grad():
     output = pipeline(
         prompt=prompt,
+        references=parsed_references,
         height=None if sample_size is None else sample_size[0],
         width=None if sample_size is None else sample_size[1],
         num_frames=video_length,
