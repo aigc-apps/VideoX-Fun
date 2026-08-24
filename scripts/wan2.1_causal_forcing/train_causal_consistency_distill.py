@@ -44,6 +44,9 @@ from diffusers.utils.torch_utils import is_compiled_module
 from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
+from torch.distributed.fsdp import FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -766,7 +769,7 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
             low_cpu_mem_usage=True,
-            torch_dtype=torch.float32,
+            torch_dtype=weight_dtype,
         )
         ema_transformer3d.num_frame_per_block = args.num_frame_per_block
         ema_transformer3d.independent_first_frame = args.independent_first_frame
@@ -843,7 +846,30 @@ def main():
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         def _save_ema_pretrained(output_dir):
-            if ema_transformer3d is not None and accelerator.is_main_process:
+            if ema_transformer3d is None:
+                return
+            if isinstance(ema_transformer3d, FSDP):
+                # The EMA copy is FSDP-sharded: gather the full fp32 state dict
+                # (collective — every rank must enter) and let rank0 write a
+                # diffusers-style folder that stays compatible with the old
+                # `save_pretrained` layout (config.json + safetensors).
+                with FSDP.state_dict_type(
+                    ema_transformer3d,
+                    StateDictType.FULL_STATE_DICT,
+                    FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+                ):
+                    ema_state = ema_transformer3d.state_dict()
+                if accelerator.is_main_process:
+                    from safetensors.torch import save_file
+                    ema_dir = os.path.join(output_dir, "ema_transformer")
+                    os.makedirs(ema_dir, exist_ok=True)
+                    ema_transformer3d.module.save_config(ema_dir)
+                    # Keep fp32 on disk: the EMA target must not round-trip
+                    # through bf16 (see the polyak-precision comment above).
+                    ema_state = {k: v.detach().clone().contiguous() for k, v in ema_state.items()}
+                    save_file(ema_state, os.path.join(ema_dir, "diffusion_pytorch_model.safetensors"), metadata={"format": "pt"})
+                del ema_state
+            elif accelerator.is_main_process:
                 ema_transformer3d.save_pretrained(os.path.join(output_dir, "ema_transformer"))
 
         def _load_ema_pretrained(input_dir):
@@ -852,13 +878,26 @@ def main():
             ema_path = os.path.join(input_dir, "ema_transformer")
             if not os.path.exists(ema_path):
                 return
-            ema_loaded = WanTransformer3DModel_SelfForcing.from_pretrained(
-                ema_path,
-                transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                low_cpu_mem_usage=True,
-            )
-            ema_transformer3d.load_state_dict(ema_loaded.state_dict(), strict=True)
-            del ema_loaded
+            if isinstance(ema_transformer3d, FSDP):
+                from safetensors.torch import load_file
+                ema_state = load_file(os.path.join(ema_path, "diffusion_pytorch_model.safetensors"))
+                # Every rank feeds the full state dict; under the
+                # FULL_STATE_DICT context FSDP scatters it into local shards.
+                with FSDP.state_dict_type(
+                    ema_transformer3d,
+                    StateDictType.FULL_STATE_DICT,
+                    FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+                ):
+                    ema_transformer3d.load_state_dict(ema_state, strict=True)
+                del ema_state
+            else:
+                ema_loaded = WanTransformer3DModel_SelfForcing.from_pretrained(
+                    ema_path,
+                    transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                    low_cpu_mem_usage=True,
+                )
+                ema_transformer3d.load_state_dict(ema_loaded.state_dict(), strict=True)
+                del ema_loaded
             print(f"Loaded EMA generator from {ema_path}.")
 
         if fsdp_stage != 0 or zero_stage == 3:
@@ -1241,6 +1280,32 @@ def main():
         shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype)
         teacher_transformer3d = shard_fn(teacher_transformer3d)
 
+        # Shard the EMA copy too. Unlike the teacher, the EMA copy must share
+        # the generator's *exact* FSDP layout (same auto-wrap policy,
+        # use_orig_params, sharding strategy), so that `parameters()` of the
+        # two FSDP roots pair up shard-for-shard and the polyak update below
+        # can run on local fp32 shards with no all-gather. We therefore reuse
+        # accelerate's own fsdp_plugin wrap kwargs (mirroring what
+        # `accelerator.prepare` did to the generator) instead of `shard_model`,
+        # whose lambda policy over `model.blocks` is not guaranteed to match.
+        if ema_transformer3d is not None and args.use_fsdp and fsdp_plugin is not None:
+            fsdp_plugin.set_auto_wrap_policy(ema_transformer3d)
+            ema_transformer3d = FSDP(
+                ema_transformer3d,
+                sharding_strategy=fsdp_plugin.sharding_strategy or fsdp_plugin.reshard_after_forward,
+                cpu_offload=fsdp_plugin.cpu_offload,
+                auto_wrap_policy=fsdp_plugin.auto_wrap_policy,
+                mixed_precision=fsdp_plugin.mixed_precision_policy,
+                sync_module_states=fsdp_plugin.sync_module_states,
+                backward_prefetch=fsdp_plugin.backward_prefetch,
+                forward_prefetch=fsdp_plugin.forward_prefetch,
+                use_orig_params=fsdp_plugin.use_orig_params,
+                ignored_modules=fsdp_plugin.ignored_modules,
+                limit_all_gathers=fsdp_plugin.limit_all_gathers,
+                device_id=accelerator.device,
+            )
+            ema_transformer3d.eval()
+
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
@@ -1259,7 +1324,8 @@ def main():
     #     magnitude ~LR*grad*0.01 ~ 1e-8, which underflows in bf16. EMA MUST
     #     be fp32 or the consistency target stops tracking the live generator.
     teacher_transformer3d.to(accelerator.device)
-    if ema_transformer3d is not None:
+    if ema_transformer3d is not None and not isinstance(ema_transformer3d, FSDP):
+        # The FSDP-wrapped EMA copy already lives on-device as fp32 shards.
         ema_transformer3d.to(accelerator.device)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1522,7 +1588,10 @@ def main():
 
                 # --- EMA-target at (latent_t_next, t_next) -> x0_pred_t_next (no grad) ---
                 with torch.no_grad():
-                    ema_model = ema_transformer3d if ema_transformer3d is not None else accelerator.unwrap_model(transformer3d)
+                    # Fall back to the *prepared* generator (not the unwrapped
+                    # one): under FSDP the unwrapped module only holds flat
+                    # parameter shards and cannot run a forward.
+                    ema_model = ema_transformer3d if ema_transformer3d is not None else transformer3d
                     noisy_next_list = [latent_t_next[i] for i in range(bsz)]
                     with torch.cuda.amp.autocast(dtype=weight_dtype):
                         flow_ema = ema_model(
@@ -1552,53 +1621,54 @@ def main():
                 # that early-training instability does not bias the right-hand
                 # side of the CCD objective.
                 #
-                # Under FSDP the live generator only holds a *shard* of each
-                # parameter per rank (the launch script uses FULL_SHARD +
-                # SHARDED_STATE_DICT), so `unwrap_model(...).state_dict()` returns
-                # sharded tensors whose keys/shapes do not line up with the full,
-                # un-sharded `ema_transformer3d` copy that every rank runs forward
-                # on. Accelerate's default FULL_STATE_DICT config is also
-                # rank0-only + CPU-offloaded, which would leave rank>0 with empty
-                # dicts and rank0 with device-mismatched CPU tensors. We therefore
-                # force a full, un-sharded gather to *every* rank (rank0_only=False,
-                # offload_to_cpu=False) so each rank can update its own
-                # full-precision EMA copy locally and stay bit-for-bit in sync.
+                # Under FSDP both the generator and the EMA copy are wrapped
+                # with the *same* fsdp_plugin layout (see the wrap right after
+                # `accelerator.prepare`), so `parameters()` of the two FSDP
+                # roots yields flat-parameter shards that pair up 1:1 in both
+                # order and shape. Outside forward the shards are the fp32
+                # master weights, so a per-shard polyak update is bit-identical
+                # to a full-tensor update — no FULL_STATE_DICT all-gather, no
+                # transient full-model copy, and every rank stays in sync
+                # because shards are disjoint slices of the same parameters.
                 if ema_transformer3d is not None and accelerator.sync_gradients:
-                    if args.use_fsdp:
-                        from torch.distributed.fsdp import \
-                            FullyShardedDataParallel as FSDP
-                        from torch.distributed.fsdp import (FullStateDictConfig,
-                                                            StateDictType)
-                        # Collective: all ranks enter this together because the
-                        # enclosing guard only depends on synchronized state
-                        # (`sync_gradients` / `use_fsdp`), never on rank-local data.
-                        with FSDP.state_dict_type(
-                            transformer3d,
-                            StateDictType.FULL_STATE_DICT,
-                            FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
-                        ):
-                            live_state = transformer3d.state_dict()
+                    if isinstance(ema_transformer3d, FSDP):
+                        with torch.no_grad():
+                            src_params = list(transformer3d.parameters())
+                            ema_params = list(ema_transformer3d.parameters())
+                            assert len(src_params) == len(ema_params), (
+                                f"FSDP layout mismatch between generator ({len(src_params)} params) "
+                                f"and EMA copy ({len(ema_params)} params); polyak-on-shards needs "
+                                "identical wrapping."
+                            )
+                            copy_only = global_step < args.ema_start_step
+                            decay = args.ema_weight
+                            for p_ema, p_src in zip(ema_params, src_params):
+                                # use_orig_params=True can leave 0-numel views
+                                # on ranks that own no slice of a parameter.
+                                if p_ema.numel() == 0:
+                                    continue
+                                src = p_src.detach().to(device=p_ema.device, dtype=p_ema.dtype)
+                                if copy_only or not p_ema.dtype.is_floating_point:
+                                    p_ema.copy_(src)
+                                else:
+                                    p_ema.mul_(decay).add_(src, alpha=1.0 - decay)
+                            # Buffers are not sharded by FSDP; mirror them directly.
+                            for b_ema, b_src in zip(ema_transformer3d.buffers(), transformer3d.buffers()):
+                                b_ema.copy_(b_src.to(device=b_ema.device, dtype=b_ema.dtype))
                     else:
                         live_state = accelerator.unwrap_model(transformer3d).state_dict()
-                    # FULL_STATE_DICT already strips FSDP wrapper prefixes, but stay
-                    # defensive against any `_fsdp_wrapped_module.` leftovers so the
-                    # keys match the plain EMA module's state_dict.
-                    live_state = {
-                        (k.replace("_fsdp_wrapped_module.", "") if "_fsdp_wrapped_module." in k else k): v
-                        for k, v in live_state.items()
-                    }
-                    if global_step < args.ema_start_step:
-                        ema_transformer3d.load_state_dict(live_state, strict=True)
-                    else:
-                        decay = args.ema_weight
-                        ema_state = ema_transformer3d.state_dict()
-                        with torch.no_grad():
-                            for k, v in ema_state.items():
-                                src = live_state[k].to(device=v.device, dtype=v.dtype)
-                                if v.dtype.is_floating_point:
-                                    v.mul_(decay).add_(src, alpha=1.0 - decay)
-                                else:
-                                    v.copy_(src)
+                        if global_step < args.ema_start_step:
+                            ema_transformer3d.load_state_dict(live_state, strict=True)
+                        else:
+                            decay = args.ema_weight
+                            ema_state = ema_transformer3d.state_dict()
+                            with torch.no_grad():
+                                for k, v in ema_state.items():
+                                    src = live_state[k].to(device=v.device, dtype=v.dtype)
+                                    if v.dtype.is_floating_point:
+                                        v.mul_(decay).add_(src, alpha=1.0 - decay)
+                                    else:
+                                        v.copy_(src)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

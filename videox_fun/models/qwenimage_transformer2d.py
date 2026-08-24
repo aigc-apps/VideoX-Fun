@@ -1102,9 +1102,10 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
 
     @classmethod
     def from_pretrained(
-        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
+        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs=None,
         low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
     ):
+        transformer_additional_kwargs = {} if transformer_additional_kwargs is None else dict(transformer_additional_kwargs)
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
         print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
@@ -1120,15 +1121,17 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
-            for key in transformer_additional_kwargs["dict_mapping"]:
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+            dict_mapping = transformer_additional_kwargs.pop("dict_mapping")
+            for key in dict_mapping:
+                transformer_additional_kwargs[dict_mapping[key]] = config[key]
 
         if low_cpu_mem_usage:
             try:
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                if diffusers_version >= "0.33.0":
+                from packaging import version as pkg_version
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     from diffusers.models.model_loading_utils import \
                         load_model_dict_into_meta
                 else:
@@ -1144,7 +1147,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
 
                 param_device = "cpu"
                 if os.path.exists(model_file):
-                    state_dict = torch.load(model_file, map_location="cpu")
+                    state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
                 elif os.path.exists(model_file_safetensors):
                     from safetensors.torch import load_file, safe_open
                     state_dict = load_file(model_file_safetensors)
@@ -1157,15 +1160,18 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         _state_dict = load_file(_model_file_safetensors)
                         for key in _state_dict:
                             state_dict[key] = _state_dict[key]
+                if len(state_dict) == 0:
+                    raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
 
+                model_state_dict = model.state_dict()
                 filtered_state_dict = {}
                 for key in state_dict:
-                    if key in model.state_dict() and model.state_dict()[key].size() == state_dict[key].size():
+                    if key in model_state_dict and model_state_dict[key].size() == state_dict[key].size():
                         filtered_state_dict[key] = state_dict[key]
                     else:
                         print(f"Skipping key '{key}' due to size mismatch or absence in model.")
                         
-                model_keys = set(model.state_dict().keys())
+                model_keys = set(model_state_dict.keys())
                 loaded_keys = set(filtered_state_dict.keys())
                 missing_keys = model_keys - loaded_keys
 
@@ -1176,7 +1182,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                         for key in missing_keys:
                             param_shape = model_state_dict[key].shape
                             param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
-                            if "control" in key and key.replace("control_", "transformer_") in filtered_state_dict.keys() and model.state_dict()[key].size() == filtered_state_dict[key.replace("control_", "transformer_")].size():
+                            if "control" in key and key.replace("control_", "transformer_") in filtered_state_dict.keys() and model_state_dict[key].size() == filtered_state_dict[key.replace("control_", "transformer_")].size():
                                 initialized_dict[key] = filtered_state_dict[key.replace("control_", "transformer_")].clone()
                                 print(f"Initializing missing parameter '{key}' with model.state_dict().")
                             elif "after_proj" in key or "before_proj" in key:
@@ -1211,12 +1217,12 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                     print(f"Missing keys will be initialized: {sorted(missing_keys)}")
                     initialized_params = initialize_missing_parameters(
                         missing_keys, 
-                        model.state_dict(), 
+                        model_state_dict, 
                         torch_dtype
                     )
                     filtered_state_dict.update(initialized_params)
 
-                if diffusers_version >= "0.33.0":
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
                     # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
                     load_model_dict_into_meta(
@@ -1246,13 +1252,15 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                 
                 return model
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(
                     f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
                 )
         
         model = cls.from_config(config, **transformer_additional_kwargs)
         if os.path.exists(model_file):
-            state_dict = torch.load(model_file, map_location="cpu")
+            state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
         elif os.path.exists(model_file_safetensors):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(model_file_safetensors)
@@ -1264,16 +1272,19 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                 _state_dict = load_file(_model_file_safetensors)
                 for key in _state_dict:
                     state_dict[key] = _state_dict[key]
+        if len(state_dict) == 0:
+            raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
         
+        model_state_dict = model.state_dict()
         tmp_state_dict = {} 
         for key in state_dict:
-            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+            if key in model_state_dict.keys() and model_state_dict[key].size() == state_dict[key].size():
                 tmp_state_dict[key] = state_dict[key]
             else:
                 print(key, "Size don't match, skip")
         
-        for key in model.state_dict():
-            if "control" in key and key.replace("control_", "transformer_") in state_dict.keys() and model.state_dict()[key].size() == state_dict[key.replace("control_", "transformer_")].size():
+        for key in model_state_dict:
+            if "control" in key and key.replace("control_", "transformer_") in state_dict.keys() and model_state_dict[key].size() == state_dict[key.replace("control_", "transformer_")].size():
                 tmp_state_dict[key] = state_dict[key.replace("control_", "transformer_")].clone()
                 print(f"Initializing missing parameter '{key}' with model.state_dict().")
                 

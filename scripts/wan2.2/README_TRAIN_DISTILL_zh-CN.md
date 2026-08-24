@@ -21,6 +21,7 @@
   - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
   - [3.6 其他后端](#36-其他后端)
   - [3.7 多机分布式训练](#37-多机分布式训练)
+  - [3.8 DFD 后训练](#38-dfd-后训练)
 - [四、推理测试](#四推理测试)
   - [4.1 推理参数解析](#41-推理参数解析)
   - [4.2 文生视频（T2V）推理](#42-文生视频t2v推理)
@@ -713,7 +714,143 @@ NCCL_DEBUG=INFO
      export NCCL_P2P_DISABLE=1
      ```
 
-- **数据同步**：所有机器必须能够访问相同的数据路径（NFS/共享存储）
+- **数据同步**: 所有机器必须能够访问相同的数据路径 (NFS/共享存储)
+
+### 3.8 DFD 后训练
+
+DFD 是在 DMD 预训练生成器之上的后训练方案. 它使用 VAE 将配对真实视频编码为学生锚点: 学生在由 `--denoising_step_indices_list` 推导出的少步学生时间步上对加噪后的真实潜变量去噪, 并以 `--dfd_teacher_replace_prob` 的概率将教师 (real score) 的输入替换为加噪后的真实潜变量, 从而进一步提升少步生成的质量.
+
+你可以使用 `--generator_transformer_path` 从已完成的 DMD 检查点热启动, 也可以只运行一次训练任务, 先执行标准 DMD, 从 `--dfd_start_step` 起切换为 DFD.
+
+**使用限制**:
+- DFD 目前仅支持 `--train_mode normal` 的 T2V 训练.
+- DFD 不支持 `--enable_text_encoder_in_dataloader`.
+- DFD 要求显式指定 `--seed`, 以保证后训练可复现.
+- `--dfd_start_step` 必须为非负数, `--dfd_teacher_replace_prob` 必须在 `[0, 1]` 区间内, `--gen_update_interval` 必须大于零.
+
+**数据要求**:
+- DFD 需要配对真实视频, 因此数据集必须包含真实视频文件. 数据集结构与 metadata.json 格式和 **2.3 metadata.json 格式** 一致.
+
+**DFD 专属参数**:
+
+| 参数 | 说明 | 示例值 |
+|-----|------|-------|
+| `--dfd` | 是否在 DMD 预训练生成器上使用 DFD 后训练 | - |
+| `--dfd_teacher_replace_prob` | 将教师评分输入替换为配对真实数据的概率 | 0.5 |
+| `--dfd_start_step` | 从该 global_step 起切换为 DFD; 之前的步数执行标准 DMD | 0 |
+| `--generator_transformer_path` | 从 DMD 权重热启动 generator 与 fake score | `output_dir_wan2.2_distill/checkpoint-xxx/diffusion_pytorch_model.safetensors` |
+| `--fake_score_transformer_path` | 仅从权重热启动 fake score | None |
+
+**用法 1: 从 DMD 检查点进行 DFD 后训练** (从已完成的 DMD 权重热启动 generator 与 fake score):
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_distill.py \
+  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.2_distill_dfd" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --boundary_type="low" \
+  --train_mode="normal" \
+  --trainable_modules "." \
+  --low_vram \
+  --generator_transformer_path="output_dir_wan2.2_distill/checkpoint-xxx/diffusion_pytorch_model.safetensors" \
+  --dfd \
+  --dfd_teacher_replace_prob=0.5 \
+  --dfd_start_step=0
+```
+
+**用法 2: 单次训练中从 DMD 切换为 DFD** (`--dfd_start_step` 之前执行标准 DMD, 之后执行 DFD):
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.2/train_distill.py \
+  --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --train_batch_size=1 \
+  --video_repeat=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.2_distill_dfd" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --boundary_type="low" \
+  --train_mode="normal" \
+  --trainable_modules "." \
+  --low_vram \
+  --dfd \
+  --dfd_teacher_replace_prob=0.5 \
+  --dfd_start_step=500
+```
+
+**训练监控**:
+- 开启 DFD 后会额外记录 `train_dfd_real_replace` 指标, 用于统计教师评分输入被配对真实数据替换的步数.
+
+**推理**:
+- DFD 产物的使用方式与 DMD 产物一致, 请参考 **四、推理测试** (通常为 4 步, `guidance_scale=1.0`).
 
 ---
 

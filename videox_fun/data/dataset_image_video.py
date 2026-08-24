@@ -282,6 +282,206 @@ class ImageVideoDataset(Dataset):
         return sample
 
 
+class LingbotImageVideoDataset(ImageVideoDataset):
+    """Dataset variant for LingBot-World camera-controlled I2V training.
+
+    Extends :class:`ImageVideoDataset` and, for each video sample, additionally
+    loads the paired camera trajectory (``poses.npy``) and intrinsics
+    (``intrinsics.npy``) referenced through ``action_path`` in the annotation
+    file. The sampled RGB frame indices are also returned so the training loop
+    can slice the trajectory in sync with the video clip.
+
+    Annotation entries are expected to have the form::
+
+        {
+            "file_path": "videos/xxx.mp4",
+            "text": "...",
+            "type": "video",
+            "action_path": "actions/xxx"   # dir with poses.npy + intrinsics.npy
+        }
+
+    Samples without ``action_path`` (typically images) fall back to the base
+    behavior; downstream code should treat ``sample["action_c2ws"] is None``
+    as "no camera control".
+    """
+
+    def __init__(self, *args, action_data_root=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Where to resolve ``action_path`` from the annotation file. Defaults
+        # to ``data_root`` so a single top-level dataset directory works out of
+        # the box (mirroring the video path resolution).
+        self.action_data_root = action_data_root if action_data_root is not None else self.data_root
+
+    def _resolve_action_path(self, action_path):
+        if action_path is None:
+            return None
+        if os.path.isabs(action_path) or self.action_data_root is None:
+            return action_path
+        return os.path.join(self.action_data_root, action_path)
+
+    def _load_camera(self, action_path):
+        """Load poses.npy / intrinsics.npy from ``action_path``.
+
+        Returns ``(c2ws[F, 4, 4], intrinsics[N, 4])`` numpy arrays, or
+        ``(None, None)`` if either file is missing.
+        """
+        if action_path is None:
+            return None, None
+        resolved = self._resolve_action_path(action_path)
+        pose_file = os.path.join(resolved, "poses.npy")
+        intr_file = os.path.join(resolved, "intrinsics.npy")
+        if not (os.path.isfile(pose_file) and os.path.isfile(intr_file)):
+            return None, None
+        c2ws = np.load(pose_file)
+        intrinsics = np.load(intr_file)
+        return c2ws, intrinsics
+
+    def get_batch(self, idx):
+        """Same as base class but also returns the sampled frame indices."""
+        data_info = self.dataset[idx % len(self.dataset)]
+
+        if data_info.get('type', 'image') == 'video':
+            video_id, text = data_info['file_path'], data_info['text']
+
+            if self.data_root is None:
+                video_dir = video_id
+            else:
+                video_dir = os.path.join(self.data_root, video_id)
+
+            with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
+                min_sample_n_frames = min(
+                    self.video_sample_n_frames,
+                    int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.video_sample_stride)
+                )
+                if min_sample_n_frames == 0:
+                    raise ValueError(f"No Frames in video.")
+                min_video_sample_n_frames = getattr(self, "min_video_sample_n_frames", None)
+                if min_video_sample_n_frames is not None and min_sample_n_frames < min_video_sample_n_frames:
+                    raise ValueError(
+                        f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
+                    )
+
+                video_length = int(self.video_length_drop_end * len(video_reader))
+                clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
+                start_idx = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+                batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
+
+                try:
+                    sample_args = (video_reader, batch_index)
+                    raw_frames = func_timeout(
+                        VIDEO_READER_TIMEOUT, get_video_reader_batch, args=sample_args
+                    )
+                    resized_frames = [resize_frame(raw_frames[i], self.larger_side_of_image_and_video)
+                                      for i in range(len(raw_frames))]
+                    del raw_frames
+                    pixel_values = np.stack(resized_frames)
+                    del resized_frames
+                except FunctionTimedOut:
+                    raise ValueError(f"Read {idx} timeout.")
+                except Exception as e:
+                    raise ValueError(f"Failed to extract frames from video. Error is {e}.")
+
+            del video_reader
+
+            if not self.enable_bucket:
+                pixel_values = torch.from_numpy(pixel_values).permute(0, 3, 1, 2).contiguous()
+                pixel_values = pixel_values / 255.
+                pixel_values = self.video_transforms(pixel_values)
+
+            if random.random() < self.text_drop_ratio:
+                text = ''
+
+            action_path = data_info.get('action_path', None)
+            c2ws, intrinsics = self._load_camera(action_path)
+            if c2ws is not None:
+                # Align the trajectory with the sampled frames.
+                if len(c2ws) < int(batch_index.max()) + 1:
+                    # Trajectory is too short: fall back to no camera control.
+                    sampled_c2ws = None
+                    sampled_intrinsics = None
+                else:
+                    sampled_c2ws = c2ws[batch_index]
+                    sampled_intrinsics = intrinsics
+            else:
+                sampled_c2ws = None
+                sampled_intrinsics = None
+
+            # Per-sample calibration resolution of ``intrinsics.npy``. Required
+            # for camera-controlled samples so ``get_Ks_transformed`` can rescale
+            # the intrinsics to the training bucket. If a sample carries a camera
+            # trajectory but is missing these fields, treat it as invalid here so
+            # ``__getitem__`` skips it and re-samples another entry (rather than
+            # crashing the training loop later).
+            org_h = data_info.get('intrinsics_org_height', None)
+            org_w = data_info.get('intrinsics_org_width', None)
+            if sampled_c2ws is not None:
+                if org_h is None or org_w is None:
+                    raise ValueError(
+                        f"Skipping camera-controlled sample {video_id!r}: missing "
+                        "`intrinsics_org_height`/`intrinsics_org_width` in the annotation."
+                    )
+                sampled_intrinsics_org_hw = (int(org_h), int(org_w))
+            else:
+                sampled_intrinsics_org_hw = None
+
+            return pixel_values, text, 'video', video_dir, sampled_c2ws, sampled_intrinsics, sampled_intrinsics_org_hw
+        else:
+            image_path, text = data_info['file_path'], data_info['text']
+            if self.data_root is not None:
+                image_path = os.path.join(self.data_root, image_path)
+            image = Image.open(image_path).convert('RGB')
+            if not self.enable_bucket:
+                image = self.image_transforms(image).unsqueeze(0)
+            else:
+                image = np.expand_dims(np.array(image), 0)
+            if random.random() < self.text_drop_ratio:
+                text = ''
+            return image, text, 'image', image_path, None, None, None
+
+    def __getitem__(self, idx):
+        data_info = self.dataset[idx % len(self.dataset)]
+        data_type = data_info.get('type', 'image')
+        while True:
+            sample = {}
+            try:
+                data_info_local = self.dataset[idx % len(self.dataset)]
+                data_type_local = data_info_local.get('type', 'image')
+                if data_type_local != data_type:
+                    raise ValueError("data_type_local != data_type")
+
+                pixel_values, name, data_type, file_path, c2ws, intrinsics, intrinsics_org_hw = self.get_batch(idx)
+                sample["pixel_values"] = pixel_values
+                sample["text"] = name
+                sample["data_type"] = data_type
+                sample["idx"] = idx
+                # Camera fields are optional; None means "no camera control".
+                sample["action_c2ws"] = c2ws
+                sample["action_intrinsics"] = intrinsics
+                # Optional per-sample intrinsics calibration resolution (H, W);
+                # None means "use the global CLI default".
+                sample["action_intrinsics_org_hw"] = intrinsics_org_hw
+                if self.return_file_name:
+                    sample["file_name"] = os.path.basename(file_path)
+
+                if len(sample) > 0:
+                    break
+            except Exception as e:
+                print(e, self.dataset[idx % len(self.dataset)])
+                idx = random.randint(0, self.length - 1)
+
+        if self.enable_inpaint and not self.enable_bucket:
+            mask = get_random_mask(pixel_values.size())
+            mask_pixel_values = torch.where(mask.bool(), torch.tensor(self.inpaint_mask_fill_value), pixel_values)
+            sample["mask_pixel_values"] = mask_pixel_values
+            sample["mask"] = mask
+
+            clip_pixel_values = sample["pixel_values"][0].permute(1, 2, 0).contiguous()
+            clip_pixel_values = (clip_pixel_values * 0.5 + 0.5) * 255
+            sample["clip_pixel_values"] = clip_pixel_values
+
+        return sample
+
+
 class ImageVideoControlDataset(Dataset):
     """Dataset for control-based image and video training (Canny, Depth, Pose, etc.)."""
     def __init__(

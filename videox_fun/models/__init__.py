@@ -20,9 +20,12 @@ except Exception:
     print("Your transformers version is too old to load Qwen2_5_VLForConditionalGeneration and Qwen2Tokenizer. If you wish to use QwenImage, please upgrade your transformers package to the latest version.")
 
 try:
-    from transformers import Qwen3VLForConditionalGeneration
+    from transformers import (Qwen2TokenizerFast,
+                              Qwen3VLForConditionalGeneration,
+                              Qwen3VLProcessor)
 except:
     Qwen3VLForConditionalGeneration = None
+    Qwen2TokenizerFast, Qwen3VLProcessor = None, None
     print("Your transformers version is too old to load Qwen3VLForConditionalGeneration. If you wish to use Qwen3VLForConditionalGeneration, please upgrade your transformers package to the latest version.")
 
 try:
@@ -56,6 +59,7 @@ from .infinitetalk_audio_encoder import InfiniteTalkAudioEncoder
 from .infinitetalk_transformer3d import InfiniteTalkTransformer3DModel
 from .lens_reasoner import LensPromptReasoner
 from .lens_transformer2d import LensTransformer2DModel
+from .lingbot_video_transformer3d import LingBotVideoTransformer3DModel
 from .longcatvideo_audio_encoder import (LongCatVideoAudioEncoder,
                                          Wav2Vec2ModelWrapper)
 from .longcatvideo_transformer3d import LongCatVideoTransformer3DModel
@@ -68,6 +72,11 @@ from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
 from .ltx2_vocoder import LTX2Vocoder, LTX2VocoderWithBWE
+from .minimax_h3_transformer3d import MiniMaxH3Transformer3DModel
+from .minimax_h3_transformer3d_control import \
+    MiniMaxH3ControlTransformer3DModel
+from .minimax_h3_vae import AutoencoderKLMiniMaxH3
+from .minimax_h3_vae_audio import AutoencoderKLMiniMaxH3Audio
 from .mova_audio_transformer3d import WanAudioTransformer3DModel
 from .mova_interactionv2 import MOVADualTowerConditionalBridge
 from .mova_model import MOVAModel
@@ -79,10 +88,14 @@ from .qwenimage_vae import AutoencoderKLQwenImage
 from .turbowan_transformer3d import TurboWanTransformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
+from .wan_latent_upsampler import WanLatentUpsamplerModel
 from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
+from .wan_transformer3d_lingbot_world import WanTransformer3DModel_LingbotWorld
+from .wan_transformer3d_lingbot_world_fast import \
+    WanTransformer3DModel_LingbotWorldFast
 from .wan_transformer3d_s2v import Wan2_2Transformer3DModel_S2V
 from .wan_transformer3d_self_forcing import WanTransformer3DModel_SelfForcing
 from .wan_transformer3d_vace import VaceWanTransformer3DModel

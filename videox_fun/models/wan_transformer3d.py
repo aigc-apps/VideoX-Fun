@@ -1222,9 +1222,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     @classmethod
     def from_pretrained(
-        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
+        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs=None,
         low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
     ):
+        transformer_additional_kwargs = {} if transformer_additional_kwargs is None else dict(transformer_additional_kwargs)
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
         print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
@@ -1245,15 +1246,17 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
-            for key in transformer_additional_kwargs["dict_mapping"]:
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+            dict_mapping = transformer_additional_kwargs.pop("dict_mapping")
+            for key in dict_mapping:
+                transformer_additional_kwargs[dict_mapping[key]] = config[key]
 
         if low_cpu_mem_usage:
             try:
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                if diffusers_version >= "0.33.0":
+                from packaging import version as pkg_version
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     from diffusers.models.model_loading_utils import \
                         load_model_dict_into_meta
                 else:
@@ -1269,7 +1272,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
                 param_device = "cpu"
                 if os.path.exists(model_file):
-                    state_dict = torch.load(model_file, map_location="cpu")
+                    state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
                 elif os.path.exists(model_file_safetensors):
                     from safetensors.torch import load_file, safe_open
                     state_dict = load_file(model_file_safetensors)
@@ -1282,20 +1285,23 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         _state_dict = load_file(_model_file_safetensors)
                         for key in _state_dict:
                             state_dict[key] = _state_dict[key]
+                if len(state_dict) == 0:
+                    raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
 
-                if model.state_dict()['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
-                    tmp_state_dict = torch.zeros(model.state_dict()['patch_embedding.weight'].size(), dtype=torch_dtype, device=param_device)
-                    tmp_state_dict[:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
+                model_state_dict = model.state_dict()
+                if model_state_dict['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
+                    tmp_state_dict = torch.zeros(model_state_dict['patch_embedding.weight'].size(), dtype=torch_dtype, device=param_device)
+                    tmp_state_dict[:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model_state_dict['patch_embedding.weight'].size()[1], :, :]
                     state_dict['patch_embedding.weight'] = tmp_state_dict
 
                 filtered_state_dict = {}
                 for key in state_dict:
-                    if key in model.state_dict() and model.state_dict()[key].size() == state_dict[key].size():
+                    if key in model_state_dict and model_state_dict[key].size() == state_dict[key].size():
                         filtered_state_dict[key] = state_dict[key]
                     else:
                         print(f"Skipping key '{key}' due to size mismatch or absence in model.")
                         
-                model_keys = set(model.state_dict().keys())
+                model_keys = set(model_state_dict.keys())
                 loaded_keys = set(filtered_state_dict.keys())
                 missing_keys = model_keys - loaded_keys
 
@@ -1306,7 +1312,26 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         for key in missing_keys:
                             param_shape = model_state_dict[key].shape
                             param_dtype = torch_dtype if torch_dtype is not None else model_state_dict[key].dtype
-                            if 'weight' in key:
+                            if "after_proj" in key or "before_proj" in key:
+                                # VACE-style control blocks zero-init these projections in __init__,
+                                # which is lost under init_empty_weights; keep the branch a no-op at start.
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                print(f"Initializing missing parameter '{key}' with zero.")
+                            elif "processor." in key and ("k_proj" in key or "v_proj" in key):
+                                # Audio cross-attention processors (e.g. FantasyTalking) zero-init k/v
+                                # projections in __init__ so the audio branch starts as a no-op.
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                print(f"Initializing missing parameter '{key}' with zero.")
+                            elif (
+                                ('audio_injector' in key and '.o.' in key)
+                                or ('injector_adain_layers' in key and '.linear.' in key)
+                                or any(name in key for name in ('trainable_cond_mask', 'cond_encoder', 'zip_motion_out.1', 'proj_l'))
+                            ):
+                                # S2V zero_init_weights() / turbowan SparseLinearAttention.init_weights_()
+                                # zero these modules in __init__, which is lost under init_empty_weights.
+                                initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
+                                print(f"Initializing missing parameter '{key}' with zero.")
+                            elif 'weight' in key:
                                 if any(norm_type in key for norm_type in ['norm', 'ln_', 'layer_norm', 'group_norm', 'batch_norm']):
                                     initialized_dict[key] = torch.ones(param_shape, dtype=param_dtype)
                                 elif 'embedding' in key or 'embed' in key:
@@ -1335,12 +1360,12 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     print(f"Missing keys will be initialized: {sorted(missing_keys)}")
                     initialized_params = initialize_missing_parameters(
                         missing_keys, 
-                        model.state_dict(), 
+                        model_state_dict, 
                         torch_dtype
                     )
                     filtered_state_dict.update(initialized_params)
 
-                if diffusers_version >= "0.33.0":
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
                     # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
                     load_model_dict_into_meta(
@@ -1370,13 +1395,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 
                 return model
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(
                     f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
                 )
         
         model = cls.from_config(config, **transformer_additional_kwargs)
         if os.path.exists(model_file):
-            state_dict = torch.load(model_file, map_location="cpu")
+            state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
         elif os.path.exists(model_file_safetensors):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(model_file_safetensors)
@@ -1388,15 +1415,18 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 _state_dict = load_file(_model_file_safetensors)
                 for key in _state_dict:
                     state_dict[key] = _state_dict[key]
+        if len(state_dict) == 0:
+            raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
         
-        if model.state_dict()['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
-            model.state_dict()['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model.state_dict()['patch_embedding.weight'].size()[1], :, :]
-            model.state_dict()['patch_embedding.weight'][:, state_dict['patch_embedding.weight'].size()[1]:, :, :] = 0
-            state_dict['patch_embedding.weight'] = model.state_dict()['patch_embedding.weight']
+        model_state_dict = model.state_dict()
+        if model_state_dict['patch_embedding.weight'].size() != state_dict['patch_embedding.weight'].size():
+            model_state_dict['patch_embedding.weight'][:, :state_dict['patch_embedding.weight'].size()[1], :, :] = state_dict['patch_embedding.weight'][:, :model_state_dict['patch_embedding.weight'].size()[1], :, :]
+            model_state_dict['patch_embedding.weight'][:, state_dict['patch_embedding.weight'].size()[1]:, :, :] = 0
+            state_dict['patch_embedding.weight'] = model_state_dict['patch_embedding.weight']
         
         tmp_state_dict = {} 
         for key in state_dict:
-            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+            if key in model_state_dict.keys() and model_state_dict[key].size() == state_dict[key].size():
                 tmp_state_dict[key] = state_dict[key]
             else:
                 print(key, "Size don't match, skip")

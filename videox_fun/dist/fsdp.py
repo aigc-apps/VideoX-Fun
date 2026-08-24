@@ -60,14 +60,12 @@ def create_transformer_auto_wrap_policy(
             "Please check the class names or the model structure."
         )
     
-    def transformer_policy(module, recurse, unwrapped_params):
+    def transformer_policy(module, recurse, nonwrapped_numel=None, **kwargs):
         # Use the standard transformer auto wrap policy with the discovered classes
-        return transformer_auto_wrap_policy(
-            module=module,
-            recurse=recurse,
-            unwrapped_params=unwrapped_params,
-            transformer_layer_cls=transformer_classes,
-        )
+        policy_kwargs = dict(module=module, recurse=recurse, transformer_layer_cls=transformer_classes)
+        if nonwrapped_numel is not None:
+            policy_kwargs["nonwrapped_numel"] = nonwrapped_numel
+        return transformer_auto_wrap_policy(**policy_kwargs)
     
     return transformer_policy
 
@@ -83,6 +81,8 @@ def shard_model(
     sync_module_states=True,
     module_to_wrapper=None,
     transformer_layer_cls_to_wrap=None,
+    cast_dtype=True,
+    ignored_modules=None,
 ):  
     """
     Wraps the model with FSDP using the specified configuration.
@@ -98,6 +98,11 @@ def shard_model(
         sync_module_states: Whether to sync module states across ranks.
         module_to_wrapper: Specific modules to wrap if using lambda policy.
         transformer_layer_cls_to_wrap: List of class names to wrap using transformer policy.
+        cast_dtype: Whether to cast the managed parameters to `param_dtype` before wrapping. Set False to
+            keep a pre-quantized storage dtype (e.g. float8) — MixedPrecision still computes in `param_dtype`.
+        ignored_modules: Modules excluded from FSDP (kept replicated in their own dtype via ignored_states).
+            Use for modules a mixed-precision checkpoint pins to float32: casting them into the shard dtype
+            makes AdaLN/output-head rounding accumulate coherently over the denoising trajectory (flicker).
         
     Returns:
         The FSDP-wrapped model.
@@ -115,6 +120,25 @@ def shard_model(
             lambda_fn=lambda m: m in (model.blocks if module_to_wrapper is None else module_to_wrapper)
         )
 
+    # FSDP flattens each wrap unit's parameters into one flat buffer and requires a uniform dtype inside it.
+    # Models that pin a few modules to fp32 for numerical precision (e.g. MiniMax-H3's embedders/output heads)
+    # would otherwise fail with "Must flatten tensors with uniform dtype"; MixedPrecision computes in
+    # `param_dtype` anyway, so cast the managed params up front. With `cast_dtype=False` the caller
+    # intentionally keeps a different storage dtype (e.g. a pre-applied float8 quantization); FSDP keeps one
+    # flat buffer per dtype and MixedPrecision casts to `param_dtype` for the compute. The ignored modules
+    # keep their own dtype (typically float32) and stay replicated — a blanket model.to() on them would round
+    # the AdaLN modulation and accumulate coherently over the sampling trajectory into temporal flicker.
+    ignored_modules = list(ignored_modules) if ignored_modules else []
+    ignored_param_ids = {id(p) for m in ignored_modules for p in m.parameters()}
+    if cast_dtype and param_dtype is not None:
+        for p in model.parameters():
+            # A pre-applied float8 quantization stays as the storage dtype (MixedPrecision casts it to
+            # `param_dtype` for the compute, matching the non-FSDP qfloat8 dequant wrapper numerics); only
+            # the remaining dtypes (e.g. fp32 heads) are homogenized into `param_dtype`.
+            if (p.dtype != param_dtype and id(p) not in ignored_param_ids
+                    and p.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)):
+                p.data = p.data.to(param_dtype)
+
     model = FSDP(
         module=model,
         process_group=process_group,
@@ -125,8 +149,14 @@ def shard_model(
             reduce_dtype=reduce_dtype,
             buffer_dtype=buffer_dtype),
         device_id=device_id,
-        sync_module_states=sync_module_states)
-    
+        sync_module_states=sync_module_states,
+        ignored_states=ignored_modules if ignored_modules else None)
+
+    # `device_id`/`sync_module_states` only manage the sharded params; the ignored modules must be placed on
+    # the device explicitly.
+    for m in ignored_modules:
+        m.to(device_id)
+
     return model
 
 

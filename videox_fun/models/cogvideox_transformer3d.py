@@ -757,9 +757,10 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
 
     @classmethod
     def from_pretrained(
-        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
+        cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs=None,
         low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
     ):
+        transformer_additional_kwargs = {} if transformer_additional_kwargs is None else dict(transformer_additional_kwargs)
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
         print(f"loaded 3D transformer's pretrained weights from {pretrained_model_path} ...")
@@ -775,15 +776,17 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
-            for key in transformer_additional_kwargs["dict_mapping"]:
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+            dict_mapping = transformer_additional_kwargs.pop("dict_mapping")
+            for key in dict_mapping:
+                transformer_additional_kwargs[dict_mapping[key]] = config[key]
 
         if low_cpu_mem_usage:
             try:
                 import re
 
                 from diffusers import __version__ as diffusers_version
-                if diffusers_version >= "0.33.0":
+                from packaging import version as pkg_version
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     from diffusers.models.model_loading_utils import \
                         load_model_dict_into_meta
                 else:
@@ -799,7 +802,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
 
                 param_device = "cpu"
                 if os.path.exists(model_file):
-                    state_dict = torch.load(model_file, map_location="cpu")
+                    state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
                 elif os.path.exists(model_file_safetensors):
                     from safetensors.torch import load_file, safe_open
                     state_dict = load_file(model_file_safetensors)
@@ -811,9 +814,11 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
                         _state_dict = load_file(_model_file_safetensors)
                         for key in _state_dict:
                             state_dict[key] = _state_dict[key]
+                if len(state_dict) == 0:
+                    raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
                 model._convert_deprecated_attention_blocks(state_dict)
 
-                if diffusers_version >= "0.33.0":
+                if pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0"):
                     # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
                     # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
                     load_model_dict_into_meta(
@@ -852,13 +857,15 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
                 
                 return model
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(
                     f"The low_cpu_mem_usage mode is not work because {e}. Use low_cpu_mem_usage=False instead."
                 )
         
         model = cls.from_config(config, **transformer_additional_kwargs)
         if os.path.exists(model_file):
-            state_dict = torch.load(model_file, map_location="cpu")
+            state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
         elif os.path.exists(model_file_safetensors):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(model_file_safetensors)
@@ -870,32 +877,35 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin):
                 _state_dict = load_file(_model_file_safetensors)
                 for key in _state_dict:
                     state_dict[key] = _state_dict[key]
+        if len(state_dict) == 0:
+            raise FileNotFoundError(f"No weights found in {pretrained_model_path}")
         
-        if model.state_dict()['patch_embed.proj.weight'].size() != state_dict['patch_embed.proj.weight'].size():
-            new_shape   = model.state_dict()['patch_embed.proj.weight'].size()
+        model_state_dict = model.state_dict()
+        if model_state_dict['patch_embed.proj.weight'].size() != state_dict['patch_embed.proj.weight'].size():
+            new_shape   = model_state_dict['patch_embed.proj.weight'].size()
             if len(new_shape) == 5:
                 state_dict['patch_embed.proj.weight'] = state_dict['patch_embed.proj.weight'].unsqueeze(2).expand(new_shape).clone()
                 state_dict['patch_embed.proj.weight'][:, :, :-1] = 0
             elif len(new_shape) == 2:
-                if model.state_dict()['patch_embed.proj.weight'].size()[1] > state_dict['patch_embed.proj.weight'].size()[1]:
-                    model.state_dict()['patch_embed.proj.weight'][:, :state_dict['patch_embed.proj.weight'].size()[1]] = state_dict['patch_embed.proj.weight']
-                    model.state_dict()['patch_embed.proj.weight'][:, state_dict['patch_embed.proj.weight'].size()[1]:] = 0
-                    state_dict['patch_embed.proj.weight'] = model.state_dict()['patch_embed.proj.weight']
+                if model_state_dict['patch_embed.proj.weight'].size()[1] > state_dict['patch_embed.proj.weight'].size()[1]:
+                    model_state_dict['patch_embed.proj.weight'][:, :state_dict['patch_embed.proj.weight'].size()[1]] = state_dict['patch_embed.proj.weight']
+                    model_state_dict['patch_embed.proj.weight'][:, state_dict['patch_embed.proj.weight'].size()[1]:] = 0
+                    state_dict['patch_embed.proj.weight'] = model_state_dict['patch_embed.proj.weight']
                 else:
-                    model.state_dict()['patch_embed.proj.weight'][:, :] = state_dict['patch_embed.proj.weight'][:, :model.state_dict()['patch_embed.proj.weight'].size()[1]]
-                    state_dict['patch_embed.proj.weight'] = model.state_dict()['patch_embed.proj.weight']
+                    model_state_dict['patch_embed.proj.weight'][:, :] = state_dict['patch_embed.proj.weight'][:, :model_state_dict['patch_embed.proj.weight'].size()[1]]
+                    state_dict['patch_embed.proj.weight'] = model_state_dict['patch_embed.proj.weight']
             else:
-                if model.state_dict()['patch_embed.proj.weight'].size()[1] > state_dict['patch_embed.proj.weight'].size()[1]:
-                    model.state_dict()['patch_embed.proj.weight'][:, :state_dict['patch_embed.proj.weight'].size()[1], :, :] = state_dict['patch_embed.proj.weight']
-                    model.state_dict()['patch_embed.proj.weight'][:, state_dict['patch_embed.proj.weight'].size()[1]:, :, :] = 0
-                    state_dict['patch_embed.proj.weight'] = model.state_dict()['patch_embed.proj.weight']
+                if model_state_dict['patch_embed.proj.weight'].size()[1] > state_dict['patch_embed.proj.weight'].size()[1]:
+                    model_state_dict['patch_embed.proj.weight'][:, :state_dict['patch_embed.proj.weight'].size()[1], :, :] = state_dict['patch_embed.proj.weight']
+                    model_state_dict['patch_embed.proj.weight'][:, state_dict['patch_embed.proj.weight'].size()[1]:, :, :] = 0
+                    state_dict['patch_embed.proj.weight'] = model_state_dict['patch_embed.proj.weight']
                 else:
-                    model.state_dict()['patch_embed.proj.weight'][:, :, :, :] = state_dict['patch_embed.proj.weight'][:, :model.state_dict()['patch_embed.proj.weight'].size()[1], :, :]
-                    state_dict['patch_embed.proj.weight'] = model.state_dict()['patch_embed.proj.weight']
+                    model_state_dict['patch_embed.proj.weight'][:, :, :, :] = state_dict['patch_embed.proj.weight'][:, :model_state_dict['patch_embed.proj.weight'].size()[1], :, :]
+                    state_dict['patch_embed.proj.weight'] = model_state_dict['patch_embed.proj.weight']
 
         tmp_state_dict = {} 
         for key in state_dict:
-            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+            if key in model_state_dict.keys() and model_state_dict[key].size() == state_dict[key].size():
                 tmp_state_dict[key] = state_dict[key]
             else:
                 print(key, "Size don't match, skip")
