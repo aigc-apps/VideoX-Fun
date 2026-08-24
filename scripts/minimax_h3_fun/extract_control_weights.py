@@ -29,12 +29,12 @@ def parse_args():
         "MiniMax-H3 control transformer into a standalone safetensors file."
     )
     parser.add_argument(
-        "--model_path", type=str, default="output_dir_minimax_h3_control_distill_cfg/checkpoint-3950/transformer/diffusion_pytorch_model.safetensors",
+        "--model_path", type=str, default="output_dir_minimax_h3_control_distill/checkpoint-4000/transformer/diffusion_pytorch_model.safetensors",
         help="Path to the saved transformer: a directory containing diffusion_pytorch_model*.safetensors "
         "(e.g. `<checkpoint>/transformer`), or a single .safetensors file.",
     )
     parser.add_argument(
-        "--output_path", type=str, default="output_dir_minimax_h3_control_distill_cfg/checkpoint-3950/transformer/diffusion_pytorch_model_control.safetensors",
+        "--output_path", type=str, default="output_dir_minimax_h3_control_distill/checkpoint-4000/transformer/diffusion_pytorch_model_control.safetensors",
         help="Where to write the extracted control weights.",
     )
     return parser.parse_args()
