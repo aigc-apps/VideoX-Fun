@@ -339,17 +339,31 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         special_token_ids=None,
         rm_head_type="default",
         rm_head_kwargs=None,
+        **kwargs,
     ):
+        # transformers >= 5.0 passes extra kwargs (e.g. use_cache) from
+        # from_pretrained directly to the model constructor instead of
+        # absorbing them into the config, so accept and apply them here.
+        # Note: in 5.x `use_cache` lives on the nested text_config.
+        if "use_cache" in kwargs:
+            use_cache = kwargs.pop("use_cache")
+            if getattr(config, "text_config", None) is not None:
+                config.text_config.use_cache = use_cache
+            else:
+                config.use_cache = use_cache
         super().__init__(config)
         self.output_dim = output_dim
+        # transformers >= 5.0 moved text params (e.g. hidden_size) into the
+        # nested text_config; fall back to the top-level attribute for 4.x.
+        hidden_size = getattr(config, "text_config", config).hidden_size
         if rm_head_type == "default":
-            self.rm_head = nn.Linear(config.hidden_size, output_dim, bias=False)
+            self.rm_head = nn.Linear(hidden_size, output_dim, bias=False)
         elif rm_head_type == "ranknet":
             if rm_head_kwargs is not None:
                 for layer in range(rm_head_kwargs.get("num_layers", 3)):
                     if layer == 0:
                         self.rm_head = nn.Sequential(
-                            nn.Linear(config.hidden_size, rm_head_kwargs["hidden_size"]),
+                            nn.Linear(hidden_size, rm_head_kwargs["hidden_size"]),
                             nn.ReLU(),
                             nn.Dropout(rm_head_kwargs.get("dropout", 0.1)),
                         )
@@ -369,7 +383,7 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
                         )
             else:
                 self.rm_head = nn.Sequential(
-                    nn.Linear(config.hidden_size, 1024),
+                    nn.Linear(hidden_size, 1024),
                     nn.ReLU(),
                     nn.Dropout(0.05),
                     nn.Linear(1024, 16),
@@ -401,19 +415,22 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
         rope_deltas: Optional[torch.LongTensor] = None,
+        # transformers >= 5.0 processors emit extra keys (e.g. mm_token_type_ids)
+        # that get forwarded here; accept and ignore them.
+        **kwargs,
     ):
         output_attentions = (
             output_attentions
             if output_attentions is not None
-            else self.config.output_attentions
+            else getattr(self.config, "output_attentions", False)
         )
         output_hidden_states = (
             output_hidden_states
             if output_hidden_states is not None
-            else self.config.output_hidden_states
+            else getattr(self.config, "output_hidden_states", False)
         )
         return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict if return_dict is not None else getattr(self.config, "use_return_dict", True)
         )
 
         if inputs_embeds is None:
@@ -424,10 +441,19 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
                 inputs_embeds = self.model.language_model.embed_tokens(input_ids)
             else:
                 raise AttributeError("Cannot find embed_tokens in model structure")
-            
+
+            # transformers >= 5.0 removed the top-level `visual` property and
+            # `get_dtype()`; resolve them compatibly for both versions.
+            visual = self.visual if hasattr(self, "visual") else self.model.visual
+            visual_dtype = visual.get_dtype() if hasattr(visual, "get_dtype") else next(visual.parameters()).dtype
+
             if pixel_values is not None:
-                pixel_values = pixel_values.type(self.visual.get_dtype())
-                image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
+                pixel_values = pixel_values.type(visual_dtype)
+                image_embeds = visual(pixel_values, grid_thw=image_grid_thw)
+                # transformers >= 5.0 returns a ModelOutput; the merged vision
+                # features live in `pooler_output` (see Qwen2VLModel.get_image_features)
+                if not isinstance(image_embeds, torch.Tensor):
+                    image_embeds = image_embeds.pooler_output
                 image_mask = (
                     (input_ids == self.config.image_token_id)
                     .unsqueeze(-1)
@@ -439,8 +465,10 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
                 inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
             if pixel_values_videos is not None:
-                pixel_values_videos = pixel_values_videos.type(self.visual.get_dtype())
-                video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+                pixel_values_videos = pixel_values_videos.type(visual_dtype)
+                video_embeds = visual(pixel_values_videos, grid_thw=video_grid_thw)
+                if not isinstance(video_embeds, torch.Tensor):
+                    video_embeds = video_embeds.pooler_output
                 video_mask = (
                     (input_ids == self.config.video_token_id)
                     .unsqueeze(-1)
@@ -551,7 +579,6 @@ def create_model_and_processor(model_config, peft_lora_config, training_args, ca
         revision=model_config.model_revision,
         device_map=None,
         quantization_config=None,
-        use_cache=True,
     )
 
     processor = AutoProcessor.from_pretrained(
@@ -720,12 +747,10 @@ class HPSv3RewardInferencer:
         # transformers >= 4.52: model structure uses model.language_model.*
         # transformers < 4.52: model structure uses model.layers.*, visual.*
         
-        # Check if model uses new architecture by inspecting actual model structure
-        # Method 1: Check if model.model has 'language_model' as a direct child module
-        has_language_model_attr = hasattr(model.model, 'language_model')
-        # Method 2: Check if 'language_model' is in named modules
-        has_language_model_module = any(name == 'language_model' for name, _ in model.model.named_children())
-        uses_new_arch = has_language_model_attr or has_language_model_module
+        # Check if model uses new architecture by scanning its own state_dict
+        # keys: attribute probing breaks when the model is wrapped (e.g. PEFT),
+        # and the `language_model` property was removed in transformers >= 5.0.
+        uses_new_arch = any("language_model" in k for k in model.state_dict().keys())
         
         # Detect checkpoint format by scanning all keys
         has_legacy_visual = any(k.startswith("visual.") for k in state_dict.keys())
@@ -737,7 +762,7 @@ class HPSv3RewardInferencer:
         )
         
         # Log detection results for debugging
-        logger.debug(f"Model architecture: {'new' if uses_new_arch else 'old'} (has_language_model={has_language_model_attr}, has_language_module={has_language_model_module})")
+        logger.debug(f"Model architecture: {'new' if uses_new_arch else 'old'}")
         logger.debug(f"Checkpoint format: legacy_visual={has_legacy_visual}, new_visual={has_new_visual}, new_language={has_new_language}, old_language={has_old_language}")
         
         needs_fix = False

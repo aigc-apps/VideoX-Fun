@@ -523,10 +523,23 @@ def process_vision_info(
 # ========================= Model =========================
 
 class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
-    def __init__(self, config, output_dim=4, reward_token="last", special_token_ids=None):
+    def __init__(self, config, output_dim=4, reward_token="last", special_token_ids=None, **kwargs):
+        # transformers >= 5.0 passes extra kwargs (e.g. use_cache) from
+        # from_pretrained directly to the model constructor instead of
+        # absorbing them into the config, so accept and apply them here.
+        # Note: in 5.x `use_cache` lives on the nested text_config.
+        if "use_cache" in kwargs:
+            use_cache = kwargs.pop("use_cache")
+            if getattr(config, "text_config", None) is not None:
+                config.text_config.use_cache = use_cache
+            else:
+                config.use_cache = use_cache
         super().__init__(config)
         self.output_dim = output_dim
-        self.rm_head = nn.Linear(config.hidden_size, output_dim, bias=False)
+        # transformers >= 5.0 moved text params (e.g. hidden_size) into the
+        # nested text_config; fall back to the top-level attribute for 4.x.
+        hidden_size = getattr(config, "text_config", config).hidden_size
+        self.rm_head = nn.Linear(hidden_size, output_dim, bias=False)
         self.reward_token = reward_token
         self.special_token_ids = special_token_ids
         if self.special_token_ids is not None:
@@ -549,12 +562,17 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
         rope_deltas: Optional[torch.LongTensor] = None,
+        # transformers >= 5.0 processors emit extra keys (e.g. mm_token_type_ids)
+        # that get forwarded here; accept and ignore them.
+        **kwargs,
     ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions if output_attentions is not None else getattr(self.config, "output_attentions", False)
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else getattr(self.config, "output_hidden_states", False)
+        )
+        return_dict = return_dict if return_dict is not None else getattr(self.config, "use_return_dict", True)
 
         if inputs_embeds is None:
             # Support both old and new transformer versions
@@ -564,17 +582,28 @@ class Qwen2VLRewardModelBT(Qwen2VLForConditionalGeneration):
                 inputs_embeds = self.model.language_model.embed_tokens(input_ids)
             else:
                 raise AttributeError("Cannot find embed_tokens in model structure")
-            
+
+            # transformers >= 5.0 removed the top-level `visual` property and
+            # `get_dtype()`; resolve them compatibly for both versions.
+            visual = self.visual if hasattr(self, "visual") else self.model.visual
+            visual_dtype = visual.get_dtype() if hasattr(visual, "get_dtype") else next(visual.parameters()).dtype
+
             if pixel_values is not None:
-                pixel_values = pixel_values.type(self.visual.get_dtype())
-                image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
+                pixel_values = pixel_values.type(visual_dtype)
+                image_embeds = visual(pixel_values, grid_thw=image_grid_thw)
+                # transformers >= 5.0 returns a ModelOutput; the merged vision
+                # features live in `pooler_output` (see Qwen2VLModel.get_image_features)
+                if not isinstance(image_embeds, torch.Tensor):
+                    image_embeds = image_embeds.pooler_output
                 image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
                 image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                 inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
             if pixel_values_videos is not None:
-                pixel_values_videos = pixel_values_videos.type(self.visual.get_dtype())
-                video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+                pixel_values_videos = pixel_values_videos.type(visual_dtype)
+                video_embeds = visual(pixel_values_videos, grid_thw=video_grid_thw)
+                if not isinstance(video_embeds, torch.Tensor):
+                    video_embeds = video_embeds.pooler_output
                 video_mask = (input_ids == self.config.video_token_id).unsqueeze(-1).expand_as(inputs_embeds)
                 video_embeds = video_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                 inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
@@ -659,10 +688,10 @@ def _remap_checkpoint_keys(state_dict, model=None):
     """
     # Detect model architecture if model is provided
     if model is not None:
-        # Check if model uses new architecture (has language_model attribute)
-        has_language_model_attr = hasattr(model.model, 'language_model')
-        has_language_model_module = any(name == 'language_model' for name, _ in model.model.named_children())
-        uses_new_arch = has_language_model_attr or has_language_model_module
+        # Scan the model's own state_dict keys instead of attribute probing:
+        # attribute checks break when the model is wrapped (e.g. by PEFT), and
+        # the `language_model` property was removed in transformers >= 5.0.
+        uses_new_arch = any("language_model" in k for k in model.state_dict().keys())
     else:
         # Auto-detect from state_dict keys (assume new format if contains language_model)
         uses_new_arch = any('language_model' in k for k in state_dict.keys())

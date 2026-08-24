@@ -542,6 +542,10 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
+        # Determine if the model is 5B by checking the transformer config's dim field.
+        # dim == 3072 → 5B model; dim == 5120 → 14B model.
+        is_5b = self.transformer.config.dim == 3072
+
         # 3. Encode input prompt
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
@@ -608,7 +612,7 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                     torch.zeros_like(latents)[:, :1].to(device, weight_dtype), [1, 4, 1, 1, 1]
                 )
                 masked_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
-                if self.vae.spatial_compression_ratio >= 16:
+                if is_5b:
                     mask = torch.ones_like(latents).to(device, weight_dtype)[:, :1].to(device, weight_dtype)
             else:
                 bs, _, video_length, height, width = video.size()
@@ -640,7 +644,7 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                 mask_condition = mask_condition.transpose(1, 2)
                 mask_latents = resize_mask(1 - mask_condition, masked_video_latents, True).to(device, weight_dtype) 
 
-                if self.vae.spatial_compression_ratio >= 16:
+                if is_5b:
                     mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
                     if not mask[:, :, 0, :, :].any():
                         mask[:, :, 1:, :, :] = 1
@@ -676,7 +680,7 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                     y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(device, weight_dtype) 
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                if self.vae.spatial_compression_ratio >= 16 and init_video is not None:
+                if is_5b and init_video is not None:
                     temp_ts = ((mask[0][0][:, ::2, ::2]) * t).flatten()
                     temp_ts = torch.cat([
                         temp_ts,
@@ -717,7 +721,7 @@ class Wan2_2FunInpaintPipeline(DiffusionPipeline):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
-                if self.vae.spatial_compression_ratio >= 16 and not mask[:, :, 0, :, :].any():
+                if is_5b and not mask[:, :, 0, :, :].any():
                     latents = (1 - mask) * masked_video_latents + mask * latents
 
                 if callback_on_step_end is not None:

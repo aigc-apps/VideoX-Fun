@@ -48,6 +48,9 @@ class LoRAModule(torch.nn.Module):
         if org_module.__class__.__name__ == "Conv2d":
             in_dim = org_module.in_channels
             out_dim = org_module.out_channels
+        elif org_module.__class__.__name__ == "Conv3d":
+            in_dim = org_module.in_channels
+            out_dim = org_module.out_channels
         else:
             in_dim = org_module.in_features
             out_dim = org_module.out_features
@@ -59,6 +62,12 @@ class LoRAModule(torch.nn.Module):
             padding = org_module.padding
             self.lora_down = torch.nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
             self.lora_up = torch.nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
+        elif org_module.__class__.__name__ == "Conv3d":
+            kernel_size = org_module.kernel_size
+            stride = org_module.stride
+            padding = org_module.padding
+            self.lora_down = torch.nn.Conv3d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
+            self.lora_up = torch.nn.Conv3d(self.lora_dim, out_dim, (1, 1, 1), (1, 1, 1), bias=False)
         else:
             self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
             self.lora_up = torch.nn.Linear(self.lora_dim, out_dim, bias=False)
@@ -106,6 +115,8 @@ class LoRAModule(torch.nn.Module):
                 mask = mask.unsqueeze(1)  # for Text Encoder
             elif len(lx.size()) == 4:
                 mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
+            elif len(lx.size()) == 5:
+                mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # for Conv3d
             lx = lx * mask
 
             # scaling for rank dropout: treat as if the rank is changed
@@ -115,7 +126,17 @@ class LoRAModule(torch.nn.Module):
 
         lx = self.lora_up(lx)
 
-        return org_forwarded.to(weight_dtype) + lx.to(weight_dtype) * self.multiplier * scale
+        # Fused `out = org + alpha * lx`: the unfused `org + lx * multiplier * scale` materializes one extra
+        # full-size transient (`lx * multiplier * scale`) on top of the result. When dtypes already match we go one
+        # step further and add in place (mirroring peft's `result += ...`), keeping only two full-size tensors
+        # alive per LoRA'ed layer — the wide feed-forward projections are the activation peak of LoRA training.
+        # `org_forwarded` is the base layer's freshly produced output with no other consumer, so the in-place add
+        # is autograd-safe. The `.to(weight_dtype)` fallback keeps mixed-dtype setups (fp32 LoRA weights over bf16
+        # activations) correct.
+        alpha = self.multiplier * scale
+        if org_forwarded.dtype != weight_dtype or lx.dtype != weight_dtype:
+            return org_forwarded.to(weight_dtype) + lx.to(weight_dtype) * alpha
+        return org_forwarded.add_(lx, alpha=alpha)
 
 def addnet_hash_legacy(b):
     """Old model hash used by sd-webui-additional-networks for .safetensors format files"""
@@ -165,7 +186,8 @@ class LoRANetwork(torch.nn.Module):
         "HunyuanVideoTransformer3DModel", "Flux2Transformer2DModel", "ZImageTransformer2DModel", \
         "LongCatVideoTransformer3DModel", "LongCatVideoAvatarTransformer3DModel", "TurboWanTransformer3DModel", \
         "LTX2VideoTransformer3DModel", "InfiniteTalkTransformer3DModel", "WanAudioTransformer3DModel", \
-        "MOVADualTowerConditionalBridge",  "FlashHeadTransformer3DModel", "LensTransformer2DModel"
+        "MOVADualTowerConditionalBridge",  "FlashHeadTransformer3DModel", "LensTransformer2DModel", \
+        "MiniMaxH3Transformer3DModel"
     ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
@@ -212,6 +234,8 @@ class LoRANetwork(torch.nn.Module):
                         is_linear = child_module.__class__.__name__ == "Linear" or child_module.__class__.__name__ == "LoRACompatibleLinear"
                         is_conv2d = child_module.__class__.__name__ == "Conv2d" or child_module.__class__.__name__ == "LoRACompatibleConv"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
+                        is_conv3d = child_module.__class__.__name__ == "Conv3d"
+                        is_conv3d_1x1x1 = is_conv3d and child_module.kernel_size == (1, 1, 1)
                         
                         skip_names = skip_name.split(',') if skip_name is not None else []
                         target_names = target_name.split(',') if target_name is not None else []
@@ -225,19 +249,19 @@ class LoRANetwork(torch.nn.Module):
                         if target_names and not any(target_n in child_name for target_n in target_names):
                             continue
                             
-                        if is_linear or is_conv2d:
+                        if is_linear or is_conv2d or is_conv3d:
                             lora_name = prefix + "." + name + "." + child_name
                             lora_name = lora_name.replace(".", "_")
 
                             dim = None
                             alpha = None
 
-                            if is_linear or is_conv2d_1x1:
+                            if is_linear or is_conv2d_1x1 or is_conv3d:
                                 dim = self.lora_dim
                                 alpha = self.alpha
 
                             if dim is None or dim == 0:
-                                if is_linear or is_conv2d_1x1:
+                                if is_linear or is_conv2d_1x1 or is_conv3d:
                                     skipped.append(lora_name)
                                 continue
 
@@ -551,6 +575,12 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             curr_layer.weight.data += multiplier * alpha * torch.mm(
                 weight_up.squeeze(3).squeeze(2), weight_down.squeeze(3).squeeze(2)
             ).unsqueeze(2).unsqueeze(3)
+        elif len(weight_up.shape) == 5:
+            # lora_up: (out_dim, lora_dim, 1, 1, 1) → (out_dim, lora_dim)
+            # lora_down: (lora_dim, in_dim, kD, kH, kW) → (lora_dim, in_dim*kD*kH*kW)
+            up_2d = weight_up.reshape(weight_up.shape[0], weight_up.shape[1])
+            down_2d = weight_down.reshape(weight_down.shape[0], -1)
+            curr_layer.weight.data += multiplier * alpha * torch.mm(up_2d, down_2d).reshape(curr_layer.weight.data.shape)
         else:
             curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
@@ -717,6 +747,12 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer.weight.data -= multiplier * alpha * torch.mm(
                 weight_up.squeeze(3).squeeze(2), weight_down.squeeze(3).squeeze(2)
             ).unsqueeze(2).unsqueeze(3)
+        elif len(weight_up.shape) == 5:
+            # lora_up: (out_dim, lora_dim, 1, 1, 1) → (out_dim, lora_dim)
+            # lora_down: (lora_dim, in_dim, kD, kH, kW) → (lora_dim, in_dim*kD*kH*kW)
+            up_2d = weight_up.reshape(weight_up.shape[0], weight_up.shape[1])
+            down_2d = weight_down.reshape(weight_down.shape[0], -1)
+            curr_layer.weight.data -= multiplier * alpha * torch.mm(up_2d, down_2d).reshape(curr_layer.weight.data.shape)
         else:
             curr_layer.weight.data -= multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)

@@ -886,7 +886,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         param_name = match.group(4)
                         new_key = f"{prefix}.encoder.middle.1.{layer_name}.{param_name}"
                     else:
-                        continue
+                        print(f"Warning: unrecognized key pattern '{old_key}', keeping original key.")
                 
                 if '.decoder.mid_block.attentions.' in old_key:
                     match = re.match(r'(.*)\.decoder\.mid_block\.attentions\.(\d+)\.(norm|to_qkv|proj)\.(.*)', old_key)
@@ -896,7 +896,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         param_name = match.group(4)
                         new_key = f"{prefix}.decoder.middle.1.{layer_name}.{param_name}"
                     else:
-                        continue
+                        print(f"Warning: unrecognized key pattern '{old_key}', keeping original key.")
                 
                 # 1. Map encoder.down_blocks -> encoder.downsamples
                 if '.encoder.down_blocks.' in old_key:
@@ -1032,7 +1032,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         
         # Add model. prefix
         tmp_state_dict = {} 
@@ -1184,10 +1184,13 @@ class AutoencoderKLWanCompileQwenImage(ModelMixin, ConfigMixin, FromOriginalMode
             from safetensors.torch import load_file, safe_open
             state_dict = load_file(pretrained_model_path)
         else:
-            state_dict = torch.load(pretrained_model_path, map_location="cpu")
+            state_dict = torch.load(pretrained_model_path, map_location="cpu", weights_only=True)
         tmp_state_dict = {} 
         for key in state_dict:
-            tmp_state_dict["model." + key] = state_dict[key]
+            if not key.startswith("model."):
+                tmp_state_dict["model." + key] = state_dict[key]
+            else:
+                tmp_state_dict[key] = state_dict[key]
         state_dict = tmp_state_dict
         m, u = model.load_state_dict(state_dict, strict=False)
         print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")
