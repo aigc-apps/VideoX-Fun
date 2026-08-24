@@ -81,9 +81,10 @@ modelscope download --dataset PAI/X-Fun-Videos-Controls-Demo --local_dir ./datas
 
 下载后数据集包含以下 metadata 文件：
 - `metadata.json`：基本格式（仅包含管控视频路径）
-- `metadata_add_width_height.json`：含宽高信息（推荐用于控制训练）
+- `metadata_add_width_height.json`：含宽高信息
+- `metadata_add_width_height_add_wav.json`：含宽高信息 + 音频路径（推荐用于 MiniMax-H3 控制训练）
 
-> 💡 示例数据集的管控信号位于 `canny/`，其 metadata 不含 `audio_path`；此时训练数据集会直接从视频容器中解码音频轨道，因此该示例数据集开箱即用。
+> 💡 示例数据集的管控信号位于 `canny/`，配对音频位于 `wav/`（由 `metadata_add_width_height_add_wav.json` 引用）；不含 `audio_path` 的 metadata 同样可用，此时训练数据集会直接从视频容器中解码音频轨道。
 
 ### 2.2 数据集结构
 
@@ -225,7 +226,7 @@ transformer_additional_kwargs:
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境。
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -372,7 +373,7 @@ accelerate launch --mixed_precision="bf16" \
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -397,7 +398,7 @@ accelerate launch --mixed_precision="bf16" \
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_control.py \
@@ -430,7 +431,7 @@ accelerate launch --mixed_precision="bf16" scripts/minimax_h3_fun/train_control.
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -480,7 +481,7 @@ export RANK=1  # 注意这里是 1
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \

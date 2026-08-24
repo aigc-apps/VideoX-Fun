@@ -1,7 +1,7 @@
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1

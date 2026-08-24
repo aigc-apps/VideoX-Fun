@@ -81,9 +81,10 @@ modelscope download --dataset PAI/X-Fun-Videos-Controls-Demo --local_dir ./datas
 
 After downloading, the dataset contains the following metadata files:
 - `metadata.json`: basic format (control video paths only)
-- `metadata_add_width_height.json`: with width/height info (recommended for control training)
+- `metadata_add_width_height.json`: with width/height info
+- `metadata_add_width_height_add_wav.json`: with width/height info + audio paths (recommended for MiniMax-H3 control training)
 
-> 💡 The demo's control signal lives in `canny/` and its metadata carries no `audio_path`; the training dataset decodes the audio track from each video container in that case, so the demo runs as-is.
+> 💡 The demo's control signal lives in `canny/` and the paired audio tracks live in `wav/` (referenced by `metadata_add_width_height_add_wav.json`); metadata files without `audio_path` still work, since the training dataset decodes the audio track from each video container in that case.
 
 ### 2.2 Dataset Structure
 
@@ -225,7 +226,7 @@ FSDP is recommended for training MiniMax-H3 control: the transformer alone is ab
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -372,7 +373,7 @@ The same `train_control.py` runs under FSDP2 by adding `--fsdp_version 2` to the
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -397,7 +398,7 @@ accelerate launch --mixed_precision="bf16" \
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_control.py \
@@ -430,7 +431,7 @@ Assuming 2 machines, each with 8 GPUs:
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total machines
@@ -480,7 +481,7 @@ export RANK=1  # Note: this is 1
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height_add_wav.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
