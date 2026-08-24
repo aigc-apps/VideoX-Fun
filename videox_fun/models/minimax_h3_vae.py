@@ -861,9 +861,16 @@ class AutoencoderKLMiniMaxH3(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin, Con
         MiniMax-H3 encodes a video reference through this method rather than through [`~encode`], because the
         posterior is sampled under a fixed generator rather than through the distribution object, so it carries the
         offload hook too.
+
+        A single frame has no temporal extent to chunk, so it goes through the spatial encoder alone. Padding it up
+        to `clip_length` by repetition instead would run the temporal path over `clip_length` copies of the same image
+        and return `clip_length // temporal_compression_ratio - token_drop` latent frames rather than one — which is
+        not the conditioning MiniMax-H3 was trained with.
         """
         clip_length = self.config.clip_length
         num_frames = x.shape[2]
+        if num_frames == 1:
+            return self._encode_clip(x)
         if num_frames % clip_length != 0:
             pad_frames = x[:, :, -1:].repeat(1, 1, (-num_frames) % clip_length, 1, 1)
             x = torch.cat([x, pad_frames], dim=2)

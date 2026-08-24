@@ -9,7 +9,10 @@ import the same constants and functions, so the two paths cannot drift apart.
 The module also hosts ``MiniMaxH3MixedPrecisionLoaderMixin``, the loading base of the three MiniMax-H3 model
 classes. The mixin auto-detects the checkpoint layout (original vs. diffusers) and, for a diffusers layout, restores
 the ``_keep_in_fp32_modules`` tensors the diffusers loader would otherwise round down when ``torch_dtype`` is not
-float32.
+float32. A diffusers-layout checkpoint that misses the keys a subclass adds on top of it (the control branch, the
+multiview modules) is loaded shard-wise into a meta build through ``load_model_dict_into_meta`` instead of through
+``ModelMixin.from_pretrained``, which every diffusers version tolerates; the missing parameters stay on the meta
+device for the subclass's ``from_pretrained`` to materialise.
 
 The differences between the two formats are
 
@@ -79,11 +82,136 @@ class MiniMaxH3MixedPrecisionLoaderMixin:
         torch_dtype = kwargs.pop("torch_dtype", None)
         dtype = kwargs.pop("dtype", None)
         torch_dtype = torch_dtype if torch_dtype is not None else dtype
+        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", None)
+        # The missing-keys loader below cannot hand a partially-meta model to accelerate's dispatcher, so it pops
+        # `device_map` instead of honouring it; a subclass that materialises the missing parameters re-applies the
+        # device map afterwards (see `MiniMaxH3MultiViewsTransformer3DModel.from_pretrained`).
+        device_map = kwargs.pop("device_map", None)
+        max_memory = kwargs.pop("max_memory", None)
 
+        # A checkpoint that misses the keys this class adds on top of it (the control branch, the multiview
+        # modules) cannot go through `ModelMixin.from_pretrained` under `low_cpu_mem_usage`: diffusers before 0.33
+        # feeds the sharded layout to `accelerate.load_checkpoint_and_dispatch`, which moves the model while the
+        # missing parameters are still on the meta device ("Cannot copy out of meta tensor"), and the non-sharded
+        # layout raises on the missing keys outright. Load the shards into a meta build ourselves instead; whatever
+        # the checkpoint does not carry stays on meta for the class's `from_pretrained` to materialise.
+        if low_cpu_mem_usage is not False:
+            model = cls._from_pretrained_with_missing_keys(pretrained_model_name_or_path, torch_dtype, **kwargs)
+            if model is not None:
+                if torch_dtype not in (None, torch.float32) and cls._keep_in_fp32_modules:
+                    restore_fp32_modules(model, pretrained_model_name_or_path, kwargs.get("subfolder", None))
+                if device_map is not None:
+                    model._pending_device_map = device_map
+                    model._pending_max_memory = max_memory
+                return model
+
+        if low_cpu_mem_usage is not None:
+            kwargs["low_cpu_mem_usage"] = low_cpu_mem_usage
+        if device_map is not None:
+            kwargs["device_map"] = device_map
+        if max_memory is not None:
+            kwargs["max_memory"] = max_memory
         model = super().from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype, **kwargs)
         if torch_dtype not in (None, torch.float32) and cls._keep_in_fp32_modules:
             restore_fp32_modules(model, pretrained_model_name_or_path, kwargs.get("subfolder", None))
         return model
+
+    @classmethod
+    def _from_pretrained_with_missing_keys(cls, pretrained_model_name_or_path, torch_dtype, **kwargs):
+        r"""
+        Load a local diffusers-layout checkpoint the model outgrows — e.g. the released MiniMax-H3 weights loaded
+        into the control or multiview transformer — or return `None` when the checkpoint carries every key of the
+        model, or is not a local safetensors directory, so the standard `ModelMixin.from_pretrained` takes over.
+
+        Mirrors the manual loading of `WanTransformer3DModel.from_pretrained`: the model is built on the meta
+        device and the checkpoint's shards are written into it one by one through `load_model_dict_into_meta`, the
+        one load primitive every diffusers version offers, without dispatching the model while parameters are still
+        on meta. Parameters the checkpoint does not carry stay on the meta device for the class's `from_pretrained`
+        to materialise.
+        """
+        if pretrained_model_name_or_path is None:
+            return None
+        subfolder = kwargs.pop("subfolder", None)
+        directory = (
+            os.path.join(str(pretrained_model_name_or_path), subfolder) if subfolder
+            else str(pretrained_model_name_or_path)
+        )
+        if not os.path.isdir(directory):
+            return None
+        checkpoint_keys = _read_safetensors_keys(directory)
+        if checkpoint_keys is None:
+            return None
+
+        import accelerate
+        from diffusers import __version__ as diffusers_version
+        from packaging import version as pkg_version
+        is_new_load_utils = pkg_version.parse(diffusers_version) >= pkg_version.parse("0.33.0")
+        if is_new_load_utils:
+            # Diffusers has refactored `load_model_dict_into_meta` since version 0.33.0 in this commit:
+            # https://github.com/huggingface/diffusers/commit/f5929e03060d56063ff34b25a8308833bec7c785.
+            from diffusers.models.model_loading_utils import load_model_dict_into_meta
+        else:
+            from diffusers.models.modeling_utils import load_model_dict_into_meta
+
+        # Loading-only kwargs of `ModelMixin.from_pretrained` that `load_config` / `from_config` must not see.
+        for key in (
+            "variant", "use_safetensors", "device_map", "max_memory", "offload_folder", "offload_state_dict",
+            "cache_dir", "force_download", "proxies", "local_files_only", "token", "revision",
+            "output_loading_info", "quantization_config", "dduf_entries", "disable_mmap",
+        ):
+            kwargs.pop(key, None)
+        config, unused_kwargs = cls.load_config(
+            pretrained_model_name_or_path, subfolder=subfolder, return_unused_kwargs=True, **kwargs
+        )
+        with accelerate.init_empty_weights():
+            model = cls.from_config(config, **unused_kwargs)
+        model_state_dict = model.state_dict()
+        missing_keys = [key for key in model_state_dict if key not in checkpoint_keys]
+        if not missing_keys:
+            return None
+        logger.info(
+            f"The checkpoint at {directory} misses {len(missing_keys)} key(s) of {cls.__name__}; loading the "
+            "shards through `load_model_dict_into_meta` and leaving those parameters on the meta device for the "
+            "class's `from_pretrained` to materialise."
+        )
+
+        for file in sorted(glob.glob(os.path.join(directory, "*.safetensors"))):
+            with safe_open(file, framework="pt") as reader:
+                state_dict = {}
+                for key in reader.keys():
+                    if key not in model_state_dict:
+                        continue
+                    if model_state_dict[key].shape != torch.Size(reader.get_slice(key).get_shape()):
+                        logger.warning(f"Skipping key '{key}' of {file}: shape mismatch with the model.")
+                        continue
+                    state_dict[key] = reader.get_tensor(key)
+            if not state_dict:
+                continue
+            if is_new_load_utils:
+                load_model_dict_into_meta(
+                    model, state_dict, dtype=torch_dtype, model_name_or_path=pretrained_model_name_or_path
+                )
+            else:
+                load_model_dict_into_meta(
+                    model, state_dict, device="cpu", dtype=torch_dtype,
+                    model_name_or_path=pretrained_model_name_or_path,
+                )
+
+        model.register_to_config(_name_or_path=pretrained_model_name_or_path)
+        model.eval()
+        return model
+
+
+def _read_safetensors_keys(directory):
+    r"""The keys of every safetensors shard in `directory`, or `None` when it holds none."""
+    files = sorted(glob.glob(os.path.join(directory, "*.safetensors")))
+    if not files:
+        return None
+    keys = set()
+    for file in files:
+        with safe_open(file, framework="pt") as reader:
+            keys.update(reader.keys())
+    return keys
 
 
 def _assign_tensor(model: torch.nn.Module, key: str, tensor: torch.Tensor) -> None:

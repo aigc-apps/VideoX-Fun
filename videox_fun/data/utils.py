@@ -88,7 +88,7 @@ def get_random_mask(shape, image_start_only=False):
 
     if not image_start_only:
         if f != 1:
-            mask_index = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], p=[0.05, 0.2, 0.2, 0.2, 0.05, 0.05, 0.05, 0.1, 0.05, 0.05]) 
+            mask_index = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], p=[0.10, 0.2, 0.2, 0.15, 0.05, 0.05, 0.05, 0.1, 0.05, 0.05]) 
         else:
             mask_index = np.random.choice([0, 1, 7, 8], p = [0.2, 0.7, 0.05, 0.05])
         if mask_index == 0:
@@ -142,16 +142,16 @@ def get_random_mask(shape, image_start_only=False):
             a = torch.randint(min(w, h) // 8, min(w, h) // 4, (1,)).item()  # Semi-major axis
             b = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()  # Semi-minor axis
 
-            # Vectorized ellipse mask using meshgrid
+            # Vectorized ellipse mask using meshgrid, applied to every frame of the clip
             y_grid, x_grid = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing='ij')
-            mask[0, 0, :, :] = (((y_grid - center_y) ** 2) / (b ** 2) + ((x_grid - center_x) ** 2) / (a ** 2) < 1).to(torch.uint8)
+            mask[:, 0, :, :] = (((y_grid - center_y) ** 2) / (b ** 2) + ((x_grid - center_x) ** 2) / (a ** 2) < 1).to(torch.uint8)
         elif mask_index == 8:
             center_x = torch.randint(0, w, (1,)).item()
             center_y = torch.randint(0, h, (1,)).item()
             radius = torch.randint(min(h, w) // 8, min(h, w) // 4, (1,)).item()
-            # Vectorized circle mask using meshgrid
+            # Vectorized circle mask using meshgrid, applied to every frame of the clip
             y_grid, x_grid = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing='ij')
-            mask[0, 0, :, :] = ((y_grid - center_y) ** 2 + (x_grid - center_x) ** 2 < radius ** 2).to(torch.uint8)
+            mask[:, 0, :, :] = ((y_grid - center_y) ** 2 + (x_grid - center_x) ** 2 < radius ** 2).to(torch.uint8)
         elif mask_index == 9:
             for idx in range(f):
                 if np.random.rand() > 0.5:

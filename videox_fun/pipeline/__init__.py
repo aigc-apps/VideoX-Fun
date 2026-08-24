@@ -18,7 +18,11 @@ from .pipeline_longcatvideo_avatar import LongCatVideoAvatarPipeline
 from .pipeline_ltx2 import LTX2Pipeline
 from .pipeline_ltx2_i2v import LTX2I2VPipeline
 from .pipeline_ltx2_latent_upsample import LTX2LatentUpsamplePipeline
-from .pipeline_minimax_h3 import MiniMaxH3Pipeline
+from .pipeline_minimax_h3 import (MiniMaxH3AudioReference,
+                                  MiniMaxH3ImageReference,
+                                  MiniMaxH3Pipeline,
+                                  MiniMaxH3VideoReference)
+from .pipeline_minimax_h3_control import MiniMaxH3ControlPipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage_control import QwenImageControlPipeline

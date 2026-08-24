@@ -1484,14 +1484,19 @@ def _patch_group_offload_device_anchors(obj) -> None:
 
 
 def safe_enable_group_offload(obj, *args, **kwargs):
-    """Safely call enable_group_offload, register default implementation if not exists.
+    """Safely call enable_group_offload, registering the patched local implementation.
     Also patches obj._execution_device so that pipelines using group offload (which does
     not use Accelerate _hf_hook) can still return the correct onload device instead of
     falling back to self.device (which may be CPU after offloading).
     """
 
-    if not hasattr(obj, 'enable_group_offload'):
-        obj.enable_group_offload = types.MethodType(enable_group_offload, obj)
+    # Always bind the local backport, even when diffusers ships its own `enable_group_offload`
+    # (diffusers >= 0.32 does): the stock implementation only moves parameters / buffers and does
+    # not know about legacy `torch.nn.utils.weight_norm`, whose recomputed `weight` is a plain
+    # tensor attribute. With the stock hooks that attribute stays on the offload device while the
+    # inputs are moved to the accelerator, so the weight-normed conv1d of the MiniMax-H3 audio
+    # VAE fails with `Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor)`.
+    obj.enable_group_offload = types.MethodType(enable_group_offload, obj)
 
     result = obj.enable_group_offload(*args, **kwargs)
 

@@ -1,4 +1,4 @@
-export MODEL_NAME="/models/Diffusion_Transformer/MiniMax-H3"
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
 export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO

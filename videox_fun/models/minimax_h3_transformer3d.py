@@ -587,16 +587,24 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
         Enable multi-GPU inference by splitting the packed sequence across the sequence-parallel group.
 
         Every rank keeps its own slice of the rows — norms, feed-forwards and the two projections run on that slice
-        only — and the attention processor all-gathers the keys and values so that each rank still attends over the
-        whole sequence. The result is numerically identical to the single-GPU path.
+        only — and the attention processor turns the row split into a head split over the whole sequence through the
+        group's all-to-all. The rows are gathered back after the block stack.
         """
         self.sp_world_size = get_sequence_parallel_world_size()
         self.sp_world_rank = get_sequence_parallel_rank()
         self.all_gather = get_sp_group().all_gather
 
+        # The all-to-all of the attention processor splits the heads across the group, so the head count has to be
+        # divisible by it — a mismatch would silently drop heads rather than fail inside the kernel.
+        num_heads = self.transformer_blocks[0].attn.heads
+        if num_heads % self.sp_world_size != 0:
+            raise ValueError(
+                f"Sequence-parallel inference splits the {num_heads} attention heads across the group, so the group "
+                f"size must divide them; got a sequence-parallel world size of {self.sp_world_size}."
+            )
+
         for block in self.transformer_blocks:
             block.attn.set_processor(MiniMaxH3MultiGPUsAttnProcessor())
-            block.attn.all_gather = self.all_gather
 
     def forward(
         self,

@@ -1,26 +1,31 @@
-# Modified from scripts/wan2.1_fun/train_lora.py for MiniMax-H3, aligned to the videox-fun unified training
-# scaffold (parameter set, peft/kohya LoRA switch, comfyui-compatible save, sanity check, checkpointing).
+# CFG distillation of the MiniMax-H3 control branch, mirroring `scripts/flux2_fun/train_control_distill.py`: a
+# frozen teacher copy of `MiniMaxH3ControlTransformer3DModel` (the real score) runs two forward passes per step —
+# one on the prompt, one on the empty negative prompt — and the two predictions combine with
+# `--real_guidance_scale` classifier-free guidance into the target the trainable student (the generator, whose
+# control branch is trained through `--trainable_modules control`) regresses onto with an MSE loss over the video
+# and audio rows alike. Both copies load the same `--transformer_path`, a trained control branch.
 #
-# LoRA finetuning of the packed-sequence transformer on the *video and audio* rows together, covering `t2v`
-# (text only), `fl2v` (first-frame keyframe conditioning, the keyframe taken from the training sample itself)
-# and `ref2va` (reference image / video / audio conditioning, loaded from `transformer_ref`).
-# The layout mirrors `scripts/ltx2.3/train_lora.py`: batch-level training (bs=1, the packed layout is per-sample),
-# video + audio flow-matching loss weighted 0.5 / 0.5, FSDP + offload composable.
+# The student side keeps the control-training recipe of `scripts/minimax_h3_fun/train_control.py`:
+#   * 10% of the batches zero the control latents, keeping the unconditional path trainable (CFG),
+#   * the audio stream keeps the joint video + audio packed layout of `scripts/minimax_h3/train.py`.
 #
 # MiniMax-H3's rectified-flow convention is the *opposite* of Wan's and is reproduced here from
 # `MiniMaxH3Scheduler.scale_noise` / `MiniMaxH3Scheduler.step`, the single source of truth:
 #   * noising: `x_t = t * x0 + (1 - t) * noise` with `t = 1` clean, `t = 1 - sigma`,
 #   * the sigma grid is exponentially shifted, `sigma' = s * sigma / (1 + (s - 1) * sigma)`, `s = 12.0` for video and `3.0` for audio,
-#   * the transformer predicts a data-ward velocity, so the regression target is `x0 - noise`.
+#   * the transformer predicts a data-ward velocity (`x0 - noise`); student and teacher predictions live in that
+#     space, so the distillation loss compares them element-wise.
 #
-# The checkpoint is guidance-distilled: one forward per step, no unconditional branch.
+# The released checkpoint is guidance-distilled (see `pipeline_minimax_h3.py`), so the student takes no guidance
+# input; the guidance enters only through the teacher's two CFG forward passes.
 #
 # Usage:
-#   accelerate launch scripts/minimax_h3/train_lora.py \
+#   accelerate launch scripts/minimax_h3_fun/train_control_distill.py \
 #       --pretrained_model_name_or_path=/root/MiniMax-H3 \
-#       --train_mode=fl2v --gradient_checkpointing --low_vram
+#       --gradient_checkpointing --low_vram --trainable_modules "control"
 
 import argparse
+import contextlib
 import gc
 import inspect
 import logging
@@ -44,12 +49,14 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
-from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import compute_density_for_timestep_sampling
+from diffusers.training_utils import (EMAModel,
+                                      compute_density_for_timestep_sampling)
 from diffusers.utils.torch_utils import is_compiled_module
+from einops import rearrange
+from omegaconf import OmegaConf
 from packaging import version
-from PIL import Image
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
@@ -61,27 +68,30 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512,
                              AspectRatioBatchImageVideoSampler,
-                             ImageVideoSampler, RandomSampler,
-                             VideoSpeechDataset, get_closest_ratio)
+                             ImageVideoSampler, VideoSpeechControlDataset,
+                             get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
-                               MiniMaxH3Transformer3DModel, Qwen2TokenizerFast,
+                               MiniMaxH3ControlTransformer3DModel,
+                               Qwen2TokenizerFast,
                                Qwen3VLForConditionalGeneration,
                                Qwen3VLProcessor)
-from videox_fun.pipeline import MiniMaxH3Pipeline
+from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
+                             ASPECT_RATIO_RANDOM_CROP_PROB,
+                             AspectRatioBatchImageVideoSampler,
+                             ImageVideoDataset, ImageVideoSampler,
+                             RandomSampler, get_closest_ratio)
 from videox_fun.pipeline.pipeline_minimax_h3 import (
-    MINIMAX_H3_KEYFRAME_NOISE_AUG,
-    MINIMAX_H3_KEYFRAME_ENCODE_SEED, MINIMAX_H3_FPS, MINIMAX_H3_PIXEL_MEAN,
-    MINIMAX_H3_PIXEL_STD, MINIMAX_H3_TEXT_ENCODER_LAYER, MINIMAX_H3_TEXT_TAG,
-    MINIMAX_H3_VIDEO_SAMPLE_FPS, MINIMAX_H3_VIDEO_TAG,
-    _offload_scope, align_num_frames, audio_latent_num_frames,
-    build_packed_sequence, build_ref2va_packed_sequence, build_row_timesteps,
-    check_ref2va_references, keyframe_condition_noise,
-    normalize_ref2va_references, patchify_video_latents, prepare_keyframe_image,
-    ref2va_condition_rows, video_latent_num_frames)
+    MINIMAX_H3_FPS, MINIMAX_H3_PIXEL_MEAN, MINIMAX_H3_PIXEL_STD,
+    MINIMAX_H3_TEXT_ENCODER_LAYER, MINIMAX_H3_TEXT_TAG, _offload_scope,
+    align_num_frames, audio_latent_num_frames, build_packed_sequence,
+    build_row_timesteps, patchify_video_latents, unpatchify_video_tokens,
+    video_latent_num_frames)
+from videox_fun.pipeline import MiniMaxH3ControlPipeline
 from videox_fun.utils import MiniMaxH3Scheduler
-from videox_fun.utils.lora_utils import convert_peft_lora_to_kohya_lora, create_network
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils.utils import (get_video_to_video_latent,
+                                    save_videos_grid,
+                                    save_videos_with_audio_grid)
 
 # Silences diffusers' `randn_tensor` notice about CPU generators producing CUDA tensors (the tensor is created
 # on CPU and moved to GPU; harmless, only a marginal speed note).
@@ -91,103 +101,6 @@ def _mm_token_type_ids(tokenizer, token_ids):
     image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
     video_pad_id = tokenizer.convert_tokens_to_ids("<|video_pad|>")
     return [1 if t == image_pad_id else 2 if t == video_pad_id else 0 for t in token_ids]
-
-
-def gather_ref2va_vision_features(processor, references):
-    r"""Run references' pixels through the conditioner's processors, batched per modality.
-
-    Returns (vision_inputs, image_token_counts, video_block_token_counts, video_block_timestamps).
-    """
-    merge_size = processor.image_processor.merge_size**2
-    vision_inputs = {}
-    image_token_counts = []
-    video_block_token_counts = []
-    video_block_timestamps = []
-
-    images = [ref.image for ref in references if ref.kind == "image"]
-    if images:
-        image_features = processor.image_processor(images=images, return_tensors="pt")
-        vision_inputs["pixel_values"] = image_features["pixel_values"]
-        vision_inputs["image_grid_thw"] = image_features["image_grid_thw"]
-        image_token_counts = [
-            int(grid.prod()) // merge_size for grid in image_features["image_grid_thw"]
-        ]
-
-    videos = [ref for ref in references if ref.kind == "video"]
-    if videos:
-        temporal_patch = processor.video_processor.temporal_patch_size
-        sampled = [
-            MiniMaxH3Pipeline._sample_ref2va_condition_frames(
-                ref.frames, float(ref.fps), MINIMAX_H3_VIDEO_SAMPLE_FPS, temporal_patch
-            )
-            for ref in videos
-        ]
-        video_block_timestamps = [timestamps for _, timestamps in sampled]
-        video_features = processor.video_processor(
-            videos=[np.stack(frames) for frames, _ in sampled], do_sample_frames=False, return_tensors="pt"
-        )
-        vision_inputs["pixel_values_videos"] = video_features["pixel_values_videos"]
-        vision_inputs["video_grid_thw"] = video_features["video_grid_thw"]
-        video_block_token_counts = [
-            int(grid[1]) * int(grid[2]) // merge_size for grid in video_features["video_grid_thw"]
-        ]
-        for timestamps, grid in zip(video_block_timestamps, video_features["video_grid_thw"]):
-            if int(grid[0]) != len(timestamps):
-                raise ValueError(
-                    f"The processor merged a reference video into {int(grid[0])} vision blocks, but MiniMax-H3 "
-                    f"labels {len(timestamps)} of them."
-                )
-    return vision_inputs, image_token_counts, video_block_token_counts, video_block_timestamps
-
-
-def build_ref2va_presentation(tokenizer, references, image_token_counts, video_block_token_counts,
-                              video_block_timestamps, prompt):
-    r"""Tokenize MiniMax-H3's presentation of a `ref2va` request."""
-
-    def text(value):
-        ids = tokenizer(value, add_special_tokens=False)["input_ids"]
-        return ids, [MINIMAX_H3_TEXT_TAG] * len(ids)
-
-    def vision(pad_token, num_tokens):
-        ids = (
-            [tokenizer.convert_tokens_to_ids("<|vision_start|>")]
-            + [tokenizer.convert_tokens_to_ids(pad_token)] * num_tokens
-            + [tokenizer.convert_tokens_to_ids("<|vision_end|>")]
-        )
-        return ids, [MINIMAX_H3_VIDEO_TAG] * len(ids)
-
-    token_ids, token_tags = [], []
-    counts = {"image": 0, "video": 0, "audio": 0}
-    for reference in references:
-        if reference.has_audio:
-            counts["audio"] += 1
-            ids, tags = text(f"<Audio {counts['audio']}>: ")
-            token_ids += ids
-            token_tags += tags
-        if reference.kind == "image":
-            counts["image"] += 1
-            ids, tags = text(f"<Picture {counts['image']}>: ")
-            token_ids += ids
-            token_tags += tags
-            ids, tags = vision("<|image_pad|>", image_token_counts[counts["image"] - 1])
-            token_ids += ids
-            token_tags += tags
-        elif reference.kind == "video":
-            counts["video"] += 1
-            ids, tags = text(f"<Video {counts['video']}>: ")
-            token_ids += ids
-            token_tags += tags
-            for timestamp in video_block_timestamps[counts["video"] - 1]:
-                ids, tags = text(f"<{timestamp:.1f} seconds>")
-                token_ids += ids
-                token_tags += tags
-                ids, tags = vision("<|video_pad|>", video_block_token_counts[counts["video"] - 1])
-                token_ids += ids
-                token_tags += tags
-    ids, tags = text(prompt)
-    token_ids += ids
-    token_tags += tags
-    return token_ids, token_tags
 
 
 def resample_waveform_to_span(waveform, target_length):
@@ -207,18 +120,12 @@ def resample_waveform_to_span(waveform, target_length):
     return resampled[0] if mono else resampled
 
 
-def encode_prompt(
-    text_encoder, tokenizer, processor, prompt,
-    images=None, references=None, device=None, dtype=None,
-):
-    r"""Build MiniMax-H3's presentation of a request and encode it.
+def encode_prompt(text_encoder, tokenizer, processor, prompt, device, dtype):
+    r"""Build MiniMax-H3's presentation of a text-only request and encode it.
 
-    The presentation is the verbatim prompt for `t2va`. Every keyframe prepends a `"<Picture i>: "` label and a
-    vision block (`<|vision_start|>`, one `<|image_pad|>` per vision patch, `<|vision_end|>`) — no chat template
-    and no special tokens. The rows of a vision block are tagged as *video* rather than text, which is what the
-    transformer's AdaLN modulation keys off.
-
-    When `references` is given, the `ref2va` presentation is built instead and `images` is ignored.
+    Control training conditions on the control video through the transformer's side branch, so the presentation is
+    always the verbatim prompt — no keyframe vision blocks, which keeps the text stream of every sample plain text
+    tagged `MINIMAX_H3_TEXT_TAG`.
     """
     num_layers = text_encoder.config.text_config.num_hidden_layers
     if num_layers <= MINIMAX_H3_TEXT_ENCODER_LAYER:
@@ -229,58 +136,23 @@ def encode_prompt(
             f"{MINIMAX_H3_TEXT_ENCODER_LAYER} layers is post-norm and is not the conditioning MiniMax-H3 expects."
         )
 
-    pixel_values, image_grid_thw = None, None
-    vision_inputs = {}
-    token_ids, token_tags = [], []
-    if references:
-        # The ref2va presentation: vision features gathered per modality, tokenization in request order.
-        vision_inputs, image_token_counts, video_block_token_counts, video_block_timestamps = (
-            gather_ref2va_vision_features(processor, references)
-        )
-        token_ids, token_tags = build_ref2va_presentation(
-            tokenizer, references, image_token_counts, video_block_token_counts,
-            video_block_timestamps, prompt,
-        )
-        pixel_values = vision_inputs.get("pixel_values")
-        image_grid_thw = vision_inputs.get("image_grid_thw")
-    elif images:
-        vision = processor.image_processor(images=images, return_tensors="pt")
-        pixel_values, image_grid_thw = vision["pixel_values"], vision["image_grid_thw"]
-        merge_size = processor.image_processor.merge_size**2
-        for index in range(len(images)):
-            num_image_tokens = int(image_grid_thw[index].prod()) // merge_size
-            label_ids = tokenizer(f"<Picture {index + 1}>: ", add_special_tokens=False)["input_ids"]
-            vision_ids = (
-                [tokenizer.convert_tokens_to_ids("<|vision_start|>")]
-                + [tokenizer.convert_tokens_to_ids("<|image_pad|>")] * num_image_tokens
-                + [tokenizer.convert_tokens_to_ids("<|vision_end|>")]
-            )
-            token_ids += label_ids + vision_ids
-            token_tags += [MINIMAX_H3_TEXT_TAG] * len(label_ids) + [MINIMAX_H3_VIDEO_TAG] * len(vision_ids)
-    prompt_ids = [] if references else tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    token_ids += prompt_ids
-    token_tags += [MINIMAX_H3_TEXT_TAG] * len(prompt_ids)
+    token_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     if not token_ids:
         # An empty prompt (e.g. the dataset's text drop for classifier-free guidance) tokenizes to zero tokens,
         # and Qwen3-VL's `get_rope_index` cannot reduce over a zero-length sequence dimension; a single
         # whitespace token stands in for the dropped text.
         token_ids = tokenizer(" ", add_special_tokens=False)["input_ids"]
-        token_tags = [MINIMAX_H3_TEXT_TAG] * len(token_ids)
+    token_tags = [MINIMAX_H3_TEXT_TAG] * len(token_ids)
 
     input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
     encoder_kwargs = dict(
         input_ids=input_ids,
         attention_mask=torch.ones_like(input_ids),
-        pixel_values=None if pixel_values is None else pixel_values.to(device, text_encoder.dtype),
-        image_grid_thw=None if image_grid_thw is None else image_grid_thw.to(device),
+        pixel_values=None,
+        image_grid_thw=None,
         use_cache=False,
         output_hidden_states=True,
     )
-    if "pixel_values_videos" in vision_inputs:
-        encoder_kwargs["pixel_values_videos"] = vision_inputs["pixel_values_videos"].to(
-            device, text_encoder.dtype
-        )
-        encoder_kwargs["video_grid_thw"] = vision_inputs["video_grid_thw"].to(device)
     model_module = text_encoder.model
     inner_forward = getattr(getattr(model_module, "module", model_module), "forward", model_module.forward)
     if "mm_token_type_ids" in inspect.signature(inner_forward).parameters:
@@ -293,112 +165,99 @@ def encode_prompt(
     return prompt_embeds, torch.tensor(token_tags, dtype=torch.long)
 
 
-def encode_keyframes(vae, patch_size, images, device):
-    r"""Encode the `fl2va` keyframes into packed conditioning rows.
-
-    The keyframes go through the video VAE's spatial encoder only — they are single frames, so none of its
-    17-frame temporal chunking applies — and the posterior is *sampled*, under a generator seeded with 42
-    independently of the request seed. The sampled latent is rounded to float16 before being normalized, as in the
-    reference implementation; both are part of reproducing the released model's conditioning.
-    """
-    latents_mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
-    latents_std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1)
-    pixel_mean = torch.tensor(MINIMAX_H3_PIXEL_MEAN, device=device).view(1, -1, 1, 1, 1)
-    pixel_std = torch.tensor(MINIMAX_H3_PIXEL_STD, device=device).view(1, -1, 1, 1, 1)
-
-    rows = []
-    with _offload_scope(vae):
-        for image in images:
-            pixels = torch.from_numpy(np.array(image)).to(device).permute(2, 0, 1)[None, :, None]
-            pixels = (pixels.to(torch.float32).div(255.0) - pixel_mean) / pixel_std
-            moments = vae._encode_clip(pixels)
-            posterior = DiagonalGaussianDistribution(moments)
-            latents = posterior.sample(generator=torch.Generator().manual_seed(MINIMAX_H3_KEYFRAME_ENCODE_SEED))
-            latents = latents.to(torch.float16).float().cpu()
-            rows.append(patchify_video_latents((latents - latents_mean) / latents_std, patch_size))
-    return torch.cat(rows)
-
-
-def encode_reference_latents_for_training(
-    vae, audio_vae, references, patch_size, device,
-    audio_latent_channels=None,
-):
-    r"""Encode the `ref2va` references for training.
-
-    Image and video references go through the video VAE (sampled posterior, float16 rounding, normalized);
-    audio references go through the audio VAE (posterior mean, normalized). Mirrors
-    `MiniMaxH3Pipeline.encode_reference_latents` without requiring a pipeline instance.
-    """
-    if audio_latent_channels is None:
-        audio_latent_channels = getattr(audio_vae.config, "latent_channels", 32)
-    latents_mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
-    latents_std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1)
-    pixel_mean = torch.tensor(MINIMAX_H3_PIXEL_MEAN, device=device).view(1, -1, 1, 1, 1)
-    pixel_std = torch.tensor(MINIMAX_H3_PIXEL_STD, device=device).view(1, -1, 1, 1, 1)
-    frames_per_chunk = getattr(vae, "frames_per_chunk", 17)
-    latents_per_chunk = getattr(vae, "latents_per_chunk", 5)
-
-    def encode_pixels(pixels):
-        pixels = (pixels.to(torch.float32).div(255.0) - pixel_mean) / pixel_std
-        posterior = DiagonalGaussianDistribution(vae._encode(pixels))
-        latents = posterior.sample(
-            generator=torch.Generator().manual_seed(MINIMAX_H3_KEYFRAME_ENCODE_SEED)
-        )
-        latents = latents.to(torch.float16).float().cpu()
-        return (latents - latents_mean) / latents_std
-
-    condition_latents = []
-    with _offload_scope(vae):
-        for reference in references:
-            if reference.kind == "image":
-                pixels = torch.from_numpy(np.array(reference.image)).to(device).permute(2, 0, 1)[None, :, None]
-                condition_latents.append(encode_pixels(pixels))
-            elif reference.kind == "video":
-                num_frames = reference.frames.shape[0]
-                num_frames = (
-                    max(1, (num_frames - latents_per_chunk) // frames_per_chunk) * frames_per_chunk
-                    + latents_per_chunk
-                )
-                pixels = (
-                    torch.from_numpy(reference.frames[:num_frames].copy()).to(device).permute(3, 0, 1, 2)[None]
-                )
-                condition_latents.append(encode_pixels(pixels))
-
-    audio_latents_mean = torch.tensor(audio_vae.config.latents_mean).view(1, 1, -1)
-    audio_latents_std = torch.tensor(audio_vae.config.latents_std).view(1, 1, -1)
-    audio_condition_latents = []
-    with _offload_scope(audio_vae):
-        for reference in references:
-            if reference.has_audio:
-                posterior = audio_vae.encode(reference.audio.to(device)[:, None], return_dict=False)[0]
-                latents = posterior.mode().float().cpu().transpose(1, 2)
-                normalized = (latents - audio_latents_mean) / audio_latents_std
-                audio_condition_latents.append(normalized.reshape(-1, audio_latent_channels))
-    return condition_latents, audio_condition_latents
-
-
 def shifted_sigma(shift: float, sigma: torch.Tensor) -> torch.Tensor:
     r"""The exponential sigma shift of `MiniMaxH3Scheduler`, `sigma' = s*sigma / (1 + (s-1)*sigma)`."""
     return shift * sigma / (1 + (shift - 1) * sigma)
 
 
+def linear_decay(initial_value, final_value, total_steps, current_step):
+    if current_step >= total_steps:
+        return final_value
+    current_step = max(0, current_step)
+    step_size = (final_value - initial_value) / total_steps
+    current_value = initial_value + step_size * current_step
+    return current_value
+
+
+def snap_num_frames(actual_num_frames, max_num_frames):
+    """
+    Pick the generation length from the control video instead of padding a short one: the largest `17 * n + 5`
+    the video VAE can decode that does not exceed the frames actually read (capped by `max_num_frames`), snapping
+    down so no tail frame is ever repeated. A control video below 5 frames is raised to 5, the smallest count
+    the video VAE can encode.
+    """
+    num_frames = min(actual_num_frames, max_num_frames)
+    num_frames = (num_frames - 5) // 17 * 17 + 5
+    return max(num_frames, 5)
+
+
 logger = get_logger(__name__, log_level="INFO")
+
+
+@contextlib.contextmanager
+def restore_frozen_requires_grad(model, trainable_module_names, enabled):
+    r"""Narrow `requires_grad` back to the real trainable set for the duration of an `accelerator` checkpoint call.
+
+    FSDP training keeps `requires_grad` uniformly `True` so that every wrapped unit is resharded by a normal
+    post-backward hook (see the `use_fsdp` branch of `main`), but FSDP's optimizer state helpers read
+    `requires_grad` off every original parameter of a flat parameter (`_get_fqn_to_fsdp_param_info`) and demand each
+    gradient-requiring one be in the optimizer state. A frozen parameter sharing its unit with a trainable one —
+    `proj_in.weight` next to `control_proj_in.weight` in the root unit — therefore aborts the save with
+    "proj_in.weight is not in the optimizer state", and a resume hits the same check. Dropping `requires_grad` on
+    the frozen parameters narrows that walk to the optimizer's own parameters; it is restored afterwards so the next
+    backward keeps its prompt reshard.
+    """
+    if not enabled:
+        yield
+        return
+
+    frozen_params = [
+        param for name, param in model.named_parameters()
+        if not any(trainable_module_name in name for trainable_module_name in trainable_module_names)
+    ]
+    # A wrap without `use_orig_params` exposes flat parameters only, whose names match no trainable module: narrowing
+    # would then freeze the whole model, so leave `requires_grad` alone and let the save report its own error.
+    if len(frozen_params) == len(list(model.named_parameters())):
+        logger.warning(
+            f"No parameter of the model matches {trainable_module_names}, so `requires_grad` is left as it is for "
+            "the checkpoint."
+        )
+        yield
+        return
+
+    for param in frozen_params:
+        param.requires_grad = False
+    try:
+        yield
+    finally:
+        for param in frozen_params:
+            param.requires_grad = True
 
 
 def log_validation(
     vae, audio_vae, text_encoder, tokenizer, processor, transformer,
     scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
 ):
+    r"""Run the inference pipeline over the validation pairs and save one video with its soundtrack per prompt.
+
+    The denoise loop, the control-row construction and both decodes are `MiniMaxH3ControlPipeline`'s own, the way
+    `scripts/minimax_h3/train.py` validates through `MiniMaxH3Pipeline`, so a validation sample reproduces
+    `examples/minimax_h3_fun/predict_v2v_control.py` exactly — including the audio stream and the inpaint
+    zero-padding of an `--enable_inpaint` checkpoint. A validation pair without a control path runs with
+    `control_video=None`, the base-model branch.
+    """
     try:
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=weight_dtype):
             logger.info("Running validation... ")
-            pipeline = MiniMaxH3Pipeline(
+            pipeline = MiniMaxH3ControlPipeline(
                 vae=vae,
                 audio_vae=audio_vae,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
                 processor=processor,
-                transformer=accelerator.unwrap_model(transformer),
+                # Under FSDP the transformer must keep its wrapper so `_pre_forward_unshard` materializes the
+                # sharded FlatParameters during inference; unwrapping leaves weights as 1-D shard views.
+                transformer=accelerator.unwrap_model(transformer) if type(transformer).__name__ == 'DistributedDataParallel' else transformer,
                 scheduler=scheduler,
                 audio_scheduler=audio_scheduler,
             )
@@ -411,24 +270,45 @@ def log_validation(
                 generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
                 logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
+            validation_paths = args.validation_paths if args.validation_paths else [""] * len(args.validation_prompts)
             for i in range(len(args.validation_prompts)):
+                control_video = None
+                num_frames = args.video_sample_n_frames
+                if validation_paths[i]:
+                    # The exact preprocessing of `examples/minimax_h3_fun/predict_v2v_control.py` (fps resample,
+                    # canvas resize + crop, `[0, 1]` `(1, 3, F, H, W)` layout), then generate at the control
+                    # video's actual length instead of padding a short one.
+                    control_video, _, _, _ = get_video_to_video_latent(
+                        validation_paths[i],
+                        video_length=args.video_sample_n_frames,
+                        sample_size=(args.video_sample_size, args.video_sample_size),
+                        fps=MINIMAX_H3_FPS,
+                        ref_image=None,
+                        keep_aspect_ratio=True,
+                    )
+                    num_frames = snap_num_frames(control_video.shape[2], args.video_sample_n_frames)
+
                 output = pipeline(
-                    args.validation_prompts[i],
+                    prompt=args.validation_prompts[i],
+                    control_video=control_video,
                     height=args.video_sample_size,
                     width=args.video_sample_size,
-                    num_frames=args.video_sample_n_frames,
-                    num_inference_steps=50,
+                    num_frames=num_frames,
+                    num_inference_steps=args.validation_sampling_steps,
                     generator=generator,
+                    output_type="pt",
                 )
-                sample = output.videos
+
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                save_videos_grid(
-                    sample,
+                save_videos_with_audio_grid(
+                    output.videos,
+                    output.audio,
                     os.path.join(
                         args.output_dir,
                         f"sample/sample-{global_step}-rank{accelerator.process_index}-image-{i}.mp4",
                     ),
                     fps=24,
+                    audio_sample_rate=output.sampling_rate,
                 )
 
             del pipeline
@@ -441,13 +321,15 @@ def log_validation(
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+        # The full traceback, not just `str(e)`: a validation that keeps failing silently leaves no sample and no
+        # clue, which is indistinguishable from a validation that never proves the control branch works.
+        logger.exception(f"Eval error on rank {accelerator.process_index}")
         vae.to(accelerator.device if not args.low_vram else "cpu")
         text_encoder.to(accelerator.device if not args.low_vram else "cpu")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MiniMax-H3 LoRA training (video + audio, t2v / fl2v / ref2va).")
+    parser = argparse.ArgumentParser(description="MiniMax-H3 control CFG distillation (video + audio, VACE-style side branch).")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -467,6 +349,12 @@ def parse_args():
         type=str,
         default=None,
         help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
+    )
+    parser.add_argument(
+        "--config_path",
+        type=str,
+        default=None,
+        help="The config of the model in training, e.g. config/minimax_h3/minimax_h3_control.yaml.",
     )
     parser.add_argument(
         "--train_data_dir",
@@ -496,6 +384,16 @@ def parse_args():
         "--enable_bucket", action="store_true", help="Whether enable bucket sample in datasets."
     )
     parser.add_argument(
+        "--enable_inpaint",
+        action="store_true",
+        help=(
+            "Feed a random inpaint mask through the control branch alongside the control video: the control rows "
+            "carry the visibility map + masked-video latents on top of `in_channels` (WanFun's mask recipe of "
+            "scripts/wan2.1_fun/train_lora.py), so the yaml at `--config_path` must pin the matching widened "
+            "`control_in_dim`, and checkpoints of a mask-less control branch no longer load."
+        ),
+    )
+    parser.add_argument(
         "--random_hw_adapt", action="store_true", help="Whether enable random adapt height and width in datasets."
     )
     parser.add_argument(
@@ -510,7 +408,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="samples/minimax-h3-lora",
+        default="samples/minimax-h3-control",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -552,7 +450,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-4,
+        default=1e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -583,6 +481,7 @@ def parse_args():
             "Whether or not to allow TF32 on Ampere GPUs. Can be used to speed up training."
         ),
     )
+    parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
@@ -596,6 +495,34 @@ def parse_args():
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument(
+        '--trainable_modules',
+        nargs='+',
+        default=["control"],
+        help='Enter a list of trainable modules'
+    )
+    parser.add_argument(
+        '--trainable_modules_low_learning_rate',
+        nargs='+',
+        default=[],
+        help='Enter a list of trainable modules with lower learning rate'
+    )
+    parser.add_argument(
+        "--abnormal_norm_clip_start",
+        type=int,
+        default=1000,
+        help=(
+            'When do we start doing additional processing on abnormal gradients. '
+        ),
+    )
+    parser.add_argument(
+        "--initial_grad_norm_ratio",
+        type=int,
+        default=5,
+        help=(
+            'The initial gradient is relative to the multiple of the max_grad_norm. '
+        ),
+    )
     parser.add_argument(
         "--weighting_scheme",
         type=str,
@@ -616,6 +543,12 @@ def parse_args():
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
     parser.add_argument(
+        "--real_guidance_scale",
+        type=float,
+        default=4.0,
+        help="The cfg scale for real score.",
+    )
+    parser.add_argument(
         "--mixed_precision",
         type=str,
         default=None,
@@ -634,6 +567,9 @@ def parse_args():
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
         ),
+    )
+    parser.add_argument(
+        "--report_model_info", action="store_true", help="Whether or not to report more info about model (such as norm, grad)."
     )
     parser.add_argument(
         "--logging_dir",
@@ -668,7 +604,6 @@ def parse_args():
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
         ),
     )
-    parser.add_argument("--save_state", action="store_true", help="Whether or not to save state.")
     parser.add_argument(
         "--transformer_path",
         type=str,
@@ -688,65 +623,7 @@ def parse_args():
         "--use_fsdp", action="store_true", help="Whether or not to use fsdp."
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument(
-        "--use_peft_lora", action="store_true", help="Whether or not to use peft lora."
-    )
-    parser.add_argument(
-        "--rank",
-        type=int,
-        default=128,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--network_alpha",
-        type=int,
-        default=64,
-        help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--target_name",
-        type=str,
-        default="to_,ff,linear_",
-        help=("The module is trained in loras."),
-    )
-    parser.add_argument(
-        "--lora_skip_name",
-        type=str,
-        default=None,
-        help=("The module is not trained in loras."),
-    )
-    parser.add_argument(
-        "--train_text_encoder",
-        action="store_true",
-        help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
-    )
     # MiniMax-H3 specific
-    parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="fl2v",
-        choices=["t2v", "fl2v", "ref2va"],
-        help="t2v (text only), fl2v (first-frame keyframe conditioning), or ref2va (reference to video+audio).",
-    )
-    parser.add_argument(
-        "--t2v_ratio",
-        type=float,
-        default=0.0,
-        help=("Under --train_mode=fl2v, the fraction of steps that drop the keyframe and train t2v instead, so one "
-              "run keeps both conditionings. 0 trains fl2v only."),
-    )
-    parser.add_argument(
-        "--video_loss_weight",
-        type=float,
-        default=0.5,
-        help="Weight of the video flow-matching loss in the joint video + audio loss.",
-    )
-    parser.add_argument(
-        "--audio_loss_weight",
-        type=float,
-        default=0.5,
-        help="Weight of the audio flow-matching loss in the joint video + audio loss.",
-    )
     parser.add_argument(
         "--video_sample_size",
         type=int,
@@ -784,7 +661,7 @@ def parse_args():
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="minimax_h3_lora",
+        default="minimax_h3_control_distill",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
@@ -798,6 +675,13 @@ def parse_args():
         help=("A set of prompts evaluated every `--validation_steps` / `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control videos evaluated every `--validation_steps` / `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
         "--validation_steps",
         type=int,
         default=2000,
@@ -808,6 +692,12 @@ def parse_args():
         type=int,
         default=5,
         help="Run validation every X epochs.",
+    )
+    parser.add_argument(
+        "--validation_sampling_steps",
+        type=int,
+        default=50,
+        help="Number of denoising steps of the validation sampling loop.",
     )
 
     args = parser.parse_args()
@@ -821,15 +711,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.train_mode not in ("t2v", "fl2v", "ref2va"):
-        raise ValueError(f"`train_mode` must be 't2v', 'fl2v' or 'ref2va', got {args.train_mode!r}.")
-    if not 0.0 <= args.t2v_ratio <= 1.0:
-        raise ValueError(f"`t2v_ratio` is a probability and must be in [0, 1], got {args.t2v_ratio}.")
-    if args.t2v_ratio > 0.0 and args.train_mode != "fl2v":
-        raise ValueError(
-            f"`t2v_ratio` mixes t2v steps into an fl2v run, so it only applies to `--train_mode=fl2v`, but "
-            f"`train_mode` is {args.train_mode!r}. Drop `--t2v_ratio` to train {args.train_mode} only."
-        )
     if args.video_sample_size % 32:
         raise ValueError(
             f"`video_sample_size` {args.video_sample_size} must be a multiple of 32: the canvas is patched "
@@ -858,9 +739,6 @@ def main():
         fsdp_stage = 0
         print(f"Using DeepSpeed Zero stage: {zero_stage}")
         args.use_deepspeed = True
-        if zero_stage == 3:
-            print("Auto set save_state to True because zero_stage == 3")
-            args.save_state = True
     elif fsdp_plugin is not None:
         from torch.distributed.fsdp import ShardingStrategy
         zero_stage = 0
@@ -874,13 +752,13 @@ def main():
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
         args.use_fsdp = True
-        if fsdp_stage == 3:
-            print("Auto set save_state to True because fsdp_stage == 3")
-            args.save_state = True
     else:
         zero_stage = 0
         fsdp_stage = 0
         print("DeepSpeed/FSDP is not enabled.")
+
+    if accelerator.is_main_process:
+        writer = SummaryWriter(log_dir=logging_dir)
 
     logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S", level=logging.INFO)
     logger.info(accelerator.state, main_process_only=False)
@@ -920,11 +798,36 @@ def main():
         args.mixed_precision = accelerator.mixed_precision
 
     # ------------------------------------------------------------------ models
-    # `pretrained_model_name_or_path` may point at a converted diffusers layout or at an *original* MiniMax-H3
-    # partition; every component's `from_pretrained` auto-detects the layout and stream-converts the original
-    # shards on the fly, so the caller never branches on the format itself.
-    transformer = MiniMaxH3Transformer3DModel.from_pretrained(
+    # The control variant of the transformer. The released MiniMax-H3 layout has no control-branch entries, and
+    # `from_pretrained` initialises them itself: every control block from the main block it is attached to and
+    # `control_proj_in` from `proj_in`, with before_proj / after_proj zeroed. The side branch therefore starts as an
+    # identity — the freshly loaded model is numerically identical to the base MiniMax-H3 model — while its blocks
+    # still receive gradient.
+    # `--enable_inpaint` feeds a random inpaint mask through the side branch alongside the control video: on top
+    # of the control video's `in_channels` the control rows carry the visibility map and the masked-video latents
+    # (WanFun's mask recipe of scripts/wan2.1_fun/train_lora.py). `control_proj_in` then no longer matches
+    # `proj_in` and `materialize_missing_control_params` initialises it off the fixed seed; the widened projection
+    # also stops a mask-less control checkpoint from loading.
+    # `--config_path` pins that layout (config/minimax_h3/minimax_h3_control.yaml, mirroring flux2's
+    # `transformer_additional_kwargs`): `control_blocks_places` selects the layers the control blocks attach to and
+    # `control_in_dim` the channels the control rows carry, both overriding the registered config at
+    # `from_pretrained` time. With `--enable_inpaint` the yaml's `control_in_dim` must cover the mask channels;
+    # the model default (`in_channels`) does not, and the forward of `control_proj_in` rejects the mismatch.
+    transformer_load_kwargs = {}
+    if args.config_path is not None:
+        config = OmegaConf.load(args.config_path)
+        transformer_load_kwargs.update(
+            OmegaConf.to_container(config["transformer_additional_kwargs"], resolve=True)
+        )
+    transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer", low_cpu_mem_usage=True, torch_dtype=weight_dtype,
+        **transformer_load_kwargs,
+    )
+    # The frozen teacher (the real score) is a second copy of the same control model; both copies load the same
+    # `--transformer_path` below, mirroring `scripts/flux2_fun/train_control_distill.py`.
+    real_score_transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="transformer", low_cpu_mem_usage=True, torch_dtype=weight_dtype,
+        **transformer_load_kwargs,
     )
 
     def deepspeed_zero_init_disabled_context_manager():
@@ -966,49 +869,13 @@ def main():
     scheduler = MiniMaxH3Scheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     audio_scheduler = MiniMaxH3Scheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="audio_scheduler")
 
-    # Freeze everything; the LoRA modules created below are the only trainable parameters.
+    # Freeze the VAEs, the conditioner and the teacher; the student transformer's trainable parameters are selected
+    # below through `--trainable_modules` (the control branch by default).
     transformer.requires_grad_(False)
+    real_score_transformer.requires_grad_(False)
     vae.requires_grad_(False)
     audio_vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
-
-    # Conditioning (`encode_prompt` / `encode_keyframes`) runs through the module-level helpers; the pipeline is
-    # only constructed inside `log_validation` for inference, mirroring `scripts/ltx2/train.py`.
-
-    # ------------------------------------------------------------------ LoRA
-    # peft path: inject adapters straight into the transformer; kohya path: build a LoRANetwork and apply it.
-    if args.use_peft_lora:
-        from peft import (LoraConfig, get_peft_model_state_dict,
-                          inject_adapter_in_model)
-        lora_config = LoraConfig(r=args.rank, lora_alpha=args.network_alpha, target_modules=args.target_name.split(","))
-        transformer = inject_adapter_in_model(lora_config, transformer)
-        network = None
-    else:
-        network = create_network(
-            1.0,
-            args.rank,
-            args.network_alpha,
-            text_encoder,
-            transformer,
-            neuron_dropout=None,
-            target_name=args.target_name,
-            skip_name=args.lora_skip_name,
-        )
-        network = network.to(weight_dtype)
-        network.apply_to(text_encoder, transformer, args.train_text_encoder, True)
-
-        # Re-parent each LoRA module under its target layer so FSDP shards it with the enclosing
-        # MiniMaxH3TransformerBlock; keeping every LoRA weight in the root unit would leave them
-        # unsharded from forward through the whole backward. The duplicate registration under `network`
-        # must be dropped, otherwise the same parameter would live in two FSDP units. The org module
-        # reference was deleted by `apply_to`, but the patched bound method still carries it.
-        path_by_id = {id(m): n for n, m in transformer.named_modules()}
-        lora_save_keys = []
-        for lora in network.unet_loras:
-            org_module = lora.org_forward.__self__
-            setattr(org_module, "lora_adapter", lora)
-            network._modules.pop(lora.lora_name, None)
-            lora_save_keys.append((f"{path_by_id[id(org_module)]}.lora_adapter", lora.lora_name))
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -1020,6 +887,7 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = transformer.load_state_dict(state_dict, strict=False)
+        m, u = real_score_transformer.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
@@ -1036,32 +904,76 @@ def main():
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
+    transformer.train()
+    real_score_transformer.eval()
+    if accelerator.is_main_process:
+        accelerator.print(
+            f"Trainable modules '{args.trainable_modules}'."
+        )
+    for name, param in transformer.named_parameters():
+        for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                param.requires_grad = True
+                break
+
+    # FSDP1 does not reshard a *fully frozen* wrapped unit through a post-backward hook: it registers a `mode="all"`
+    # multi-grad hook over the gradient-requiring inputs of the unit's forward instead, so the unsharded flat
+    # parameters of the main stack can stay alive far into the backward pass — tens of GB for a 50-block model.
+    # Keeping `requires_grad` uniformly `True` gives every unit a normal post-backward hook, i.e. a reshard plus
+    # reduce-scatter right after its own backward. The frozen parameters therefore carry a sharded gradient (model
+    # size / world size), which is never read and never handed to the optimizer: the trainable set stays the one
+    # selected above and is matched by name everywhere below.
+    if args.use_fsdp:
+        transformer.requires_grad_(True)
+
+    # Create EMA for the transformer.
+    if args.use_ema:
+        if zero_stage == 3:
+            raise NotImplementedError("FSDP does not support EMA.")
+
+        ema_transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="transformer", **transformer_load_kwargs
+        ).to(weight_dtype)
+
+        ema_transformer = EMAModel(ema_transformer.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=ema_transformer.config)
+
     # ------------------------------------------------------------------ save / load hooks
-    # `accelerate` 0.16.0+ supports custom saving hooks. peft weights are exported in both the native and the
-    # kohya (`lora_unet_*`) spellings so the predict scripts and ComfyUI load them with zero changes.
+    # `accelerate` 0.16.0+ supports custom saving hooks; the full transformer is serialized in the diffusers
+    # layout (`transformer/`) so the predict scripts and the pipeline load it with zero changes.
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                if getattr(accelerator, "is_fsdp2", False):
+                    # `accelerator.get_state_dict` gathers the FSDP2 full state dict on the GPU, which OOMs on a
+                    # model this large at steady-state occupancy; offload the gather straight to CPU instead.
+                    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+                    accelerate_state_dict = get_model_state_dict(
+                        models[-1], options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+                    )
+                else:
+                    accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    if args.use_peft_lora:
-                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
-                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                    else:
-                        # The LoRA modules were re-parented under their target layers, so rebuild the original
-                        # kohya key names (`lora_unet_*`) from the recorded mapping instead of filtering `network`.
-                        network_state_dict = {}
-                        for new_prefix, lora_name in lora_save_keys:
-                            prefix = new_prefix + "."
-                            for key, value in accelerate_state_dict.items():
-                                if key.startswith(prefix):
-                                    network_state_dict[f"{lora_name}.{key[len(prefix):]}"] = value.to(weight_dtype)
-                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+
+                    # Serialized in the diffusers layout (`transformer/` plus its `config.json`) so the predict
+                    # scripts load the checkpoint with `from_pretrained(..., subfolder="transformer")` instead of a
+                    # hand-rolled `load_state_dict(..., strict=False)`, which silently accepts a mismatched file.
+                    save_directory = os.path.join(output_dir, "transformer")
+                    os.makedirs(save_directory, exist_ok=True)
+                    safetensor_save_path = os.path.join(save_directory, f"diffusion_pytorch_model.safetensors")
+                    # MiniMax-H3 ships a mixed-precision checkpoint, and the modules the model pins in float32
+                    # (`_keep_in_fp32_modules`: the patch projections — `control_proj_in` included, it matches the
+                    # `proj_in` substring — the timestep MLP and the two output heads) have to stay float32 here;
+                    # casting them to `weight_dtype` would quantize exactly the weights whose precision the
+                    # released model depends on.
+                    fp32_patterns = MiniMaxH3ControlTransformer3DModel._keep_in_fp32_modules
+                    accelerate_state_dict = {
+                        k: v.to(dtype=torch.float32 if any(p in k for p in fp32_patterns) else weight_dtype)
+                        for k, v in accelerate_state_dict.items()
+                    }
+                    save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
+                    accelerator.unwrap_model(models[-1]).save_config(save_directory)
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
@@ -1077,34 +989,44 @@ def main():
         else:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
-                    from safetensors.torch import save_file
-                    safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                    if args.use_peft_lora:
-                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(models[-1]), accelerate_state_dict)
-                        network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                        safetensor_kohya_format_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model_compatible_with_comfyui.safetensors")
-                        save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                    else:
-                        # The LoRA modules were re-parented under their target layers, so rebuild the original
-                        # kohya key names (`lora_unet_*`) from the recorded mapping instead of filtering `network`.
-                        network_state_dict = {}
-                        for new_prefix, lora_name in lora_save_keys:
-                            prefix = new_prefix + "."
-                            for key, value in accelerate_state_dict.items():
-                                if key.startswith(prefix):
-                                    network_state_dict[f"{lora_name}.{key[len(prefix):]}"] = value.to(weight_dtype)
-                    save_file(network_state_dict, safetensor_save_path, metadata={"format": "pt"})
+                    if args.use_ema:
+                        ema_transformer.save_pretrained(os.path.join(output_dir, "transformer_ema"))
 
+                    models[0].save_pretrained(os.path.join(output_dir, "transformer"))
                     if not args.use_deepspeed:
-                        for _ in range(len(weights)):
-                            weights.pop()
+                        weights.pop()
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
             def load_model_hook(models, input_dir):
+                if args.use_ema:
+                    ema_path = os.path.join(input_dir, "transformer_ema")
+                    _, ema_kwargs = MiniMaxH3ControlTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer_ema",
+                    )
+                    load_model = EMAModel(load_model.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=load_model.config)
+                    load_model.load_state_dict(ema_kwargs)
+
+                    ema_transformer.load_state_dict(load_model.state_dict())
+                    ema_transformer.to(accelerator.device)
+                    del load_model
+
+                for i in range(len(models)):
+                    # pop models so that they are not loaded again
+                    model = models.pop()
+
+                    # load diffusers style into model
+                    load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
+                        input_dir, subfolder="transformer"
+                    )
+                    model.register_to_config(**load_model.config)
+
+                    model.load_state_dict(load_model.state_dict())
+                    del load_model
+
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -1126,9 +1048,41 @@ def main():
     if args.scale_lr:
         args.learning_rate = args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
 
-    trainable_params = [p for p in transformer.parameters() if p.requires_grad] if args.use_peft_lora else [p for lora in network.unet_loras for p in lora.parameters() if p.requires_grad]
+    # Matched by name rather than by `requires_grad`: under FSDP every parameter carries `requires_grad=True` so that
+    # the frozen units are resharded promptly (see above), so `requires_grad` no longer marks the trainable set.
+    trainable_module_names = args.trainable_modules + args.trainable_modules_low_learning_rate
+    trainable_params = [
+        param for name, param in transformer.named_parameters()
+        if any(trainable_module_name in name for trainable_module_name in trainable_module_names)
+    ]
+    trainable_params_optim = [
+        {'params': [], 'lr': args.learning_rate},
+        {'params': [], 'lr': args.learning_rate / 2},
+    ]
+    in_already = []
+    for name, param in transformer.named_parameters():
+        high_lr_flag = False
+        if name in in_already:
+            continue
+        for trainable_module_name in args.trainable_modules:
+            if trainable_module_name in name:
+                in_already.append(name)
+                high_lr_flag = True
+                trainable_params_optim[0]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate}")
+                break
+        if high_lr_flag:
+            continue
+        for trainable_module_name in args.trainable_modules_low_learning_rate:
+            if trainable_module_name in name:
+                in_already.append(name)
+                trainable_params_optim[1]['params'].append(param)
+                if accelerator.is_main_process:
+                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                break
     num_trainable = sum(p.numel() for p in trainable_params)
-    logger.info(f"LoRA created: {len(trainable_params)} tensors, {num_trainable / 1e6:.2f} M parameters (peft={bool(args.use_peft_lora)}).")
+    logger.info(f"Trainable: {len(trainable_params)} tensors, {num_trainable / 1e6:.2f} M parameters.")
 
     # ------------------------------------------------------------------ optimizer
     if args.use_8bit_adam:
@@ -1140,7 +1094,7 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
     optimizer = optimizer_cls(
-        trainable_params,
+        trainable_params_optim,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -1148,13 +1102,12 @@ def main():
     )
 
     # ------------------------------------------------------------------ data
-    # MiniMax-H3 phase two trains video *and* audio rows of the packed sequence, so the dataset must carry the paired
-    # waveform; `VideoSpeechDataset` reads the `audio_path` field of the training meta. The three audio flags put the
-    # waveform on the inference route of `normalize_reference_audio`: sliced at the file's native rate and resampled
-    # once with the pipeline's torchaudio pass onto the audio VAE's sample rate (32 kHz, 40 latents/s), stereo kept
-    # as released, over the `num_frames / fps` span the audio latent grid keys off.
+    # MiniMax-H3 control training keeps the paired waveform of `scripts/minimax_h3/train.py`, so the dataset must
+    # carry video + control + audio; `VideoSpeechControlDataset` reads the `control_file_path` / `audio_path`
+    # fields of the training meta and resamples the waveform to the audio VAE's sample rate (32 kHz, 40 latents/s),
+    # fixed by the VAE's 800-sample hop against that 40-latents/s grid.
     audio_sr = getattr(audio_vae.config, "sampling_rate", 32000)
-    train_dataset = VideoSpeechDataset(
+    train_dataset = VideoSpeechControlDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride,
         video_sample_n_frames=args.video_sample_n_frames, enable_bucket=args.enable_bucket, enable_inpaint=False,
@@ -1169,17 +1122,15 @@ def main():
         # wrong speed against its own soundtrack; the dataset skips those too. The tolerance keeps 23.976 / 23.81 fps
         # (which is most of a webvid-style corpus) while rejecting 25 and 29.97 / 30 fps.
         target_video_sample_fps=MINIMAX_H3_FPS,
-        enable_ref2va=(args.train_mode == "ref2va"),
     )
 
     # The packed-sequence layout (text tokens + condition + audio + video rows) is per-sample, so a batch larger
-    # than one would need a sample loop; batch-level training (mirroring `scripts/ltx2.3/train_lora.py`) therefore
+    # than one would need a sample loop; batch-level training (mirroring `scripts/minimax_h3/train.py`) therefore
     # pins the batch size to one for now.
     if args.train_batch_size != 1:
         raise ValueError("MiniMax-H3 packed-sequence training requires --train_batch_size=1.")
 
-    # The MiniMax-H3 video VAE encodes 17n + 5 frames, so bucket frame counts bucket in steps of 17
-    # (ltx2.3's magvae equivalent is `vae.config.temporal_compression_ratio` with the 4n + 1 form).
+    # The MiniMax-H3 video VAE encodes 17n + 5 frames, so bucket frame counts bucket in steps of 17.
     sample_n_frames_bucket_interval = 17
 
     def worker_init_fn(_seed):
@@ -1252,11 +1203,17 @@ def main():
             length_to_frame_num = get_length_to_frame_num(target_token_length)
 
             # Create new output
-            new_examples                 = {}
-            new_examples["pixel_values"] = []
-            new_examples["text"]         = []
-            new_examples["audio"]        = []
-            new_examples["fps"]          = []
+            new_examples                          = {}
+            new_examples["pixel_values"]          = []
+            new_examples["control_pixel_values"]  = []
+            new_examples["text"]                  = []
+            new_examples["audio"]                 = []
+            new_examples["fps"]                   = []
+
+            # Used in Inpaint mode (`--enable_inpaint`)
+            if args.enable_inpaint:
+                new_examples["mask_pixel_values"] = []
+                new_examples["mask"]              = []
 
             # Get downsample ratio in image and videos
             pixel_value     = examples[0]["pixel_values"]
@@ -1310,6 +1267,11 @@ def main():
                 pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.
 
+                # The control video goes through the exact same geometry as the target video, so the patchified
+                # control rows align one-to-one with the video rows of the packed sequence.
+                control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                control_pixel_values = control_pixel_values / 255.
+
                 # Get adapt hw for resize
                 if closest_size[0] / h > closest_size[1] / w:
                     resize_size = closest_size[0], int(w * closest_size[0] / h)
@@ -1321,12 +1283,28 @@ def main():
                     transforms.CenterCrop(closest_size),
                 ])
 
-                new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
+                pixel_values = transform(pixel_values)[:batch_video_length]
+                new_examples["pixel_values"].append(pixel_values)
+                new_examples["control_pixel_values"].append(transform(control_pixel_values)[:batch_video_length])
                 new_examples["text"].append(example["text"])
 
+                # The mask follows WanFun's recipe (scripts/wan2.1_fun/train_lora.py): a random inpaint mask
+                # over the sampled clip, and the masked video (masked pixels zeroed) that the VAE encodes as the
+                # inpaint latents.
+                if args.enable_inpaint:
+                    mask = get_random_mask(pixel_values.size()).float()
+                    new_examples["mask_pixel_values"].append(pixel_values * (1 - mask))
+                    new_examples["mask"].append(mask)
+
+                # Slice the waveform like the frames: the dataset sliced it across the sample's full span, but the
+                # batch may keep fewer frames (the bucket minimum), so cut the audio to the kept span first and
+                # then rescale it onto the 24 fps timeline of `batch_video_length` (a no-op when the lengths
+                # already match within rounding; it also absorbs clips whose metadata fps disagrees with the real
+                # frame rate, which the dataset's span check missed).
                 # The waveform is `(channels, num_samples)` on the stereo route, so the length is the last axis.
                 audio_length = example["audio"].shape[-1]
-                batch_audio_length = int(audio_length / pixel_values.size()[0] * batch_video_length)
+                example_frames = example["pixel_values"].shape[0]
+                batch_audio_length = int(audio_length / example_frames * batch_video_length)
                 # The `num_frames / fps` span the audio latent grid keys off, as in the inference pipeline.
                 target_audio_length = int(round(batch_video_length / MINIMAX_H3_FPS * audio_sr))
                 new_examples["audio"].append(
@@ -1336,6 +1314,10 @@ def main():
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
+            new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
+            if args.enable_inpaint:
+                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
+                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
 
             # Pad audio to same length and stack
             max_audio_length = max(audio.shape[-1] for audio in new_examples["audio"])
@@ -1344,9 +1326,6 @@ def main():
                 for audio in new_examples["audio"]
             ])
             new_examples["fps"] = new_examples["fps"]
-            # Under `ref2va`, pass the references through (bs=1 so always one entry).
-            if args.train_mode == "ref2va":
-                new_examples["references"] = [example.get("references") for example in examples]
             return new_examples
 
         # DataLoaders creation:
@@ -1368,9 +1347,10 @@ def main():
         )
 
         def collate_fn(examples):
-            # `VideoSpeechDataset` returns `[-1, 1]` pixels; MiniMax-H3 wants `[0, 1]` and ImageNet-normalizes the
-            # encoder input itself, so hand the loop `[0, 1]` and drop the rest. The audio waveform is sliced to the
-            # video span and right-padded to a common length so the batch stacks.
+            # `VideoSpeechControlDataset` returns `[-1, 1]` pixels; MiniMax-H3 wants `[0, 1]` and ImageNet-normalizes
+            # the encoder input itself, so hand the loop `[0, 1]` and drop the rest. The control video gets the same
+            # treatment. The audio waveform is sliced to the video span and right-padded to a common length so the
+            # batch stacks.
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
             )
@@ -1385,20 +1365,43 @@ def main():
                 batch_video_length = 5
 
             # Create new output
-            new_examples                 = {}
-            new_examples["pixel_values"] = []
-            new_examples["text"]         = []
-            new_examples["audio"]        = []
-            new_examples["fps"]          = []
+            new_examples                          = {}
+            new_examples["pixel_values"]          = []
+            new_examples["control_pixel_values"]  = []
+            new_examples["text"]                  = []
+            new_examples["audio"]                 = []
+            new_examples["fps"]                   = []
+
+            # Used in Inpaint mode (`--enable_inpaint`)
+            if args.enable_inpaint:
+                new_examples["mask_pixel_values"] = []
+                new_examples["mask"]              = []
 
             for example in examples:
                 # To 0~1
-                pixel_values = example["pixel_values"][:batch_video_length]
-                new_examples["pixel_values"].append(pixel_values * 0.5 + 0.5)
+                pixel_values = example["pixel_values"][:batch_video_length] * 0.5 + 0.5
+                new_examples["pixel_values"].append(pixel_values)
+                control_pixel_values = example["control_pixel_values"][:batch_video_length]
+                new_examples["control_pixel_values"].append(control_pixel_values * 0.5 + 0.5)
                 new_examples["text"].append(example["text"])
 
+                # The mask mirrors scripts/flux2_fun/train_control.py: a random inpaint mask over the sliced
+                # clip, and the masked video (masked pixels zeroed) that the VAE encodes as the inpaint latents.
+                if args.enable_inpaint:
+                    mask = get_random_mask(pixel_values.size()).float()
+                    new_examples["mask_pixel_values"].append(pixel_values * (1 - mask))
+                    new_examples["mask"].append(mask)
+
+                # Slice the waveform like the frames: the dataset sliced it across the sample's full span, but the
+                # batch may keep fewer frames (the bucket minimum), so cut the audio to the kept span first and
+                # then rescale it onto the 24 fps timeline of `batch_video_length` (a no-op when the lengths
+                # already match within rounding; it also absorbs clips whose metadata fps disagrees with the real
+                # frame rate, which the dataset's span check missed).
+                # The waveform is `(channels, num_samples)` on the stereo route, so the length is the last axis.
                 audio_length = example["audio"].shape[-1]
-                batch_audio_length = int(audio_length / example["pixel_values"].shape[0] * batch_video_length)
+                example_frames = example["pixel_values"].shape[0]
+                batch_audio_length = int(audio_length / example_frames * batch_video_length)
+                # The `num_frames / fps` span the audio latent grid keys off, as in the inference pipeline.
                 target_audio_length = int(round(batch_video_length / MINIMAX_H3_FPS * audio_sr))
                 new_examples["audio"].append(
                     resample_waveform_to_span(example["audio"][..., :batch_audio_length], target_audio_length)
@@ -1407,6 +1410,10 @@ def main():
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
+            new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
+            if args.enable_inpaint:
+                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
+                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
 
             # Pad audio to same length and stack
             max_audio_length = max(audio.shape[-1] for audio in new_examples["audio"])
@@ -1415,9 +1422,6 @@ def main():
                 for audio in new_examples["audio"]
             ])
             new_examples["fps"] = new_examples["fps"]
-            # Under `ref2va`, pass the references through (bs=1 so always one entry).
-            if args.train_mode == "ref2va":
-                new_examples["references"] = [example.get("references") for example in examples]
             return new_examples
 
         train_dataloader = torch.utils.data.DataLoader(
@@ -1443,12 +1447,8 @@ def main():
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
 
-    # Attach the network to the transformer so `accelerator.prepare` shards / wraps them together and the saving
-    # hook can read the LoRA weights out of the prepared model. Cast to `weight_dtype` *before* prepare so FSDP
-    # flattens a uniform-dtype parameter set (the conversion mixin pins a few modules in float32 for inference
-    # precision and kohya LoRA modules default to float32).
-    if network is not None:
-        transformer.network = network
+    # Cast to `weight_dtype` *before* prepare so FSDP flattens a uniform-dtype parameter set (the conversion mixin
+    # pins a few modules in float32 for inference precision).
     transformer.gradient_checkpointing_save_on_cpu = args.gradient_checkpointing_save_on_cpu
     transformer = transformer.to(weight_dtype)
 
@@ -1456,11 +1456,10 @@ def main():
         transformer, optimizer, train_dataloader, lr_scheduler
     )
 
-    # Shard the frozen text encoder *after* prepare (mirrors `scripts/ltx2.3/train_lora.py`): the Qwen3-VL
-    # conditioner (~62 GB) is wrapped per decoder layer so the per-step unshard footprint stays small, and a
-    # post-prepare shard keeps the text encoder out of the trainable FSDP unit.
-    sharded_text_encoder = fsdp_stage != 0 or zero_stage != 0
-    if sharded_text_encoder:
+    # Shard the frozen text encoder *after* prepare (mirrors `scripts/minimax_h3/train.py`): the Qwen3-VL
+    # conditioner is wrapped per decoder layer so the per-step unshard footprint stays small, and a post-prepare
+    # shard keeps the text encoder out of the trainable FSDP unit.
+    if fsdp_stage != 0 or zero_stage != 0:
         from videox_fun.dist import shard_model
         text_encoder.model = shard_model(
             text_encoder.model,
@@ -1469,6 +1468,18 @@ def main():
             module_to_wrapper=list(text_encoder.model.language_model.layers),
         )
 
+    # Shard the frozen teacher (the real score) the same way, mirroring the text encoder's post-prepare shard: it
+    # only ever runs no-grad forwards, so it stays out of `accelerator.prepare`, out of the optimizer and out of the
+    # checkpoints, and the per-block wrapping keeps its per-step unshard footprint small.
+    # if fsdp_stage != 0 or zero_stage != 0:
+    #     from videox_fun.dist import shard_model
+    #     real_score_transformer = shard_model(
+    #         real_score_transformer,
+    #         device_id=accelerator.device,
+    #         param_dtype=weight_dtype,
+    #         module_to_wrapper=list(real_score_transformer.transformer_blocks) + list(real_score_transformer.control_blocks),
+    #     )
+
     # Move the frozen models to the GPU (or CPU under `low_vram`) and cast to `weight_dtype`; an FSDP-sharded text
     # encoder is already on-device and dtype-pinned by `shard_model`, so it is left untouched.
     device = accelerator.device
@@ -1476,20 +1487,9 @@ def main():
     # encode/decode call site), so they are moved without a dtype cast.
     vae.to(device if not args.low_vram else "cpu")
     audio_vae.to(device if not args.low_vram else "cpu")
-    transformer.to(device)
-    if not sharded_text_encoder:
-        text_encoder.to(device if not args.low_vram else "cpu", dtype=weight_dtype)
-
-    # The master weights decide whether the run trains at all, so make the two facts that matter visible in the log:
-    # the dtype must be float32 under mixed precision, and the per-rank parameter count must be the full count
-    # divided by the world size (an unsharded count means the FlatParameters were materialized on every rank).
-    if accelerator.is_main_process:
-        master_dtypes = {parameter.dtype for parameter in transformer.parameters()}
-        num_local_params = sum(parameter.numel() for parameter in transformer.parameters())
-        logger.info(
-            f"Master parameter dtype(s): {master_dtypes}, {num_local_params / 1e9:.2f} B parameters per rank "
-            f"over {accelerator.num_processes} process(es)."
-        )
+    transformer.to(device, dtype=weight_dtype)
+    real_score_transformer.to(device if not args.low_vram else "cpu", dtype=weight_dtype)
+    text_encoder.to(device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1521,17 +1521,25 @@ def main():
     train_generator = torch.Generator(device="cpu")
     if args.seed is not None:
         train_generator.manual_seed(args.seed)
-    # The t2v / fl2v draw of a mixed run gets its own generator, seeded per rank (mirroring `log_validation`) so the
-    # ranks of one global batch do not all land on the same conditioning and every step mixes the two.
-    mode_generator = torch.Generator(device="cpu")
-    if args.seed is not None:
-        mode_generator.manual_seed(args.seed + accelerator.process_index)
+
+    if args.low_vram:
+        text_encoder.to(device)
+    with torch.no_grad():
+        neg_prompt_embeds, neg_text_token_tags = encode_prompt(
+            text_encoder, tokenizer, processor, 
+            "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走", \
+            device=device, dtype=weight_dtype
+        )
+    if args.low_vram:
+        text_encoder.to("cpu")
+        torch.cuda.empty_cache()
 
     # Function for unwrapping if model was compiled with `torch.compile`.
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
         return model
+
 
     # ------------------------------------------------------------------ train loop
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1542,7 +1550,6 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
-    logger.info(f"  Video / audio loss weights = {args.video_loss_weight} / {args.audio_loss_weight}")
 
     global_step = 0
     first_epoch = 0
@@ -1578,78 +1585,11 @@ def main():
                 first_epoch = global_step // num_update_steps_per_epoch
             print(f"Load pkl from {pkl_path}. Get first_epoch = {first_epoch}.")
 
-            if zero_stage != 3 and not args.use_fsdp:
-                from safetensors.torch import load_file
-                state_dict = load_file(os.path.join(checkpoint_folder_path, "lora_diffusion_pytorch_model.safetensors"), device=str(accelerator.device))
-                if network is not None:
-                    m, u = accelerator.unwrap_model(network).load_state_dict(state_dict, strict=False)
-                else:
-                    m, u = accelerator.unwrap_model(transformer).load_state_dict(state_dict, strict=False)
-                print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-
-                optimizer_file_pt = os.path.join(checkpoint_folder_path, "optimizer.pt")
-                optimizer_file_bin = os.path.join(checkpoint_folder_path, "optimizer.bin")
-                optimizer_file_to_load = None
-
-                if os.path.exists(optimizer_file_pt):
-                    optimizer_file_to_load = optimizer_file_pt
-                elif os.path.exists(optimizer_file_bin):
-                    optimizer_file_to_load = optimizer_file_bin
-
-                if optimizer_file_to_load:
-                    try:
-                        accelerator.print(f"Loading optimizer state from {optimizer_file_to_load}")
-                        optimizer_state = torch.load(optimizer_file_to_load, map_location=accelerator.device)
-                        optimizer.load_state_dict(optimizer_state)
-                        accelerator.print("Optimizer state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load optimizer state from {optimizer_file_to_load}: {e}")
-
-                scheduler_file_pt = os.path.join(checkpoint_folder_path, "scheduler.pt")
-                scheduler_file_bin = os.path.join(checkpoint_folder_path, "scheduler.bin")
-                scheduler_file_to_load = None
-
-                if os.path.exists(scheduler_file_pt):
-                    scheduler_file_to_load = scheduler_file_pt
-                elif os.path.exists(scheduler_file_bin):
-                    scheduler_file_to_load = scheduler_file_bin
-
-                if scheduler_file_to_load:
-                    try:
-                        accelerator.print(f"Loading scheduler state from {scheduler_file_to_load}")
-                        scheduler_state = torch.load(scheduler_file_to_load, map_location=accelerator.device)
-                        lr_scheduler.load_state_dict(scheduler_state)
-                        accelerator.print("Scheduler state loaded successfully.")
-                    except Exception as e:
-                        accelerator.print(f"Failed to load scheduler state from {scheduler_file_to_load}: {e}")
-
-                if hasattr(accelerator, 'scaler') and accelerator.scaler is not None:
-                    scaler_file = os.path.join(checkpoint_folder_path, "scaler.pt")
-                    if os.path.exists(scaler_file):
-                        try:
-                            accelerator.print(f"Loading GradScaler state from {scaler_file}")
-                            scaler_state = torch.load(scaler_file, map_location=accelerator.device)
-                            accelerator.scaler.load_state_dict(scaler_state)
-                            accelerator.print("GradScaler state loaded successfully.")
-                        except Exception as e:
-                            accelerator.print(f"Failed to load GradScaler state: {e}")
-
-            else:
+            accelerator.print(f"Resuming from checkpoint {path}")
+            with restore_frozen_requires_grad(transformer, trainable_module_names, args.use_fsdp):
                 accelerator.load_state(checkpoint_folder_path)
-                accelerator.print("accelerator.load_state() completed for zero_stage 3.")
-
     else:
         initial_global_step = 0
-
-    # function for saving/removing
-    def save_model(ckpt_file, unwrapped_nw):
-        os.makedirs(args.output_dir, exist_ok=True)
-        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
-        if isinstance(unwrapped_nw, dict):
-            from safetensors.torch import save_file
-            save_file(unwrapped_nw, ckpt_file, metadata={"format": "pt"})
-            return ckpt_file
-        unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -1659,40 +1599,61 @@ def main():
     )
 
     for epoch in range(first_epoch, args.num_train_epochs):
-        train_loss = 0.0
-        train_video_loss = 0.0
-        train_audio_loss = 0.0
-        train_t2v_share = 0.0
+        train_cfg_loss = 0.0
+        train_video_cfg_loss = 0.0
+        train_audio_cfg_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
-            # Sanity check: save the first batch so a glance at output_dir/sanity_check confirms the data pipe.
+            # Sanity check: save the first batch so a glance at output_dir/sanity_check confirms the data pipe
+            # (target video *and* its paired control video, plus the paired waveform muxed into the target video).
             if epoch == first_epoch and step == 0:
-                pixel_values, texts = batch["pixel_values"].cpu(), batch["text"]
+                pixel_values, control_pixel_values, texts = batch["pixel_values"].cpu(), batch["control_pixel_values"].cpu(), batch["text"]
+                audios = batch["audio"].cpu()
                 os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
-                for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
+                for idx, (pixel_value, control_pixel_value, text) in enumerate(zip(pixel_values, control_pixel_values, texts)):
                     pixel_value = pixel_value[None].permute(0, 2, 1, 3, 4)
+                    control_pixel_value = control_pixel_value[None].permute(0, 2, 1, 3, 4)
                     gif_name = "-".join(text.replace("/", "").split()[:10]) if not text == "" else f"{global_step}-{idx}"
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=False)
+                    save_videos_grid(control_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-control.mp4", rescale=False)
+                    # Audio check: the collate slices the waveform onto the `num_frames / 24` span and rescales it
+                    # onto the batch timeline, so muxing it back into the target video exposes any span / alignment
+                    # breakage (drift, silent audio, wrong sample rate) before it surfaces as a latent mismatch.
+                    # The keep-dim wrap makes `audio[0]` inside the saver see the per-sample `(C, T)` waveform.
+                    save_videos_with_audio_grid(
+                        pixel_value, audios[idx : idx + 1],
+                        f"{args.output_dir}/sanity_check/{gif_name[:10]}-audio.mp4",
+                        fps=MINIMAX_H3_FPS,
+                        audio_sample_rate=audio_sr,
+                        rescale=False,
+                    )
+                    if args.enable_inpaint:
+                        mask_pixel_value = batch["mask_pixel_values"][idx].cpu()[None].permute(0, 2, 1, 3, 4)
+                        mask_value = batch["mask"][idx].cpu()[None].permute(0, 2, 1, 3, 4).repeat(1, 3, 1, 1, 1)
+                        save_videos_grid(mask_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask_pixel.mp4", rescale=False)
+                        save_videos_grid(mask_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask.mp4", rescale=False)
 
             with accelerator.accumulate(transformer):
                 # Batch-level training (bs=1): the packed-sequence layout (text tokens + condition + audio +
                 # video rows) is per-sample, so a batch larger than one would need a sample loop. With bs=1 the
                 # batch *is* the sample, and the encode / noise / forward / loss mirror
-                # `scripts/ltx2.3/train_lora.py` without a sample loop.
+                # `scripts/minimax_h3/train.py` without a sample loop.
                 pixel_values = batch["pixel_values"][0]
+                control_pixel_values = batch["control_pixel_values"][0]
                 text = batch["text"][0]
                 audio = batch["audio"][0]
+                if args.enable_inpaint:
+                    mask_pixel_values = batch["mask_pixel_values"][0]
+                    mask = batch["mask"][0]
                 # MiniMax-H3 has no fps input: its temporal rotary grid (`_temporal_position_grid`) and its audio
                 # latent grid (`audio_latent_num_frames`, 40 latents/s against 24 fps) are both hard-wired to 24 fps,
-                # unlike ltx2.3 which conditions on fps through `prepare_video_coords`. `batch["fps"]` cannot police
-                # that: the dataset floors it (`int(fps // stride)`), so the very common 23.976 fps arrives as 23 and
-                # is indistinguishable from a genuine 23 fps source. The audio latent count further down is the real
+                # and the control video is read on the same timeline. `batch["fps"]` cannot police that: the dataset
+                # floors it (`int(fps // stride)`), so the very common 23.976 fps arrives as 23 and is
+                # indistinguishable from a genuine 23 fps source. The audio latent count further down is the real
                 # gate — it measures the video / audio span mismatch directly, in the units the layout keys off.
 
                 # The 33 B transformer alone fills ~66 GB, so under `low_vram` it yields the GPU while the VAE and
-                # the conditioner encode, and moves back for the forward / backward. Under FSDP it stays put: a
-                # `.to()` on the wrapped model breaks the FlatParameter sharding (every rank ends up holding a full
-                # copy), and a sharded 33 B model is only ~10 GB per rank on 8 cards, so it does not need offloading.
+                # the conditioner encode, and moves back for the forward / backward.
                 if args.low_vram:
                     transformer.to("cpu")
                     torch.cuda.empty_cache()
@@ -1708,103 +1669,109 @@ def main():
                 # hands over `(F, C, H, W)` rows, the VAE wants `(B, C, F, H, W)`.
                 pixels = pixel_values.to(device).permute(1, 0, 2, 3)[None]
                 pixels = (pixels - pixel_mean) / pixel_std
+                control_pixels = control_pixel_values.to(device).permute(1, 0, 2, 3)[None]
+                control_pixels = (control_pixels - pixel_mean) / pixel_std
+                if args.enable_inpaint:
+                    mask_pixels = mask_pixel_values.to(device).permute(1, 0, 2, 3)[None]
+                    mask_pixels = (mask_pixels - pixel_mean) / pixel_std
 
-                # Under `low_vram`, load both VAEs at once and keep them on GPU for the video, keyframe and
-                # audio encodes in one session — the video VAE was previously loaded twice (once for video
-                # encode, once for keyframe encode) and the audio VAE was loaded separately.
+                # Under `low_vram`, load both VAEs at once and keep them on GPU for the video, control and audio
+                # encodes in one session.
                 if args.low_vram:
                     vae.to(device)
                     audio_vae.to(device)
 
-                # Encode in `vae_mini_batch` mini batches, mirroring `_batch_encode_vae` in ltx2.3.
-                def _batch_encode_vae(pixels):
+                # Encode in `vae_mini_batch` mini batches, mirroring `_batch_encode_vae` in train.py. The target
+                # latents are sampled; the control latents take the posterior mode (deterministic conditioning,
+                # mirroring the pipeline's keyframe recipe).
+                def _batch_encode_vae(pixels, posterior_mode=False):
                     bs = args.vae_mini_batch
                     new_pixel_values = []
                     for i in range(0, pixels.shape[0], bs):
                         pixels_bs = pixels[i : i + bs]
                         posterior = vae.encode(pixels_bs.float()).latent_dist
-                        latents_bs = posterior.sample()
+                        latents_bs = posterior.mode() if posterior_mode else posterior.sample()
                         new_pixel_values.append((latents_bs.float() - latents_mean) / latents_std)
                     return torch.cat(new_pixel_values, dim=0)
 
                 with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
                     target_latents = _batch_encode_vae(pixels)
+                    control_latents = _batch_encode_vae(control_pixels, posterior_mode=True)
+                    if args.enable_inpaint:
+                        # Inpaint latents: the masked video takes the posterior mode like the control video
+                        # (deterministic conditioning).
+                        mask_latents = _batch_encode_vae(mask_pixels, posterior_mode=True)
                 if args.low_vram:
                     target_latents = target_latents.cpu()
+                    control_latents = control_latents.cpu()
+                    if args.enable_inpaint:
+                        mask_latents = mask_latents.cpu()
 
-                # The fl2v keyframe is the sample's own first frame, prepared onto the canvas exactly like
-                # inference does (stretch: it is the geometry anchor). The keyframe image is a CPU-side PIL
-                # conversion, so the video VAE stays idle on GPU for a moment under `low_vram`.
-                # `--t2v_ratio` drops the keyframe on that fraction of steps: without the keyframe the presentation
-                # loses its vision block and the packed sequence loses its condition rows, which is exactly a t2v
-                # step, so one run can hold on to both conditionings instead of drifting to fl2v alone.
-                keyframe, keyframe_anchors = None, ()
-                step_mode = args.train_mode
-                references = None
-                if step_mode == "fl2v" and args.t2v_ratio > 0.0:
-                    if float(torch.rand((), generator=mode_generator)) < args.t2v_ratio:
-                        step_mode = "t2v"
-                elif step_mode == "ref2va":
-                    # The dataset hands over `MiniMaxH3Reference` objects; a sample without references or with an
-                    # unparseable entry falls back to t2v so the retry of `__getitem__` does not have to.
-                    raw_refs = batch.get("references", [None])[0]
-                    if raw_refs:
-                        references = list(raw_refs)
-                        references = check_ref2va_references(references)
-                        references = normalize_ref2va_references(references, num_frames, audio_sr)
-                    else:
-                        step_mode = "t2v"
-                if step_mode == "fl2v":
-                    keyframe = Image.fromarray(
-                        (pixel_values[0].cpu().permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
-                    ).convert("RGB")
-                    keyframe = prepare_keyframe_image(keyframe, height, width, stretch=True)
-                    keyframe_anchors = ("first",)
+                # Control rows: patchified exactly like the target video. 10% of the batches zero them, keeping the
+                # unconditional path trainable for classifier-free guidance (mirrors z_image_fun/train_control.py).
+                control_rows = patchify_video_latents(control_latents, patch_size)
+                if rng is None:
+                    control_keep = np.random.choice([0, 1], p=[0.10, 0.90])
+                else:
+                    control_keep = rng.choice([0, 1], p=[0.10, 0.90])
+                if not control_keep:
+                    control_rows = torch.zeros_like(control_rows)
 
-                # The conditioner reads `hidden_states[50]` of Qwen3-VL; the presentation of an `fl2v` request
-                # carries the keyframe's vision block ahead of the prompt, tagged as video rows. An FSDP-sharded
-                # text encoder tolerates symmetric `.to` moves, so it is brought on-device right before the encode
-                # and back to CPU afterwards.
+                if args.enable_inpaint:
+                    # The mask handling mirrors WanFun's inpaint recipe (scripts/wan2.1_fun/train_lora.py, the
+                    # `mask = resize_mask(1 - mask, latents)` block): the visibility map 1 - mask trilinearly
+                    # resized onto the latent grid, and the VAE-encoded masked video behind it. Wan's step packs
+                    # 4 pixel frames into every latent frame before the resize and splits the first frame off, both
+                    # keyed off its causal 4x VAE layout (latent frames = (F - 1) / 4 + 1, where the causal
+                    # convolution makes the first pixel frame fill the first latent frame alone); MiniMax-H3's VAE
+                    # runs a 17 -> 5 chunked time grid (frames 17n + 5, latents 5n + 2) whose first chunk encodes
+                    # 5 frames into 2 latents, so neither packing nor a first-frame split yields its layout and the
+                    # visibility map goes straight from pixel frames to the latent grid. The inpaint rows stay
+                    # controlnet-style — appended to the control rows along the channel columns.
+                    mask_5d = rearrange(mask, "f c h w -> c f h w")[None]
+                    mask_condition = F.interpolate(
+                        1 - mask_5d, size=mask_latents.size()[2:], mode="trilinear", align_corners=False,
+                    )
+
+                    # Encode inpaint latents.
+                    mask_condition_rows = patchify_video_latents(mask_condition, patch_size)
+                    mask_latent_rows = patchify_video_latents(mask_latents, patch_size)
+                    inpaint_rows = torch.cat(
+                        [
+                            mask_condition_rows.to(control_rows.device),
+                            mask_latent_rows.to(control_rows.device),
+                        ],
+                        dim=-1,
+                    )
+                    # A fully masked clip carries nothing of the original, so 90% of those batches drop the whole
+                    # inpaint info (WanFun's `t2v_flag` zeroes the concatenated mask map and masked-video latents
+                    # alike): the all-zero mask channels then read as pure generation, and the same all-zero layout
+                    # is what validation pads in.
+                    if bool((mask == 1).all()):
+                        if rng is None:
+                            mask_keep = np.random.choice([0, 1], p=[0.90, 0.10])
+                        else:
+                            mask_keep = rng.choice([0, 1], p=[0.90, 0.10])
+                        if not mask_keep:
+                            inpaint_rows = torch.zeros_like(inpaint_rows)
+                    control_rows = torch.cat([control_rows, inpaint_rows], dim=-1)
+
+                # The conditioner reads `hidden_states[50]` of Qwen3-VL; control training conditions on the
+                # verbatim prompt alone (no keyframe vision blocks). An FSDP-sharded text encoder tolerates
+                # symmetric `.to` moves, so it is brought on-device right before the encode and back to CPU
+                # afterwards.
                 if args.low_vram:
                     text_encoder.to(device)
                 with torch.no_grad():
-                    if step_mode == "ref2va" and references is not None:
-                        prompt_embeds, text_token_tags = encode_prompt(
-                            text_encoder, tokenizer, processor,
-                            text, references=references, device=device, dtype=weight_dtype,
-                        )
-                    else:
-                        prompt_embeds, text_token_tags = encode_prompt(
-                            text_encoder, tokenizer, processor,
-                            text, None if keyframe is None else [keyframe], device=device, dtype=weight_dtype
-                        )
+                    prompt_embeds, text_token_tags = encode_prompt(
+                        text_encoder, tokenizer, processor,
+                        text, device=device, dtype=weight_dtype
+                    )
                 if args.low_vram:
                     text_encoder.to("cpu")
                     torch.cuda.empty_cache()
+                if args.low_vram:
                     prompt_embeds = prompt_embeds.cpu()
-
-                # Conditioning rows: the keyframe latent, sampled under the released seed-42 / float16-rounding
-                # contract and noise-augmented to MiniMax-H3's conditioning level. The video VAE is still on GPU
-                # from the video encode above under `low_vram` — no second onload needed.
-                condition_rows = None
-                ref_condition_latents = None
-                ref_audio_condition_latents = []
-                if keyframe is not None:
-                    with torch.no_grad():
-                        condition_rows = encode_keyframes(vae, patch_size, [keyframe], device=device)
-                    if args.low_vram:
-                        condition_rows = condition_rows.cpu()
-                elif step_mode == "ref2va" and references is not None:
-                    # Encode the references: images and videos through the video VAE, soundtracks through the audio
-                    # VAE. The video VAE is still on GPU from the target encode under `low_vram`.
-                    with torch.no_grad():
-                        ref_condition_latents, ref_audio_condition_latents = encode_reference_latents_for_training(
-                            vae, audio_vae, references, patch_size, device,
-                            audio_latent_channels=audio_channels,
-                        )
-                    if args.low_vram:
-                        ref_condition_latents = [c.cpu() for c in ref_condition_latents]
-                        ref_audio_condition_latents = [a.cpu() for a in ref_audio_condition_latents]
 
                 # Audio latents: the waveform autoencoder is mono, stereo carried as two batch items; the dataset
                 # hands over the stereo waveform on the inference-aligned route (a mono clip arrives upmixed),
@@ -1854,15 +1821,12 @@ def main():
                     transformer.to(device)
                     # Move encoded latents back to GPU for noising and forward.
                     target_latents = target_latents.to(device)
+                    control_rows = control_rows.to(device)
                     prompt_embeds = prompt_embeds.to(device)
                     audio_rows = audio_rows.to(device)
-                    if ref_condition_latents is not None:
-                        ref_condition_latents = [c.to(device) for c in ref_condition_latents]
-                    if ref_audio_condition_latents:
-                        ref_audio_condition_latents = [a.to(device) for a in ref_audio_condition_latents]
 
                 # ---- noising ----
-                # 1. Rows: target `x0`, the noise, the noised `x_t` and the regression target `x0 - noise`.
+                # 1. Rows: target `x0`, the noise and the noised `x_t` both the student and the teacher score.
                 x0_rows = patchify_video_latents(target_latents, patch_size)
                 noise = torch.randn(
                     target_latents.shape, generator=train_generator, device="cpu", dtype=torch.float32
@@ -1885,7 +1849,6 @@ def main():
                     sigma = torch.rand((), generator=train_generator, device="cpu", dtype=torch.float32).to(device)
                 t = 1.0 - shifted_sigma(video_shift, sigma)
                 xt_rows = t * x0_rows + (1.0 - t) * noise_rows
-                target_rows = x0_rows - noise_rows
 
                 # 2b. Audio noising on the audio schedule (same sigma, audio shift); audio has no condition rows.
                 audio_x0_rows = audio_rows
@@ -1894,74 +1857,26 @@ def main():
                 ).to(device)
                 audio_t = 1.0 - shifted_sigma(audio_shift, sigma)
                 audio_xt_rows = audio_t * audio_x0_rows + (1.0 - audio_t) * audio_noise
-                audio_target_rows = audio_x0_rows - audio_noise
 
-                # 3. Prepend the conditioning rows, noise-augmented and pinned at their augmentation level.
-                num_condition_rows = 0
-                num_condition_audio_rows = 0
-                condition_timestep = float(t)
-                if condition_rows is not None:
-                    condition_rows = condition_rows.to(device)
-                    condition_noise = keyframe_condition_noise(
-                        ((1, latent_height, latent_width),),
-                        patch_size,
-                        latent_channels,
-                        generator=train_generator,
-                        device=device,
-                    )
-                    condition_rows = scheduler.scale_noise(
-                        condition_rows, MINIMAX_H3_KEYFRAME_NOISE_AUG, condition_noise
-                    )
-                    xt_rows = torch.cat([condition_rows, xt_rows])
-                    num_condition_rows = condition_rows.shape[0]
-                    condition_timestep = max(float(t), MINIMAX_H3_KEYFRAME_NOISE_AUG)
-                elif ref_condition_latents is not None:
-                    # ref2va: noise the visual conditions to t=0.999 and prepend; audio conditions ride clean
-                    # at t=0, packed with the target audio rows.
-                    condition_rows = ref2va_condition_rows(
-                        scheduler, ref_condition_latents, patch_size,
-                        generator=train_generator, device=device,
-                    )
-                    xt_rows = torch.cat([condition_rows, xt_rows])
-                    num_condition_rows = condition_rows.shape[0]
-                    condition_timestep = max(float(t), MINIMAX_H3_KEYFRAME_NOISE_AUG)
-                    if ref_audio_condition_latents:
-                        audio_condition_rows = torch.cat([
-                            rows.to(device) for rows in ref_audio_condition_latents
-                        ])
-                        audio_xt_rows = torch.cat([audio_condition_rows, audio_xt_rows])
-                        num_condition_audio_rows = audio_condition_rows.shape[0]
-
-                # 4. The packed layout and its per-row timestep plan; audio rows are packed alongside the video
-                # rows and share one forward pass.
-                if step_mode == "ref2va" and references is not None:
-                    layout = build_ref2va_packed_sequence(
-                        text_token_tags,
-                        references,
-                        ref_condition_latents,
-                        ref_audio_condition_latents,
-                        num_latent_frames,
-                        latent_height,
-                        latent_width,
-                        num_audio_latents,
-                        patch_size,
-                    )
-                else:
-                    layout = build_packed_sequence(
-                        text_token_tags,
-                        num_latent_frames,
-                        latent_height,
-                        latent_width,
-                        num_audio_latents,
-                        patch_size,
-                        keyframe_anchors,
-                    )
+                # 3. The packed layout and its per-row timestep plan; audio rows are packed alongside the video
+                # rows and share one forward pass. Control training runs the t2v layout (no keyframe rows): the
+                # control signal enters through the transformer's side branch instead of conditioning rows.
+                layout = build_packed_sequence(
+                    text_token_tags,
+                    num_latent_frames,
+                    latent_height,
+                    latent_width,
+                    num_audio_latents,
+                    patch_size,
+                    (),
+                )
                 unique_timesteps, timestep_indices = build_row_timesteps(
-                    layout, float(t), float(audio_t), condition_timestep, 1.0
+                    layout, float(t), float(audio_t), float(t), 1.0
                 )
 
-                # 5. One forward over the packed sequence. The transformer aligns every input with the dtype of
-                # its projection itself (the patch projections are float32 in the checkpoint), so no autocast.
+                # 4. One student forward over the packed sequence, carrying the clean control rows into the
+                # zero-initialised side branch. The transformer aligns every input with the dtype of its
+                # projection itself (the patch projections are float32 in the checkpoint), so no autocast.
                 video_output, audio_output = transformer(
                     hidden_states=xt_rows[None],
                     audio_hidden_states=audio_xt_rows[None],
@@ -1973,70 +1888,167 @@ def main():
                     video_indices=layout.video_indices.to(device),
                     audio_indices=layout.audio_indices.to(device),
                     text_indices=layout.text_indices.to(device),
+                    control_rows=control_rows[None],
                     return_dict=False,
                 )
 
-                # 6. MSE on the generated rows alone, in float32: the conditioning rows are re-imposed by
-                # construction and never supervised. The two losses are weighted by `--video_loss_weight` /
-                # `--audio_loss_weight` (0.5 / 0.5 by default, the split of `scripts/ltx2.3/train_lora.py`). Note
-                # that the two `mean` reductions are taken over very different row counts (~5e5 video rows against
-                # ~5e3 audio rows), so an equal weight gives every audio element roughly a hundred times the
-                # gradient of a video element; the two terms are logged separately below so a run that is being
-                # dragged by one modality is visible instead of hidden inside `train_loss`.
-                video_loss = F.mse_loss(
-                    video_output[0, num_condition_rows:].float(), target_rows.float(), reduction="mean"
+                # 5. The frozen teacher (the real score) scores the same noised rows twice — once on the prompt,
+                # once on the empty negative prompt — and the two predictions combine to the classifier-free-guided
+                # target the student regresses onto, mirroring `scripts/flux2_fun/train_control_distill.py`. The
+                # negative prompt tokenizes to another text length, so its packed layout and row-timestep plan are
+                # its own.
+                neg_layout = build_packed_sequence(
+                    neg_text_token_tags,
+                    num_latent_frames,
+                    latent_height,
+                    latent_width,
+                    num_audio_latents,
+                    patch_size,
+                    (),
                 )
-                audio_loss = F.mse_loss(
-                    audio_output[0, num_condition_audio_rows:].float(), audio_target_rows.float(), reduction="mean"
+                neg_unique_timesteps, neg_timestep_indices = build_row_timesteps(
+                    neg_layout, float(t), float(audio_t), float(t), 1.0
                 )
-                loss = args.video_loss_weight * video_loss + args.audio_loss_weight * audio_loss
+                if args.low_vram:
+                    real_score_transformer.to(device)
+                with torch.no_grad():
+                    # Conditional prediction.
+                    teacher_video_cond, teacher_audio_cond = real_score_transformer(
+                        hidden_states=xt_rows[None],
+                        audio_hidden_states=audio_xt_rows[None],
+                        encoder_hidden_states=prompt_embeds,
+                        timestep=unique_timesteps.to(device),
+                        timestep_indices=timestep_indices.to(device),
+                        token_tags=layout.token_tags.to(device),
+                        position_ids=layout.position_ids.to(device),
+                        video_indices=layout.video_indices.to(device),
+                        audio_indices=layout.audio_indices.to(device),
+                        text_indices=layout.text_indices.to(device),
+                        control_rows=control_rows[None],
+                        return_dict=False,
+                    )
+                    # Unconditional prediction.
+                    teacher_video_uncond, teacher_audio_uncond = real_score_transformer(
+                        hidden_states=xt_rows[None],
+                        audio_hidden_states=audio_xt_rows[None],
+                        encoder_hidden_states=neg_prompt_embeds,
+                        timestep=neg_unique_timesteps.to(device),
+                        timestep_indices=neg_timestep_indices.to(device),
+                        token_tags=neg_layout.token_tags.to(device),
+                        position_ids=neg_layout.position_ids.to(device),
+                        video_indices=neg_layout.video_indices.to(device),
+                        audio_indices=neg_layout.audio_indices.to(device),
+                        text_indices=neg_layout.text_indices.to(device),
+                        control_rows=control_rows[None],
+                        return_dict=False,
+                    )
+                if args.low_vram:
+                    real_score_transformer.to("cpu")
+                    torch.cuda.empty_cache()
+
+                # Apply CFG.
+                teacher_video_cfg = teacher_video_uncond + (
+                    teacher_video_cond - teacher_video_uncond
+                ) * args.real_guidance_scale
+                teacher_audio_cfg = teacher_audio_uncond + (
+                    teacher_audio_cond - teacher_audio_uncond
+                ) * args.real_guidance_scale
+
+                # 6. CFG distillation loss on the generated rows alone, in float32: the student's prediction
+                # regresses onto the teacher's CFG prediction. Video and audio losses are weighted equally (mirrors
+                # `scripts/minimax_h3/train.py`). Note that the two `mean` reductions are taken over very different
+                # row counts (~5e5 video rows against ~5e3 audio rows), so an equal weight gives every audio element
+                # roughly a hundred times the gradient of a video element; the two terms are logged separately below
+                # so a run dragged by one modality is visible instead of hidden in `train_cfg_loss`.
+                video_cfg_loss = F.mse_loss(
+                    video_output[0].float(), teacher_video_cfg[0].float(), reduction="mean"
+                )
+                audio_cfg_loss = F.mse_loss(
+                    audio_output[0].float(), teacher_audio_cfg[0].float(), reduction="mean"
+                )
+                loss = 0.5 * video_cfg_loss + 0.5 * audio_cfg_loss
 
                 # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-                train_loss += avg_loss.item() / args.gradient_accumulation_steps
-                train_video_loss += (
-                    accelerator.gather(video_loss.detach().repeat(args.train_batch_size)).mean().item()
+                avg_cfg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
+                train_cfg_loss += avg_cfg_loss.item() / args.gradient_accumulation_steps
+                train_video_cfg_loss += (
+                    accelerator.gather(video_cfg_loss.detach().repeat(args.train_batch_size)).mean().item()
                     / args.gradient_accumulation_steps
                 )
-                train_audio_loss += (
-                    accelerator.gather(audio_loss.detach().repeat(args.train_batch_size)).mean().item()
-                    / args.gradient_accumulation_steps
-                )
-                # The realized share of t2v steps across all ranks, so the log shows what the run actually mixed
-                # rather than what was requested.
-                train_t2v_share += (
-                    accelerator.gather(
-                        torch.full((args.train_batch_size,), float(step_mode == "t2v"), device=accelerator.device)
-                    ).mean().item()
+                train_audio_cfg_loss += (
+                    accelerator.gather(audio_cfg_loss.detach().repeat(args.train_batch_size)).mean().item()
                     / args.gradient_accumulation_steps
                 )
 
                 # Backpropagate
+                if global_step == initial_global_step:
+                    print(
+                        f"[mem probe] rank={accelerator.process_index} before-backward "
+                        f"mem={torch.cuda.memory_allocated() / 1e9:.1f}GB",
+                        flush=True,
+                    )
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                    if not args.use_deepspeed and not args.use_fsdp:
+                        trainable_params_grads = [p.grad for p in trainable_params if p.grad is not None]
+                        trainable_params_total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in trainable_params_grads]), 2)
+                        max_grad_norm = linear_decay(args.max_grad_norm * args.initial_grad_norm_ratio, args.max_grad_norm, args.abnormal_norm_clip_start, global_step)
+                        if trainable_params_total_norm / max_grad_norm > 5 and global_step > args.abnormal_norm_clip_start:
+                            actual_max_grad_norm = max_grad_norm / min((trainable_params_total_norm / max_grad_norm), 10)
+                        else:
+                            actual_max_grad_norm = max_grad_norm
+                    else:
+                        actual_max_grad_norm = args.max_grad_norm
+
+                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
+                        if trainable_params_total_norm > 1 and global_step > args.abnormal_norm_clip_start:
+                            for name, param in transformer.named_parameters():
+                                if param.requires_grad:
+                                    writer.add_scalar(f'gradients/before_clip_norm/{name}', param.grad.norm(), global_step=global_step)
+
+                    if getattr(accelerator, "is_fsdp2", False):
+                        # `accelerator.clip_grad_norm_` compares the passed parameters against `model.parameters()`
+                        # with `==`, which dispatches `aten.eq` on the FSDP2 DTensor parameters and crashes; the
+                        # FSDP2 branch of that check would call the same vanilla clip anyway.
+                        norm_sum = torch.nn.utils.clip_grad_norm_(trainable_params, actual_max_grad_norm)
+                    else:
+                        norm_sum = accelerator.clip_grad_norm_(trainable_params, actual_max_grad_norm)
+                    if not args.use_deepspeed and not args.use_fsdp and args.report_model_info and accelerator.is_main_process:
+                        writer.add_scalar(f'gradients/norm_sum', norm_sum, global_step=global_step)
+                        writer.add_scalar(f'gradients/actual_max_grad_norm', actual_max_grad_norm, global_step=global_step)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                del target_latents, x0_rows, noise_rows, xt_rows, layout, video_output, audio_output
+                if args.use_fsdp and accelerator.sync_gradients:
+                    # The frozen parameters keep a gradient of their own under the uniform `requires_grad` above and
+                    # the optimizer does not own them, so clear them here: FSDP folds a leftover `.grad` into the
+                    # next backward's accumulation (`prepare_gradient_for_backward`) instead of overwriting it. Gated
+                    # on `sync_gradients` like `AcceleratedOptimizer.zero_grad`, since `Module.zero_grad` would
+                    # otherwise drop the trainable parameters' partial sum mid-accumulation.
+                    transformer.zero_grad(set_to_none=True)
+                del target_latents, control_latents, control_rows, x0_rows, noise_rows, xt_rows, layout, video_output, audio_output
+                del teacher_video_cond, teacher_audio_cond, teacher_video_uncond, teacher_audio_uncond
+                del teacher_video_cfg, teacher_audio_cfg, neg_layout
+                if args.enable_inpaint:
+                    del mask_pixels, mask_latents, mask_condition_rows, mask_latent_rows, inpaint_rows
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
+                if args.use_ema:
+                    ema_transformer.step(transformer.parameters())
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log(
                     {
-                        "train_loss": train_loss,
-                        "video_loss": train_video_loss,
-                        "audio_loss": train_audio_loss,
-                        "t2v_share": train_t2v_share,
+                        "train_cfg_loss": train_cfg_loss,
+                        "video_cfg_loss": train_video_cfg_loss,
+                        "audio_cfg_loss": train_audio_cfg_loss,
                     },
                     step=global_step,
                 )
-                train_loss = 0.0
-                train_video_loss = 0.0
-                train_audio_loss = 0.0
-                train_t2v_share = 0.0
+                train_cfg_loss = 0.0
+                train_video_cfg_loss = 0.0
+                train_audio_cfg_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
@@ -2059,73 +2071,65 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
+
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            if args.use_peft_lora:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer))
-                                save_model(safetensor_save_path, network_state_dict)
-
-                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
-                            else:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        with restore_frozen_requires_grad(transformer, trainable_module_names, args.use_fsdp):
+                            accelerator.save_state(save_path)
+                        logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
+                    if args.use_ema:
+                        # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
+                        ema_transformer.store(transformer.parameters())
+                        ema_transformer.copy_to(transformer.parameters())
                     log_validation(
                         vae, audio_vae, text_encoder, tokenizer, processor, transformer,
                         scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
                     )
+                    if args.use_ema:
+                        # Switch back to the original transformer parameters.
+                        ema_transformer.restore(transformer.parameters())
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"avg_cfg_loss": avg_cfg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
+            if args.use_ema:
+                # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
+                ema_transformer.store(transformer.parameters())
+                ema_transformer.copy_to(transformer.parameters())
             log_validation(
                 vae, audio_vae, text_encoder, tokenizer, processor, transformer,
                 scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
             )
+            if args.use_ema:
+                # Switch back to the original transformer parameters.
+                ema_transformer.restore(transformer.parameters())
 
         if global_step >= args.max_train_steps:
             break
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        transformer = unwrap_model(transformer)
+        if args.use_ema:
+            ema_transformer.copy_to(transformer.parameters())
+
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        if not args.save_state:
-            if args.use_peft_lora:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer))
-                save_model(safetensor_save_path, network_state_dict)
-
-                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
-            else:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
-        else:
-            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(accelerator_save_path)
-            logger.info(f"Saved state to {accelerator_save_path}")
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        with restore_frozen_requires_grad(transformer, trainable_module_names, args.use_fsdp):
+            accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()
 

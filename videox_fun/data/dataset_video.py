@@ -15,6 +15,19 @@ from func_timeout import FunctionTimedOut, func_timeout
 from PIL import Image
 from torch.utils.data.dataset import Dataset
 
+# torchaudio decodes video containers `load_audio` falls back to and resamples the waveform on the
+# MiniMax-H3 inference-aligned route. A build mismatched with the installed torch (a torchaudio < 2.6 against
+# torch >= 2.6) fails to import with an undefined-symbol error; keep training possible in that case by holding
+# `None` here and degrading at the use sites instead of crashing at module import.
+try:
+    import torchaudio
+except Exception as _error:
+    torchaudio = None
+    # Copy inside the block: Python deletes an `except ... as` target when the block exits.
+    _torchaudio_import_error = _error
+else:
+    _torchaudio_import_error = None
+
 try:
     from decord import VideoReader
 except ImportError:
@@ -24,28 +37,43 @@ from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, resize_frame)
 
 
-def load_audio(path, sr):
-    """Load a mono float32 waveform at `sr` from an audio *or* video file.
+def load_audio(path, sr, mono=True, native_sr=False, res_type=None):
+    """Load a float32 waveform from an audio *or* video file.
 
     librosa covers plain audio files, but its support for video containers (mp4/mov/...) rides on the audioread
     fallback which is deprecated and removed in librosa 1.0, so any failure falls back to torchaudio's ffmpeg
     backend, which decodes the audio stream of every container ffmpeg understands.
+
+    By default the waveform is mixed down to mono and resampled onto `sr` at load time, which is the behaviour
+    callers before the MiniMax-H3 alignment rely on. `native_sr=True` instead hands the samples over at the rate
+    the file carries them, unresampled, so the caller slices at that rate and resamples once afterwards — the
+    order MiniMax-H3's inference normalizes a reference soundtrack in (`normalize_reference_audio`) — and
+    `mono=False` keeps the channels the file holds instead of mixing them down. `res_type` picks the librosa
+    resampler used when resampling at load time (`None` keeps librosa's default).
     """
     try:
         # Video containers miss PySoundFile and ride the deprecated audioread fallback, whose per-file "PySoundFile
         # failed" notice would otherwise flood the dataloader workers; the torchaudio fallback below still covers
         # real decode failures.
+        load_kwargs = {} if res_type is None else {"res_type": res_type}
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", module="librosa")
             warnings.filterwarnings("ignore", message="PySoundFile failed")
-            waveform, _ = librosa.load(path, sr=sr)
-        return waveform, sr
+            waveform, sample_rate = librosa.load(path, sr=None if native_sr else sr, mono=mono, **load_kwargs)
+        return waveform, sample_rate
     except Exception:
-        import torchaudio
+        if torchaudio is None:
+            raise ImportError(
+                f"librosa could not decode {path} and the torchaudio ffmpeg fallback is unavailable "
+                f"({_torchaudio_import_error}); reinstall the torchaudio matching the installed torch."
+            )
         waveform, source_sr = torchaudio.load(path)
-        waveform = torchaudio.functional.resample(waveform, source_sr, sr)
-        # Channels -> mono, matching librosa.load's default mono mixdown.
-        return waveform.mean(0).numpy().astype(np.float32), sr
+        if not native_sr and source_sr != sr:
+            waveform = torchaudio.functional.resample(waveform, source_sr, sr)
+        if mono:
+            # Channels -> mono, matching librosa.load's default mono mixdown.
+            waveform = waveform.mean(0)
+        return waveform.numpy().astype(np.float32), source_sr if native_sr else sr
 
 
 class WebVid10M(Dataset):
@@ -271,7 +299,10 @@ class VideoSpeechDataset(Dataset):
         min_video_sample_n_frames=1,
         target_video_sample_fps=None,
         video_sample_fps_tolerance=0.5,
-        resample_to_target_fps=False,
+        audio_native_sr_resample=False,
+        audio_stereo=False,
+        audio_span_includes_last_frame=False,
+        enable_ref2va=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -305,9 +336,45 @@ class VideoSpeechDataset(Dataset):
         # `new_fps` floors it to 23 and loses that. `None` disables the check, which is the previous behaviour.
         self.target_video_sample_fps = target_video_sample_fps
         self.video_sample_fps_tolerance = video_sample_fps_tolerance
-        # Whether a clip at another rate is resampled onto the target instead of being skipped; see
-        # `VideoSpeechDataset.target_video_sample_fps` above for what that trades off.
-        self.resample_to_target_fps = resample_to_target_fps
+        # Whether the audio track is loaded on the MiniMax-H3 inference route: sliced at the file's native rate
+        # and resampled once afterwards with the pipeline's torchaudio pass (`normalize_reference_audio`), rather
+        # than resampled onto `audio_sr` at load time and sliced by index there. `audio_stereo` keeps the two
+        # channels a stereo file carries (a mono file is upmixed by repeating its channel) instead of mixing them
+        # down, and `audio_span_includes_last_frame` reads the clip's span as `num_frames / fps` seconds — the
+        # last frame holding its own duration — which is what the audio latent grid keys off. All three default
+        # off: the legacy behaviour is unchanged unless a training script asks for the alignment.
+        self.audio_native_sr_resample = audio_native_sr_resample
+        self.audio_stereo = audio_stereo
+        self.audio_span_includes_last_frame = audio_span_includes_last_frame
+        # When True, the dataset reads a `references` field from each annotation and decodes the
+        # image/video/audio references into `MiniMaxH3Reference` objects for ref2va training.
+        self.enable_ref2va = enable_ref2va
+        # Resampler the degraded librosa route uses once torchaudio turns out unavailable; decided in the check
+        # below, `None` keeps librosa's default.
+        self.audio_fallback_res_type = None
+        if self.audio_native_sr_resample and torchaudio is None:
+            # The aligned route resamples with torchaudio; an ABI mismatch (a torchaudio built against another
+            # torch) falls back to the legacy librosa route instead of blocking training. That route then keeps
+            # the channels the file carries (a mono file is upmixed by repeating its channel, as in
+            # `normalize_reference_audio`) and — where available — resamples with librosa's `kaiser_best`, the
+            # closest analogue of the pipeline's torchaudio pass, so the degraded audio stays as near to the
+            # inference signal as librosa can get.
+            print(
+                f"WARNING: audio_native_sr_resample needs a working torchaudio, but importing it failed "
+                f"({_torchaudio_import_error}); falling back to the legacy librosa audio route. Reinstall the "
+                "torchaudio matching the installed torch (e.g. torch 2.7.0 wants torchaudio 2.7.0) to restore the "
+                "inference-aligned audio."
+            )
+            self.audio_native_sr_resample = False
+            try:
+                # `kaiser_best` rides on resampy; probe it once here instead of letting every sample fail on it.
+                librosa.resample(np.zeros(2, dtype=np.float32), orig_sr=2, target_sr=1, res_type="kaiser_best")
+                self.audio_fallback_res_type = "kaiser_best"
+            except Exception as e:
+                print(
+                    f"WARNING: librosa's kaiser_best resampler is unavailable ({e}); the fallback audio keeps "
+                    "librosa's default resampler."
+                )
         self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
@@ -346,16 +413,13 @@ class VideoSpeechDataset(Dataset):
                 new_fps = int(fps // local_video_sample_stride)
 
             # Compared on the unrounded rate: 23.976 fps passes a tolerance around 24 while `new_fps` floors it to 23.
-            # `frame_step` is how many source frames one sampled frame advances, kept as a float so a target rate that
-            # does not divide the source rate is still hit exactly. For an integer stride it is the stride itself, so
-            # the arithmetic below is unchanged when no target rate is asked for.
+            # A clip outside the tolerance is skipped by `__getitem__`'s retry — there is no resampling fallback, as
+            # playing it on the fixed 24 fps timeline would slow the picture down and drag the soundtrack's pitch
+            # down with it. `frame_step` is how many source frames one sampled frame advances.
             frame_step = float(local_video_sample_stride)
             if self.target_video_sample_fps is not None:
                 effective_fps = fps / local_video_sample_stride
-                if self.resample_to_target_fps:
-                    frame_step = fps / self.target_video_sample_fps
-                    new_fps = int(round(self.target_video_sample_fps))
-                elif abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
+                if abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
                     raise ValueError(
                         f"Frame rate mismatch: {video_path} samples at {effective_fps:.3f} fps (source {fps:.3f} fps "
                         f"at stride {local_video_sample_stride}), outside "
@@ -442,37 +506,112 @@ class VideoSpeechDataset(Dataset):
         # Load and extract the corresponding audio segment
         # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
-        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, which on a resampled clip is
-        # exactly `(actual_n_frames - 1) / target_fps` seconds, so the waveform follows the frames onto the target
-        # timeline rather than the source one.
-        duration = (actual_n_frames - 1) * frame_step / fps
+        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, i.e.
+        # `(actual_n_frames - 1) * frame_step / fps` seconds on the source timeline. With
+        # `audio_span_includes_last_frame` the span carries one more
+        # frame period: MiniMax-H3's inference reads a soundtrack over `num_frames / fps` seconds — the last frame
+        # holds its own duration — and its audio latent grid (`round(L / fps * 40)`) keys off that convention.
+        frame_periods = actual_n_frames if self.audio_span_includes_last_frame else actual_n_frames - 1
+        duration = frame_periods * frame_step / fps
         end_time = start_time + duration
 
-        # Load entire audio and resample to target sample rate
-        audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
+        if not self.audio_native_sr_resample:
+            # Load entire audio and resample to target sample rate. `audio_stereo` only reaches this branch as the
+            # degraded substitute for the torchaudio route, where it keeps the channels the file carries and uses
+            # the closest librosa resampler to the pipeline's torchaudio pass; without it this is the
+            # pre-alignment behaviour: mono mixdown with librosa's default resampler.
+            audio_input, sample_rate = load_audio(
+                audio_path, self.audio_sr, mono=not self.audio_stereo,
+                res_type=self.audio_fallback_res_type if self.audio_stereo else None,
+            )
 
-        # Convert time to sample indices
-        start_sample = round(start_time * self.audio_sr)
-        target_len = round(duration * self.audio_sr)
-        end_sample = start_sample + target_len
+            # Convert time to sample indices
+            start_sample = round(start_time * self.audio_sr)
+            target_len = round(duration * self.audio_sr)
+            end_sample = start_sample + target_len
 
-        # Extract audio segment with validation
-        if start_sample >= len(audio_input):
-            raise ValueError(f"Audio file too short: {audio_path}")
+            if self.audio_stereo:
+                # A `(channels, num_samples)` block sliced on the sample axis; a mono load arrives 1-D.
+                audio_input = np.asarray(audio_input)
+                if audio_input.ndim == 1:
+                    audio_input = audio_input[None]
+                elif audio_input.shape[0] > audio_input.shape[1]:
+                    audio_input = audio_input.T
+                if start_sample >= audio_input.shape[-1]:
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                audio_segment = audio_input[..., start_sample:end_sample]
+                if audio_segment.shape[-1] < target_len:
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                waveform = torch.from_numpy(np.ascontiguousarray(audio_segment)).float()
+                if waveform.shape[0] == 1:
+                    # A mono soundtrack is upmixed by repeating its channel, as in `normalize_reference_audio`.
+                    waveform = waveform.expand(2, -1).contiguous()
+                elif waveform.shape[0] != 2:
+                    raise ValueError(
+                        f"MiniMax-H3 carries at most two audio channels, got {waveform.shape[0]} in {audio_path}."
+                    )
+                audio_segment = waveform
+                audio_span_samples, audio_span_rate = audio_segment.shape[-1], self.audio_sr
+            else:
+                # Extract audio segment with validation
+                if start_sample >= len(audio_input):
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                else:
+                    audio_segment = audio_input[start_sample:end_sample]
+                    if len(audio_segment) < target_len:
+                        raise ValueError(f"Audio file too short: {audio_path}")
+                audio_span_samples, audio_span_rate = len(audio_segment), self.audio_sr
         else:
-            audio_segment = audio_input[start_sample:end_sample]
-            if len(audio_segment) < target_len:
+            # The inference-aligned route, mirroring `normalize_reference_audio` in the MiniMax-H3 pipeline: the
+            # file is read at the rate it carries its samples at, the slice is taken there, and the segment is
+            # resampled once afterwards with the same torchaudio pass (kaiser_best) the pipeline uses.
+            audio_input, source_sr = load_audio(audio_path, self.audio_sr, mono=not self.audio_stereo, native_sr=True)
+            # A `(channels, num_samples)` layout whatever the decoder handed over; a mono decode arrives 1-D.
+            audio_input = np.asarray(audio_input)
+            if audio_input.ndim == 1:
+                audio_input = audio_input[None]
+            elif audio_input.shape[0] > audio_input.shape[1]:
+                audio_input = audio_input.T
+
+            start_sample = round(start_time * source_sr)
+            target_len = round(duration * source_sr)
+            end_sample = start_sample + target_len
+            if start_sample >= audio_input.shape[-1]:
                 raise ValueError(f"Audio file too short: {audio_path}")
+            audio_segment = audio_input[..., start_sample:min(end_sample, audio_input.shape[-1])]
+            audio_span_samples, audio_span_rate = audio_segment.shape[-1], source_sr
+            if audio_segment.shape[-1] < target_len:
+                # A soundtrack that ends with the clip's last frame lacks up to one frame period of tail; pad it
+                # here rather than retrying forever. Anything short beyond that is a genuinely shorter file.
+                shortfall = target_len - audio_segment.shape[-1]
+                if shortfall > round(frame_step / fps * source_sr):
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                audio_segment = np.pad(audio_segment, [(0, 0)] * (audio_segment.ndim - 1) + [(0, shortfall)])
+
+            waveform = torch.from_numpy(np.ascontiguousarray(audio_segment)).float()
+            if source_sr != self.audio_sr:
+                waveform = torchaudio.transforms.Resample(source_sr, self.audio_sr)(waveform)
+            if self.audio_stereo:
+                if waveform.shape[0] == 1:
+                    # A mono soundtrack is upmixed by repeating its channel, as in `normalize_reference_audio`.
+                    waveform = waveform.expand(2, -1).contiguous()
+                elif waveform.shape[0] != 2:
+                    raise ValueError(
+                        f"MiniMax-H3 carries at most two audio channels, got {waveform.shape[0]} in {audio_path}."
+                    )
+            else:
+                waveform = waveform[0]
+            audio_segment, sample_rate = waveform, self.audio_sr
 
         # The sliced waveform must cover the same real-time span that the sampled frames play on the target
-        # timeline: `(actual_n_frames - 1) / target_fps` seconds. A container whose metadata fps disagrees with its
-        # real frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field
-        # alone, which the flooring above corrupts further — and surfaces much later as an audio-latent window
-        # failure in the training loop. Raise here so the retry of `__getitem__` draws another sample. The
-        # tolerance is one frame period plus rounding slack for the waveform-to-latent encoder.
+        # timeline: `frame_periods / target_fps` seconds. A container whose metadata fps disagrees with its real
+        # frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field alone,
+        # which the flooring above corrupts further — and surfaces much later as an audio-latent window failure
+        # in the training loop. Raise here so the retry of `__getitem__` draws another sample. The tolerance is
+        # one frame period plus rounding slack for the waveform-to-latent encoder.
         if self.target_video_sample_fps is not None:
-            target_span = (actual_n_frames - 1) / self.target_video_sample_fps
-            audio_span = len(audio_segment) / self.audio_sr
+            target_span = frame_periods / self.target_video_sample_fps
+            audio_span = audio_span_samples / audio_span_rate
             if abs(audio_span - target_span) > 1.0 / self.target_video_sample_fps + 0.03:
                 raise ValueError(
                     f"Audio span mismatch: {video_path} plays {target_span:.3f}s on the "
@@ -485,6 +624,58 @@ class VideoSpeechDataset(Dataset):
             text = ''
 
         return pixel_values, motion_pixel_values, text, audio_segment, sample_rate, new_fps
+
+    def _load_references(self, data_info):
+        r"""Decode the `references` field of an annotation into `MiniMaxH3Reference` objects.
+
+        Expected format in the annotation JSON:
+
+        ```json
+        {
+            "references": [
+                {"type": "image", "path": "path/to/image.jpg"},
+                {"type": "video", "path": "path/to/video.mp4"},
+                {"type": "audio", "path": "path/to/audio.wav"}
+            ]
+        }
+        ```
+
+        Video references retain their container frame rate and soundtrack; audio and image references carry
+        their own rates. The training loop resamples everything onto MiniMax-H3's fixed 24 fps / audio-VAE
+        sample rate with the same utilities the inference pipeline uses.
+        """
+        if not self.enable_ref2va:
+            return None
+        ref_infos = data_info.get("references")
+        if not ref_infos:
+            return None
+
+        # Delayed import to avoid a circular dependency between the data and pipeline modules.
+        from videox_fun.pipeline.pipeline_minimax_h3 import (
+            MiniMaxH3AudioReference,
+            MiniMaxH3ImageReference,
+            MiniMaxH3VideoReference,
+        )
+
+        references = []
+        for entry in ref_infos:
+            ref_type = entry.get("type")
+            ref_path = entry.get("path")
+            if ref_path is None:
+                raise ValueError(f"A reference entry must have a `path`, got {entry}.")
+            if self.data_root is not None and not os.path.isabs(ref_path):
+                ref_path = os.path.join(self.data_root, ref_path)
+            if ref_type == "image":
+                references.append(MiniMaxH3ImageReference.from_file(ref_path))
+            elif ref_type == "video":
+                references.append(MiniMaxH3VideoReference.from_file(ref_path))
+            elif ref_type == "audio":
+                references.append(MiniMaxH3AudioReference.from_file(ref_path))
+            else:
+                raise ValueError(
+                    f"Unsupported reference type {ref_type!r}; expected 'image', 'video' or 'audio'."
+                )
+        return references
 
     def __len__(self):
         return self.length
@@ -499,11 +690,15 @@ class VideoSpeechDataset(Dataset):
                 sample["pixel_values"] = pixel_values
                 sample["motion_pixel_values"] = motion_pixel_values
                 sample["text"] = text
-                sample["audio"] = torch.from_numpy(audio).float()
+                # The inference-aligned audio route hands over a tensor; the legacy route a numpy waveform.
+                sample["audio"] = audio if torch.is_tensor(audio) else torch.from_numpy(audio).float()
                 sample["sample_rate"] = sample_rate
                 sample["fps"] = fps
                 sample["idx"] = idx
-                
+
+                if self.enable_ref2va:
+                    sample["references"] = self._load_references(data_info)
+
                 if self.return_file_name:
                     sample["file_name"] = os.path.basename(data_info['file_path'])
 
@@ -547,7 +742,9 @@ class VideoSpeechControlDataset(Dataset):
         min_video_sample_n_frames=1,
         target_video_sample_fps=None,
         video_sample_fps_tolerance=0.5,
-        resample_to_target_fps=False,
+        audio_native_sr_resample=False,
+        audio_stereo=False,
+        audio_span_includes_last_frame=False,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -573,9 +770,38 @@ class VideoSpeechControlDataset(Dataset):
         # Frame rate the sampled clip has to land on; see `VideoSpeechDataset` for the rationale.
         self.target_video_sample_fps = target_video_sample_fps
         self.video_sample_fps_tolerance = video_sample_fps_tolerance
-        # Whether a clip at another rate is resampled onto the target instead of being skipped; see
-        # `VideoSpeechDataset.target_video_sample_fps` above for what that trades off.
-        self.resample_to_target_fps = resample_to_target_fps
+        # Whether the audio track is loaded on the MiniMax-H3 inference route; see `VideoSpeechDataset` for the
+        # rationale. All three default off: the legacy behaviour is unchanged unless a training script asks for
+        # the alignment.
+        self.audio_native_sr_resample = audio_native_sr_resample
+        self.audio_stereo = audio_stereo
+        self.audio_span_includes_last_frame = audio_span_includes_last_frame
+        # Resampler the degraded librosa route uses once torchaudio turns out unavailable; decided in the check
+        # below, `None` keeps librosa's default.
+        self.audio_fallback_res_type = None
+        if self.audio_native_sr_resample and torchaudio is None:
+            # The aligned route resamples with torchaudio; an ABI mismatch (a torchaudio built against another
+            # torch) falls back to the legacy librosa route instead of blocking training. That route then keeps
+            # the channels the file carries (a mono file is upmixed by repeating its channel, as in
+            # `normalize_reference_audio`) and — where available — resamples with librosa's `kaiser_best`, the
+            # closest analogue of the pipeline's torchaudio pass, so the degraded audio stays as near to the
+            # inference signal as librosa can get.
+            print(
+                f"WARNING: audio_native_sr_resample needs a working torchaudio, but importing it failed "
+                f"({_torchaudio_import_error}); falling back to the legacy librosa audio route. Reinstall the "
+                "torchaudio matching the installed torch (e.g. torch 2.7.0 wants torchaudio 2.7.0) to restore the "
+                "inference-aligned audio."
+            )
+            self.audio_native_sr_resample = False
+            try:
+                # `kaiser_best` rides on resampy; probe it once here instead of letting every sample fail on it.
+                librosa.resample(np.zeros(2, dtype=np.float32), orig_sr=2, target_sr=1, res_type="kaiser_best")
+                self.audio_fallback_res_type = "kaiser_best"
+            except Exception as e:
+                print(
+                    f"WARNING: librosa's kaiser_best resampler is unavailable ({e}); the fallback audio keeps "
+                    "librosa's default resampler."
+                )
         self.video_sample_size = tuple(video_sample_size) if not isinstance(video_sample_size, int) else (video_sample_size, video_sample_size)
         self.pixel_transforms = transforms.Compose(
             [
@@ -621,16 +847,13 @@ class VideoSpeechControlDataset(Dataset):
                 new_fps = int(fps // local_video_sample_stride)
 
             # Compared on the unrounded rate: 23.976 fps passes a tolerance around 24 while `new_fps` floors it to 23.
-            # `frame_step` is how many source frames one sampled frame advances, kept as a float so a target rate that
-            # does not divide the source rate is still hit exactly. For an integer stride it is the stride itself, so
-            # the arithmetic below is unchanged when no target rate is asked for.
+            # A clip outside the tolerance is skipped by `__getitem__`'s retry — there is no resampling fallback, as
+            # playing it on the fixed 24 fps timeline would slow the picture down and drag the soundtrack's pitch
+            # down with it. `frame_step` is how many source frames one sampled frame advances.
             frame_step = float(local_video_sample_stride)
             if self.target_video_sample_fps is not None:
                 effective_fps = fps / local_video_sample_stride
-                if self.resample_to_target_fps:
-                    frame_step = fps / self.target_video_sample_fps
-                    new_fps = int(round(self.target_video_sample_fps))
-                elif abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
+                if abs(effective_fps - self.target_video_sample_fps) > self.video_sample_fps_tolerance:
                     raise ValueError(
                         f"Frame rate mismatch: {video_path} samples at {effective_fps:.3f} fps (source {fps:.3f} fps "
                         f"at stride {local_video_sample_stride}), outside "
@@ -741,37 +964,112 @@ class VideoSpeechControlDataset(Dataset):
         # Load and extract the corresponding audio segment
         # Calculate start and end times (in seconds) of the video clip
         start_time = start_frame / fps
-        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, which on a resampled clip is
-        # exactly `(actual_n_frames - 1) / target_fps` seconds, so the waveform follows the frames onto the target
-        # timeline rather than the source one.
-        duration = (actual_n_frames - 1) * frame_step / fps
+        # The sampled frames span `(actual_n_frames - 1) * frame_step` source frames, i.e.
+        # `(actual_n_frames - 1) * frame_step / fps` seconds on the source timeline. With
+        # `audio_span_includes_last_frame` the span carries one more
+        # frame period: MiniMax-H3's inference reads a soundtrack over `num_frames / fps` seconds — the last frame
+        # holds its own duration — and its audio latent grid (`round(L / fps * 40)`) keys off that convention.
+        frame_periods = actual_n_frames if self.audio_span_includes_last_frame else actual_n_frames - 1
+        duration = frame_periods * frame_step / fps
         end_time = start_time + duration
 
-        # Load entire audio and resample to target sample rate
-        audio_input, sample_rate = load_audio(audio_path, self.audio_sr)
+        if not self.audio_native_sr_resample:
+            # Load entire audio and resample to target sample rate. `audio_stereo` only reaches this branch as the
+            # degraded substitute for the torchaudio route, where it keeps the channels the file carries and uses
+            # the closest librosa resampler to the pipeline's torchaudio pass; without it this is the
+            # pre-alignment behaviour: mono mixdown with librosa's default resampler.
+            audio_input, sample_rate = load_audio(
+                audio_path, self.audio_sr, mono=not self.audio_stereo,
+                res_type=self.audio_fallback_res_type if self.audio_stereo else None,
+            )
 
-        # Convert time to sample indices
-        start_sample = round(start_time * self.audio_sr)
-        target_len = round(duration * self.audio_sr)
-        end_sample = start_sample + target_len
+            # Convert time to sample indices
+            start_sample = round(start_time * self.audio_sr)
+            target_len = round(duration * self.audio_sr)
+            end_sample = start_sample + target_len
 
-        # Extract audio segment with validation
-        if start_sample >= len(audio_input):
-            raise ValueError(f"Audio file too short: {audio_path}")
+            if self.audio_stereo:
+                # A `(channels, num_samples)` block sliced on the sample axis; a mono load arrives 1-D.
+                audio_input = np.asarray(audio_input)
+                if audio_input.ndim == 1:
+                    audio_input = audio_input[None]
+                elif audio_input.shape[0] > audio_input.shape[1]:
+                    audio_input = audio_input.T
+                if start_sample >= audio_input.shape[-1]:
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                audio_segment = audio_input[..., start_sample:end_sample]
+                if audio_segment.shape[-1] < target_len:
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                waveform = torch.from_numpy(np.ascontiguousarray(audio_segment)).float()
+                if waveform.shape[0] == 1:
+                    # A mono soundtrack is upmixed by repeating its channel, as in `normalize_reference_audio`.
+                    waveform = waveform.expand(2, -1).contiguous()
+                elif waveform.shape[0] != 2:
+                    raise ValueError(
+                        f"MiniMax-H3 carries at most two audio channels, got {waveform.shape[0]} in {audio_path}."
+                    )
+                audio_segment = waveform
+                audio_span_samples, audio_span_rate = audio_segment.shape[-1], self.audio_sr
+            else:
+                # Extract audio segment with validation
+                if start_sample >= len(audio_input):
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                else:
+                    audio_segment = audio_input[start_sample:end_sample]
+                    if len(audio_segment) < target_len:
+                        raise ValueError(f"Audio file too short: {audio_path}")
+                audio_span_samples, audio_span_rate = len(audio_segment), self.audio_sr
         else:
-            audio_segment = audio_input[start_sample:end_sample]
-            if len(audio_segment) < target_len:
+            # The inference-aligned route, mirroring `normalize_reference_audio` in the MiniMax-H3 pipeline: the
+            # file is read at the rate it carries its samples at, the slice is taken there, and the segment is
+            # resampled once afterwards with the same torchaudio pass (kaiser_best) the pipeline uses.
+            audio_input, source_sr = load_audio(audio_path, self.audio_sr, mono=not self.audio_stereo, native_sr=True)
+            # A `(channels, num_samples)` layout whatever the decoder handed over; a mono decode arrives 1-D.
+            audio_input = np.asarray(audio_input)
+            if audio_input.ndim == 1:
+                audio_input = audio_input[None]
+            elif audio_input.shape[0] > audio_input.shape[1]:
+                audio_input = audio_input.T
+
+            start_sample = round(start_time * source_sr)
+            target_len = round(duration * source_sr)
+            end_sample = start_sample + target_len
+            if start_sample >= audio_input.shape[-1]:
                 raise ValueError(f"Audio file too short: {audio_path}")
+            audio_segment = audio_input[..., start_sample:min(end_sample, audio_input.shape[-1])]
+            audio_span_samples, audio_span_rate = audio_segment.shape[-1], source_sr
+            if audio_segment.shape[-1] < target_len:
+                # A soundtrack that ends with the clip's last frame lacks up to one frame period of tail; pad it
+                # here rather than retrying forever. Anything short beyond that is a genuinely shorter file.
+                shortfall = target_len - audio_segment.shape[-1]
+                if shortfall > round(frame_step / fps * source_sr):
+                    raise ValueError(f"Audio file too short: {audio_path}")
+                audio_segment = np.pad(audio_segment, [(0, 0)] * (audio_segment.ndim - 1) + [(0, shortfall)])
+
+            waveform = torch.from_numpy(np.ascontiguousarray(audio_segment)).float()
+            if source_sr != self.audio_sr:
+                waveform = torchaudio.transforms.Resample(source_sr, self.audio_sr)(waveform)
+            if self.audio_stereo:
+                if waveform.shape[0] == 1:
+                    # A mono soundtrack is upmixed by repeating its channel, as in `normalize_reference_audio`.
+                    waveform = waveform.expand(2, -1).contiguous()
+                elif waveform.shape[0] != 2:
+                    raise ValueError(
+                        f"MiniMax-H3 carries at most two audio channels, got {waveform.shape[0]} in {audio_path}."
+                    )
+            else:
+                waveform = waveform[0]
+            audio_segment, sample_rate = waveform, self.audio_sr
 
         # The sliced waveform must cover the same real-time span that the sampled frames play on the target
-        # timeline: `(actual_n_frames - 1) / target_fps` seconds. A container whose metadata fps disagrees with its
-        # real frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field
-        # alone, which the flooring above corrupts further — and surfaces much later as an audio-latent window
-        # failure in the training loop. Raise here so the retry of `__getitem__` draws another sample. The
-        # tolerance is one frame period plus rounding slack for the waveform-to-latent encoder.
+        # timeline: `frame_periods / target_fps` seconds. A container whose metadata fps disagrees with its real
+        # frame rate slices a proportionally longer / shorter waveform — undetectable from the fps field alone,
+        # which the flooring above corrupts further — and surfaces much later as an audio-latent window failure
+        # in the training loop. Raise here so the retry of `__getitem__` draws another sample. The tolerance is
+        # one frame period plus rounding slack for the waveform-to-latent encoder.
         if self.target_video_sample_fps is not None:
-            target_span = (actual_n_frames - 1) / self.target_video_sample_fps
-            audio_span = len(audio_segment) / self.audio_sr
+            target_span = frame_periods / self.target_video_sample_fps
+            audio_span = audio_span_samples / audio_span_rate
             if abs(audio_span - target_span) > 1.0 / self.target_video_sample_fps + 0.03:
                 raise ValueError(
                     f"Audio span mismatch: {video_path} plays {target_span:.3f}s on the "
@@ -799,7 +1097,7 @@ class VideoSpeechControlDataset(Dataset):
                 sample["motion_pixel_values"] = motion_pixel_values
                 sample["control_pixel_values"] = control_pixel_values
                 sample["text"] = text
-                sample["audio"] = torch.from_numpy(audio).float()
+                sample["audio"] = audio if torch.is_tensor(audio) else torch.from_numpy(audio).float()
                 sample["sample_rate"] = sample_rate
                 sample["fps"] = fps
                 sample["idx"] = idx

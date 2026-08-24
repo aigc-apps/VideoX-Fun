@@ -437,25 +437,52 @@ def get_image_to_video_latent(validation_image_start, validation_image_end, vide
 
     return  input_video, input_video_mask, clip_image
 
-def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=None, validation_video_mask=None, ref_image=None):
+def get_video_to_video_latent(input_video_path, video_length, sample_size, fps=None, validation_video_mask=None, ref_image=None, keep_aspect_ratio=False):
     if input_video_path is not None:
         if isinstance(input_video_path, str):
             cap = cv2.VideoCapture(input_video_path)
             input_video = []
 
             original_fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_skip = 1 if fps is None else max(1,int(original_fps // fps))
+            # Resample onto the `fps` timeline by timestamp instead of dropping every n-th frame: target frame
+            # `next_target_frame` reads the source frame closest to `next_target_frame / fps` seconds, so a 30 fps
+            # clip keeps its real duration on a 24 fps request instead of stretching to 1.25x its length. An
+            # unreadable source rate reads every frame, as before.
+            resample_ratio = original_fps / fps if fps is not None and original_fps > 0 else None
 
             frame_count = 0
+            next_target_frame = 0
 
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                if frame_count % frame_skip == 0:
-                    frame = cv2.resize(frame, (sample_size[1], sample_size[0]))
-                    input_video.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                if resample_ratio is None:
+                    emit_count = 1
+                else:
+                    # Every target frame snapping onto this source frame; a source slower than `fps` repeats it,
+                    # a faster one drops the frames in between.
+                    emit_count = 0
+                    while int(round(next_target_frame * resample_ratio)) == frame_count:
+                        emit_count += 1
+                        next_target_frame += 1
+
+                if emit_count:
+                    if keep_aspect_ratio:
+                        # Cover the canvas and center-crop onto it, the resize + crop geometry of the training
+                        # collates, instead of stretching the frames onto it.
+                        source_height, source_width = frame.shape[:2]
+                        scale = max(sample_size[0] / source_height, sample_size[1] / source_width)
+                        resized = cv2.resize(frame, (int(round(source_width * scale)), int(round(source_height * scale))))
+                        top = (resized.shape[0] - sample_size[0]) // 2
+                        left = (resized.shape[1] - sample_size[1]) // 2
+                        frame = resized[top : top + sample_size[0], left : left + sample_size[1]]
+                    else:
+                        frame = cv2.resize(frame, (sample_size[1], sample_size[0]))
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    for _ in range(emit_count):
+                        input_video.append(frame)
 
                 frame_count += 1
 
