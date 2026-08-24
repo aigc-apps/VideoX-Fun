@@ -9,9 +9,10 @@ This document provides a complete workflow for MiniMax-H3 control (VACE-style co
 ## Table of Contents
 - [1. Environment Setup](#1-environment-setup)
 - [2. Data Preparation](#2-data-preparation)
-  - [2.1 Dataset Structure](#21-dataset-structure)
-  - [2.2 metadata.json Format](#22-metadatajson-format)
-  - [2.3 Relative vs Absolute Path Usage](#23-relative-vs-absolute-path-usage)
+  - [2.1 Quick Test Dataset](#21-quick-test-dataset)
+  - [2.2 Dataset Structure](#22-dataset-structure)
+  - [2.3 metadata.json Format](#23-metadatajson-format)
+  - [2.4 Relative vs Absolute Path Usage](#24-relative-vs-absolute-path-usage)
 - [3. Control Branch Training](#3-control-branch-training)
   - [3.1 Download Pre-trained Model](#31-download-pre-trained-model)
   - [3.2 Control Branch YAML Configuration](#32-control-branch-yaml-configuration)
@@ -69,7 +70,22 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ## 2. Data Preparation
 
-### 2.1 Dataset Structure
+### 2.1 Quick Test Dataset
+
+We provide a test dataset with control signals containing some training data.
+
+```bash
+# Download the official example dataset (with control signals)
+modelscope download --dataset PAI/X-Fun-Videos-Controls-Demo --local_dir ./datasets/X-Fun-Videos-Controls-Demo
+```
+
+After downloading, the dataset contains the following metadata files:
+- `metadata.json`: basic format (control video paths only)
+- `metadata_add_width_height.json`: with width/height info (recommended for control training)
+
+> 💡 The demo's control signal lives in `canny/` and its metadata carries no `audio_path`; the training dataset decodes the audio track from each video container in that case, so the demo runs as-is.
+
+### 2.2 Dataset Structure
 
 Control training datasets require original videos with corresponding control signal videos (e.g., pose videos, depth videos, canny edge videos, etc.) **and** paired audio tracks, since MiniMax-H3 keeps the joint video + audio training loss.
 
@@ -96,9 +112,9 @@ Control training datasets require original videos with corresponding control sig
 > - `control/` (or `pose/`, `depth/`, `canny/`, etc.) directory stores control signal videos that correspond one-to-one with the original videos. The directory name is customizable, as long as `control_file_path` in `metadata.json` correctly points to it
 > - `wav/` directory stores the paired waveforms; they are resampled to the audio VAE's sample rate (32 kHz) during training
 
-### 2.2 metadata.json Format
+### 2.3 metadata.json Format
 
-> ⚠️ **Important**: unlike regular video training, control training of MiniMax-H3 requires **both the `control_file_path` and the `audio_path` field** in `metadata.json` — `VideoSpeechControlDataset` reads exactly these two fields on top of the usual ones.
+> ⚠️ **Important**: unlike regular video training, control training of MiniMax-H3 requires **the `control_file_path` field** in `metadata.json` — `VideoSpeechControlDataset` reads it on top of the usual ones. The `audio_path` field is optional; when it is absent, the audio track is decoded from the video container itself.
 
 **Relative path format** (example):
 ```json
@@ -133,13 +149,13 @@ Control training datasets require original videos with corresponding control sig
 **Key field descriptions**:
 - `file_path`: Original video path (relative or absolute)
 - `control_file_path`: Control signal video path (**required for control training**)
-- `audio_path`: Audio file path (**MiniMax-H3 specific and required**). Audio files are typically in `.wav` format; the path should correspond to `file_path`
+- `audio_path`: Audio file path (**MiniMax-H3 specific, optional**). Audio files are typically in `.wav` format; the path should correspond to `file_path`. When it is absent, the audio track is decoded from the video container itself
 - `text`: Video description (English prompt)
 - `type`: Data type, fixed as `"video"`
 - `width` / `height`: Video dimensions (**recommended to provide**, used for bucket training. If not provided, they will be read automatically during training, which may affect training speed when data is stored on slower systems like OSS).
   - Use `scripts/process_json_add_width_and_height.py` to extract width and height for JSON files without these fields, supporting both images and videos.
 
-### 2.3 Relative vs Absolute Path Usage
+### 2.4 Relative vs Absolute Path Usage
 
 **Relative paths**:
 
@@ -173,9 +189,12 @@ mkdir -p models/Diffusion_Transformer
 
 # Download MiniMax-H3 official weights
 hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+
+# Download the pretrained control branch (Controlnet-Union) weights
+modelscope download --model PAI/MiniMax-H3-Fun-Controlnet-Union --local_dir models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union
 ```
 
-> 💡 The loader accepts either the converted diffusers layout above or an *original* MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`); the original shards are converted on the fly while loading, with no intermediate copy on disk. The control branch is **not** part of the released weights: `from_pretrained` fills it in, every control block is initialised from the main block it is attached to and `control_proj_in` from `proj_in`, with `before_proj` / `after_proj` zeroed, so a freshly loaded model is numerically identical to the base MiniMax-H3 model.
+> 💡 The loader accepts either the converted diffusers layout above or an *original* MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`); the original shards are converted on the fly while loading, with no intermediate copy on disk. The control branch is **not** part of the base MiniMax-H3 weights: `from_pretrained` fills it in, every control block is initialised from the main block it is attached to and `control_proj_in` from `proj_in`, with `before_proj` / `after_proj` zeroed, so a freshly loaded model is numerically identical to the base MiniMax-H3 model. To train or infer with a control signal, load the released control checkpoint `models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors` through `--transformer_path` (training hot start) or `transformer_path` (inference).
 
 ### 3.2 Control Branch YAML Configuration
 
@@ -205,8 +224,8 @@ FSDP is recommended for training MiniMax-H3 control: the transformer alone is ab
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -352,8 +371,8 @@ The same `train_control.py` runs under FSDP2 by adding `--fsdp_version 2` to the
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -377,8 +396,8 @@ accelerate launch --mixed_precision="bf16" \
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_control.py \
@@ -410,8 +429,8 @@ Assuming 2 machines, each with 8 GPUs:
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total machines
@@ -460,8 +479,8 @@ export RANK=1  # Note: this is 1
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -549,7 +568,7 @@ The extracted file can be re-applied onto a fresh base model with `MiniMaxH3Cont
 | `compile_dit` | Compile Transformer for faster inference (fixed resolution) | `False` |
 | `model_name` | Base MiniMax-H3 model path | `models/Diffusion_Transformer/MiniMax-H3` |
 | `config_path` | Control branch YAML, **must match the one `train_control.py` ran with** (`control_in_dim` 49 for an inpaint checkpoint). `None` builds the default 24-channel branch, which cannot load an inpaint checkpoint | `config/minimax_h3/minimax_h3_control.yaml` |
-| `transformer_path` | Trained control checkpoint path: the whole transformer safetensors, a checkpoint's `transformer` folder is **not** accepted here — hand it the `.safetensors` file (the control-only file of **3.10** loads too, `strict=False` on missing keys) | `output_dir_minimax_h3_control_inpaint/checkpoint-xxx/transformer/diffusion_pytorch_model.safetensors` |
+| `transformer_path` | Control checkpoint path: the released `MiniMax-H3-Fun-Controlnet-Union` weights or a trained control checkpoint. Hand it a `.safetensors` file (the whole transformer or the control-only file of **3.10** load too, `strict=False` on missing keys); a checkpoint's `transformer` folder is **not** accepted here | `models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors` |
 | `vae_path` | Trained VAE weight path | `None` |
 | `lora_path` | LoRA weights path | `None` |
 | `sample_size` | Generated video resolution `[height, width]`; height/width must be multiples of 32. Control inference fits the control video onto this canvas with the training's resize + crop geometry, so it **cannot be None** | `[704, 1280]` |
@@ -601,8 +620,9 @@ model_name = "models/Diffusion_Transformer/MiniMax-H3"
 # Control branch layout: must match the yaml train_control.py ran with
 # (minimax_h3_control.yaml for an --enable_inpaint checkpoint, minimax_h3_control_only.yaml otherwise)
 config_path = "config/minimax_h3/minimax_h3_control.yaml"
-# Trained control checkpoint (.safetensors file; the control-only file of extract_control_weights.py loads too)
-transformer_path = "output_dir_minimax_h3_control_inpaint/checkpoint-xxx/transformer/diffusion_pytorch_model.safetensors"
+# Control checkpoint (.safetensors file): the released MiniMax-H3-Fun-Controlnet-Union weights or a checkpoint
+# trained by train_control.py (the control-only file of extract_control_weights.py loads too)
+transformer_path = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors"
 # Control signal video (e.g., pose video); control inference fits it onto sample_size
 # with the training's resize + crop geometry
 control_video = "asset/pose.mp4"
@@ -619,7 +639,7 @@ prompt = "..."
 ```
 
 **Notes**:
-- The control branch is not part of the released MiniMax-H3 weights: a base `model_name` without `transformer_path` starts the side branch as an identity (`after_proj` is zero) and the control video has no effect
+- The control branch is not part of the base MiniMax-H3 weights: point `transformer_path` at the released `MiniMax-H3-Fun-Controlnet-Union` checkpoint (or one trained by `train_control.py`) for the control video to take effect; a base `model_name` without `transformer_path` starts the side branch as an identity (`after_proj` is zero) and the control video has no effect
 - Generation follows the control video's actual length, snapped down to the largest `17*n+5` the video VAE can decode and capped by `video_length` — a short control video is never padded (below 5 frames it is raised to 5). With an inpaint checkpoint but no inpaint inputs given, the pipeline zero-pads the mask channels and the run degrades to pure generation; a mask-less checkpoint rejects inpaint inputs outright
 - The mask video is binarized at 0.5 before use, so grayscale masks work directly (white = repaint, black = keep)
 - The generated output carries audio: videos are saved with `save_videos_with_audio_grid`

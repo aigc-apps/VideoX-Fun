@@ -9,9 +9,10 @@
 ## 目录
 - [一、环境配置](#一环境配置)
 - [二、数据准备](#二数据准备)
-  - [2.1 数据集结构](#21-数据集结构)
-  - [2.2 metadata.json 格式](#22-metadatajson-格式)
-  - [2.3 相对路径与绝对路径使用](#23-相对路径与绝对路径使用)
+  - [2.1 快速测试数据集](#21-快速测试数据集)
+  - [2.2 数据集结构](#22-数据集结构)
+  - [2.3 metadata.json 格式](#23-metadatajson-格式)
+  - [2.4 相对路径与绝对路径使用](#24-相对路径与绝对路径使用)
 - [三、控制分支训练](#三控制分支训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
   - [3.2 控制分支 YAML 配置](#32-控制分支-yaml-配置)
@@ -69,7 +70,22 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ## 二、数据准备
 
-### 2.1 数据集结构
+### 2.1 快速测试数据集
+
+我们提供了一个包含管控信号的测试数据集，其中包含若干训练数据。
+
+```bash
+# 下载官方示例数据集（含管控信号）
+modelscope download --dataset PAI/X-Fun-Videos-Controls-Demo --local_dir ./datasets/X-Fun-Videos-Controls-Demo
+```
+
+下载后数据集包含以下 metadata 文件：
+- `metadata.json`：基本格式（仅包含管控视频路径）
+- `metadata_add_width_height.json`：含宽高信息（推荐用于控制训练）
+
+> 💡 示例数据集的管控信号位于 `canny/`，其 metadata 不含 `audio_path`；此时训练数据集会直接从视频容器中解码音频轨道，因此该示例数据集开箱即用。
+
+### 2.2 数据集结构
 
 控制训练数据集需要原始视频、与之对应的管控信号视频（如 pose 视频、depth 视频、canny 边缘视频等），**以及配对的音频轨道**（MiniMax-H3 保留视频 + 音频联合训练损失）。
 
@@ -96,9 +112,9 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 > - `control/`（或 `pose/`、`depth/`、`canny/` 等）目录存放与原始视频一一对应的管控信号视频。目录名可自定义，只要 `metadata.json` 中的 `control_file_path` 正确指向即可
 > - `wav/` 目录存放配对音频，训练时会被重采样到音频 VAE 的采样率（32 kHz）
 
-### 2.2 metadata.json 格式
+### 2.3 metadata.json 格式
 
-> ⚠️ **重要**：与普通视频训练不同，MiniMax-H3 控制训练要求 `metadata.json` 中**同时包含 `control_file_path` 和 `audio_path` 字段** —— `VideoSpeechControlDataset` 正是在常规字段之上读取这两个字段。
+> ⚠️ **重要**：与普通视频训练不同，MiniMax-H3 控制训练要求 `metadata.json` 中**包含 `control_file_path` 字段** —— `VideoSpeechControlDataset` 正是在常规字段之上读取该字段。`audio_path` 字段可选；缺省时直接从视频容器中解码音频轨道。
 
 **相对路径格式**（示例）：
 ```json
@@ -133,13 +149,13 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 **关键字段说明**：
 - `file_path`：原始视频路径（相对或绝对）
 - `control_file_path`：管控信号视频路径（**控制训练必需**）
-- `audio_path`：音频文件路径（**MiniMax-H3 特有且必需**）。音频通常为 `.wav` 格式，路径应与 `file_path` 对应
+- `audio_path`：音频文件路径（**MiniMax-H3 特有，可选**）。音频通常为 `.wav` 格式，路径应与 `file_path` 对应。缺省时直接从视频容器中解码音频轨道
 - `text`：视频描述（英文提示词）
 - `type`：数据类型，固定为 `"video"`
 - `width` / `height`：视频尺寸（**建议提供**，用于 bucket 训练。若不提供，训练时会自动读取，当数据存放在 OSS 等较慢的存储系统上时可能影响训练速度）。
   - 可使用 `scripts/process_json_add_width_and_height.py` 为缺少这两个字段的 JSON 文件提取宽高，支持图片和视频。
 
-### 2.3 相对路径与绝对路径使用
+### 2.4 相对路径与绝对路径使用
 
 **相对路径**：
 
@@ -173,9 +189,12 @@ mkdir -p models/Diffusion_Transformer
 
 # 下载 MiniMax-H3 官方权重
 hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+
+# 下载预训练控制分支（Controlnet-Union）权重
+modelscope download --model PAI/MiniMax-H3-Fun-Controlnet-Union --local_dir models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union
 ```
 
-> 💡 加载器既接受上述转换后的 diffusers 布局，也接受*原始* MiniMax-H3 分区（如 `MiniMax-H3/FL2VA`）；原始分片在加载时即时转换，不落中间文件。控制分支**不包含**在发布的权重中：`from_pretrained` 会自动补全——每个控制块从其挂载的主干块初始化、`control_proj_in` 从 `proj_in` 初始化，且 `before_proj` / `after_proj` 置零，因此刚加载的模型在数值上与基础 MiniMax-H3 模型完全一致。
+> 💡 加载器既接受上述转换后的 diffusers 布局，也接受*原始* MiniMax-H3 分区（如 `MiniMax-H3/FL2VA`）；原始分片在加载时即时转换，不落中间文件。控制分支**不包含**在基础 MiniMax-H3 权重中：`from_pretrained` 会自动补全——每个控制块从其挂载的主干块初始化、`control_proj_in` 从 `proj_in` 初始化，且 `before_proj` / `after_proj` 置零，因此刚加载的模型在数值上与基础 MiniMax-H3 模型完全一致。若需带管控信号训练或推理，请通过 `--transformer_path`（训练热启动）或 `transformer_path`（推理）加载发布的控制分支 checkpoint `models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors`。
 
 ### 3.2 控制分支 YAML 配置
 
@@ -205,8 +224,8 @@ transformer_additional_kwargs:
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1 用于无 RDMA 的多机环境。
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -352,8 +371,8 @@ accelerate launch --mixed_precision="bf16" \
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -377,8 +396,8 @@ accelerate launch --mixed_precision="bf16" \
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_control.py \
@@ -410,8 +429,8 @@ accelerate launch --mixed_precision="bf16" scripts/minimax_h3_fun/train_control.
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 总机器数
@@ -460,8 +479,8 @@ export RANK=1  # 注意这里是 1
 ```bash
 export VIDEOX_OFFLOAD_VACE_LATENTS=True
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/datasets/my_dataset/metadata.json"
+export DATASET_NAME="datasets/X-Fun-Videos-Controls-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Controls-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" \
@@ -549,7 +568,7 @@ python scripts/minimax_h3_fun/extract_control_weights.py \
 | `compile_dit` | 编译 Transformer 以加速推理（固定分辨率下有效） | `False` |
 | `model_name` | MiniMax-H3 基座模型路径 | `models/Diffusion_Transformer/MiniMax-H3` |
 | `config_path` | 控制分支 YAML，**必须与 `train_control.py` 训练时使用的一致**（inpaint checkpoint 对应 `control_in_dim` 49）。置 `None` 会构建默认 24 通道分支，无法加载 inpaint checkpoint | `config/minimax_h3/minimax_h3_control.yaml` |
-| `transformer_path` | 训练好的控制分支 checkpoint 路径：仅接受 `.safetensors` 文件（整份 transformer 或 **3.10** 的 control-only 文件均可，对缺失键使用 `strict=False`），不接受 checkpoint 的 `transformer` 目录 | `output_dir_minimax_h3_control_inpaint/checkpoint-xxx/transformer/diffusion_pytorch_model.safetensors` |
+| `transformer_path` | 控制分支 checkpoint 路径：发布的 `MiniMax-H3-Fun-Controlnet-Union` 权重或训练得到的控制分支 checkpoint。仅接受 `.safetensors` 文件（整份 transformer 或 **3.10** 的 control-only 文件均可，对缺失键使用 `strict=False`），不接受 checkpoint 的 `transformer` 目录 | `models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors` |
 | `vae_path` | 训练好的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `None` |
 | `sample_size` | 生成视频分辨率 `[height, width]`，宽高必须是 32 的倍数。控制推理按训练时的 resize + crop 几何将管控视频适配到该画布，因此**不能为 None** | `[704, 1280]` |
@@ -601,8 +620,9 @@ model_name = "models/Diffusion_Transformer/MiniMax-H3"
 # 控制分支布局：必须与 train_control.py 训练时使用的 yaml 一致
 #（--enable_inpaint 的 checkpoint 用 minimax_h3_control.yaml，否则用 minimax_h3_control_only.yaml）
 config_path = "config/minimax_h3/minimax_h3_control.yaml"
-# 训练好的控制分支 checkpoint（.safetensors 文件；extract_control_weights.py 的 control-only 文件也可加载）
-transformer_path = "output_dir_minimax_h3_control_inpaint/checkpoint-xxx/transformer/diffusion_pytorch_model.safetensors"
+# 控制分支 checkpoint（.safetensors 文件）：发布的 MiniMax-H3-Fun-Controlnet-Union 权重，
+# 或 train_control.py 训练得到的 checkpoint（extract_control_weights.py 的 control-only 文件也可加载）
+transformer_path = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors"
 # 管控信号视频（如 pose 视频）；控制推理按训练时的 resize + crop 几何
 # 将其适配到 sample_size 画布
 control_video = "asset/pose.mp4"
@@ -619,7 +639,7 @@ prompt = "..."
 ```
 
 **说明**：
-- 控制分支不包含在发布的 MiniMax-H3 权重中：只给 `model_name` 不给 `transformer_path` 时，旁路分支以恒等初始化（`after_proj` 为零），管控视频不起作用
+- 控制分支不包含在基础 MiniMax-H3 权重中：需将 `transformer_path` 指向发布的 `MiniMax-H3-Fun-Controlnet-Union` checkpoint（或 `train_control.py` 训练得到的 checkpoint），管控视频才会生效；只给 `model_name` 不给 `transformer_path` 时，旁路分支以恒等初始化（`after_proj` 为零），管控视频不起作用
 - 生成长度跟随管控视频的真实长度，向下对齐到视频 VAE 可解码的最大 `17*n+5`，并以 `video_length` 为上限——短管控视频不会被补帧（不足 5 帧时提升到 5 帧）。使用 inpaint checkpoint 但未提供 inpaint 输入时，pipeline 将 mask 通道补零，运行退化为纯生成；不带 mask 的 checkpoint 则会直接拒绝 inpaint 输入
 - mask 视频使用前会以 0.5 二值化，灰度 mask 可直接使用（白色 = 重绘、黑色 = 保留）
 - 生成结果带音频：视频通过 `save_videos_with_audio_grid` 保存
