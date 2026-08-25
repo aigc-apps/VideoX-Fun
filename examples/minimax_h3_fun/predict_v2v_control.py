@@ -84,7 +84,7 @@ lora_path           = None
 # a short control video is never padded (the duration has to stay under 15 seconds), capped by video_length.
 # Control inference fits the control video onto this canvas with the training's resize + crop geometry, so
 # sample_size must be set (it cannot be None).
-sample_size         = [704, 1280]
+sample_size         = [1280, 704]
 video_length        = 243
 fps                 = 24
 # Scale applied to every control skip before it is added to the main branch. 0.0 switches the control branch off,
@@ -219,46 +219,18 @@ fp8_exclude_module_name = [
 ]
 use_qfloat8 = "qfloat8" in GPU_memory_mode
 if use_qfloat8:
-    # Quantize before any FSDP wrapping so the fp8 tensors become the FSDP storage dtype; the per-forward
-    # dequant wrapper is applied later only when the DiT is not FSDP-sharded (it would rewrite `param.data`
-    # behind FSDP's flat storage and corrupt the compute).
     convert_model_weight_to_float8(transformer, exclude_module_name=fp8_exclude_module_name, device=device)
-dit_is_fsdp = False
+
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
-        # The mixed-precision checkpoint pins the patch embedders / timestep MLP / output heads to float32;
-        # FSDP keeps them replicated via ignored_states so the flat buffers stay uniform-dtype.
-        #
-        # Root cause of the temporal flicker, verified by per-step / per-block instrumentation: with
-        # `MixedPrecision(param_dtype=...)` the root FSDP unit applies `cast_root_forward_inputs` (default
-        # True), so the whole root forward runs in `param_dtype`. That casts the root forward inputs — the
-        # sinusoidal timestep embedding, the packed latents, the context — to bfloat16 and forces the fp32-
-        # pinned heads (proj_in / time_embedder / audio_proj_in) to compute on coarsely rounded inputs in
-        # bfloat16 instead of their native fp32: the time embedding alone shifts ~2%, every block's step-0
-        # activation ~1.5% relative (not ULP noise); the deviation compounds over the 40 steps and flips
-        # trajectories that sit on the numerical-stability edge into coherent flicker at fixed latent-time
-        # positions, seed-independently.
-        # Sharding with `param_dtype=None` + `cast_dtype=False` casts nothing (no MixedPrecision compute
-        # dtype, no root input cast), keeps the native fp32 hidden path and matches the non-FSDP numerics.
-        #
-        # The qfloat8 path cannot use the no-cast scheme: fp8 storage has no dequant wrapper under FSDP, so
-        # `MixedPrecision(param_dtype)` is the only dequant route there, the forward collapses to bfloat16
-        # anyway and stays flicker-prone. With `fsdp_dit=True` prefer a non-qfloat8 memory mode — sharding
-        # already drops the per-rank DiT/TE weights to ~(62+62)/n_gpu GB, fp8 saves little on top of it.
         fp32_modules = [m for m in transformer.modules()
                         if any(p.dtype == torch.float32 for p in m.parameters(recurse=False))]
-        if use_qfloat8:
-            shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype,
-                              module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.control_blocks),
-                              ignored_modules=[m for m in fp32_modules])
-        else:
-            shard_fn = partial(shard_model, device_id=device, param_dtype=None, cast_dtype=False,
-                              module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.control_blocks),
-                              ignored_modules=fp32_modules)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=None, cast_dtype=False,
+                          module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.control_blocks),
+                          ignored_modules=fp32_modules)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        dit_is_fsdp = True
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype,
@@ -277,14 +249,12 @@ elif GPU_memory_mode == "model_group_offload":
     register_auto_device_hook(pipeline.transformer)
     safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    if not dit_is_fsdp:
-        convert_weight_dtype_wrapper(transformer, weight_dtype)
+    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    if not dit_is_fsdp:
-        convert_weight_dtype_wrapper(transformer, weight_dtype)
+    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
