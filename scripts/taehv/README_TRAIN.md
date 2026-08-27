@@ -19,7 +19,7 @@ Two TAE families are supported (selected via `--config_path`, which determines t
 | Family | Latent | Teacher full VAE | `--config_path` | Models |
 |--------|--------|------------------|-----------------|--------|
 | taew2_1 | 16ch, patch_size=1 | `AutoencoderKLWan` (Wan2.1_VAE.pth) | `config/wan2.1/wan_civitai.yaml` | Wan2.1, Wan2.2 14B |
-| taew2_2 | 48ch, patch_size=2 | `AutoencoderKLWan3_8` (Wan2.2_VAE.pth) | `config/wan2.2/wan_civitai_t2v_2.2vae.yaml` | Wan2.2 TI2V-5B / Fun-2.2VAE |
+| taew2_2 | 48ch, patch_size=2 | `AutoencoderKLWan3_8` (Wan2.2_VAE.pth) | `config/wan2.2/wan_civitai_5b.yaml` | Wan2.2 TI2V-5B / Fun-2.2VAE |
 
 ---
 
@@ -179,7 +179,7 @@ export TAE_PATH="taew2_2.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
-  --config_path="config/wan2.2/wan_civitai_t2v_2.2vae.yaml" \
+  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --tae_path=$TAE_PATH \
   --train_data_dir=$DATASET_NAME \
@@ -228,7 +228,7 @@ export TAE_PATH="taew2_1.safetensors"
 
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
-| `--config_path` | Model config yaml; its `vae_kwargs.vae_type` selects the teacher full VAE family | `config/wan2.2/wan_civitai_t2v_2.2vae.yaml` |
+| `--config_path` | Model config yaml; its `vae_kwargs.vae_type` selects the teacher full VAE family | `config/wan2.2/wan_civitai_5b.yaml` |
 | `--pretrained_model_name_or_path` | Model directory containing the full VAE weights | `models/Diffusion_Transformer/Wan2.2-TI2V-5B` |
 | `--tae_path` | Optional TAE weights to warm-start from (file / directory). Omit to train from scratch | `taew2_2.safetensors` |
 | `--tae_arch_variant` | TAE decoder variant when training from scratch: base (`None`) or `super` (~2x decoder params) | `None` |

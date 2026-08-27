@@ -19,7 +19,7 @@
 | 家族 | Latent | Teacher 完整 VAE | `--config_path` | 适用模型 |
 |------|--------|------------------|-----------------|----------|
 | taew2_1 | 16ch, patch_size=1 | `AutoencoderKLWan`（Wan2.1_VAE.pth） | `config/wan2.1/wan_civitai.yaml` | Wan2.1、Wan2.2 14B |
-| taew2_2 | 48ch, patch_size=2 | `AutoencoderKLWan3_8`（Wan2.2_VAE.pth） | `config/wan2.2/wan_civitai_t2v_2.2vae.yaml` | Wan2.2 TI2V-5B / Fun-2.2VAE |
+| taew2_2 | 48ch, patch_size=2 | `AutoencoderKLWan3_8`（Wan2.2_VAE.pth） | `config/wan2.2/wan_civitai_5b.yaml` | Wan2.2 TI2V-5B / Fun-2.2VAE |
 
 ---
 
@@ -179,7 +179,7 @@ export TAE_PATH="taew2_2.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
-  --config_path="config/wan2.2/wan_civitai_t2v_2.2vae.yaml" \
+  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --tae_path=$TAE_PATH \
   --train_data_dir=$DATASET_NAME \
@@ -228,7 +228,7 @@ export TAE_PATH="taew2_1.safetensors"
 
 | 参数 | 说明 | 示例值 |
 |------|------|--------|
-| `--config_path` | 模型配置 yaml；其 `vae_kwargs.vae_type` 决定 teacher 完整 VAE 家族 | `config/wan2.2/wan_civitai_t2v_2.2vae.yaml` |
+| `--config_path` | 模型配置 yaml；其 `vae_kwargs.vae_type` 决定 teacher 完整 VAE 家族 | `config/wan2.2/wan_civitai_5b.yaml` |
 | `--pretrained_model_name_or_path` | 包含完整 VAE 权重的模型目录 | `models/Diffusion_Transformer/Wan2.2-TI2V-5B` |
 | `--tae_path` | 可选的 TAE 热启动权重（文件或目录）。不填则从头训练 | `taew2_2.safetensors` |
 | `--tae_arch_variant` | 从头训练时的 TAE decoder 变体：base（`None`）或 `super`（decoder 参数量约 2 倍） | `None` |

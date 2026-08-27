@@ -1,12 +1,14 @@
-NCCL_DEBUG=INFO
-
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME=""
 export DATASET_META_NAME="/mnt/data/datasets/your_dataset/metadata.json"
 export TAE_PATH="taew2_2.safetensors"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
-  --config_path="config/wan2.2/wan_civitai_t2v_2.2vae.yaml" \
+  --config_path="config/wan2.2/wan_civitai_5b.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --tae_path=$TAE_PATH \
   --train_data_dir=$DATASET_NAME \

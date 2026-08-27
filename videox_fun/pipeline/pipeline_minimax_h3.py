@@ -2519,6 +2519,12 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
         elif condition_latents is not None:
             latents = torch.cat([condition_latents, latents])
 
+        # The conditioning has been merged into `latents`; drop the raw copies. The ref2va references carry their
+        # decoded frames in host RAM and can weigh several GB, so they must not ride along into the loop and decode.
+        del condition_latents, audio_condition_latents
+        if do_ref2va:
+            del references
+
         # 6. Initialize the two schedules and stage the row-to-timestep plan of every step. One forward serves every
         # modality and every noise level at once: the generated rows step down their own schedule while the
         # conditioning rows stay pinned at their noise-augmentation level.

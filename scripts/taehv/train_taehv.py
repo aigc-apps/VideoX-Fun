@@ -15,8 +15,8 @@ is what makes TAE latents interchangeable with the diffusion model latents.
 
 The teacher VAE family is selected by --config_path:
     config/wan2.1/wan_civitai.yaml                -> AutoencoderKLWan    (16ch, taew2_1)
-    config/wan2.2/wan_civitai_t2v_2.2vae.yaml     -> AutoencoderKLWan3_8 (48ch, taew2_2)
-    config/wan2.2/wan_civitai_i2v_2.2vae.yaml     -> AutoencoderKLWan3_8 (48ch, taew2_2)
+    config/wan2.2/wan_civitai_5b.yaml             -> AutoencoderKLWan3_8 (48ch, taew2_2)
+(any wan2.2 *_2.2vae.yaml also works, they share the same vae_kwargs)
 """
 #!/usr/bin/env python
 # coding=utf-8
