@@ -749,6 +749,23 @@ def parse_args():
         action="store_true",
         help="whether to use randomize timesteps indices in training.",
     )
+    parser.add_argument(
+        "--index_jitter_ratio",
+        type=float,
+        default=0.3,
+        help="Symmetric jitter budget (fraction of the neighboring gap) applied to the "
+             "denoising step indices when --randomize_step_indices is enabled.",
+    )
+    parser.add_argument(
+        "--flow_euler_rollout",
+        action="store_true",
+        help="Simulate the normal flow-matching inference rollout in the generator's multi-step "
+             "self-rollout (LightX2V-style): keep the model prediction in flow/velocity space and "
+             "advance to the next noise level with a deterministic Euler ODE step "
+             "(x_next = x_t + (sigma_next - sigma_t) * v), instead of converting the prediction "
+             "to x0 and re-noising with fresh noise. The final step still converts to x0 since "
+             "the DMD objective is defined on x0.",
+    )
 
     parser.add_argument(
         "--dfd",
@@ -766,6 +783,13 @@ def parse_args():
         type=int,
         default=0,
         help="Switch on DFD from this global_step onward; earlier steps run plain DMD.",
+    )
+    parser.add_argument(
+        "--decoupled_dmd",
+        action="store_true",
+        help="Use Decoupled DMD (arXiv:2511.22677): decompose the DMD gradient into a CFG Augmentation "
+             "term re-noised at tau_CA cleaner than the generator's current step and a Distribution "
+             "Matching term re-noised over the full noise range (Decoupled-Hybrid schedule).",
     )
     parser.add_argument(
         "--generator_transformer_path",
@@ -820,6 +844,14 @@ def main():
             raise ValueError("--dfd_teacher_replace_prob must be in [0, 1].")
         if args.gen_update_interval <= 0:
             raise ValueError("--gen_update_interval must be greater than zero.")
+
+    if args.decoupled_dmd:
+        if args.real_guidance_scale <= 1.0:
+            raise ValueError("--real_guidance_scale must be greater than 1.0 to keep the CA term of Decoupled DMD active.")
+        if args.dfd:
+            raise ValueError("Decoupled DMD does not support --dfd.")
+        if any(int(i) <= 1 for i in args.denoising_step_indices_list):
+            print("WARNING: --denoising_step_indices_list contains a step index below 2, where tau_CA degenerates to tau_CA == t.")
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -1812,6 +1844,13 @@ def main():
         train_denoising_loss = 0.0
         train_dfd_real_replace = 0.0
         dfd_real_replace_now = 0.0
+        train_ca_scale = 0.0
+        train_dm_scale = 0.0
+        train_latent_std = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
             generator_update = step % args.gen_update_interval == 0
@@ -2081,7 +2120,16 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            with accelerator.accumulate(generator_transformer3d):
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2157,6 +2205,8 @@ def main():
                     student_timestep_indices = torch.randint(0, dfd_student_timesteps.numel(), (bsz,), device=accelerator.device, generator=torch_rng)
                     student_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=real_latents.dtype)
                     student_timestep = dfd_student_timesteps[student_timestep_indices] * 1000
+                    # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
+                    generator_step_timestep = student_timestep
                     student_input = add_noise(real_latents, student_noise, student_timestep)
                     student_forward_context = contextlib.nullcontext() if generator_update else torch.no_grad()
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), student_forward_context:
@@ -2220,24 +2270,39 @@ def main():
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                         clip_fea=clip_context if args.train_mode != "normal" else None,
                                     )
-                                    generator_pred = convert_flow_pred_to_x0(
-                                        scheduler=noise_scheduler,
-                                        flow_pred=generator_pred,
-                                        xt=generator_noise,
-                                        timestep=timestep
-                                    )
+                                    if not args.flow_euler_rollout or is_final_step:
+                                        generator_pred = convert_flow_pred_to_x0(
+                                            scheduler=noise_scheduler,
+                                            flow_pred=generator_pred,
+                                            xt=generator_noise,
+                                            timestep=timestep
+                                        )
                                 
                                 if is_final_step:
+                                    # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
+                                    generator_step_timestep = timestep
                                     break
                                 
                                 next_timestep = denoising_step_list[index + 1] * torch.ones(
                                     generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
                                 )
-                                generator_noise = add_noise(
-                                    generator_pred,
-                                    torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                                    next_timestep
-                                )
+                                if args.flow_euler_rollout:
+                                    # Mimic the normal flow-matching inference rollout (LightX2V-style): keep
+                                    # the prediction in flow/velocity space and advance to the next noise level
+                                    # with a deterministic Euler ODE step, no x0 conversion / fresh re-noising.
+                                    # x_next = x_t - sigma_t * v + sigma_n * v = x_t + (sigma_n - sigma_t) * v,
+                                    # matching LightX2V WanStepDistillScheduler.step_post (computed in fp32).
+                                    sigma_t = get_sigmas(timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
+                                    sigma_next = get_sigmas(next_timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
+                                    generator_noise = (
+                                        generator_noise.float() + (sigma_next - sigma_t) * generator_pred.float()
+                                    ).to(generator_noise.dtype)
+                                else:
+                                    generator_noise = add_noise(
+                                        generator_pred,
+                                        torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                        next_timestep
+                                    )
 
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
@@ -2247,6 +2312,33 @@ def main():
                         dmd_noise,
                         generator_timestep
                     ).detach().to(accelerator.device, dtype=weight_dtype)
+
+                    if args.decoupled_dmd:
+                        # Decoupled DMD (arXiv:2511.22677, Sec. 4.3): the CA engine must re-noise at
+                        # tau_CA > t, i.e. noise levels cleaner than the generator's current step, so it
+                        # only enhances not-yet-resolved (higher-frequency) content. Scheduler timesteps
+                        # are ordered from noisy to clean, hence sample indices strictly after t's position.
+                        schedule_timesteps = noise_scheduler.timesteps.to(device=accelerator.device)
+                        num_schedule_steps = schedule_timesteps.numel()
+                        step_positions = torch.argmin(
+                            (schedule_timesteps.unsqueeze(0).float() - generator_step_timestep.reshape(-1, 1).float()).abs(),
+                            dim=1
+                        )
+                        # Uniform over the schedule positions cleaner than t, matching how tau_DM is
+                        # sampled uniformly over the full set of schedule positions.
+                        ca_low = (step_positions + 1).clamp(max=num_schedule_steps - 1)
+                        ca_span = num_schedule_steps - ca_low
+                        ca_offset = (
+                            torch.rand(ca_low.shape, device=accelerator.device, generator=torch_rng) * ca_span
+                        ).long()
+                        ca_positions = (ca_low + ca_offset).clamp(max=num_schedule_steps - 1)
+                        ca_timestep = schedule_timesteps[ca_positions]
+                        ca_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
+                        generator_ca_input = add_noise(
+                            generator_pred,
+                            ca_noise,
+                            ca_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
 
                     # DFD may feed the frozen teacher the paired real latent instead.
                     real_score_input = generator_denoised_input
@@ -2297,7 +2389,7 @@ def main():
                         else:
                             fake_score_main = fake_score_main_cond
 
-                        # Compute real score
+                        # Compute real score (conditional branch always evaluated on the DM input tau_DM)
                         real_score_main_cond = real_score_transformer3d(
                             x=real_score_input,
                             context=prompt_embeds,
@@ -2313,29 +2405,82 @@ def main():
                             timestep=generator_timestep
                         )
 
-                        real_score_main_uncond = real_score_transformer3d(
-                            x=real_score_input,
-                            context=neg_prompt_embeds,
-                            t=generator_timestep,
-                            seq_len=seq_len,
-                            y=inpaint_latents if args.train_mode != "normal" else None,
-                            clip_fea=clip_context if args.train_mode != "normal" else None,
-                        )
-                        real_score_main_uncond = convert_flow_pred_to_x0(
-                            scheduler=noise_scheduler,
-                            flow_pred=real_score_main_uncond,
-                            xt=real_score_input,
-                            timestep=generator_timestep
-                        )
+                        if args.decoupled_dmd:
+                            # CA term: teacher cond/uncond evaluated at the cleaner re-noise level tau_CA.
+                            real_score_ca_cond = real_score_transformer3d(
+                                x=generator_ca_input,
+                                context=prompt_embeds,
+                                t=ca_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                                clip_fea=clip_context if args.train_mode != "normal" else None,
+                            )
+                            real_score_ca_cond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_ca_cond,
+                                xt=generator_ca_input,
+                                timestep=ca_timestep
+                            )
 
-                        real_score_main = real_score_main_uncond + (
-                            real_score_main_cond - real_score_main_uncond
-                        ) * args.real_guidance_scale
+                            real_score_ca_uncond = real_score_transformer3d(
+                                x=generator_ca_input,
+                                context=neg_prompt_embeds,
+                                t=ca_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                                clip_fea=clip_context if args.train_mode != "normal" else None,
+                            )
+                            real_score_ca_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_ca_uncond,
+                                xt=generator_ca_input,
+                                timestep=ca_timestep
+                            )
+                        else:
+                            real_score_main_uncond = real_score_transformer3d(
+                                x=real_score_input,
+                                context=neg_prompt_embeds,
+                                t=generator_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                                clip_fea=clip_context if args.train_mode != "normal" else None,
+                            )
+                            real_score_main_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_main_uncond,
+                                xt=real_score_input,
+                                timestep=generator_timestep
+                            )
+
+                            real_score_main = real_score_main_uncond + (
+                                real_score_main_cond - real_score_main_uncond
+                            ) * args.real_guidance_scale
 
                     # DMD loss
-                    fake_to_real_grad = fake_score_main - real_score_main
+                    if args.decoupled_dmd:
+                        # Decoupled DMD (arXiv:2511.22677, Eq. 8) splits the teacher target into
+                        #   DM term (shield/regularizer): s_cond(tau_DM) - s_fake(tau_DM), full noise range;
+                        #   CA term (spear/engine): (alpha - 1) * (s_cond(tau_CA) - s_uncond(tau_CA)), tau_CA > t.
+                        # Composing them into one target keeps Eq. 8's (alpha - 1) relative weight under the
+                        # single adaptive normalizer of DMD, and reduces exactly to s_cfg when tau_CA == tau_DM.
+                        ca_delta = (
+                            real_score_ca_cond - real_score_ca_uncond
+                        ) * (args.real_guidance_scale - 1.0)
+                        real_score_target = real_score_main_cond + ca_delta
+                    else:
+                        real_score_target = real_score_main
+                        ca_delta = (
+                            real_score_main_cond - real_score_main_uncond
+                        ) * (args.real_guidance_scale - 1.0)
+
+                    # Magnitudes of the two Eq. 6 terms, recomputed from the frozen score tensors so the
+                    # monitor costs no extra forward pass and never touches the graph.
+                    ca_scale = ca_delta.float().abs().mean()
+                    dm_scale = (real_score_main_cond - fake_score_main).float().abs().mean()
+
+                    fake_to_real_grad = fake_score_main - real_score_target
                     if dfd_active:
-                        normalizer = 1.0 / ((generator_pred.float() - real_score_main.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
+                        normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
                         fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
 
                         dmd_loss = 0.5 * F.mse_loss(
@@ -2344,7 +2489,7 @@ def main():
                             reduction="mean"
                         )
                     else:
-                        generator_to_real_norm = generator_pred - real_score_main
+                        generator_to_real_norm = generator_pred - real_score_target
                         normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
                         fake_to_real_grad = fake_to_real_grad / normalizer
                         fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
@@ -2355,7 +2500,15 @@ def main():
                             reduction="mean"
                         )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
+
+                    monitor = accelerator.gather(
+                        torch.stack([ca_scale, dm_scale, generator_pred.float().std()])[None]
+                    ).mean(dim=0)
+                    train_ca_scale += monitor[0].item()
+                    train_dm_scale += monitor[1].item()
+                    train_latent_std += monitor[2].item()
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
@@ -2484,7 +2637,12 @@ def main():
 
                 progress_bar.update(1)
                 global_step += 1
-                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}
+                gen_log_div = max(train_gen_log_count, 1)
+                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / gen_log_div}
+                tracker_logs["train_ca_scale"] = train_ca_scale / gen_log_div
+                tracker_logs["train_dm_scale"] = train_dm_scale / gen_log_div
+                tracker_logs["train_ca_dm_ratio"] = train_ca_scale / (train_dm_scale + 1e-12)
+                tracker_logs["train_latent_std"] = train_latent_std / gen_log_div
                 if args.dfd:
                     tracker_logs["train_dfd_real_replace"] = train_dfd_real_replace
                     dfd_real_replace_now = train_dfd_real_replace
@@ -2492,6 +2650,10 @@ def main():
                 train_dmd_loss = 0.0
                 train_denoising_loss = 0.0
                 train_dfd_real_replace = 0.0
+                train_ca_scale = 0.0
+                train_dm_scale = 0.0
+                train_latent_std = 0.0
+                train_gen_log_count = 0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
