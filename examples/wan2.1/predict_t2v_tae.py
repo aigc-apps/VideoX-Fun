@@ -13,12 +13,11 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8, AutoencoderTinyWan,
-                               AutoTokenizer, CLIPModel,
-                               Wan2_2Transformer3DModel,
-                               WanLatentUpsamplerModel, WanT5EncoderModel)
+from videox_fun.models import (AutoencoderKLWan, AutoencoderTinyWan,
+                               AutoTokenizer, WanT5EncoderModel,
+                               WanTransformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Wan2_2FunInpaintPipeline, WanLatentUpsamplePipeline
+from videox_fun.pipeline import WanPipeline
 from videox_fun.utils import (register_auto_device_hook,
                               safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
@@ -64,6 +63,11 @@ compile_dit         = False
 enable_teacache     = True
 # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
+# # --------------------------------------------------------------------------------------------------- #
+# | Model Name          | threshold | Model Name          | threshold | Model Name          | threshold |
+# | Wan2.1-T2V-1.3B     | 0.05~0.10 | Wan2.1-T2V-14B      | 0.10~0.15 | Wan2.1-I2V-14B-720P | 0.20~0.30 |
+# | Wan2.1-I2V-14B-480P | 0.20~0.25 | Wan2.1-Fun-*-1.3B-* | 0.05~0.10 | Wan2.1-Fun-*-14B-*  | 0.20~0.30 |
+# # --------------------------------------------------------------------------------------------------- #
 teacache_threshold  = 0.10
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
@@ -81,59 +85,48 @@ enable_riflex       = False
 riflex_k            = 6
 
 # Config and model path
-config_path         = "config/wan2.2/wan_civitai_i2v_2.2vae.yaml"
+config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "models/Diffusion_Transformer/Wan2.2-Fun-I2V-A14B-2.2VAE"
-# TAE (Tiny AutoEncoder): shares the Wan2.2 VAE latent space but decodes much
-# cheaper (<0.5GB vs ~6-9GB), at the cost of fine detail. Weights: taew2_2.pth.
-tae_path            = "models/Diffusion_Transformer/taew2_2.pth"
+model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+
+# TAE (Tiny AutoEncoder) config.
+# TAE shares the exact latent space of the full Wan2.1 VAE but encodes / decodes
+# much faster and cheaper (<0.5GB vs ~6-9GB peak memory), at the cost of some
+# fine detail. It is suited for live previewing or low-memory decoding.
+# Weights come from https://github.com/madebyollin/taehv (taew2_1.pth for the
+# Wan2.1 / Wan2.2 14B 16ch latent).
+# The tae_path can be a path relative to model_name or an absolute path;
+# latent channels / patch size / compression ratios are inferred from it.
+tae_path                = "taew2_1.pth"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
-sampler_name        = "Flow"
+sampler_name        = "Flow_Unipc"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
-shift               = 5
-
-# Latent upsampler config
-# The latent upsampler spatially upsamples the generated latents before VAE decoding.
-enable_latent_upsample = True
+# If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
+# If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
+shift               = 3 
 
 # Load pretrained model if need
-# The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
-transformer_path        = None
-transformer_high_path   = None
-vae_path                = None
-# Load pretrained latent upsampler model if need.
-# If latent_upsampler_path is None, the latent_upsampler_subpath subfolder of model_name will be used.
-latent_upsampler_path   = None
-# Load lora model if need
-# The lora_path is used for low noise model, the lora_high_path is used for high noise model.
-lora_path               = None
-lora_high_path          = None
+transformer_path    = None
+vae_path            = None
+lora_path           = None
 
 # Other params
-sample_size         = [704, 1280]
+sample_size         = [480, 832]
 video_length        = 81
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
-weight_dtype            = torch.bfloat16
-# If you want to generate from text, please set the validation_image_start = None and validation_image_end = None
-validation_image_start  = "asset/1.png"
-validation_image_end    = None
-
-# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
-# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+weight_dtype        = torch.bfloat16
 prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 6.0
 seed                = 43
 num_inference_steps = 50
-# The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
-lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-fun-i2v-2.2vae-tae"
+save_path           = "samples/wan-videos-t2v-tae"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -143,23 +136,13 @@ config['vae_kwargs'] = OmegaConf.create({
     'vae_type': 'AutoencoderTinyWan',
     'vae_subpath': tae_path,
 })
-boundary = config['transformer_additional_kwargs'].get('boundary', 0.900)
 
-transformer = Wan2_2Transformer3DModel.from_pretrained(
-    os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')),
+transformer = WanTransformer3DModel.from_pretrained(
+    os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
     transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
-    transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
-        os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
-        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-        low_cpu_mem_usage=True,
-        torch_dtype=weight_dtype,
-    )
-else:
-    transformer_2 = None
 
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
@@ -173,23 +156,9 @@ if transformer_path is not None:
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
-if transformer_2 is not None:
-    if transformer_high_path is not None:
-        print(f"From checkpoint: {transformer_high_path}")
-        if transformer_high_path.endswith("safetensors"):
-            from safetensors.torch import load_file, safe_open
-            state_dict = load_file(transformer_high_path)
-        else:
-            state_dict = torch.load(transformer_high_path, map_location="cpu")
-        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
-
-        m, u = transformer_2.load_state_dict(state_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-
 # Get Vae
 Chosen_AutoencoderKL = {
     "AutoencoderKLWan": AutoencoderKLWan,
-    "AutoencoderKLWan3_8": AutoencoderKLWan3_8,
     "AutoencoderTinyWan": AutoencoderTinyWan
 }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
 vae = Chosen_AutoencoderKL.from_pretrained(
@@ -225,7 +194,6 @@ text_encoder = WanT5EncoderModel.from_pretrained(
     low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
-text_encoder = text_encoder.eval()
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
@@ -240,9 +208,8 @@ scheduler = Chosen_Scheduler(
 )
 
 # Get Pipeline
-pipeline = Wan2_2FunInpaintPipeline(
+pipeline = WanPipeline(
     transformer=transformer,
-    transformer_2=transformer_2,
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
@@ -251,13 +218,9 @@ pipeline = Wan2_2FunInpaintPipeline(
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
-    if transformer_2 is not None:
-        transformer_2.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
         pipeline.transformer = shard_fn(pipeline.transformer)
-        if transformer_2 is not None:
-            pipeline.transformer_2 = shard_fn(pipeline.transformer_2)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
@@ -267,38 +230,24 @@ if ulysses_degree > 1 or ring_degree > 1:
 if compile_dit:
     for i in range(len(pipeline.transformer.blocks)):
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
-    if transformer_2 is not None:
-        for i in range(len(pipeline.transformer_2.blocks)):
-            pipeline.transformer_2.blocks[i] = torch.compile(pipeline.transformer_2.blocks[i])
     print("Add Compile")
 
 if GPU_memory_mode == "sequential_cpu_offload":
     replace_parameters_by_name(transformer, ["modulation",], device=device)
     transformer.freqs = transformer.freqs.to(device=device)
-    if transformer_2 is not None:
-        replace_parameters_by_name(transformer_2, ["modulation",], device=device)
-        transformer_2.freqs = transformer_2.freqs.to(device=device)
     pipeline.enable_sequential_cpu_offload(device=device)
 elif GPU_memory_mode == "model_group_offload":
     register_auto_device_hook(pipeline.transformer)
-    if transformer_2 is not None:
-        register_auto_device_hook(pipeline.transformer_2)
     safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
 elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    if transformer_2 is not None:
-        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
-        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_cpu_offload":
     pipeline.enable_model_cpu_offload(device=device)
 elif GPU_memory_mode == "model_full_load_and_qfloat8":
     convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
     convert_weight_dtype_wrapper(transformer, weight_dtype)
-    if transformer_2 is not None:
-        convert_model_weight_to_float8(transformer_2, exclude_module_name=["modulation",], device=device)
-        convert_weight_dtype_wrapper(transformer_2, weight_dtype)
     pipeline.to(device=device)
 else:
     pipeline.to(device=device)
@@ -309,21 +258,15 @@ if coefficients is not None:
     pipeline.transformer.enable_teacache(
         coefficients, num_inference_steps, teacache_threshold, num_skip_start_steps=num_skip_start_steps, offload=teacache_offload
     )
-    if transformer_2 is not None:
-        pipeline.transformer_2.share_teacache(transformer=pipeline.transformer)
 
 if cfg_skip_ratio is not None:
     print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
     pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
-    if transformer_2 is not None:
-        pipeline.transformer_2.share_cfg_skip(transformer=pipeline.transformer)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-if lora_high_path is not None and transformer_2 is not None:
-    pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -331,10 +274,6 @@ with torch.no_grad():
 
     if enable_riflex:
         pipeline.transformer.enable_riflex(k = riflex_k, L_test = latent_frames)
-        if transformer_2 is not None:
-            pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
-
-    input_video, input_video_mask, clip_image = get_image_to_video_latent(validation_image_start, validation_image_end, video_length=video_length, sample_size=sample_size)
 
     sample = pipeline(
         prompt, 
@@ -345,63 +284,11 @@ with torch.no_grad():
         generator   = generator,
         guidance_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        boundary = boundary,
-
-        video      = input_video,
-        mask_video   = input_video_mask,
         shift = shift,
-        output_type = "latent" if enable_latent_upsample else "pil",
     ).videos
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
-if lora_high_path is not None and transformer_2 is not None:
-    pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
-
-if enable_latent_upsample:
-    lu_kwargs = OmegaConf.to_container(config['latent_upsampler_kwargs'], resolve=True)
-    lu_subpath = lu_kwargs.pop('latent_upsampler_subpath', 'latent_upsampler')
-
-    if latent_upsampler_path is None:
-        latent_upsampler_path = os.path.join(model_name, lu_subpath)
-    print(f"From latent_upsampler checkpoint: {latent_upsampler_path}")
-
-    if os.path.isdir(latent_upsampler_path):
-        latent_upsampler = WanLatentUpsamplerModel.from_pretrained(
-            latent_upsampler_path,
-            in_channels=vae.config.latent_channels,
-            **lu_kwargs,
-        )
-    else:
-        latent_upsampler = WanLatentUpsamplerModel(
-            in_channels=vae.config.latent_channels,
-            **lu_kwargs,
-        )
-        if latent_upsampler_path.endswith("safetensors"):
-            from safetensors.torch import load_file
-            state_dict = load_file(latent_upsampler_path)
-        else:
-            state_dict = torch.load(latent_upsampler_path, map_location="cpu")
-        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
-
-        m, u = latent_upsampler.load_state_dict(state_dict, strict=False)
-        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-
-    latent_upsampler.eval().to(device, dtype=weight_dtype)
-
-    upsample_pipeline = WanLatentUpsamplePipeline(
-        vae=pipeline.vae,
-        latent_upsampler=latent_upsampler,
-    )
-    upsample_pipeline.to(device=device, dtype=weight_dtype)
-
-    with torch.no_grad():
-        upsampled = upsample_pipeline(
-            latents=sample,
-            output_type="pt",
-            return_dict=False,
-        )
-    sample = upsampled[0]
 
 def save_results():
     if not os.path.exists(save_path):

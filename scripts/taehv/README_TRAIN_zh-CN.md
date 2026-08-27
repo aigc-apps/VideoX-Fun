@@ -175,7 +175,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
 # 可选：用官方发布的 TAE 权重热启动，而不是从头训练。
-export TAE_PATH="taew2_2.safetensors"
+export TAE_PATH="models/Diffusion_Transformer/taew2_2.pth"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \

@@ -18,7 +18,7 @@ from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                Wan2_2Transformer3DModel,
                                WanLatentUpsamplerModel, WanT5EncoderModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import Wan2_2I2VPipeline, WanLatentUpsamplePipeline
+from videox_fun.pipeline import Wan2_2FunInpaintPipeline, WanLatentUpsamplePipeline
 from videox_fun.utils import (register_auto_device_hook,
                               safe_enable_group_offload)
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler

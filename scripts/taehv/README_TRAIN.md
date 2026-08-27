@@ -175,7 +175,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
 # Optional: warm-start from released TAE weights instead of training from scratch.
-export TAE_PATH="taew2_2.safetensors"
+export TAE_PATH="models/Diffusion_Transformer/taew2_2.pth"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
