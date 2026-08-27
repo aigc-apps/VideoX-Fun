@@ -93,11 +93,11 @@ model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 # TAE shares the exact latent space of the full Wan2.1 VAE but encodes / decodes
 # much faster and cheaper (<0.5GB vs ~6-9GB peak memory), at the cost of some
 # fine detail. It is suited for live previewing or low-memory decoding.
-# Weights come from https://github.com/madebyollin/taehv (taew2_1.pth for the
+# Weights come from https://github.com/madebyollin/taehv (taew2_1.safetensors for the
 # Wan2.1 / Wan2.2 14B 16ch latent).
 # The tae_path can be a path relative to model_name or an absolute path;
 # latent channels / patch size / compression ratios are inferred from it.
-tae_path                = "taew2_1.pth"
+tae_path                = "taew2_1.safetensors"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow_Unipc"

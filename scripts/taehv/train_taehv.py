@@ -1004,8 +1004,9 @@ def main():
                     torch.cuda.empty_cache()
 
                 # 2. Student forward: TAE encode -> decode
-                z_tae = tae.encode(pixel_values).latent_dist.mode()
-                decoded = tae.decode(z_tae).sample
+                # Use the unwrapped model since encode/decode are not exposed by DDP.
+                z_tae = unwrap_model(tae).encode(pixel_values).latent_dist.mode()
+                decoded = unwrap_model(tae).decode(z_tae).sample
                 # Trim to the input temporal span in case the TAE padded extra frames.
                 decoded = decoded[:, :, :pixel_values.shape[2]]
 

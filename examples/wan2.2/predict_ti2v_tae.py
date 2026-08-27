@@ -89,8 +89,8 @@ config_path         = "config/wan2.2/wan_civitai_5b.yaml"
 model_name          = "models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 
 # TAE (Tiny AutoEncoder): shares the Wan2.2 VAE latent space but decodes much
-# cheaper (<0.5GB vs ~6-9GB), at the cost of fine detail. Weights: taew2_2.pth.
-tae_path            = "models/Diffusion_Transformer/taew2_2.pth"
+# cheaper (<0.5GB vs ~6-9GB), at the cost of fine detail. Weights: taew2_2.safetensors.
+tae_path            = "models/Diffusion_Transformer/taew2_2.safetensors"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow_Unipc"

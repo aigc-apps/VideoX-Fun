@@ -1,7 +1,7 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
-export TAE_PATH="models/Diffusion_Transformer/taew2_2.pth"
+export TAE_PATH="models/Diffusion_Transformer/taew2_2.safetensors"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
