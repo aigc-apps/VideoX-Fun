@@ -137,10 +137,17 @@ if vae_path is not None:
 tokenizer = AutoTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
-text_encoder = Qwen3ForCausalLM.from_pretrained(
-    model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
-    low_cpu_mem_usage=True,
-)
+try:
+    text_encoder = Qwen3ForCausalLM.from_pretrained(
+        model_name, subfolder="text_encoder", dtype=weight_dtype,
+        low_cpu_mem_usage=True,
+    )
+except TypeError:
+    # transformers < 4.56: `dtype` is not accepted yet
+    text_encoder = Qwen3ForCausalLM.from_pretrained(
+        model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
+        low_cpu_mem_usage=True,
+    )
 
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
