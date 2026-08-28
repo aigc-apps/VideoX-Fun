@@ -1039,6 +1039,10 @@ def main():
     else:
         transformer3d.requires_grad_(False)
 
+    # Determine if the model is 5B by checking the transformer config's dim field.
+    # dim == 3072 → 5B model; dim == 5120 → 14B model.
+    is_5b = transformer3d.config.dim == 3072
+
     # Lora will work with this...
     network = create_network(
         1.0,
@@ -1444,7 +1448,7 @@ def main():
                     torch.zeros_like(latents)[:, :1].to(accelerator.device, weight_dtype), [1, 4, 1, 1, 1]
                 )
                 masked_video_latents = torch.zeros_like(latents).to(accelerator.device, weight_dtype)
-                if vae.config.spatial_compression_ratio >= 16:
+                if is_5b:
                     mask = torch.ones_like(latents).to(accelerator.device, weight_dtype)[:, :1].to(accelerator.device, weight_dtype)
 
                 generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
@@ -1517,7 +1521,7 @@ def main():
                         y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(accelerator.device, weight_dtype) 
 
                     # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                    if vae.config.spatial_compression_ratio >= 16 and init_video is not None:
+                    if is_5b and init_video is not None:
                         temp_ts = ((mask[0][0][:, ::2, ::2]) * t).flatten()
                         temp_ts = torch.cat([
                             temp_ts,
@@ -1577,7 +1581,7 @@ def main():
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = noise_scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
-                    if vae.config.spatial_compression_ratio >= 16 and not mask[:, :, 0, :, :].any():
+                    if is_5b and not mask[:, :, 0, :, :].any():
                         latents = (1 - mask) * masked_video_latents + mask * latents
 
                 # decode latents (tensor)

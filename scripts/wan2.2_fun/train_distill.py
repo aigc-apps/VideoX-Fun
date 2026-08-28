@@ -1211,6 +1211,9 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     spatial_compression_ratio = vae.config.spatial_compression_ratio
+    # Determine if the model is 5B by checking the transformer config's dim field.
+    # dim == 3072 → 5B model; dim == 5120 → 14B model.
+    is_5b = generator_transformer3d.config.dim == 3072
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -2002,7 +2005,7 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+            if args.train_mode == "inpaint" and is_5b:
                 mask_conditions[:, :, 1:, :, :] = 1
                 _has_first_frame = not mask_conditions[:, :, 0, :, :].any()
 
@@ -2116,7 +2119,7 @@ def main():
                             with context_manager:
                                 _timestep = timestep
                                 _generator_noise = generator_noise
-                                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                                if args.train_mode == "inpaint" and is_5b:
                                     _generator_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_noise
                                     if _has_first_frame:
                                         _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
@@ -2161,7 +2164,7 @@ def main():
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
                         _generator_timestep = generator_timestep
                         _generator_denoised_input = generator_denoised_input
-                        if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                        if args.train_mode == "inpaint" and is_5b:
                             _generator_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_denoised_input
                             if _has_first_frame:
                                 _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _generator_timestep[:, None, None, None]).flatten(1)
@@ -2289,7 +2292,7 @@ def main():
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                             _timestep = timestep
                             _fake_score_critic_noise = fake_score_critic_noise
-                            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                            if args.train_mode == "inpaint" and is_5b:
                                 _fake_score_critic_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _fake_score_critic_noise
                                 if _has_first_frame:
                                     _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
@@ -2335,7 +2338,7 @@ def main():
                     critic_timestep
                 )
                 _critic_timestep = critic_timestep
-                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                if args.train_mode == "inpaint" and is_5b:
                     fake_score_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * fake_score_denoised_input
                     if _has_first_frame:
                         _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _critic_timestep[:, None, None, None]).flatten(1)

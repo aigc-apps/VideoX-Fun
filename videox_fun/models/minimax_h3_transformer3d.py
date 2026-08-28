@@ -144,6 +144,21 @@ class MiniMaxH3AdaLayerNormModulation(nn.Module):
         return temb.chunk(6, dim=-1)
 
 
+def _index_select_rows(table: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    r"""
+    `table.index_select(0, indices)` with a sm80-safe backward.
+
+    The backward of a row gather is a scatter-add into the table, and bf16 has no native `atomicAdd`
+    before sm90 — on Ampere the few-row tables of the AdaLN modulations degenerate into a CAS spin
+    (~0.3 s per call over a 28k-row packed sequence). Gathering from a float32 view keeps the forward
+    values bit-identical (the bf16 -> fp32 -> bf16 round trip is exact) while the backward scatter-add
+    runs on hardware fp32 atomics.
+    """
+    if table.dtype != torch.bfloat16:
+        return table.index_select(0, indices)
+    return table.float().index_select(0, indices).to(table.dtype)
+
+
 class MiniMaxH3AdaLayerNormOut(nn.Module):
     r"""
     Final norm of the packed sequence, shift/scale modulated per row. The modulation table holds one row per
@@ -161,8 +176,8 @@ class MiniMaxH3AdaLayerNormOut(nn.Module):
         shift, scale = self.linear(F.silu(temb).to(self.linear.weight.dtype)).chunk(2, dim=-1)
         # The modulation itself stays at the block stack's precision; `forward` casts to the output heads' dtype.
         hidden_states = self.norm(hidden_states)
-        return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(
-            0, timestep_indices
+        return hidden_states * (1.0 + _index_select_rows(scale, timestep_indices)) + _index_select_rows(
+            shift, timestep_indices
         )
 
 
@@ -365,18 +380,18 @@ class MiniMaxH3TransformerBlock(nn.Module):
         residual = hidden_states
         norm_hidden_states = self.norm1(hidden_states)
         norm_hidden_states = norm_hidden_states * (
-            1.0 + scale_msa.index_select(0, adaln_indices)
-        ) + shift_msa.index_select(0, adaln_indices)
+            1.0 + _index_select_rows(scale_msa, adaln_indices)
+        ) + _index_select_rows(shift_msa, adaln_indices)
         attn_output = self.attn(norm_hidden_states, rotary_emb, attention_mask, valid_length)
-        hidden_states = residual + gate_msa.index_select(0, adaln_indices) * attn_output
+        hidden_states = residual + _index_select_rows(gate_msa, adaln_indices) * attn_output
 
         residual = hidden_states
         norm_hidden_states = self.norm2(hidden_states)
         norm_hidden_states = norm_hidden_states * (
-            1.0 + scale_mlp.index_select(0, adaln_indices)
-        ) + shift_mlp.index_select(0, adaln_indices)
+            1.0 + _index_select_rows(scale_mlp, adaln_indices)
+        ) + _index_select_rows(shift_mlp, adaln_indices)
         ff_output = self.ff(norm_hidden_states)
-        hidden_states = residual + gate_mlp.index_select(0, adaln_indices) * ff_output
+        hidden_states = residual + _index_select_rows(gate_mlp, adaln_indices) * ff_output
 
         return hidden_states
 
