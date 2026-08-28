@@ -28,6 +28,15 @@ from videox_fun.utils.utils import (filter_kwargs, get_image, get_image_latent,
                                     get_image_to_video_latent,
                                     get_video_to_video_latent,
                                     save_videos_grid)
+import transformers
+from packaging.version import Version
+
+def _dtype_kwargs(dtype):
+    """`dtype` keyword of `from_pretrained` exists since transformers 4.56 (PR #39782);
+    older versions use `torch_dtype`."""
+    if Version(transformers.__version__) >= Version("4.56"):
+        return {"dtype": dtype}
+    return {"torch_dtype": dtype}
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -138,7 +147,7 @@ tokenizer = AutoTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
 text_encoder = Qwen3ForCausalLM.from_pretrained(
-    model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
+    model_name, subfolder="text_encoder", **_dtype_kwargs(weight_dtype),
     low_cpu_mem_usage=True,
 )
 
