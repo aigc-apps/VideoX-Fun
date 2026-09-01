@@ -361,13 +361,33 @@ def pdd_state_dict(transformer) -> dict:
     }
 
 
+PDD_WEIGHTS_NAME = "pdd.safetensors"
+PDD_EMA_WEIGHTS_NAME = "pdd_ema.safetensors"
+# Pre-rename checkpoints stored live weights here; resume still accepts it.
+PDD_LEGACY_LIVE_WEIGHTS_NAME = "pdd_live.safetensors"
+
+
 def resolve_pdd_lora_path(path):
-    r"""A checkpoint directory (loads `pdd.safetensors`) or a weights file."""
+    r"""
+    A checkpoint directory or a weights file.
+
+    A directory prefers `pdd_ema.safetensors` (the EMA inference export) and falls back to `pdd.safetensors`
+    (live weights, or the EMA file on checkpoints written before the rename).
+    """
     if path is None:
         return None
     path = os.path.abspath(os.path.expanduser(path))
     if os.path.isdir(path):
-        path = os.path.join(path, "pdd.safetensors")
+        ema = os.path.join(path, PDD_EMA_WEIGHTS_NAME)
+        live = os.path.join(path, PDD_WEIGHTS_NAME)
+        if os.path.isfile(ema):
+            path = ema
+        elif os.path.isfile(live):
+            path = live
+        else:
+            raise FileNotFoundError(
+                f"PDD checkpoint directory {path} has neither {PDD_EMA_WEIGHTS_NAME} nor {PDD_WEIGHTS_NAME}."
+            )
     if not os.path.isfile(path):
         raise FileNotFoundError(f"PDD checkpoint does not exist: {path}")
     return path
@@ -399,9 +419,10 @@ def load_pdd_config(weights_path):
 
 def load_pdd_lora(transformer, pdd_lora_path):
     r"""
-    Attach the parallel heads and LoRA, then load `pdd.safetensors` into `transformer`.
+    Attach the parallel heads and LoRA, then load the resolved PDD weights into `transformer`.
 
-    Returns the config the predict scripts need to arm the heads and pick NFE.
+    A checkpoint directory loads `pdd_ema.safetensors` when present (EMA inference export) and otherwise
+    `pdd.safetensors`. Returns the config the predict scripts need to arm the heads and pick NFE.
     """
     path = resolve_pdd_lora_path(pdd_lora_path)
     config = load_pdd_config(path)

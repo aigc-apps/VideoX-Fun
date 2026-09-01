@@ -31,5 +31,4 @@ accelerate launch --mixed_precision="no" --use_fsdp \
   --train_mode="fl2va" \
   --pdd_num_steps=32 \
   --pdd_block_size=4 \
-  --use_ema \
   --validation_steps=200

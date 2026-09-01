@@ -67,7 +67,9 @@ for project_root in project_roots:
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
                                MiniMaxH3Transformer3DModel)
-from videox_fun.models.minimax_h3_pdd import (LoRALinear,
+from videox_fun.models.minimax_h3_pdd import (PDD_EMA_WEIGHTS_NAME,
+                                              PDD_LEGACY_LIVE_WEIGHTS_NAME,
+                                              PDD_WEIGHTS_NAME, LoRALinear,
                                               MiniMaxH3ParallelHead, add_lora,
                                               attach_parallel_decoder,
                                               pdd_sampling_plan,
@@ -283,8 +285,8 @@ def log_validation(
 ):
     r"""
     Generate every held-out cache entry with the student at `--validation_nfe`, sharded across ranks, and save
-    next to the run. Entries are already cached Qwen3-VL conditioning; this does not load JSON inference jobs.
-
+    next to the run. Entries are already cached Qwen3-VL conditioning;
+    
     PDD generation is an ordinary Euler loop over the *block boundaries* of the grid: those boundaries are exactly
     the schedule `MiniMaxH3Scheduler` builds for `NFE` steps, so the released pipeline drives the student unchanged
     and the only PDD-specific work is arming the heads before each step.
@@ -419,10 +421,11 @@ def parse_args():
     parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
+    parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
         "--max_train_steps",
         type=int,
-        default=3000,
+        default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
     )
     parser.add_argument(
@@ -665,7 +668,7 @@ def parse_args():
     parser.add_argument(
         "--use_ema",
         action="store_true",
-        help="Keep an exponential moving average of the trainable set, and validate and checkpoint from it.",
+        help="Keep an exponential moving average of the trainable set. Validation and `pdd_ema.safetensors` use it.",
     )
     parser.add_argument("--ema_decay", type=float, default=0.99)
     parser.add_argument("--abnormal_norm_clip_start", type=int, default=1000)
@@ -681,10 +684,6 @@ def parse_args():
     if args.pdd_max_block_size is None:
         args.pdd_max_block_size = args.pdd_block_size
     return args
-
-
-PDD_WEIGHTS_NAME = "pdd.safetensors"
-PDD_LIVE_WEIGHTS_NAME = "pdd_live.safetensors"
 
 
 def filter_pdd_state_dict(transformer, state_dict):
@@ -711,7 +710,7 @@ def save_pdd_weights(path, state_dict):
 
 
 def dump_pdd_config(args, save_path):
-    r"""Write `pdd_config.json` with both this script's LoRA flags and the inference aliases `predict_t2v_args.py` reads."""
+    r"""Write `pdd_config.json` with both this script's LoRA flags and the inference aliases `predict_t2v.py` reads."""
     config = dict(vars(args))
     config["lora_rank"] = args.rank
     config["lora_alpha"] = args.network_alpha
@@ -721,11 +720,11 @@ def dump_pdd_config(args, save_path):
 
 
 def save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator):
-    r"""Optimizer / scheduler / live weights / EMA shadow — the pieces `pdd.safetensors` (the EMA export) does not hold."""
+    r"""Optimizer / scheduler / live `pdd.safetensors` / EMA shadow — the pieces `pdd_ema.safetensors` does not hold."""
     os.makedirs(save_path, exist_ok=True)
     torch.save(optimizer.state_dict(), os.path.join(save_path, "optimizer.pt"))
     torch.save(lr_scheduler.state_dict(), os.path.join(save_path, "scheduler.pt"))
-    save_pdd_weights(os.path.join(save_path, PDD_LIVE_WEIGHTS_NAME), pdd_state_dict(student))
+    save_pdd_weights(os.path.join(save_path, PDD_WEIGHTS_NAME), pdd_state_dict(student))
     if ema is not None:
         torch.save(ema.state_dict(), os.path.join(save_path, "ema.pt"))
     if getattr(accelerator, "scaler", None) is not None:
@@ -733,10 +732,11 @@ def save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelera
 
 
 def load_resume_state(save_path, student, optimizer, lr_scheduler, ema, trainable_params, accelerator):
-    r"""Load the trainer state written by [`save_resume_state`], same `.pt` / `.bin` lookup as `train_lora.py`."""
+    r"""Load the trainer state written by [`save_resume_state`]. Prefers legacy `pdd_live.safetensors` when present."""
     from safetensors.torch import load_file
 
-    weights_path = os.path.join(save_path, PDD_LIVE_WEIGHTS_NAME)
+    legacy_live = os.path.join(save_path, PDD_LEGACY_LIVE_WEIGHTS_NAME)
+    weights_path = legacy_live if os.path.isfile(legacy_live) else os.path.join(save_path, PDD_WEIGHTS_NAME)
     state_dict = load_file(weights_path, device="cpu")
     m, u = student.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
@@ -1016,9 +1016,9 @@ def main():
 
     # ------------------------------------------------------------------ save / load hooks
     # `accelerate` 0.16.0+ supports custom saving hooks. Under FSDP / ZeRO-3 the hook writes
-    # `pdd_live.safetensors` from the gathered trainable tensors so DDP `--save_state` resume can reload
-    # live weights; popping `weights` on the DDP path keeps `save_state` from serializing the frozen backbone.
-    # The EMA / inference export `pdd.safetensors` is written after `ema.copy_to`.
+    # live `pdd.safetensors` from the gathered trainable tensors so DDP `--save_state` resume can reload
+    # the current step; popping `weights` on the DDP path keeps `save_state` from serializing the frozen
+    # backbone. The EMA inference export `pdd_ema.safetensors` is written after `ema.copy_to`.
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
@@ -1026,7 +1026,7 @@ def main():
                 if accelerator.is_main_process and accelerate_state_dict is not None:
                     os.makedirs(output_dir, exist_ok=True)
                     save_pdd_weights(
-                        os.path.join(output_dir, PDD_LIVE_WEIGHTS_NAME),
+                        os.path.join(output_dir, PDD_WEIGHTS_NAME),
                         filter_pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
                     )
                     dump_pdd_config(args, output_dir)
@@ -1040,7 +1040,7 @@ def main():
                 if accelerator.is_main_process and accelerate_state_dict is not None:
                     os.makedirs(output_dir, exist_ok=True)
                     save_pdd_weights(
-                        os.path.join(output_dir, PDD_LIVE_WEIGHTS_NAME),
+                        os.path.join(output_dir, PDD_WEIGHTS_NAME),
                         filter_pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
                     )
                     dump_pdd_config(args, output_dir)
@@ -1105,6 +1105,15 @@ def main():
     train_cache = load_cache_split(os.path.join(cache_root, "train"), args.train_mode)
     val_cache = load_cache_split(os.path.join(cache_root, "val"), args.train_mode)
 
+    # Scheduler and math around the number of training steps. There is no DataLoader: one epoch is one pass
+    # through the prompt cache (batch size is 1). `--max_train_steps` overrides `--num_train_epochs`, matching
+    # `scripts/minimax_h3/train_lora.py`.
+    overrode_max_train_steps = False
+    num_update_steps_per_epoch = math.ceil(len(train_cache) / args.gradient_accumulation_steps)
+    if args.max_train_steps is None:
+        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        overrode_max_train_steps = True
+
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
@@ -1117,10 +1126,7 @@ def main():
 
     device = accelerator.device
     # The two VAEs stay float32 (mirrors the pipeline: float32 weights, float16 autocast only at the
-    # encode/decode call site), so they are moved without a dtype cast. Under `--low_vram` they live on
-    # CPU and only come on-device inside `log_validation`, the same residency as `train_lora.py`.
-    # Under FSDP a `.to()` on the wrapped transformer rematerializes FlatParameters on every rank, so the
-    # sharded model is left where `prepare` put it.
+    # encode/decode call site), so they are moved without a dtype cast.
     vae.to(device if not args.low_vram else "cpu")
     audio_vae.to(device if not args.low_vram else "cpu")
     if fsdp_stage == 0 and zero_stage == 0:
@@ -1132,6 +1138,14 @@ def main():
         if args.use_ema
         else None
     )
+
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
+    # PDD has no DataLoader (`accelerator.prepare` does not shard the prompt cache); recompute against the cache
+    # anyway so `--num_train_epochs` and `--max_train_steps` stay consistent with `train_lora.py`.
+    num_update_steps_per_epoch = math.ceil(len(train_cache) / args.gradient_accumulation_steps)
+    if overrode_max_train_steps:
+        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     if accelerator.is_main_process:
         master_dtypes = {parameter.dtype for parameter in transformer.parameters()}
@@ -1181,6 +1195,7 @@ def main():
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_cache)}")
+    logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
@@ -1387,23 +1402,23 @@ def main():
                 if ema is not None:
                     ema.store(trainable_params)
                     ema.copy_to(trainable_params)
-                if args.use_deepspeed or args.use_fsdp:
-                    state_dict = accelerator.get_state_dict(transformer, unwrap=True)
-                    if accelerator.is_main_process and state_dict is not None:
+                    checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    if args.use_deepspeed or args.use_fsdp:
+                        state_dict = accelerator.get_state_dict(transformer, unwrap=True)
+                        if accelerator.is_main_process and state_dict is not None:
+                            save_pdd_weights(
+                                os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                                filter_pdd_state_dict(unwrap_model(transformer), state_dict),
+                            )
+                            dump_pdd_config(args, checkpoint_dir)
+                    elif accelerator.is_main_process:
                         save_pdd_weights(
-                            os.path.join(args.output_dir, f"checkpoint-{global_step}", PDD_WEIGHTS_NAME),
-                            filter_pdd_state_dict(unwrap_model(transformer), state_dict),
+                            os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                            pdd_state_dict(unwrap_model(transformer)),
                         )
-                        dump_pdd_config(args, os.path.join(args.output_dir, f"checkpoint-{global_step}"))
-                        logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
-                elif accelerator.is_main_process:
-                    save_pdd_weights(
-                        os.path.join(args.output_dir, f"checkpoint-{global_step}", PDD_WEIGHTS_NAME),
-                        pdd_state_dict(unwrap_model(transformer)),
-                    )
-                    logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
-                if ema is not None:
                     ema.restore(trainable_params)
+                if accelerator.is_main_process:
+                    logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
                 accelerator.wait_for_everyone()
 
             if global_step % args.validation_steps == 0:
@@ -1437,17 +1452,17 @@ def main():
             dump_pdd_config(args, save_path)
         if ema is not None:
             ema.copy_to(trainable_params)
-        if args.use_deepspeed or args.use_fsdp:
-            state_dict = accelerator.get_state_dict(transformer, unwrap=True)
-            if accelerator.is_main_process and state_dict is not None:
-                save_pdd_weights(
-                    os.path.join(save_path, PDD_WEIGHTS_NAME),
-                    filter_pdd_state_dict(unwrap_model(transformer), state_dict),
-                )
-                dump_pdd_config(args, save_path)
-                logger.info(f"Saved state to {save_path}")
-        elif accelerator.is_main_process:
-            save_pdd_weights(os.path.join(save_path, PDD_WEIGHTS_NAME), pdd_state_dict(unwrap_model(transformer)))
+            if args.use_deepspeed or args.use_fsdp:
+                state_dict = accelerator.get_state_dict(transformer, unwrap=True)
+                if accelerator.is_main_process and state_dict is not None:
+                    save_pdd_weights(
+                        os.path.join(save_path, PDD_EMA_WEIGHTS_NAME),
+                        filter_pdd_state_dict(unwrap_model(transformer), state_dict),
+                    )
+                    dump_pdd_config(args, save_path)
+            elif accelerator.is_main_process:
+                save_pdd_weights(os.path.join(save_path, PDD_EMA_WEIGHTS_NAME), pdd_state_dict(unwrap_model(transformer)))
+        if accelerator.is_main_process:
             logger.info(f"Saved state to {save_path}")
     accelerator.end_training()
 
