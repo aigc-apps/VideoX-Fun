@@ -63,7 +63,7 @@ compile_dit         = False
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
 # model path
-model_name          = "../CogVideoX-Fun-Github/models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
+model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -73,7 +73,7 @@ shift               = 5
 stochastic_sampling = True
 
 # Load pretrained model if need
-transformer_path    = "/mnt/data/Code/CogVideoX-Fun-Github/models/Diffusion_Transformer/Self-Forcing/checkpoints/self_forcing_dmd.pt"
+transformer_path    = "models/Diffusion_Transformer/Self-Forcing/checkpoints/self_forcing_dmd.pt"
 vae_path            = None
 lora_path           = None
 
