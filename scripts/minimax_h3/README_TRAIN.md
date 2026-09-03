@@ -181,7 +181,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 mkdir -p models/Diffusion_Transformer
 
 # Download MiniMax-H3 official weights
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 ```
 
 > 💡 The loader accepts either the converted diffusers layout above or an *original* MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`); the original shards are converted on the fly while loading, with no intermediate copy on disk.

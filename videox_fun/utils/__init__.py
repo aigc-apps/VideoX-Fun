@@ -12,6 +12,9 @@ from .group_offload import (register_auto_device_hook,
                             safe_remove_group_offloading)
 from .lora_utils import (convert_peft_lora_to_kohya_lora, create_network,
                          merge_lora, unmerge_lora)
+from .perf_metrics import install as install_perf_metrics
+from .perf_metrics import install_training as install_perf_training
+from .perf_metrics import instrument_pipeline
 from .sd3_sde_with_logprob import sde_step_with_logprob
 from .trigflow_sampler import (RectifiedFlow_TrigFlowWrapper,
                                sample_trigflow_timesteps)

@@ -400,14 +400,17 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             raise ValueError("Invalid set gradient checkpointing")
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
-        # x: BCTHW in [-1, 1] -> normalized latents BCLHW
-        scale = [item.to(x.device, x.dtype) for item in self.scale]
+        # x: BCTHW in [-1, 1] -> normalized latents BCLHW.
+        # NOTE: the official TAE weights were distilled against the *normalized*
+        # Wan latent space (see the official diffusers wrapper, which sets
+        # latents_mean=zeros/latents_std=ones and passes pipeline latents
+        # through unchanged), so no mean/std scaling is applied here: the
+        # encoder output is already interchangeable with full-VAE latents.
         x = (x.add(1).div_(2)).clamp_(0, 1)     # [-1, 1] -> [0, 1]
         x = x.permute(0, 2, 1, 3, 4)            # BCTHW -> NTCHW
         zs = []
         for u in x:
             z = self.model.encode_video(u.unsqueeze(0), parallel=self.parallel).squeeze(0)
-            z = (z - scale[0].view(1, -1, 1, 1)) * scale[1].view(1, -1, 1, 1)
             zs.append(z.permute(1, 0, 2, 3))    # TCHW -> CTHW
         return torch.stack(zs)
 
@@ -426,9 +429,9 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     def _decode(self, zs):
-        # zs: BCLHW normalized latents -> BCTHW in [-1, 1]
-        scale = [item.to(zs.device, zs.dtype) for item in self.scale]
-        zs = zs / scale[1].view(1, -1, 1, 1, 1) + scale[0].view(1, -1, 1, 1, 1)
+        # zs: BCLHW normalized latents -> BCTHW in [-1, 1].
+        # NOTE: no denormalization here, for the same reason as in _encode:
+        # the official TAE decoder consumes normalized latents directly.
         zs = zs.permute(0, 2, 1, 3, 4)          # BCTHW -> NTCHW
         dec = []
         for u in zs:
