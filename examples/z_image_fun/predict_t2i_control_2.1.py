@@ -3,8 +3,10 @@ import sys
 
 import numpy as np
 import torch
+import transformers
 from diffusers import FlowMatchEulerDiscreteScheduler
 from omegaconf import OmegaConf
+from packaging.version import Version
 from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
@@ -137,8 +139,14 @@ if vae_path is not None:
 tokenizer = AutoTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
+
+# `Qwen3ForCausalLM.from_pretrained` renamed `torch_dtype` -> `dtype` in transformers
+# 4.56 (PR #39782); pick whichever keyword the installed version accepts.
+def _dtype_kwargs(dtype):
+    return {"dtype": dtype} if Version(transformers.__version__) >= Version("4.56") else {"torch_dtype": dtype}
+
 text_encoder = Qwen3ForCausalLM.from_pretrained(
-    model_name, subfolder="text_encoder", torch_dtype=weight_dtype,
+    model_name, subfolder="text_encoder", **_dtype_kwargs(weight_dtype),
     low_cpu_mem_usage=True,
 )
 
