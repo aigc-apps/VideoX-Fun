@@ -112,6 +112,23 @@ class CasualWanSelfAttention(nn.Module):
         self.local_attn_size = local_attn_size
         self.sink_size = sink_size
 
+        # Forcing-KV (arXiv 2605.09681) hybrid KV cache compression state,
+        # aligned with the official zju-jiyicheng/Forcing-KV architecture.
+        # Configured by WanSelfForcingPipeline.set_forcing_kv_config; defaults
+        # keep the original full-window attention path bit-identical.
+        self.forcing_kv_enable = False
+        self.forcing_kv_static_heads = None
+        self.forcing_kv_dynamic_heads = None
+        self.forcing_kv_layer_idx = -1
+        self.forcing_kv_ar_start = 1
+        self.forcing_kv_spatial_context_length = 1
+        self.forcing_kv_temporal_context_length = 1
+        self.forcing_kv_dynamic_context_length = 1
+        self.forcing_kv_num_frame_patch = 6
+        self.forcing_kv_sim_retention_ratio = 0.33
+        # Lazily-built, device-cached head index tensors (see _fkv_head_indices).
+        self._fkv_idx_cache = None
+
         # Layers
         self.q = nn.Linear(dim, dim)
         self.k = nn.Linear(dim, dim)
@@ -131,7 +148,8 @@ class CasualWanSelfAttention(nn.Module):
         current_start=0,
         cache_start=None, 
         dtype=torch.bfloat16, 
-        t=0
+        t=0,
+        forcing_kv_state=None,
     ):
         r"""
         Args:
@@ -143,6 +161,9 @@ class CasualWanSelfAttention(nn.Module):
             kv_cache: KV cache for causal self-attention
             current_start: Current starting position in token sequence
             cache_start: Cache starting position
+            forcing_kv_state: Dict shared across blocks within one forward call,
+                used by Forcing-KV to pass per-chunk metadata (e.g. frames per
+                chunk) from the model down to the self-attention layers.
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
         if cache_start is None:
@@ -259,6 +280,35 @@ class CasualWanSelfAttention(nn.Module):
             # If we are using local attention and the current KV cache size is larger than the local attention size, we need to truncate the KV cache
             kv_cache_size = kv_cache["k"].shape[1]
             num_new_tokens = roped_query.shape[1]
+
+            # Forcing-KV: per-cache compression state, lazily created on first
+            # use. Before the switch step (ar_start) every layer attends over
+            # [sink + recent history + current chunk]; after the switch, layer 0
+            # keeps that path while layers >= 1 split heads into static/dynamic
+            # groups with separate history budgets (official architecture).
+            forcing_kv_active = bool(
+                self.forcing_kv_enable and self.forcing_kv_static_heads is not None)
+            is_appending = current_end > kv_cache["global_end_index"].item()
+            clean_pass = bool(forcing_kv_state is not None and forcing_kv_state.get("clean_pass", False))
+            fkv = None
+            fkv_switched = False
+            if forcing_kv_active:
+                if "forcing_kv" not in kv_cache:
+                    kv_cache["forcing_kv"] = {
+                        "switched_at": None,
+                        "dyn_k": None,
+                        "dyn_v": None,
+                        "dyn_valid": 0,
+                    }
+                fkv = kv_cache["forcing_kv"]
+                fpb = max(1, int(self.num_frame_per_block))
+                ar_step = current_start // (frame_seqlen * fpb)
+                if clean_pass and ar_step >= self.forcing_kv_ar_start and fkv["switched_at"] is None:
+                    # Mirror the official switch: it only takes effect from the
+                    # next chunk on, so the switching chunk itself stays
+                    # ungrouped.
+                    fkv["switched_at"] = ar_step
+                fkv_switched = fkv["switched_at"] is not None and ar_step > fkv["switched_at"]
             
             if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
                     num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
@@ -283,17 +333,31 @@ class CasualWanSelfAttention(nn.Module):
                 local_start_index = local_end_index - num_new_tokens
                 kv_cache["k"][:, local_start_index:local_end_index] = roped_key
                 kv_cache["v"][:, local_start_index:local_end_index] = v
-            
+
             # Compute attention with local window
             if self.local_attn_size == -1:
                 max_attention_size = local_end_index
             else:
                 max_attention_size = self.local_attn_size * frame_seqlen
-            x = attention(
-                roped_query,
-                kv_cache["k"][:, max(0, local_end_index - max_attention_size):local_end_index],
-                kv_cache["v"][:, max(0, local_end_index - max_attention_size):local_end_index]
-            )
+            window_start = max(0, local_end_index - max_attention_size)
+            if forcing_kv_active:
+                x = self._forcing_kv_grouped_attention(
+                    roped_query, kv_cache, fkv, fkv_switched,
+                    local_start_index, local_end_index, frame_seqlen)
+                if clean_pass and fkv_switched and self.forcing_kv_layer_idx != 0:
+                    self._forcing_kv_dynamic_update(
+                        kv_cache, fkv, local_start_index, local_end_index,
+                        frame_seqlen, forcing_kv_state=forcing_kv_state)
+            else:
+                x = attention(
+                    roped_query,
+                    kv_cache["k"][:, window_start:local_end_index],
+                    kv_cache["v"][:, window_start:local_end_index]
+                )
+            # Expose the attention window for offline head profiling
+            kv_cache["_fkv_last_q"] = roped_query
+            kv_cache["_fkv_window_start"] = window_start
+            kv_cache["_fkv_local_end"] = local_end_index
             kv_cache["global_end_index"].fill_(current_end)
             kv_cache["local_end_index"].fill_(local_end_index)
 
@@ -301,6 +365,204 @@ class CasualWanSelfAttention(nn.Module):
         x = x.flatten(2)
         x = self.o(x)
         return x
+
+    def _fkv_head_indices(self, device):
+        """Lazily build and cache the static/dynamic head index tensors.
+
+        Constant for a given head profile; cached on the module keyed by device
+        so the hot path (grouped attention / dynamic update) never rebuilds the
+        tensors or pays their host->device copies. Reset by set_forcing_kv_config.
+        """
+        cache = self._fkv_idx_cache
+        if cache is not None and cache[0] == device:
+            return cache[1], cache[2]
+        s_idx = torch.tensor(
+            self.forcing_kv_static_heads or [], dtype=torch.long, device=device)
+        d_idx = torch.tensor(
+            self.forcing_kv_dynamic_heads or [], dtype=torch.long, device=device)
+        self._fkv_idx_cache = (device, s_idx, d_idx)
+        return s_idx, d_idx
+
+    # ------------------------------------------------------------------
+    # Forcing-KV: Hybrid KV Cache Compression for Efficient Autoregressive
+    # Video Diffusion Models (arXiv 2605.09681), aligned with the official
+    # zju-jiyicheng/Forcing-KV implementation. Static ("spatial") heads
+    # attend over [sink + last spatial_context_length frames + current
+    # chunk]; dynamic ("temporal") heads attend over [sink + compressed
+    # segment cache + last temporal_context_length frames + current chunk].
+    # Layer 0 and pre-switch chunks use the ungrouped path over
+    # [sink + max(spatial, temporal) history frames + current chunk].
+    # ------------------------------------------------------------------
+    def _forcing_kv_grouped_attention(self, roped_query, kv_cache, fkv,
+                                      fkv_switched, local_start_index,
+                                      local_end_index, frame_seqlen):
+        """Per-head-group attention over the compacted KV cache."""
+        k_full = kv_cache["k"]
+        v_full = kv_cache["v"]
+        sink_tokens = self.sink_size * frame_seqlen
+        # Early chunks may hold fewer tokens than the sink budget
+        sink_end = min(sink_tokens, local_start_index)
+        cur = slice(local_start_index, local_end_index)
+
+        def hist_slice(n_frames):
+            start = max(sink_end, local_start_index - n_frames * frame_seqlen)
+            return slice(start, local_start_index)
+
+        layer_idx = self.forcing_kv_layer_idx
+        if not fkv_switched or layer_idx == 0:
+            # Ungrouped path shared by layer 0 and pre-switch chunks
+            n_hist = max(self.forcing_kv_spatial_context_length,
+                         self.forcing_kv_temporal_context_length)
+            hist = hist_slice(n_hist)
+            return attention(
+                roped_query,
+                torch.cat([k_full[:, :sink_end], k_full[:, hist], k_full[:, cur]], dim=1),
+                torch.cat([v_full[:, :sink_end], v_full[:, hist], v_full[:, cur]], dim=1),
+            )
+
+        # Head index tensors are built lazily once and cached on the module
+        # (constant for a given head profile); see _fkv_head_indices.
+        s_idx, d_idx = self._fkv_head_indices(roped_query.device)
+        x = roped_query.new_empty(roped_query.shape)
+
+        if s_idx.numel() > 0:
+            hist_s = hist_slice(self.forcing_kv_spatial_context_length)
+            k_s = torch.cat([
+                k_full[:, :sink_end].index_select(2, s_idx),
+                k_full[:, hist_s].index_select(2, s_idx),
+                k_full[:, cur].index_select(2, s_idx),
+            ], dim=1)
+            v_s = torch.cat([
+                v_full[:, :sink_end].index_select(2, s_idx),
+                v_full[:, hist_s].index_select(2, s_idx),
+                v_full[:, cur].index_select(2, s_idx),
+            ], dim=1)
+            x.index_copy_(2, s_idx, attention(
+                roped_query.index_select(2, s_idx), k_s, v_s))
+
+        if d_idx.numel() > 0:
+            hist_t = hist_slice(self.forcing_kv_temporal_context_length)
+            k_parts = [k_full[:, :sink_end].index_select(2, d_idx)]
+            v_parts = [v_full[:, :sink_end].index_select(2, d_idx)]
+            dyn_valid = int(fkv["dyn_valid"])
+            if dyn_valid > 0 and fkv["dyn_k"] is not None:
+                k_parts.append(fkv["dyn_k"][:, :dyn_valid])
+                v_parts.append(fkv["dyn_v"][:, :dyn_valid])
+            k_parts.append(k_full[:, hist_t].index_select(2, d_idx))
+            k_parts.append(k_full[:, cur].index_select(2, d_idx))
+            v_parts.append(v_full[:, hist_t].index_select(2, d_idx))
+            v_parts.append(v_full[:, cur].index_select(2, d_idx))
+            x.index_copy_(2, d_idx, attention(
+                roped_query.index_select(2, d_idx),
+                torch.cat(k_parts, dim=1), torch.cat(v_parts, dim=1)))
+        return x
+
+    def _forcing_kv_dynamic_update(self, kv_cache, fkv, local_start_index,
+                                   local_end_index, frame_seqlen,
+                                   forcing_kv_state=None):
+        """Refresh the dynamic compressed cache (official dynamic_compression).
+
+        Candidate frames are the last temporal_context_length history frames
+        plus the current chunk; the final chunk frame acts as the boundary.
+        Adjacent frame pairs are scored segment-wise with fp32 cosine
+        similarity computed per token (heads x dim vectors) and averaged over
+        each segment's tokens (official token_scores.mean(dim=3)); the least
+        similar segments are kept. Layer 1 computes the keep decision once
+        and every other layer of the same forward call reuses it through the
+        per-forward forcing_kv_state (the official build shares via a class
+        attribute on a single cache; here the state dict is fresh per forward
+        so the two CFG caches stay independent).
+        """
+        layer_idx = self.forcing_kv_layer_idx
+        d_idx = self._fkv_head_indices(kv_cache["k"].device)[1]
+        temporal = max(0, int(self.forcing_kv_temporal_context_length))
+        n_patch = int(self.forcing_kv_num_frame_patch)
+        retention = float(self.forcing_kv_sim_retention_ratio)
+
+        if d_idx.numel() == 0 or temporal == 0 or n_patch <= 0:
+            fkv["dyn_valid"] = 0
+            return
+        if frame_seqlen % n_patch != 0:
+            raise ValueError(
+                f"Frame token count {frame_seqlen} must be divisible by "
+                f"forcing_kv_num_frame_patch {n_patch}")
+
+        k_full = kv_cache["k"]
+        v_full = kv_cache["v"]
+        hist_start = max(self.sink_size * frame_seqlen,
+                         local_start_index - temporal * frame_seqlen)
+        old_k = k_full[:, hist_start:local_start_index]
+        new_k = k_full[:, local_start_index:local_end_index]
+        if old_k.shape[1] < temporal * frame_seqlen or new_k.shape[1] < frame_seqlen:
+            # Not enough history yet; skip the dynamic cache for this chunk
+            fkv["dyn_valid"] = 0
+            return
+        old_v = v_full[:, hist_start:local_start_index]
+        new_v = v_full[:, local_start_index:local_end_index]
+        chain_k = torch.cat([old_k, new_k], dim=1)
+        chain_v = torch.cat([old_v, new_v], dim=1)
+        num_chain_frames = chain_k.shape[1] // frame_seqlen
+        pairs = num_chain_frames - 1
+        chunk_tokens = frame_seqlen // n_patch
+        total_chunks = pairs * n_patch
+
+        device = chain_k.device
+        capacity_chunks = int(self.forcing_kv_dynamic_context_length) * n_patch
+        keep_chunk_count = max(0, min(
+            min(capacity_chunks, total_chunks),
+            int(round(total_chunks * retention))))
+
+        keep_indices = (forcing_kv_state or {}).get("fkv_keep_indices")
+        if keep_indices is None:
+            # Official scoring: cosine similarity per token (heads x dim)
+            # between adjacent frames, averaged over the segment's tokens.
+            chain = chain_k.index_select(2, d_idx).float()
+            frames = chain.reshape(
+                chain.shape[0], num_chain_frames, n_patch, chunk_tokens, -1)
+            token_scores = torch.nn.functional.cosine_similarity(
+                frames[:, :-1], frames[:, 1:], dim=-1)  # [B, pairs, n_patch, chunk_tokens]
+            patch_scores = token_scores.mean(dim=3)[0]  # [pairs, n_patch]
+            if keep_chunk_count > 0:
+                keep = torch.topk(
+                    patch_scores.reshape(-1), k=keep_chunk_count, largest=False).indices
+                keep_indices = torch.sort(keep).values
+            else:
+                keep_indices = torch.empty(
+                    (0,), device=device, dtype=torch.long)
+            if forcing_kv_state is not None and layer_idx == 1:
+                # First grouped layer: publish the decision for this forward
+                forcing_kv_state["fkv_keep_indices"] = keep_indices
+        if keep_indices.numel() == 0:
+            fkv["dyn_valid"] = 0
+            return
+        keep_chunk_count = keep_indices.numel()
+
+        # Fill this layer's dynamic cache with the selected candidate
+        # segments (all chain frames except the boundary frame)
+        cand_k = chain_k[:, : pairs * frame_seqlen].reshape(
+            chain_k.shape[0], total_chunks, chunk_tokens,
+            chain_k.shape[2], chain_k.shape[3]).index_select(1, keep_indices)
+        cand_v = chain_v[:, : pairs * frame_seqlen].reshape(
+            chain_v.shape[0], total_chunks, chunk_tokens,
+            chain_v.shape[2], chain_v.shape[3]).index_select(1, keep_indices)
+        n_dyn = d_idx.numel()
+        head_dim = chain_k.shape[-1]
+        sel_k = cand_k.index_select(3, d_idx).reshape(
+            cand_k.shape[0], keep_chunk_count * chunk_tokens, n_dyn, head_dim)
+        sel_v = cand_v.index_select(3, d_idx).reshape(
+            cand_v.shape[0], keep_chunk_count * chunk_tokens, n_dyn, head_dim)
+
+        capacity_tokens = int(self.forcing_kv_dynamic_context_length) * frame_seqlen
+        if fkv["dyn_k"] is None or fkv["dyn_k"].shape[1] < sel_k.shape[1] \
+                or fkv["dyn_k"].shape[2] != n_dyn:
+            # Allocate once per layer; reused (overwritten) every chunk
+            fkv["dyn_k"] = sel_k.new_zeros(
+                (sel_k.shape[0], max(capacity_tokens, sel_k.shape[1]), n_dyn, head_dim))
+            fkv["dyn_v"] = sel_v.new_zeros(
+                (sel_v.shape[0], max(capacity_tokens, sel_v.shape[1]), n_dyn, head_dim))
+        fkv["dyn_k"][:, : sel_k.shape[1]] = sel_k
+        fkv["dyn_v"][:, : sel_v.shape[1]] = sel_v
+        fkv["dyn_valid"] = sel_k.shape[1]
 
 
 class CasualWanT2VCrossAttention(CasualWanSelfAttention):
@@ -482,6 +744,7 @@ class CasualWanAttentionBlock(nn.Module):
         block_mask=None,
         dtype=torch.bfloat16,
         t=0,
+        forcing_kv_state=None,
     ):
         r"""
         Args:
@@ -497,15 +760,23 @@ class CasualWanAttentionBlock(nn.Module):
             current_start: Current starting position in token sequence
             cache_start: Cache starting position
             block_mask: Block mask for flex attention
+            forcing_kv_state: Dict shared across blocks within one forward call,
+                forwarded to the self-attention layer for Forcing-KV.
         """
         num_frames, frame_seqlen = e.shape[1], x.shape[1] // e.shape[1]
         e = (self.modulation.unsqueeze(1) + e).chunk(6, dim=2)
 
         # Self-attention with modulation
+        attn_kwargs = {}
+        if forcing_kv_state is not None:
+            # Only forwarded when set: the USP-replaced self-attn forward used
+            # in multi-GPU inference does not accept this keyword.
+            attn_kwargs["forcing_kv_state"] = forcing_kv_state
         y = self.self_attn(
             (self.norm1(x).unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * (1 + e[1]) + e[0]).flatten(1, 2),
             seq_lens, grid_sizes,
-            freqs, block_mask, kv_cache, current_start, cache_start)
+            freqs, block_mask, kv_cache, current_start, cache_start,
+            **attn_kwargs)
 
         # Residual connection with modulation
         x = x + (y.unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * e[2]).flatten(1, 2)
@@ -601,6 +872,17 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         # Self-Forcing causal inference parameters
         local_attn_size=-1,
         sink_size=0,
+
+        # Forcing-KV hybrid KV cache compression (arXiv 2605.09681),
+        # aligned with the official zju-jiyicheng/Forcing-KV architecture
+        forcing_kv_enable=False,
+        forcing_kv_head_profile=None,
+        forcing_kv_ar_start=1,
+        forcing_kv_spatial_context_length=1,
+        forcing_kv_temporal_context_length=1,
+        forcing_kv_dynamic_context_length=1,
+        forcing_kv_num_frame_patch=6,
+        forcing_kv_sim_retention_ratio=0.33,
     ):
         r"""
         Initialize the diffusion model backbone.
@@ -697,6 +979,17 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
             block.self_attn.layer_idx = layer_idx
             block.self_attn.num_layers = self.num_layers
 
+        # Forcing-KV: propagate per-head compression config to all self-attn
+        # layers (training-free; disabled by default keeps behavior unchanged).
+        self.set_forcing_kv_config(
+            forcing_kv_enable, forcing_kv_head_profile,
+            ar_start=forcing_kv_ar_start,
+            spatial_context_length=forcing_kv_spatial_context_length,
+            temporal_context_length=forcing_kv_temporal_context_length,
+            dynamic_context_length=forcing_kv_dynamic_context_length,
+            num_frame_patch=forcing_kv_num_frame_patch,
+            sim_retention_ratio=forcing_kv_sim_retention_ratio)
+
         # Head
         self.head = CausalHead(dim, out_dim, patch_size, eps)
         
@@ -713,6 +1006,72 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         self.sp_world_size = 1
         self.sp_world_rank = 0
         self.init_weights()
+
+    def set_forcing_kv_config(self, enable, head_profile=None, ar_start=1,
+                              spatial_context_length=1, temporal_context_length=1,
+                              dynamic_context_length=1, num_frame_patch=6,
+                              sim_retention_ratio=0.33):
+        """Propagate Forcing-KV settings to every self-attention layer.
+
+        Args:
+            enable: Master switch. When False the original full-window
+                attention path is used and results are bit-identical.
+            head_profile: Offline head classification. Supports the official
+                format {"layers": [{"layer_idx", "static_head", "dynamic_head"}]}
+                as well as a plain {layer: {"static": [...]}} mapping.
+            ar_start: First AR step (chunk index) after which grouped
+                head compression activates.
+            spatial_context_length: History frames kept for static heads.
+            temporal_context_length: Recent frames kept for dynamic heads.
+            dynamic_context_length: Compressed segment cache capacity (frames).
+            num_frame_patch: Token segments per latent frame.
+            sim_retention_ratio: Fraction of candidate segments kept.
+        """
+        head_map = {}
+        if head_profile is not None:
+            layers = head_profile.get("layers") if isinstance(head_profile, dict) else None
+            if layers is not None:
+                # Official configs_head/*.json format
+                for entry in layers:
+                    key = entry.get("layer_idx", entry.get("layer"))
+                    static = entry.get("static_head", entry.get("static", []))
+                    head_map[int(key)] = static
+            else:
+                for key, entry in head_profile.items():
+                    try:
+                        layer = int(key)
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(entry, dict):
+                        entry = entry.get("static", [])
+                    head_map[layer] = entry
+
+        for layer_idx, block in enumerate(self.blocks):
+            attn = block.self_attn
+            attn.forcing_kv_enable = bool(enable)
+            attn.forcing_kv_layer_idx = layer_idx
+            attn.forcing_kv_ar_start = int(ar_start)
+            attn.forcing_kv_spatial_context_length = int(spatial_context_length)
+            attn.forcing_kv_temporal_context_length = int(temporal_context_length)
+            attn.forcing_kv_dynamic_context_length = int(dynamic_context_length)
+            attn.forcing_kv_num_frame_patch = int(num_frame_patch)
+            attn.forcing_kv_sim_retention_ratio = float(sim_retention_ratio)
+            if head_profile is None:
+                attn.forcing_kv_static_heads = None
+                static_list = []
+            else:
+                static = head_map.get(layer_idx)
+                static_list = [int(h) for h in static] if static else []
+                attn.forcing_kv_static_heads = static_list
+            # Precompute the head partition once (constant for a given profile).
+            # Index tensors are built lazily on first forward via
+            # _fkv_head_indices() so they land on the real (post-materialization)
+            # device and get cached there - this avoids per-forward rebuilds and
+            # any meta-device buffer copy errors.
+            static_set = set(static_list)
+            attn.forcing_kv_dynamic_heads = [
+                h for h in range(attn.num_heads) if h not in static_set]
+            attn._fkv_idx_cache = None
 
     def enable_multi_gpus_inference(self):
         """Enable multi-GPU inference with sequence parallelism for KV cache mode."""
@@ -922,6 +1281,7 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
         cache_start: int = 0,
         clean_x=None,
         aug_t=None,
+        forcing_kv_state: dict = None,
     ):
         r"""
         Run the diffusion model with kv caching.
@@ -1088,13 +1448,22 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
                 return module(*inputs, **kwargs)
             return custom_forward
 
+        # Forcing-KV: one fresh state dict per forward call, shared across all
+        # blocks so each self-attn layer can detect the clean context pass.
+        if forcing_kv_state is None and kv_cache is not None:
+            forcing_kv_state = {}
+        if kv_cache is not None:
+            for block in self.blocks:
+                block.self_attn.num_frame_per_block = self.num_frame_per_block
+
         for block_index, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 kwargs.update(
                     {
                         "kv_cache": kv_cache[block_index] if kv_cache else None,
                         "current_start": current_start,
-                        "cache_start": cache_start
+                        "cache_start": cache_start,
+                        "forcing_kv_state": forcing_kv_state,
                     }
                 )
                 x = torch.utils.checkpoint.checkpoint(
@@ -1108,7 +1477,8 @@ class WanTransformer3DModel_SelfForcing(WanTransformer3DModel):
                         "kv_cache": kv_cache[block_index] if kv_cache else None,
                         "crossattn_cache": crossattn_cache[block_index] if crossattn_cache else None,
                         "current_start": current_start,
-                        "cache_start": cache_start
+                        "cache_start": cache_start,
+                        "forcing_kv_state": forcing_kv_state,
                     }
                 )
                 x = block(x, **kwargs)
