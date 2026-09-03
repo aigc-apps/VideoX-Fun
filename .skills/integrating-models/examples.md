@@ -359,6 +359,8 @@ def main():
     #   Speech/audio (S2V)     -> VideoSpeechDataset / VideoSpeechControlDataset
     #   Animate                -> VideoAnimateDataset
     #   Distill text / GRPO / DPO -> TextDataset
+    # Smoke-test on the matching official demo dataset (reference.md §8), e.g.
+    #   datasets/X-Fun-Videos-Demo + metadata_add_width_height.json for T2V/I2V.
     train_dataset = ImageVideoDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride,
@@ -404,8 +406,14 @@ if __name__ == "__main__":
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/<Family>-Model"
-export DATASET_NAME="datasets/internal_datasets/"  # = train_data_dir (data_root); media live under train/
-export DATASET_META_NAME="datasets/internal_datasets/metadata.json"  # = train_data_meta: [{"file_path","text","type"}] — see reference.md §8 Annotation format
+# Test data = the official demo dataset matching the task (reference.md §8). Download once, e.g.:
+#   modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun-Videos-Demo
+#   T2I -> X-Fun-Images-Demo | control -> X-Fun-{Videos,Images}-Controls-Demo
+#   S2V -> X-Fun-Videos-Audios-Demo | image edit -> X-Fun-Images-Edit-Demo
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"  # = train_data_dir (data_root); media live under train/
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"  # = train_data_meta: [{"file_path","text","type","width","height"}] — see reference.md §8
+# Metadata variants: VACE/subject-ref -> metadata_add_width_height_add_objects.json (X-Fun-Videos-Controls-Demo);
+# audio-visual joint -> metadata_add_width_height_add_wav.json; lingbot_video -> metadata_lingbot_video_add_width_height.json
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/<family>/train.py \
