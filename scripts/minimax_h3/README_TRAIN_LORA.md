@@ -256,6 +256,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Samples per batch | 1 |
 | `--video_sample_size` | Maximum video resolution for training | 960 |
+| `--fix_sample_size` | Fixed `[height, width]` canvas (both multiples of 32) overriding `--video_sample_size`; requires `--enable_bucket` and turns off `--random_hw_adapt` / `--training_with_video_token_length` | None |
 | `--token_sample_size` | Token length sampling size | 960 |
 | `--video_sample_stride` | Frame sampling stride (MiniMax-H3 is 24 fps) | 1 |
 | `--video_sample_n_frames` | Number of frames to sample, must follow the `17*n+5` form of the video VAE (duration stays between 5 and 15 seconds) | 124 |
@@ -606,5 +607,6 @@ torchrun --nproc_per_node=2 examples/minimax_h3/predict_t2v.py
 
 ## 5. Additional Resources
 
+- **MiniMax-H3 PDD LoRA training**: `scripts/minimax_h3/README_TRAIN_PDD_LORA.md`
 - **MiniMax-H3 Official GitHub**: https://github.com/MiniMax-AI/MiniMax-H3
 - **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun

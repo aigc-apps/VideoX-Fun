@@ -1,6 +1,6 @@
 # MiniMax-H3 PDD LoRA 训练指南
 
-本文档提供 MiniMax-H3 的 Parallel Decoding Distillation（PDD，[arXiv 2607.26004](https://arxiv.org/abs/2607.26004)）LoRA 训练完整工作流，包括环境配置、prompt cache 准备、分布式训练和推理测试。
+本文档提供 MiniMax-H3 的 Parallel Decoding Distillation（PDD，[arXiv 2607.26004](https://arxiv.org/abs/2607.26004)）LoRA 训练完整工作流，包括环境配置、条件 cache 准备、分布式训练和推理测试。
 
 > **注意**：MiniMax-H3 是一个音视频生成模型，可以同时生成视频和对应音频。PDD 训练是 **data-free** 的：从不读取目标视频。每个 rank 携带一条轨迹，用学生自己的预测向前滚动，并由同一骨干上的冻结教师监督。训练只需要缓存好的 Qwen3-VL 条件，因此约 62 GB 的文本编码器不会进入训练进程。
 
@@ -11,14 +11,15 @@ PDD 把预训练 flow 模型变成 *parallel decoder*。采样区间被离散成
 ## 目录
 - [一、环境配置](#一环境配置)
 - [二、数据准备](#二数据准备)
-  - [2.1 Data-free Prompt Cache](#21-data-free-prompt-cache)
+  - [2.1 Data-free 条件](#21-data-free-条件)
   - [2.2 Cache 结构](#22-cache-结构)
-  - [2.3 编码 Prompt](#23-编码-prompt)
-  - [2.4 Prompt JSON 格式](#24-prompt-json-格式)
+  - [2.3 生成 Cache](#23-生成-cache)
+  - [2.4 标注 JSON 格式](#24-标注-json-格式)
   - [2.5 Ref2VA Request Cache](#25-ref2va-request-cache)
 - [三、PDD LoRA 训练](#三pdd-lora-训练)
   - [3.1 下载预训练模型](#31-下载预训练模型)
   - [3.2 快速开始（FSDP）](#32-快速开始fsdp)
+    - [3.2.1 Ref2VA 训练](#321-ref2va-训练)
   - [3.3 PDD 训练参数](#33-pdd-训练参数)
   - [3.4 训练验证](#34-训练验证)
   - [3.5 Checkpoint 布局](#35-checkpoint-布局)
@@ -69,79 +70,83 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ## 二、数据准备
 
-PDD **不使用** 视频/音频数据集或 `metadata.json`。训练读取的是缓存好的 Qwen3-VL embedding 目录；学生轨迹从噪声采样。
+PDD 是 **data-free** 的：学生轨迹从噪声采样，因此完全不读取用于 loss 的目标视频/音频媒体。训练只读取 *条件*——`fl2va` 是 prompt，`ref2va` 是 prompt 加参考媒体。两种 `--train_mode` 都支持两条条件路径，由 `--enable_preprocess_training` 选择：
 
-### 2.1 Data-free Prompt Cache
+| `--train_mode` | 条件 | **Cache 路径**（`--enable_preprocess_training`） | **直接加载路径**（不加该参数） |
+|----------------|------|--------------------------------------------------|-------------------------------|
+| `fl2va` | prompt | 用 `generate_prompt_cache.py` 预编码，读取 `outputs.json` | 读取 `{"text": ...}` 标注（`TextDataset`），现场编码 |
+| `ref2va` | prompt + 参考媒体 | 用 `generate_ref2va_request_cache.py` 预编码，读取 `outputs.json` | 读取 request 标注（`load_requests`），现场编码 prompt + 参考 latent |
 
-`--train_mode=fl2va`（默认配方，FL2VA / t2va packed 布局）需要带 `train/` 和 `val/` 划分的 `--prompt_cache`。用 `scripts/minimax_h3_fun/encode_prompts.py` 预先编码 prompt；PDD 训练过程中不会加载约 62 GB 的 Qwen3-VL 条件器。
+- **Cache 路径**（适合长时间 / 反复训练）：Qwen3-VL embedding——`ref2va` 还有 VAE 编码的参考 latent——**只**预编码一次写入 safetensors，训练时约 62 GB 的条件器完全不加载。
+- **直接加载路径**（适合快速起步或 request 集较小）：没有单独的预处理步骤；训练进程加载约 62 GB 条件器（`ref2va` 还有两个 VAE），逐条现场编码。请开启 `--low_vram`，使其仅在编码时搬上 GPU。
+
+> 💡 两条路径都同时供训练轨迹和验证渲染使用——data-free PDD 没有 train/val 之分，因此 `--train_data_meta` 与 `--val_data_meta` 通常指向同一份标注（例如官方 `datasets/X-Fun-Videos-Audios-Demo`，标准测试数据，绝不用临时拼凑的 prompt 集）。
+
+### 2.1 Data-free 条件
+
+`--train_mode=fl2va`（默认配方，FL2VA / t2va packed 布局）需要 prompt 条件；`--train_mode=ref2va` 还需要参考媒体（图像 / 视频 / 音频），并默认加载 `transformer_ref`。走 **cache 路径** 时，用 `scripts/minimax_h3/generate_prompt_cache.sh`（`fl2va`）或 `scripts/minimax_h3/generate_ref2va_request_cache.sh`（`ref2va`）**只生成一次** cache；两者都在 `accelerate launch` 下多卡运行，此后 PDD 训练过程中不会加载约 62 GB 的 Qwen3-VL 条件器。走 **直接加载路径** 时没有预处理步骤：把 `--train_data_meta` 直接指向标注，训练进程现场编码（两条 `ref2va` 路径的完整流程见 **3.2.1**）。
 
 ### 2.2 Cache 结构
 
 ```
 📦 datasets/
-├── 📂 minimax_h3_pdd_prompt_cache/
-│   ├── 📂 train/
-│   │   ├── 📄 prompts.json
-│   │   ├── 📄 0000.pt
-│   │   ├── 📄 0001.pt
-│   │   └── 📄 ...
-│   └── 📂 val/
-│       ├── 📄 prompts.json
-│       ├── 📄 0000.pt
-│       └── 📄 ...
+├── 📂 X-Fun-Videos-Audios-Demo/          # 官方 demo 数据集（`text` 字幕的来源）
+│   └── 📄 metadata_add_width_height.json
+└── 📂 minimax_h3_pdd_prompt_cache/       # 只生成一次；同时供训练与验证使用
+    ├── 📄 outputs.json
+    ├── 📄 00000.safetensors
+    ├── 📄 00001.safetensors
+    └── 📄 ...
 ```
 
-每个 `*.pt` 文件包含：
+`outputs.json` 是 `ImageVideoSafetensorsDataset` 读取的 `{"file_path": ".../00000.safetensors"}` 记录列表。`--train_data_dir` 是拼接到每个 `file_path` 之前的可选根目录；当 `outputs.json` 已使用仓库相对（或绝对）路径时（生成器即如此）可留空。每个 `fl2va` `.safetensors` 包含：
 
 | 字段 | 说明 |
 |------|------|
-| `prompt` | 原始 prompt 字符串 |
 | `prompt_embeds` | MiniMax-H3 文本编码器层上的 Qwen3-VL hidden states（bfloat16） |
-| `text_token_tags` | packed sequence 用的逐 token 标签 |
+| `text_token_tags` | packed sequence 用的逐 token 标签（int64） |
 
-### 2.3 编码 Prompt
+### 2.3 生成 Cache
+
+该步骤仅 **cache 路径** 需要；直接加载路径（**3.2.1 Route A**）直接读取标注，跳过此步。
 
 ```bash
-# 训练集
-python scripts/minimax_h3_fun/encode_prompts.py \
-  --model models/Diffusion_Transformer/MiniMax-H3 \
-  --prompts-json datasets/my_pdd_prompts_train.json \
-  --output datasets/minimax_h3_pdd_prompt_cache \
-  --split train
+# fl2va：多卡缓存官方 demo 数据集的 prompt 条件
+bash scripts/minimax_h3/generate_prompt_cache.sh
 
-# 验证集（供 `--validation_steps` 使用）
-python scripts/minimax_h3_fun/encode_prompts.py \
-  --model models/Diffusion_Transformer/MiniMax-H3 \
-  --prompts-json datasets/my_pdd_prompts_val.json \
-  --output datasets/minimax_h3_pdd_prompt_cache \
-  --split val
+# ref2va：缓存 request 条件（prompt embedding + 参考 latent）
+bash scripts/minimax_h3/generate_ref2va_request_cache.sh
 ```
 
-> 💡 `--model` 可以是转换后的 diffusers 布局，也可以是原始 MiniMax-H3 分区（例如 `MiniMax-H3/FL2VA`）。分词器从 `tokenizer/` 读取，条件器从 `text_encoder/` 读取。
+每个启动器只运行一次 `accelerate launch ... generate_*_cache.py`：每个 rank 走标注的交错分片，已存在的 `.safetensors` 会被跳过（resume），最后由 rank0 写出 `outputs.json`。请先编辑各 `.sh` 顶部的 `MODEL_NAME` / `DATASET_META` / `CACHE_ROOT` 变量。
 
-### 2.4 Prompt JSON 格式
+> 💡 `--pretrained_model_name_or_path` 可以是转换后的 diffusers 布局，也可以是原始 MiniMax-H3 分区（例如 `MiniMax-H3/FL2VA`）。分词器从 `tokenizer/` 读取，processor 从 `processor/` 读取，条件器从 `text_encoder/` 读取。
 
-编码器接受字符串列表，或带 `examples` 列表的 jobs 文档（每项为字符串，或带 `prompt` 字段的对象）：
+### 2.4 标注 JSON 格式
+
+`fl2va` 生成器读取官方 demo 数据集的标注 JSON——记录列表中 PDD 只用到 `text` 字幕（音视频数据集携带的 `file_path` / `audio_path` / `control_file_path` / `width` / `height` 字段在此被忽略）。也接受纯字符串列表，或 `{"prompt": ...}` / `{"examples": [...]}` jobs：
 
 ```json
-{
-  "examples": [
-    {
-      "task": "t2va",
-      "prompt": "A brown dog barks on a sofa, sitting on a light-colored couch in a cozy room",
-      "duration": 5.1666666667,
-      "aspect_ratio": "16:9",
-      "megapixels": 0.98
-    }
-  ]
-}
+[
+  {"file_path": "train/00000001.mp4", "text": "A young woman gently turns her head to the right ...", "audio_path": "wav/00000001.wav", "type": "video"}
+]
 ```
 
-只编码 prompt 文本。分辨率和时长由训练/推理参数决定（`--video_sample_height` / `--video_sample_width` / `--video_sample_n_frames`），不是 cache 字段。
+`ref2va` 路径——`generate_ref2va_request_cache.py`（cache）与直接加载训练皆然——则读取 request 记录的列表。既可以是显式的 `{"prompt": ..., "references": [...]}` request，其中每个 reference 是 `"image=..."` / `"video=..."` / `"audio=..."` 字符串（`predict_ref2va.py` 的 schema，按模型读取顺序排列）：
+
+```json
+[
+  {"prompt": "The character turns and waves", "references": ["image=ref/face.png", "audio=ref/voice.wav"]}
+]
+```
+
+也可以是——默认方式，遵循官方 demo 约定——与上面 `fl2va` 完全相同的音视频 demo 标注：`load_requests` 会从每条记录自身的 `file_path`（视频）+ `audio_path`（音频）推导出 `video=`/`audio=` reference（相对媒体路径按标注文件所在目录解析），并用其 `text` 作为 prompt。
+
+只编码条件。分辨率和时长由训练/推理参数决定（`--video_sample_size` / `--fix_sample_size` / `--video_sample_n_frames`），不是 cache 字段。
 
 ### 2.5 Ref2VA Request Cache
 
-`--train_mode=ref2va` 使用 `--request_cache` 而不是 `--prompt_cache`，默认加载 `transformer_ref`。每条缓存的 `.pt` request 还要带参考 latent（`condition_latents`、`audio_condition_latents`、`reference_kinds`），供 Ref2VA packed 布局使用。`encode_prompts.py` 只写 fl2va 的 prompt cache。
+`--train_mode=ref2va` 默认加载 `transformer_ref`。走 **cache 路径** 时读取 `generate_ref2va_request_cache.py` 写出的 request cache：除 `prompt_embeds` / `text_token_tags` 外，每条 request `.safetensors` 还带有 Ref2VA packed 布局所需的参考 latent，并扁平化为张量——`reference_kind_ids` / `reference_has_audio`（每个 reference 的类别与是否含音频）、`num_condition_latents` / `num_audio_condition_latents`，以及带下标的 `condition_latents_{i}` / `audio_condition_latents_{i}`。走 **直接加载路径** 时，同样的 latent 改为现场生成——`train_pdd_lora.py` 用 `load_requests` 读取 request 标注，用 Qwen3-VL 编码 prompt、用两个 VAE 编码参考——因此不需要 `.safetensors` cache（即 `--train_mode=ref2va` 且不加 `--enable_preprocess_training`）。
 
 ---
 
@@ -161,15 +166,19 @@ hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniM
 
 ### 3.2 快速开始（FSDP）
 
-若已按 **2.3** 编码 prompt cache、按 **3.1** 下载权重，可直接复制运行下面的命令。`scripts/minimax_h3_fun/train_pdd_lora.sh` 是同一套 launch。
+若已按 **2.3** 生成条件 cache、按 **3.1** 下载权重，可直接复制运行下面的命令。`scripts/minimax_h3/train_pdd_lora.sh` 是同一套 launch。
 
 推荐使用 FSDP：虽然 PDD 不加载 Qwen3-VL，冻结的 transformer 在 bfloat16 下仍约 62 GB，必须跨 GPU 切分——FSDP（`FULL_SHARD`）会切分权重，DeepSpeed-Zero-2 不会。
 
 必须使用 `--mixed_precision=no`。发布权重已将 `proj_out` / `audio_proj_out` 钉在 float32（`_keep_in_fp32_modules`）；由此构建的 parallel head 作为 float32 master 权重叠在 bfloat16 骨干上，训练过程不走 autocast。
 
+**fl2va（读取 prompt cache——默认配方）：**
+
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 # 无 RDMA 的多机环境可设置 NCCL_IB_DISABLE=1 和 NCCL_P2P_DISABLE=1。
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -179,12 +188,14 @@ accelerate launch --mixed_precision="no" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
     --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/minimax_h3_fun/train_pdd_lora.py \
+    scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   --video_sample_n_frames=124 \
-  --video_sample_height=768 \
-  --video_sample_width=1344 \
+  --fix_sample_size 768 1344 \
   --train_batch_size=1 \
   --max_train_steps=3000 \
   --checkpointing_steps=200 \
@@ -206,6 +217,76 @@ accelerate launch --mixed_precision="no" --use_fsdp \
   --pdd_block_size=4 \
   --validation_steps=200 \
   --resume_from_checkpoint=latest
+```
+
+#### 3.2.1 Ref2VA 训练
+
+`--train_mode=ref2va` 除 prompt 外还对参考媒体（图像 / 视频 / 音频）加以条件，并默认加载 `transformer_ref`。它可走任一条条件路径；下面两条命令都是在 FSDP 快速开始的基础上，只改动 mode / data 相关参数。
+
+**Route A —— 直接加载（无 request cache）。** 把 `--train_data_meta` 直接指向 request 标注：既可以是显式的 `{"prompt", "references"}` schema，也可以是官方 `X-Fun-Videos-Audios-Demo` 标注（其自身的视频 + 音频会被当作 reference，见 **2.4**）。训练进程会加载 Qwen3-VL 条件器与两个 VAE，对每条 request 现场编码，因此请保留 `--low_vram`——它们仅在编码时搬上 GPU。
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
+export REQUEST_META="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="no" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/minimax_h3/train_pdd_lora.py \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_mode="ref2va" \
+  --train_data_meta=$REQUEST_META \
+  --val_data_meta=$REQUEST_META \
+  --video_sample_n_frames=124 \
+  --fix_sample_size 768 1344 \
+  --train_batch_size=1 \
+  --max_train_steps=3000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-5 \
+  --lora_learning_rate=1e-4 \
+  --seed=43 \
+  --output_dir="output_dir_minimax_h3_pdd_ref2va_lora" \
+  --gradient_checkpointing \
+  --gradient_checkpointing_save_on_cpu \
+  --mixed_precision="no" \
+  --adam_weight_decay=0.0 \
+  --max_grad_norm=1.0 \
+  --rank=64 \
+  --network_alpha=64 \
+  --low_vram \
+  --target_name="to_q,to_k,to_v,to_out.0,ff.net.0.proj,ff.net.2,adaln_proj.linear" \
+  --pdd_num_steps=32 \
+  --pdd_block_size=4 \
+  --validation_steps=200 \
+  --resume_from_checkpoint=latest
+```
+
+> ⚠️ Route A 会把约 62 GB 的 Qwen3-VL 条件器常驻在训练进程中（由 FSDP 与 transformer 一起切分），并在每次轨迹 reset 时用 VAE 编码该 request 的参考。若长时间或反复训练，请用 Route B 预编码一次，训练时就不再加载条件器。
+
+**Route B —— request cache（适合长时间 / 反复训练）。** 先用 `generate_ref2va_request_cache.sh`（**2.3**）预编码一次，再加 `--enable_preprocess_training` 训练；约 62 GB 条件器不会进入训练进程：
+
+```bash
+# 1) 预编码 ref2va request 一次（多卡）：prompt embedding + 参考 latent → safetensors
+bash scripts/minimax_h3/generate_ref2va_request_cache.sh
+
+# 2) 从 cache 训练——即 Route A 改动以下参数
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
+export REQUEST_CACHE_META="datasets/minimax_h3_pdd_request_cache/outputs.json"
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="no" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/minimax_h3/train_pdd_lora.py \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_mode="ref2va" \
+  --enable_preprocess_training \
+  --train_data_meta=$REQUEST_CACHE_META \
+  --val_data_meta=$REQUEST_CACHE_META \
+  ... # 其余参数与 Route A 相同
 ```
 
 ### 3.3 PDD 训练参数
@@ -232,15 +313,18 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 | 参数 | 说明 | 示例值 |
 |------|------|--------|
 | `--pretrained_model_name_or_path` | 预训练模型路径 | `models/Diffusion_Transformer/MiniMax-H3` |
-| `--prompt_cache` | 带 `train/`、`val/` 的 Qwen3-VL 缓存目录（`fl2va`） | `datasets/minimax_h3_pdd_prompt_cache` |
-| `--request_cache` | 带 `train/`、`val/` 的 Ref2VA request 缓存（`ref2va`） | `datasets/minimax_h3_pdd_ref2va_cache` |
-| `--train_mode` | `fl2va`（t2va 布局 + `--prompt_cache`）或 `ref2va`（`transformer_ref` + `--request_cache`） | `fl2va` |
+| `--enable_preprocess_training` | 使用预处理好的 safetensors cache 训练，而非现场编码条件；`fl2va` 与 `ref2va` 都支持两条路径 | 开启 |
+| `--train_data_dir` | 拼接到 `--train_data_meta` 每个 `file_path` 之前的可选根目录；当其存的是仓库相对/绝对路径时留空 | `""` |
+| `--train_data_meta` | 加该参数时：cache 的 `outputs.json`。不加时：现场编码的标注（`fl2va`：`{"text": ...}`；`ref2va`：request 列表） | `datasets/minimax_h3_pdd_prompt_cache/outputs.json` |
+| `--val_data_meta` | 与 `--train_data_meta` 一致：加该参数时用 cache 的 `outputs.json`，不加时用现场编码的标注（`fl2va`：`{"text": ...}`；`ref2va`：request 列表）。留空则跳过验证 | `datasets/minimax_h3_pdd_prompt_cache/outputs.json` |
+| `--train_mode` | `fl2va`（t2va 布局）或 `ref2va`（`transformer_ref` + 参考媒体）；两者都可走 cache 或直接加载路径 | `fl2va` |
 | `--transformer_subfolder` | Transformer 子目录。默认：`ref2va` 用 `transformer_ref`，否则 `transformer` | None |
 | `--train_batch_size` | 必须为 1：每个 rank 只携带一条轨迹 | 1 |
-| `--num_train_epochs` | 未指定 `--max_train_steps` 时的训练轮数。一轮对应 prompt cache 走一遍 | 100 |
+| `--num_train_epochs` | 未指定 `--max_train_steps` 时的训练轮数。一轮对应条件集走一遍 | 100 |
 | `--max_train_steps` | 总优化步数。若设置则覆盖 `--num_train_epochs` | 3000 |
 | `--video_sample_n_frames` | 采样帧数，须符合视频 VAE 的 `17*n+5`（时长保持在 5 到 15 秒） | 124 |
-| `--video_sample_height` / `--video_sample_width` | 画布尺寸；都必须是 32 的倍数 | 768 / 1344 |
+| `--video_sample_size` | 正方形画布尺寸（高 = 宽）；必须是 32 的倍数 | 1280 |
+| `--fix_sample_size` | 固定的 `[高, 宽]`，用于非正方形画布并覆盖 `--video_sample_size`；都必须是 32 的倍数 | 768 1344 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
 | `--checkpointing_steps` | 每 N 步保存一次 checkpoint | 200 |
 | `--seed` | 随机种子 | 43 |
@@ -258,7 +342,7 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 
 ### 3.4 训练验证
 
-验证 **不使用** `--validation_prompts`。它会对 `val/` cache 中的每一条、按 rank 分片，以 `--validation_nfe` 生成。
+验证 **不使用** `--validation_prompts`。它会按 rank 分片、以 `--validation_nfe` 生成 `--val_data_meta` 的每一条：加 `--enable_preprocess_training` 时是 cache 的 `outputs.json`，不加时是现场编码的标注——与训练路径一致，`fl2va`（prompt）与 `ref2va`（request）皆然。当 `--val_data_meta` 留空时跳过验证。
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
@@ -286,12 +370,17 @@ FSDP stage 3 / ZeRO-3 还会把 `accelerator.save_state` 写进同一目录（�
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_pdd_lora.py \
+accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # 与快速开始相同的 train_pdd_lora.py 参数
 ```
 
@@ -301,12 +390,17 @@ accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="no" scripts/minimax_h3_fun/train_pdd_lora.py \
+accelerate launch --mixed_precision="no" scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # 与快速开始相同的 train_pdd_lora.py 参数
 ```
 
@@ -321,7 +415,9 @@ accelerate launch --mixed_precision="no" scripts/minimax_h3_fun/train_pdd_lora.p
 **机器 0（Master）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # 机器总数
@@ -336,9 +432,12 @@ accelerate launch --mixed_precision="no" --main_process_ip=$MASTER_ADDR --main_p
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
     --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/minimax_h3_fun/train_pdd_lora.py \
+    scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # 与快速开始相同的 train_pdd_lora.py 参数
 ```
 
@@ -360,7 +459,7 @@ export RANK=1  # 注意这里是 1
      export NCCL_P2P_DISABLE=1
      ```
 
-- **数据同步**：所有机器必须能访问相同的 prompt cache 和模型路径（NFS/共享存储）
+- **数据同步**：所有机器必须能访问相同的条件 cache 和模型路径（NFS/共享存储）
 
 ## 四、推理测试
 

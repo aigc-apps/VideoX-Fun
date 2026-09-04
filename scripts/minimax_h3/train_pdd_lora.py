@@ -10,8 +10,9 @@
 #
 # Training is *data-free* (Algorithm 3 of the paper): no target video is ever read. Each rank carries one
 # trajectory, rolls it forward with the student's own predictions, and resets to fresh noise and a fresh prompt
-# when it reaches the end of the grid. Only cached Qwen3-VL conditioning is needed, which keeps the 62 GB
-# conditioner out of the run. `--train_mode=ref2va` additionally consumes cached reference latents.
+# when it reaches the end of the grid. The conditioning is either pre-encoded (`--enable_preprocess_training`,
+# which keeps the 62 GB conditioner out of the run) or encoded on the fly from an annotation JSON; `ref2va`
+# supports both, its on-the-fly route additionally VAE-encoding each request's reference latents.
 # FSDP / DeepSpeed follow `scripts/minimax_h3/train_lora.py`: the plugin is read off Accelerator, ZeRO-3
 # skips `zero.Init` on the frozen VAEs, FSDP stage 3 / ZeRO-3 resume through `accelerator.save_state`, and the
 # student / teacher forwards always go through the prepared wrapper so a sharded 33 B backbone all-gathers.
@@ -25,10 +26,19 @@
 # The checkpoint is guidance-distilled: one forward per step, no unconditional branch.
 #
 # Usage:
-#   accelerate launch --mixed_precision no scripts/minimax_h3_fun/train_pdd_lora.py \
+#   # fl2va off a pre-encoded prompt cache (`--enable_preprocess_training`):
+#   accelerate launch --mixed_precision no scripts/minimax_h3/train_pdd_lora.py \
 #       --pretrained_model_name_or_path=models/Diffusion_Transformer/MiniMax-H3 \
-#       --train_mode=fl2va --prompt_cache=datasets/minimax_h3_pdd_prompt_cache \
+#       --train_mode=fl2va --enable_preprocess_training \
+#       --train_data_meta=datasets/minimax_h3_pdd_prompt_cache/outputs.json \
 #       --output_dir=output_dir_minimax_h3_pdd_lora --gradient_checkpointing --resume_from_checkpoint=latest
+#
+#   # ref2va loaded directly from a request annotation (no request cache; encodes on the fly):
+#   accelerate launch --mixed_precision no scripts/minimax_h3/train_pdd_lora.py \
+#       --pretrained_model_name_or_path=models/Diffusion_Transformer/MiniMax-H3 \
+#       --train_mode=ref2va \
+#       --train_data_meta=datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json \
+#       --output_dir=output_dir_minimax_h3_pdd_ref2va_lora --gradient_checkpointing --resume_from_checkpoint=latest
 
 import argparse
 import gc
@@ -48,6 +58,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import transformers
+from torch.utils.data import DataLoader, Dataset
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
@@ -64,27 +75,41 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
+from videox_fun.data import (BatchSampler, ImageVideoSafetensorsDataset,
+                             RandomSampler, TextDataset)
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
-                               MiniMaxH3Transformer3DModel)
-from videox_fun.models.minimax_h3_pdd import (PDD_EMA_WEIGHTS_NAME,
-                                              PDD_LEGACY_LIVE_WEIGHTS_NAME,
-                                              PDD_WEIGHTS_NAME, LoRALinear,
-                                              MiniMaxH3ParallelHead, add_lora,
-                                              attach_parallel_decoder,
-                                              pdd_sampling_plan,
-                                              pdd_state_dict,
+                               MiniMaxH3Transformer3DModel, Qwen2TokenizerFast,
+                               Qwen3VLForConditionalGeneration,
+                               Qwen3VLProcessor)
+from videox_fun.models.minimax_h3_pdd import (attach_parallel_decoder,
                                               pdd_teacher_mean_velocity,
-                                              pdd_time_grid,
-                                              pdd_training_plan,
-                                              set_parallel_plan, teacher_mode)
+                                              set_parallel_plan)
+from videox_fun.utils.lora_utils_pdd import (PDD_EMA_WEIGHTS_NAME,
+                                             PDD_LEGACY_LIVE_WEIGHTS_NAME,
+                                             PDD_WEIGHTS_NAME, PDDLoRALinear,
+                                             PDDParallelHead, add_pdd_lora,
+                                             pdd_sampling_plan,
+                                             pdd_state_dict,
+                                             pdd_teacher_mode,
+                                             pdd_time_grid,
+                                             pdd_training_plan)
 from videox_fun.pipeline import MiniMaxH3Pipeline
 from videox_fun.pipeline.pipeline_minimax_h3 import (
     MINIMAX_H3_KEYFRAME_NOISE_AUG, align_num_frames, audio_latent_num_frames,
     build_packed_sequence, build_ref2va_packed_sequence, build_row_timesteps,
+    check_ref2va_references, normalize_ref2va_references,
     patchify_video_latents, video_latent_num_frames)
 from videox_fun.utils import MiniMaxH3Scheduler
 from videox_fun.utils.utils import save_videos_with_audio_grid
+
+# The on-the-fly route (without `--enable_preprocess_training`) encodes conditioning with the canonical MiniMax-H3
+# recipes rather than re-deriving them; these modules sit in the same directory, already on `sys.path`.
+# `encode_prompt` builds the `fl2va` / `ref2va` presentation, `encode_reference_latents_for_training` the `ref2va`
+# reference latents, and `load_requests` / `parse_reference` read a `ref2va` request annotation exactly as
+# `generate_ref2va_request_cache.py` does.
+from train_lora import encode_prompt, encode_reference_latents_for_training
+from generate_ref2va_request_cache import load_requests, parse_reference
 
 # Silences diffusers' `randn_tensor` notice about CPU generators producing CUDA tensors (the tensor is created
 # on CPU and moved to GPU; harmless, only a marginal speed note).
@@ -99,15 +124,56 @@ def linear_decay(initial_value, final_value, total_steps, current_step):
     return initial_value + step_size * current_step
 
 
-def load_cache_split(folder, kind):
-    r"""Load a `train/` or `val/` split of cached `.pt` requests, in index order."""
-    names = sorted(name for name in os.listdir(folder) if name.endswith(".pt"))
-    if not names:
-        raise FileNotFoundError(
-            f"No cached {kind} entries under {folder}. Encode the Qwen3-VL conditioning first "
-            f"(`prompt_embeds` / `text_token_tags`, and for ref2va the reference latents)."
-        )
-    return [torch.load(os.path.join(folder, name), weights_only=False) for name in names]
+# The `ref2va` request cache flattens its ragged reference structure into tensors (safetensors holds tensors only):
+# the per-reference kind / has-audio pair becomes two int vectors and the per-reference latents become indexed
+# tensors under a count. This maps the kind id back to the string `Ref2VATrajectory` and `log_validation` expect.
+_REFERENCE_KINDS = ("image", "video", "audio")
+
+
+def reconstruct_cache_entry(state_dict, train_mode):
+    r"""Rebuild one normalized conditioning entry from a flat safetensors `state_dict`.
+
+    `ImageVideoSafetensorsDataset.__getitem__` returns the raw tensor dict written by `generate_prompt_cache.py`
+    (`fl2va`) or `generate_ref2va_request_cache.py` (`ref2va`); this restores the `{prompt_embeds, text_token_tags}`
+    (plus, for `ref2va`, `{reference_kinds, condition_latents, audio_condition_latents}`) shape the trajectories and
+    validation consume, so both are agnostic to how the cache was serialized.
+    """
+    entry = {
+        "prompt_embeds": state_dict["prompt_embeds"],
+        "text_token_tags": state_dict["text_token_tags"],
+    }
+    if train_mode == "ref2va":
+        kind_ids = state_dict["reference_kind_ids"].tolist()
+        has_audio = state_dict["reference_has_audio"].tolist()
+        entry["reference_kinds"] = [
+            (_REFERENCE_KINDS[int(kind)], bool(int(flag))) for kind, flag in zip(kind_ids, has_audio)
+        ]
+        num_condition = int(state_dict["num_condition_latents"])
+        entry["condition_latents"] = [state_dict[f"condition_latents_{i}"] for i in range(num_condition)]
+        num_audio_condition = int(state_dict["num_audio_condition_latents"])
+        entry["audio_condition_latents"] = [
+            state_dict[f"audio_condition_latents_{i}"] for i in range(num_audio_condition)
+        ]
+    return entry
+
+
+class _RequestDataset(Dataset):
+    r"""Map-style wrapper over the in-memory `ref2va` request list `load_requests` returns.
+
+    The on-the-fly `ref2va` route has no pre-encoded safetensors to read, so the requests (each a
+    `{"prompt": str, "references": [str, ...]}` record) are carried in memory and flow through the same
+    accelerate-sharded DataLoader as the other conditioning routes. The reference media are parsed and encoded in the
+    conditioning iterator (main process), never in the collate / DataLoader workers.
+    """
+
+    def __init__(self, requests):
+        self.requests = list(requests)
+
+    def __len__(self):
+        return len(self.requests)
+
+    def __getitem__(self, index):
+        return self.requests[index]
 
 
 class FL2VATrajectory:
@@ -119,23 +185,28 @@ class FL2VATrajectory:
     (with a new prompt) once it reaches the end of the grid.
     """
 
-    def __init__(self, geometry, patch_size, latent_channels, audio_channels, prompts, rng, device):
+    def __init__(self, geometry, patch_size, latent_channels, audio_channels, condition_iter, device):
         self.geometry = geometry
         self.patch_size = patch_size
         self.latent_channels = latent_channels
         self.audio_channels = audio_channels
-        self.prompts = prompts
-        self.rng = rng
+        self.condition_iter = condition_iter
         self.device = device
         self.index = None
 
     def reset(self):
         num_latent_frames, latent_height, latent_width, num_audio_latents = self.geometry
-        cached = self.prompts[int(self.rng.integers(len(self.prompts)))]
+        # Draw the next conditioning entry from the (accelerate-sharded, cycling) dataloader iterator instead of
+        # picking at random from a whole in-memory cache: each rank now sees a distinct slice of the data.
+        cached = next(self.condition_iter)
         self.prompt_embeds = cached["prompt_embeds"].to(self.device)
         text_token_tags = cached["text_token_tags"]
         if not torch.is_tensor(text_token_tags):
             text_token_tags = torch.tensor(text_token_tags, dtype=torch.long)
+        else:
+            # `accelerator.prepare` moves the cached conditioning onto the GPU, but `build_packed_sequence` assembles
+            # the layout on CPU (its outputs are moved to `self.device` just below), so keep the tags on CPU to match.
+            text_token_tags = text_token_tags.cpu()
         self.layout = build_packed_sequence(
             text_token_tags,
             num_latent_frames,
@@ -186,20 +257,20 @@ class Ref2VATrajectory:
     trajectory and never move; only the generated tail is rolled forward and supervised.
     """
 
-    def __init__(self, geometry, patch_size, latent_channels, audio_channels, requests, scheduler, rng, device):
+    def __init__(self, geometry, patch_size, latent_channels, audio_channels, condition_iter, scheduler, device):
         self.geometry = geometry
         self.patch_size = patch_size
         self.latent_channels = latent_channels
         self.audio_channels = audio_channels
-        self.requests = requests
+        self.condition_iter = condition_iter
         self.scheduler = scheduler
-        self.rng = rng
         self.device = device
         self.index = None
 
     def reset(self):
         num_latent_frames, latent_height, latent_width, num_audio_latents = self.geometry
-        request = self.requests[int(self.rng.integers(len(self.requests)))]
+        # Draw the next cached request from the (accelerate-sharded, cycling) dataloader iterator.
+        request = next(self.condition_iter)
         self.prompt_embeds = request["prompt_embeds"].to(self.device)
         references = [SimpleNamespace(kind=kind, has_audio=has_audio) for kind, has_audio in request["reference_kinds"]]
         condition_latents = request["condition_latents"]
@@ -207,6 +278,10 @@ class Ref2VATrajectory:
         text_token_tags = request["text_token_tags"]
         if not torch.is_tensor(text_token_tags):
             text_token_tags = torch.tensor(text_token_tags, dtype=torch.long)
+        else:
+            # `accelerator.prepare` moves the cached conditioning onto the GPU, but `build_ref2va_packed_sequence`
+            # assembles the layout on CPU (its outputs are moved to `self.device` just below), so keep the tags there.
+            text_token_tags = text_token_tags.cpu()
 
         self.layout = build_ref2va_packed_sequence(
             text_token_tags,
@@ -284,20 +359,38 @@ def log_validation(
     vae, audio_vae, transformer, scheduler, audio_scheduler, args, accelerator, val_cache, grids, global_step,
 ):
     r"""
-    Generate every held-out cache entry with the student at `--validation_nfe`, sharded across ranks, and save
-    next to the run. Entries are already cached Qwen3-VL conditioning;
-    
+    Render every validation cache entry with the student at `--validation_nfe` and save the mp4 (video + audio)
+    next to the run. Each entry is already-cached Qwen3-VL conditioning, so no text encoder is loaded here.
+
     PDD generation is an ordinary Euler loop over the *block boundaries* of the grid: those boundaries are exactly
     the schedule `MiniMaxH3Scheduler` builds for `NFE` steps, so the released pipeline drives the student unchanged
     and the only PDD-specific work is arming the heads before each step.
     """
-    assigned = [
-        (index, entry)
-        for index, entry in enumerate(val_cache)
-        if index % accelerator.num_processes == accelerator.process_index
-    ]
-    if not assigned:
-        return
+    sharded = (
+        getattr(accelerator.state, "fsdp_plugin", None) is not None
+        or getattr(accelerator.state, "deepspeed_plugin", None) is not None
+    )
+    if sharded:
+        # Under FSDP / DeepSpeed every forward all-gathers the sharded params, so it is a *collective* that all ranks
+        # must enter the same number of times. Splitting the entries by `index % num_processes` gives ranks different
+        # counts whenever `len(val_cache)` is not a multiple of `num_processes` (2 entries over 4 ranks leaves ranks 2
+        # and 3 with nothing to render); a rank that returns early never joins the all-gather the others block on, and
+        # NCCL times out. So every rank walks the same `ceil(len / ranks)` rounds, cycling the entry list, and writes
+        # a file only for the entries it owns (`index < len`) — the extra cycles are collective ballast that keep the
+        # ranks in lockstep, not duplicate renders.
+        num_rounds = math.ceil(len(val_cache) / accelerator.num_processes)
+        assigned = []
+        for round_index in range(num_rounds):
+            index = round_index * accelerator.num_processes + accelerator.process_index
+            assigned.append((index, val_cache[index % len(val_cache)], index < len(val_cache)))
+    else:
+        assigned = [
+            (index, entry, True)
+            for index, entry in enumerate(val_cache)
+            if index % accelerator.num_processes == accelerator.process_index
+        ]
+        if not assigned:
+            return
 
     try:
         with torch.no_grad():
@@ -305,10 +398,6 @@ def log_validation(
             _, _, video_steps, audio_steps = grids
             num_steps = video_steps.shape[0]
             student = accelerator.unwrap_model(transformer)
-            sharded = (
-                getattr(accelerator.state, "fsdp_plugin", None) is not None
-                or getattr(accelerator.state, "deepspeed_plugin", None) is not None
-            )
 
             pipeline = MiniMaxH3Pipeline(
                 vae=vae,
@@ -342,7 +431,7 @@ def log_validation(
             audio_vae.to(accelerator.device)
             os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
 
-            for index, entry in assigned:
+            for index, entry, owner in assigned:
                 arm(0)
                 if args.seed is None:
                     generator = None
@@ -373,16 +462,17 @@ def log_validation(
                     )
 
                 output = pipeline(**call_kwargs)
-                save_videos_with_audio_grid(
-                    output.videos,
-                    output.audio,
-                    os.path.join(
-                        args.output_dir,
-                        f"sample/sample-{global_step}-prompt{index}-{args.train_mode}-nfe{args.validation_nfe}.mp4",
-                    ),
-                    fps=24,
-                    audio_sample_rate=output.sampling_rate,
-                )
+                if owner:
+                    save_videos_with_audio_grid(
+                        output.videos,
+                        output.audio,
+                        os.path.join(
+                            args.output_dir,
+                            f"sample/sample-{global_step}-prompt{index}-{args.train_mode}-nfe{args.validation_nfe}.mp4",
+                        ),
+                        fps=24,
+                        audio_sample_rate=output.sampling_rate,
+                    )
                 del output
 
             del pipeline
@@ -574,7 +664,7 @@ def parse_args():
         type=str,
         default="fl2va",
         choices=["fl2va", "ref2va"],
-        help="fl2va: FL2VA / t2va packed layout and `--prompt_cache`. ref2va: Ref2VA layout and `--request_cache`.",
+        help="fl2va: FL2VA / t2va packed layout. ref2va: Ref2VA layout, which also consumes cached reference latents.",
     )
     parser.add_argument(
         "--video_loss_weight",
@@ -616,16 +706,41 @@ def parse_args():
     )
     # PDD
     parser.add_argument(
-        "--prompt_cache",
-        type=str,
-        default=None,
-        help="Folder with `train/` and `val/` of cached Qwen3-VL conditioning for `--train_mode=fl2va`.",
+        "--enable_preprocess_training",
+        action="store_true",
+        help=(
+            "Train on the pre-processed (cached) conditioning instead of encoding it on the fly. When set, read the "
+            "pre-encoded safetensors via `ImageVideoSafetensorsDataset(--train_data_meta=outputs.json, "
+            "data_root=--train_data_dir)` — the ~62 GB conditioner stays out of training. When unset, load a Qwen3-VL "
+            "conditioner in the run and encode the conditioning on the fly: `fl2va` reads prompts via "
+            "`TextDataset(--train_data_meta)`, and `ref2va` reads a request annotation via `load_requests` and also "
+            "VAE-encodes each request's reference latents."
+        ),
     )
     parser.add_argument(
-        "--request_cache",
+        "--train_data_dir",
         type=str,
         default=None,
-        help="Folder with `train/` and `val/` of cached `ref2va` requests for `--train_mode=ref2va`.",
+        help="Optional root prepended to each `file_path` of `--train_data_meta` (used with "
+             "`--enable_preprocess_training`); leave empty when `outputs.json` already stores absolute paths.",
+    )
+    parser.add_argument(
+        "--train_data_meta",
+        type=str,
+        default=None,
+        help="Annotation JSON of the training conditioning. With `--enable_preprocess_training`: the `outputs.json` "
+             "written by `generate_prompt_cache.py` / `generate_ref2va_request_cache.py`. Without it: `fl2va` reads a "
+             "list of `{\"text\": ...}` records (`TextDataset`), and `ref2va` reads a list of requests "
+             "(`{\"prompt\": ..., \"references\": [...]}`, or the demo record `load_requests` derives them from).",
+    )
+    parser.add_argument(
+        "--val_data_meta",
+        type=str,
+        default=None,
+        help="Optional annotation JSON of the held-out conditioning used by validation, mirroring `--train_data_meta`: "
+             "with `--enable_preprocess_training` the `outputs.json` written by `generate_prompt_cache.py` / "
+             "`generate_ref2va_request_cache.py`; without it the on-the-fly annotation (`fl2va`: `{\"text\": ...}` "
+             "records; `ref2va`: the request list). Validation is skipped when it is left empty.",
     )
     parser.add_argument(
         "--transformer_subfolder",
@@ -673,8 +788,17 @@ def parse_args():
     parser.add_argument("--ema_decay", type=float, default=0.99)
     parser.add_argument("--abnormal_norm_clip_start", type=int, default=1000)
     parser.add_argument("--initial_grad_norm_ratio", type=int, default=5)
-    parser.add_argument("--video_sample_height", type=int, default=704)
-    parser.add_argument("--video_sample_width", type=int, default=1280)
+    parser.add_argument(
+        "--video_sample_size",
+        type=int,
+        default=1280,
+        help="Square canvas size (height = width) for validation and latent geometry; must be a multiple of 32.",
+    )
+    parser.add_argument(
+        "--fix_sample_size",
+        nargs=2, type=int, default=None,
+        help="Fix Sample size [height, width] to override `--video_sample_size` with a fixed non-square shape.",
+    )
     parser.add_argument("--validation_nfe", type=int, default=8)
 
     args = parser.parse_args()
@@ -683,21 +807,53 @@ def parse_args():
         args.local_rank = env_local_rank
     if args.pdd_max_block_size is None:
         args.pdd_max_block_size = args.pdd_block_size
+    if args.fix_sample_size is not None:
+        args.video_sample_height, args.video_sample_width = args.fix_sample_size
+    else:
+        args.video_sample_height = args.video_sample_width = args.video_sample_size
     return args
 
 
-def filter_pdd_state_dict(transformer, state_dict):
-    r"""Apply [`pdd_state_dict`]'s trainable-key filter to a (possibly FSDP-gathered) `state_dict`."""
-    trainable = {
-        name
-        for name, module in transformer.named_modules()
-        if isinstance(module, (MiniMaxH3ParallelHead, LoRALinear))
-    }
-    return {
-        name: value.detach().cpu()
-        for name, value in state_dict.items()
-        if any(name.startswith(f"{prefix}.") for prefix in trainable) and ".base." not in name
-    }
+def gather_full_state_dict(model, accelerator):
+    r"""Consolidated `state_dict` of a (possibly sharded) model, gathered to rank-0 CPU.
+
+    Under `--fsdp_state_dict_type=SHARDED_STATE_DICT`, `accelerator.get_state_dict(..., unwrap=True)` hands back
+    *sharded* tensors, so `pdd_state_dict`'s `.detach().cpu()` only materializes the params of the root wrap
+    unit (the token refiner) and silently drops every separately-wrapped child unit — the `MiniMaxH3TransformerBlock`
+    LoRA and both `PDDParallelHead`s — leaving a 13 MB stub instead of the full ~1.4 GB trainable set. Temporarily
+    switching the FSDP root to `FULL_STATE_DICT` (offloaded to CPU, rank-0 only) reconstructs every original-named
+    param across all wrap units. DeepSpeed ZeRO-3 and DDP already consolidate in `accelerator.get_state_dict`, so
+    they keep using it. Collective: call on every rank; only rank 0 receives a non-empty dict.
+    """
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    # `accelerator.get_state_dict(..., unwrap=True)` unwraps the FSDP root and reads `.state_dict()` off the *sharded*
+    # original-param views, so it silently returns only the root wrap unit's tensors (the token refiner) and drops
+    # every separately-wrapped child unit. Detect the FSDP wrapper directly — not via `fsdp_plugin`, which is not
+    # reliably plumbed this far — and gather a FULL_STATE_DICT on the wrapped root instead.
+    if isinstance(model, FSDP):
+        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+        ):
+            state_dict = model.state_dict()
+        if accelerator.is_main_process:
+            logger.info(
+                "gather_full_state_dict[FSDP FULL_STATE_DICT]: %d tensors (blocks.*=%d, proj_out*=%d).",
+                len(state_dict),
+                sum("blocks." in key for key in state_dict),
+                sum("proj_out" in key for key in state_dict),
+            )
+        return state_dict
+    state_dict = accelerator.get_state_dict(model, unwrap=True)
+    if accelerator.is_main_process:
+        logger.info(
+            "gather_full_state_dict[get_state_dict fallback]: %d tensors (type(model)=%s).",
+            len(state_dict) if state_dict else 0,
+            type(model).__name__,
+        )
+    return state_dict
 
 
 def save_pdd_weights(path, state_dict):
@@ -812,7 +968,7 @@ def main():
         )
     if args.video_sample_height % 32 or args.video_sample_width % 32:
         raise ValueError(
-            f"`video_sample_height` / `video_sample_width` ({args.video_sample_height}x{args.video_sample_width}) "
+            f"`video_sample_size` / `fix_sample_size` ({args.video_sample_height}x{args.video_sample_width}) "
             "must be multiples of 32: the canvas is patched 2x2 into the transformer and its RoPE grid keys off that."
         )
     if args.pdd_num_steps % args.pdd_block_size:
@@ -826,12 +982,12 @@ def main():
             f"`--validation_nfe` {args.validation_nfe} must divide the grid size {args.pdd_num_steps}: generation "
             "advances `N / NFE` intervals per evaluation."
         )
-    if args.train_mode == "fl2va":
-        if not args.prompt_cache:
-            raise ValueError("`--train_mode=fl2va` requires `--prompt_cache` with `train/` and `val/` splits.")
-    elif args.train_mode == "ref2va":
-        if not args.request_cache:
-            raise ValueError("`--train_mode=ref2va` requires `--request_cache` with `train/` and `val/` splits.")
+    if not args.train_data_meta:
+        raise ValueError(
+            "`--train_data_meta` is required: the `outputs.json` of the cached conditioning (with "
+            "`--enable_preprocess_training`) or the on-the-fly annotation JSON without it (`fl2va`: `{\"text\": ...}` "
+            "records; `ref2va`: the request list `load_requests` reads)."
+        )
     if args.train_batch_size != 1:
         raise ValueError("Data-free PDD carries one trajectory per rank and requires --train_batch_size=1.")
 
@@ -886,14 +1042,12 @@ def main():
 
     # If passed along, set the training seed now.
     # Per-rank seeding: the ranks of one global batch have to roll out *different* noise, otherwise the trajectories
-    # of a step differ only in their prompt.
+    # of a step differ only in their prompt. The conditioning order is drawn by the dataloader's own seeded sampler.
     if args.seed is not None:
         set_seed(args.seed + accelerator.process_index)
-        rng = np.random.default_rng(np.random.PCG64(args.seed + accelerator.process_index))
-        print(f"Init rng with seed {args.seed + accelerator.process_index}. Process_index is {accelerator.process_index}")
+        print(f"Init seed {args.seed + accelerator.process_index}. Process_index is {accelerator.process_index}")
     else:
-        rng = np.random.default_rng()
-        print(f"Init rng without fixed seed. Process_index is {accelerator.process_index}")
+        print(f"Init without fixed seed. Process_index is {accelerator.process_index}")
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -943,7 +1097,10 @@ def main():
     # For now the following workaround will partially support Deepspeed ZeRO-3, by excluding the
     # frozen models from being partitioned during `zero.Init` which gets called during
     # `from_pretrained`. So the two VAEs will not enjoy the parameter sharding across multiple gpus
-    # and only the transformer will get ZeRO sharded. PDD never loads the 62 GB conditioner.
+    # and only the transformer will get ZeRO sharded. The 62 GB conditioner is loaded only when conditioning is
+    # encoded on the fly (without `--enable_preprocess_training`); the cached route keeps it out of the run entirely.
+    uses_text_encoder = not args.enable_preprocess_training
+    tokenizer = processor = text_encoder = None
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # The two VAEs stay float32 as released (the encode/decode recipe is float16 autocast over float32
         # weights), so they are loaded without `torch_dtype`; the mixed-precision loader mixin restores the
@@ -954,6 +1111,15 @@ def main():
         audio_vae = AutoencoderKLMiniMaxH3Audio.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="audio_vae", low_cpu_mem_usage=True,
         )
+        if uses_text_encoder:
+            # On-the-fly conditioning (`fl2va` prompts, `ref2va` requests): the same Qwen3-VL components
+            # `train_lora.py` loads, so `train_lora.encode_prompt` runs unchanged. Mirrors `scripts/minimax_h3/train_lora.py`.
+            tokenizer = Qwen2TokenizerFast.from_pretrained(os.path.join(args.pretrained_model_name_or_path, "tokenizer"))
+            processor = Qwen3VLProcessor.from_pretrained(os.path.join(args.pretrained_model_name_or_path, "processor"))
+            text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, "text_encoder"), low_cpu_mem_usage=True, torch_dtype=weight_dtype,
+            )
+            text_encoder = text_encoder.eval()
     scheduler = MiniMaxH3Scheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     audio_scheduler = MiniMaxH3Scheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="audio_scheduler")
 
@@ -961,9 +1127,11 @@ def main():
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
     audio_vae.requires_grad_(False)
+    if uses_text_encoder:
+        text_encoder.requires_grad_(False)
 
     # ------------------------------------------------------------------ LoRA
-    num_adapters = add_lora(transformer, args.target_name.split(","), args.rank, args.network_alpha)
+    num_adapters = add_pdd_lora(transformer, args.target_name.split(","), args.rank, args.network_alpha)
     attach_parallel_decoder(transformer, args.pdd_num_steps)
     transformer.train()
     # FSDP flattens one dtype per wrap unit. DDP keeps float32 LoRA master weights; under FSDP the adapters match
@@ -972,13 +1140,13 @@ def main():
     # mixed into the bf16 root flatten (`--mixed_precision=no` does not install an FSDP MixedPrecision policy).
     if fsdp_plugin is not None:
         for module in transformer.modules():
-            if isinstance(module, LoRALinear):
+            if isinstance(module, PDDLoRALinear):
                 dtype = module.base.weight.dtype
                 module.lora_down.data = module.lora_down.data.to(dtype)
                 module.lora_up.data = module.lora_up.data.to(dtype)
         wrap_names = list(fsdp_plugin.transformer_cls_names_to_wrap or [])
-        if "MiniMaxH3ParallelHead" not in wrap_names:
-            wrap_names.append("MiniMaxH3ParallelHead")
+        if "PDDParallelHead" not in wrap_names:
+            wrap_names.append("PDDParallelHead")
             fsdp_plugin.transformer_cls_names_to_wrap = wrap_names
         ignored = []
         for name in ("proj_in", "audio_proj_in", "time_embedder", "rope"):
@@ -1022,12 +1190,12 @@ def main():
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                accelerate_state_dict = gather_full_state_dict(models[-1], accelerator)
                 if accelerator.is_main_process and accelerate_state_dict is not None:
                     os.makedirs(output_dir, exist_ok=True)
                     save_pdd_weights(
                         os.path.join(output_dir, PDD_WEIGHTS_NAME),
-                        filter_pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
+                        pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
                     )
                     dump_pdd_config(args, output_dir)
 
@@ -1036,12 +1204,12 @@ def main():
 
         else:
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                accelerate_state_dict = gather_full_state_dict(models[-1], accelerator)
                 if accelerator.is_main_process and accelerate_state_dict is not None:
                     os.makedirs(output_dir, exist_ok=True)
                     save_pdd_weights(
                         os.path.join(output_dir, PDD_WEIGHTS_NAME),
-                        filter_pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
+                        pdd_state_dict(unwrap_model(models[-1]), accelerate_state_dict),
                     )
                     dump_pdd_config(args, output_dir)
                     if not args.use_deepspeed:
@@ -1099,17 +1267,48 @@ def main():
     )
 
     # ------------------------------------------------------------------ data
-    # Data-free PDD never reads a target video: each rank carries one trajectory and only cached Qwen3-VL
-    # conditioning (plus encoded reference latents under `ref2va`) is needed.
-    cache_root = args.request_cache if args.train_mode == "ref2va" else args.prompt_cache
-    train_cache = load_cache_split(os.path.join(cache_root, "train"), args.train_mode)
-    val_cache = load_cache_split(os.path.join(cache_root, "val"), args.train_mode)
+    # Data-free PDD never reads a target video: each rank carries one trajectory and needs only the conditioning —
+    # either pre-encoded safetensors (`--enable_preprocess_training`) or an annotation encoded on the fly (without it).
+    # All three routes go through a DataLoader so `accelerator.prepare` shards the entries across ranks, replacing the
+    # old whole-cache random pick.
+    if args.enable_preprocess_training:
+        train_dataset = ImageVideoSafetensorsDataset(args.train_data_meta, data_root=args.train_data_dir)
 
-    # Scheduler and math around the number of training steps. There is no DataLoader: one epoch is one pass
-    # through the prompt cache (batch size is 1). `--max_train_steps` overrides `--num_train_epochs`, matching
-    # `scripts/minimax_h3/train_lora.py`.
+        def collate_fn(examples):
+            return reconstruct_cache_entry(examples[0], args.train_mode)
+    elif args.train_mode == "ref2va":
+        # On-the-fly `ref2va`: read the request annotation with `load_requests` (the same reader the cache generator
+        # uses) and encode each request's prompt + reference latents in the conditioning iterator below.
+        train_dataset = _RequestDataset(load_requests(args.train_data_meta))
+
+        def collate_fn(examples):
+            # `--train_batch_size=1`: one request per trajectory reset, so hand over the single record; the Qwen3-VL /
+            # VAE encode runs in the conditioning iterator below (main process), not in the collate / workers.
+            return {"prompt": examples[0]["prompt"], "references": list(examples[0]["references"])}
+    else:
+        train_dataset = TextDataset(args.train_data_meta)
+
+        def collate_fn(examples):
+            # `--train_batch_size=1`: one conditioning entry per trajectory reset, so hand over the single record; the
+            # Qwen3-VL encode runs in the conditioning iterator below (main process), not in the collate / workers.
+            return {"text": examples[0]["text"]}
+
+    batch_sampler_generator = torch.Generator().manual_seed(args.seed)
+    batch_sampler = BatchSampler(
+        RandomSampler(train_dataset, generator=batch_sampler_generator),
+        batch_size=args.train_batch_size,
+        drop_last=True,
+    )
+    train_dataloader = DataLoader(train_dataset, batch_sampler=batch_sampler, collate_fn=collate_fn)
+
+    # The held-out validation conditioning mirrors the training route (a cache *or* on-the-fly prompts) instead of
+    # forcing a pre-processed cache, so it is built further down — once the conditioner is sharded / on-device — right
+    # before the trajectory setup. Validation is skipped when `--val_data_meta` is empty.
+
+    # Scheduler and math around the number of training steps. One epoch is one pass through the conditioning set
+    # (batch size is 1). `--max_train_steps` overrides `--num_train_epochs`, matching `scripts/minimax_h3/train_lora.py`.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_cache) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(len(train_dataset) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -1122,7 +1321,22 @@ def main():
     )
 
     transformer.gradient_checkpointing_save_on_cpu = args.gradient_checkpointing_save_on_cpu
-    transformer, optimizer, lr_scheduler = accelerator.prepare(transformer, optimizer, lr_scheduler)
+    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        transformer, optimizer, train_dataloader, lr_scheduler
+    )
+
+    # Shard the frozen text encoder *after* prepare (mirrors `train_lora.py`): the Qwen3-VL conditioner (~62 GB) is
+    # wrapped per decoder layer so the per-step unshard footprint stays small, and a post-prepare shard keeps it out of
+    # the trainable FSDP unit. Only the on-the-fly text route loads it (`uses_text_encoder`).
+    sharded_text_encoder = uses_text_encoder and (fsdp_stage != 0 or zero_stage != 0)
+    if sharded_text_encoder:
+        from videox_fun.dist import shard_model
+        text_encoder.model = shard_model(
+            text_encoder.model,
+            device_id=accelerator.device,
+            param_dtype=weight_dtype,
+            module_to_wrapper=list(text_encoder.model.language_model.layers),
+        )
 
     device = accelerator.device
     # The two VAEs stay float32 (mirrors the pipeline: float32 weights, float16 autocast only at the
@@ -1131,6 +1345,10 @@ def main():
     audio_vae.to(device if not args.low_vram else "cpu")
     if fsdp_stage == 0 and zero_stage == 0:
         transformer.to(device)
+    # An FSDP/ZeRO-sharded text encoder is already on-device and dtype-pinned by `shard_model`; otherwise move it to
+    # the GPU, or keep it on CPU under `--low_vram` (the conditioning iterator moves it up only for each encode).
+    if uses_text_encoder and not sharded_text_encoder:
+        text_encoder.to(device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     trainable_params = [parameter for parameter in transformer.parameters() if parameter.requires_grad]
     ema = (
@@ -1139,10 +1357,10 @@ def main():
         else None
     )
 
-    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    # PDD has no DataLoader (`accelerator.prepare` does not shard the prompt cache); recompute against the cache
-    # anyway so `--num_train_epochs` and `--max_train_steps` stay consistent with `train_lora.py`.
-    num_update_steps_per_epoch = math.ceil(len(train_cache) / args.gradient_accumulation_steps)
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed. One
+    # epoch is one pass through the conditioning set (batch size 1), keeping `--num_train_epochs` / `--max_train_steps`
+    # consistent with `train_lora.py`.
+    num_update_steps_per_epoch = math.ceil(len(train_dataset) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
@@ -1180,13 +1398,110 @@ def main():
         f"Grid N={args.pdd_num_steps}, L_min={args.pdd_block_size}, L_max={args.pdd_max_block_size}: block starts at "
         f"t = {[round(float(video_grid[i]), 4) for i in range(0, args.pdd_num_steps + 1, args.pdd_block_size)]}"
     )
+
+    # On-the-fly `ref2va` conditioning, shared by the training iterator and validation: parse the request's
+    # references, then encode the prompt (Qwen3-VL) and the reference latents (the two VAEs) with the same recipes
+    # `generate_ref2va_request_cache.py` uses. Under `--low_vram` the two encodes are serialized — conditioner up then
+    # down, VAEs up then down — so the ~62 GB text encoder and a 124-frame reference video never share the GPU.
+    ref2va_num_frames = align_num_frames(int(args.video_sample_n_frames))
+    ref2va_audio_sr = getattr(audio_vae.config, "sampling_rate", 32000)
+
+    def encode_request_on_the_fly(request):
+        references = [parse_reference(entry) for entry in request["references"]]
+        references = check_ref2va_references(references)
+        references = normalize_ref2va_references(references, ref2va_num_frames, ref2va_audio_sr)
+
+        if args.low_vram and not sharded_text_encoder:
+            text_encoder.to(device)
+        with torch.no_grad():
+            prompt_embeds, text_token_tags = encode_prompt(
+                text_encoder, tokenizer, processor, request["prompt"],
+                references=references, device=device, dtype=weight_dtype,
+            )
+        if args.low_vram and not sharded_text_encoder:
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+        if args.low_vram:
+            vae.to(device)
+            audio_vae.to(device)
+        with torch.no_grad():
+            condition_latents, audio_condition_latents = encode_reference_latents_for_training(
+                vae, audio_vae, references, patch_size, device, audio_latent_channels=audio_channels,
+            )
+        if args.low_vram:
+            vae.to("cpu")
+            audio_vae.to("cpu")
+            torch.cuda.empty_cache()
+
+        return {
+            "prompt_embeds": prompt_embeds,
+            "text_token_tags": text_token_tags,
+            "reference_kinds": [(reference.kind, bool(reference.has_audio)) for reference in references],
+            "condition_latents": condition_latents,
+            "audio_condition_latents": audio_condition_latents,
+        }
+
+    # Validation conditioning, built now that the conditioner is sharded / on-device so it can mirror the training
+    # route: with `--enable_preprocess_training` a `generate_*_cache.py` cache (`outputs.json` + safetensors); without
+    # it, the on-the-fly annotation encoded here (`fl2va` prompts via `TextDataset`, `ref2va` requests via
+    # `encode_request_on_the_fly`). Every rank builds the full list (exactly like the cache route); `log_validation`
+    # shards it at render time.
+    val_cache = []
+    if args.val_data_meta:
+        if args.enable_preprocess_training:
+            val_dataset = ImageVideoSafetensorsDataset(args.val_data_meta, data_root=args.train_data_dir)
+            val_cache = [reconstruct_cache_entry(val_dataset[i], args.train_mode) for i in range(len(val_dataset))]
+        elif args.train_mode == "ref2va":
+            val_dataset = _RequestDataset(load_requests(args.val_data_meta))
+            val_cache = [encode_request_on_the_fly(val_dataset[i]) for i in range(len(val_dataset))]
+        else:
+            val_dataset = TextDataset(args.val_data_meta)
+            if args.low_vram and not sharded_text_encoder:
+                text_encoder.to(device)
+            with torch.no_grad():
+                for i in range(len(val_dataset)):
+                    prompt_embeds, text_token_tags = encode_prompt(
+                        text_encoder, tokenizer, processor, val_dataset[i]["text"], device=device, dtype=weight_dtype,
+                    )
+                    val_cache.append({"prompt_embeds": prompt_embeds, "text_token_tags": text_token_tags})
+            if args.low_vram and not sharded_text_encoder:
+                text_encoder.to("cpu")
+                torch.cuda.empty_cache()
+
+    # The conditioning iterator turns the (accelerate-sharded, cycling) dataloader into the normalized entries the
+    # trajectories pull on `reset()`. The pre-processed route already yields `{prompt_embeds, text_token_tags}` (plus
+    # the ref2va reference tensors); the on-the-fly route encodes each entry here in the main process — `fl2va` prompts
+    # via `encode_prompt`, `ref2va` requests via `encode_request_on_the_fly` — moving the conditioner / VAEs up only
+    # for the encode under `--low_vram`.
+    def conditioning_iterator():
+        while True:
+            for batch in train_dataloader:
+                if not uses_text_encoder:
+                    yield batch
+                elif args.train_mode == "ref2va":
+                    yield encode_request_on_the_fly(batch)
+                else:
+                    if args.low_vram and not sharded_text_encoder:
+                        text_encoder.to(device)
+                    with torch.no_grad():
+                        prompt_embeds, text_token_tags = encode_prompt(
+                            text_encoder, tokenizer, processor, batch["text"], device=device, dtype=weight_dtype,
+                        )
+                    if args.low_vram and not sharded_text_encoder:
+                        text_encoder.to("cpu")
+                        torch.cuda.empty_cache()
+                    yield {"prompt_embeds": prompt_embeds, "text_token_tags": text_token_tags}
+
+    condition_iter = conditioning_iterator()
+
     if args.train_mode == "ref2va":
         trajectory = Ref2VATrajectory(
-            geometry, patch_size, latent_channels, audio_channels, train_cache, scheduler, rng, device,
+            geometry, patch_size, latent_channels, audio_channels, condition_iter, scheduler, device,
         )
     else:
         trajectory = FL2VATrajectory(
-            geometry, patch_size, latent_channels, audio_channels, train_cache, rng, device,
+            geometry, patch_size, latent_channels, audio_channels, condition_iter, device,
         )
     target_seed = (args.seed if args.seed is not None else 0) + 1000 + accelerator.process_index
     target_rng = np.random.default_rng(np.random.PCG64(target_seed))
@@ -1194,7 +1509,7 @@ def main():
     # ------------------------------------------------------------------ train loop
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_cache)}")
+    logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -1303,7 +1618,7 @@ def main():
                     state_video_tail + video_output[:, 2 * position].detach(),
                     state_audio_tail + audio_output[:, 2 * position].detach(),
                 )
-                with teacher_mode(student), torch.no_grad():
+                with pdd_teacher_mode(student), torch.no_grad():
                     target_video, target_audio = pdd_teacher_mean_velocity(
                         transformer, trajectory.forward_kwargs, state_video, state_audio, target, grids, args.pdd_solver
                     )
@@ -1404,11 +1719,11 @@ def main():
                     ema.copy_to(trainable_params)
                     checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     if args.use_deepspeed or args.use_fsdp:
-                        state_dict = accelerator.get_state_dict(transformer, unwrap=True)
+                        state_dict = gather_full_state_dict(transformer, accelerator)
                         if accelerator.is_main_process and state_dict is not None:
                             save_pdd_weights(
                                 os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
-                                filter_pdd_state_dict(unwrap_model(transformer), state_dict),
+                                pdd_state_dict(unwrap_model(transformer), state_dict),
                             )
                             dump_pdd_config(args, checkpoint_dir)
                     elif accelerator.is_main_process:
@@ -1421,7 +1736,7 @@ def main():
                     logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
                 accelerator.wait_for_everyone()
 
-            if global_step % args.validation_steps == 0:
+            if global_step % args.validation_steps == 0 and val_cache:
                 if ema is not None:
                     ema.store(trainable_params)
                     ema.copy_to(trainable_params)
@@ -1453,11 +1768,11 @@ def main():
         if ema is not None:
             ema.copy_to(trainable_params)
             if args.use_deepspeed or args.use_fsdp:
-                state_dict = accelerator.get_state_dict(transformer, unwrap=True)
+                state_dict = gather_full_state_dict(transformer, accelerator)
                 if accelerator.is_main_process and state_dict is not None:
                     save_pdd_weights(
                         os.path.join(save_path, PDD_EMA_WEIGHTS_NAME),
-                        filter_pdd_state_dict(unwrap_model(transformer), state_dict),
+                        pdd_state_dict(unwrap_model(transformer), state_dict),
                     )
                     dump_pdd_config(args, save_path)
             elif accelerator.is_main_process:

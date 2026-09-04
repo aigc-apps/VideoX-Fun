@@ -1,6 +1,6 @@
 # MiniMax-H3 PDD LoRA Training Guide
 
-This document provides a complete workflow for Parallel Decoding Distillation (PDD, [arXiv 2607.26004](https://arxiv.org/abs/2607.26004)) LoRA training of MiniMax-H3, including environment configuration, prompt-cache preparation, distributed training, and inference testing.
+This document provides a complete workflow for Parallel Decoding Distillation (PDD, [arXiv 2607.26004](https://arxiv.org/abs/2607.26004)) LoRA training of MiniMax-H3, including environment configuration, conditioning-cache preparation, distributed training, and inference testing.
 
 > **Note**: MiniMax-H3 is an audio-visual generative video model that can simultaneously generate video and corresponding audio. PDD training is **data-free**: it never reads target videos. Each rank carries one trajectory, rolls it forward with the student's own predictions, and is supervised by a frozen teacher on the same backbone. Only cached Qwen3-VL conditioning is needed, which keeps the ~62 GB text encoder out of the training run.
 
@@ -11,14 +11,15 @@ PDD turns the pre-trained flow model into a *parallel decoder*. The sampling int
 ## Table of Contents
 - [1. Environment Configuration](#1-environment-configuration)
 - [2. Data Preparation](#2-data-preparation)
-  - [2.1 Data-free Prompt Cache](#21-data-free-prompt-cache)
+  - [2.1 Data-free Conditioning](#21-data-free-conditioning)
   - [2.2 Cache Structure](#22-cache-structure)
-  - [2.3 Encoding Prompts](#23-encoding-prompts)
-  - [2.4 Prompt JSON Format](#24-prompt-json-format)
+  - [2.3 Generating the Cache](#23-generating-the-cache)
+  - [2.4 Annotation JSON Format](#24-annotation-json-format)
   - [2.5 Ref2VA Request Cache](#25-ref2va-request-cache)
 - [3. PDD LoRA Training](#3-pdd-lora-training)
   - [3.1 Download Pretrained Model](#31-download-pretrained-model)
   - [3.2 Quick Start (FSDP)](#32-quick-start-fsdp)
+    - [3.2.1 Ref2VA Training](#321-ref2va-training)
   - [3.3 PDD Training Parameters](#33-pdd-training-parameters)
   - [3.4 Training Validation](#34-training-validation)
   - [3.5 Checkpoint Layout](#35-checkpoint-layout)
@@ -69,79 +70,83 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ## 2. Data Preparation
 
-PDD does **not** use a video/audio dataset or `metadata.json`. Training consumes a folder of cached Qwen3-VL embeddings; the student trajectory is sampled from noise.
+PDD is **data-free**: the student trajectory is sampled from noise, so no target video/audio media is ever read for the loss. Training consumes only *conditioning* — the prompt for `fl2va`, and the prompt plus reference media for `ref2va`. Both `--train_mode`s support both conditioning routes, selected by `--enable_preprocess_training`:
 
-### 2.1 Data-free Prompt Cache
+| `--train_mode` | Conditions on | **Cache route** (`--enable_preprocess_training`) | **Direct-load route** (flag omitted) |
+|----------------|---------------|--------------------------------------------------|--------------------------------------|
+| `fl2va` | prompt | Pre-encode with `generate_prompt_cache.py`, read the `outputs.json` | Read a `{"text": ...}` annotation (`TextDataset`), encode on the fly |
+| `ref2va` | prompt + reference media | Pre-encode with `generate_ref2va_request_cache.py`, read the `outputs.json` | Read a request annotation (`load_requests`), encode the prompt + reference latents on the fly |
 
-`--train_mode=fl2va` (the default recipe, FL2VA / t2va packed layout) requires `--prompt_cache` with `train/` and `val/` splits. Encode the prompts once with `scripts/minimax_h3_fun/encode_prompts.py`; the ~62 GB Qwen3-VL conditioner is not loaded during PDD training.
+- **Cache route** (recommended for long / repeated runs): the Qwen3-VL embeddings — and, for `ref2va`, the VAE-encoded reference latents — are pre-encoded to safetensors **once**, so the ~62 GB conditioner never loads during training.
+- **Direct-load route** (recommended to start, or for a small request set): there is no separate preprocessing step; the run loads the ~62 GB conditioner (and, for `ref2va`, the two VAEs) and encodes each entry on the fly. Keep `--low_vram` on so they move onto the GPU only while encoding.
+
+> 💡 Either route feeds **both** the train trajectories and the validation renders — data-free PDD has no train/val split, so `--train_data_meta` and `--val_data_meta` usually point at the same annotation (e.g. the official `datasets/X-Fun-Videos-Audios-Demo`, the standard test data — never an ad-hoc prompt set).
+
+### 2.1 Data-free Conditioning
+
+`--train_mode=fl2va` (the default recipe, FL2VA / t2va packed layout) needs the prompt conditioning; `--train_mode=ref2va` additionally needs reference media (images / videos / audio) and loads `transformer_ref` by default. On the **cache route**, generate the cache **once** with `scripts/minimax_h3/generate_prompt_cache.sh` (`fl2va`) or `scripts/minimax_h3/generate_ref2va_request_cache.sh` (`ref2va`); both run multi-GPU under `accelerate launch`, and the ~62 GB Qwen3-VL conditioner is then not loaded during PDD training. On the **direct-load route** there is no preprocessing step: point `--train_data_meta` straight at the annotation and the run encodes it on the fly (see **3.2.1** for both `ref2va` routes end to end).
 
 ### 2.2 Cache Structure
 
 ```
 📦 datasets/
-├── 📂 minimax_h3_pdd_prompt_cache/
-│   ├── 📂 train/
-│   │   ├── 📄 prompts.json
-│   │   ├── 📄 0000.pt
-│   │   ├── 📄 0001.pt
-│   │   └── 📄 ...
-│   └── 📂 val/
-│       ├── 📄 prompts.json
-│       ├── 📄 0000.pt
-│       └── 📄 ...
+├── 📂 X-Fun-Videos-Audios-Demo/          # official demo dataset (source of the `text` captions)
+│   └── 📄 metadata_add_width_height.json
+└── 📂 minimax_h3_pdd_prompt_cache/       # generated once; feeds both train and validation
+    ├── 📄 outputs.json
+    ├── 📄 00000.safetensors
+    ├── 📄 00001.safetensors
+    └── 📄 ...
 ```
 
-Each `*.pt` file holds:
+`outputs.json` is a list of `{"file_path": ".../00000.safetensors"}` records that `ImageVideoSafetensorsDataset` reads. `--train_data_dir` is the optional root prepended to each `file_path`; leave it empty when `outputs.json` already stores repo-relative (or absolute) paths, as the generators do. Each `fl2va` `.safetensors` holds:
 
 | Field | Description |
 |-------|-------------|
-| `prompt` | Original prompt string |
 | `prompt_embeds` | Qwen3-VL hidden states at the MiniMax-H3 text-encoder layer (bfloat16) |
-| `text_token_tags` | Per-token tags for the packed sequence |
+| `text_token_tags` | Per-token tags for the packed sequence (int64) |
 
-### 2.3 Encoding Prompts
+### 2.3 Generating the Cache
+
+This step is only for the **cache route**; the direct-load route (**3.2.1 Route A**) reads the annotation directly and skips it.
 
 ```bash
-# Train split
-python scripts/minimax_h3_fun/encode_prompts.py \
-  --model models/Diffusion_Transformer/MiniMax-H3 \
-  --prompts-json datasets/my_pdd_prompts_train.json \
-  --output datasets/minimax_h3_pdd_prompt_cache \
-  --split train
+# fl2va: cache the prompt conditioning of the official demo dataset (multi-GPU)
+bash scripts/minimax_h3/generate_prompt_cache.sh
 
-# Val split (used by `--validation_steps`)
-python scripts/minimax_h3_fun/encode_prompts.py \
-  --model models/Diffusion_Transformer/MiniMax-H3 \
-  --prompts-json datasets/my_pdd_prompts_val.json \
-  --output datasets/minimax_h3_pdd_prompt_cache \
-  --split val
+# ref2va: cache the request conditioning (prompt embeds + reference latents)
+bash scripts/minimax_h3/generate_ref2va_request_cache.sh
 ```
 
-> 💡 `--model` may be either the converted diffusers layout or an original MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`). The tokenizer is read from `tokenizer/` and the conditioner from `text_encoder/`.
+Each launcher runs `accelerate launch ... generate_*_cache.py` once: every rank walks an interleaved slice of the annotation, `.safetensors` that already exist are skipped (resume), and rank0 finally writes `outputs.json`. Edit the `MODEL_NAME` / `DATASET_META` / `CACHE_ROOT` variables at the top of each `.sh` first.
 
-### 2.4 Prompt JSON Format
+> 💡 `--pretrained_model_name_or_path` may be either the converted diffusers layout or an original MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`). The tokenizer is read from `tokenizer/`, the processor from `processor/`, and the conditioner from `text_encoder/`.
 
-The encoder accepts a JSON list of strings, or a jobs document with an `examples` list (each entry a string or an object with `prompt`):
+### 2.4 Annotation JSON Format
+
+The `fl2va` generator reads the official demo dataset's annotation JSON — a list of records whose `text` caption is the only field PDD uses (the `file_path` / `audio_path` / `control_file_path` / `width` / `height` fields the audio-visual dataset carries are ignored). A bare list of strings, or `{"prompt": ...}` / `{"examples": [...]}` jobs, are accepted too:
 
 ```json
-{
-  "examples": [
-    {
-      "task": "t2va",
-      "prompt": "A brown dog barks on a sofa, sitting on a light-colored couch in a cozy room",
-      "duration": 5.1666666667,
-      "aspect_ratio": "16:9",
-      "megapixels": 0.98
-    }
-  ]
-}
+[
+  {"file_path": "train/00000001.mp4", "text": "A young woman gently turns her head to the right ...", "audio_path": "wav/00000001.wav", "type": "video"}
+]
 ```
 
-Only the prompt text is encoded. Resolution and duration are training/inference flags (`--video_sample_height` / `--video_sample_width` / `--video_sample_n_frames`), not cache fields.
+The `ref2va` route — both `generate_ref2va_request_cache.py` (cache) and direct-load training — reads a list of request records instead. Either an explicit `{"prompt": ..., "references": [...]}` request, where each reference is an `"image=..."` / `"video=..."` / `"audio=..."` string (the `predict_ref2va.py` schema, in the order the model reads them):
+
+```json
+[
+  {"prompt": "The character turns and waves", "references": ["image=ref/face.png", "audio=ref/voice.wav"]}
+]
+```
+
+or — the default — the *same* audio-visual demo annotation as `fl2va` above: `load_requests` derives the `video=<file_path>` + `audio=<audio_path>` references from each record (relative media paths resolve against the annotation's directory) and uses its `text` as the prompt.
+
+Only the conditioning is encoded. Resolution and duration are training/inference flags (`--video_sample_size` / `--fix_sample_size` / `--video_sample_n_frames`), not cache fields.
 
 ### 2.5 Ref2VA Request Cache
 
-`--train_mode=ref2va` uses `--request_cache` instead of `--prompt_cache`, and loads `transformer_ref` by default. Each cached `.pt` request additionally carries reference latents (`condition_latents`, `audio_condition_latents`, `reference_kinds`) for the Ref2VA packed layout. `encode_prompts.py` only writes the fl2va prompt cache.
+`--train_mode=ref2va` loads `transformer_ref` by default. On the **cache route** it reads the request cache written by `generate_ref2va_request_cache.py`: besides `prompt_embeds` / `text_token_tags`, each request `.safetensors` also carries the reference latents for the Ref2VA packed layout, flattened into tensors — `reference_kind_ids` / `reference_has_audio` (per-reference kind and has-audio flag), `num_condition_latents` / `num_audio_condition_latents`, and the indexed `condition_latents_{i}` / `audio_condition_latents_{i}`. On the **direct-load route** the very same latents are produced on the fly instead — `train_pdd_lora.py` reads the request annotation with `load_requests`, encodes the prompt with Qwen3-VL and the references with the two VAEs — so no `.safetensors` cache is needed (`--train_mode=ref2va` without `--enable_preprocess_training`).
 
 ---
 
@@ -161,15 +166,19 @@ hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniM
 
 ### 3.2 Quick Start (FSDP)
 
-If you have encoded a prompt cache as per **2.3** and downloaded the weights as per **3.1**, you can copy and run the command below. `scripts/minimax_h3_fun/train_pdd_lora.sh` is the same launch.
+If you have generated a conditioning cache as per **2.3** and downloaded the weights as per **3.1**, you can copy and run the command below. `scripts/minimax_h3/train_pdd_lora.sh` is the same launch.
 
 FSDP is recommended: even though PDD does not load Qwen3-VL, the frozen transformer is still about 62 GB in bfloat16 and must be sharded — which FSDP (`FULL_SHARD`) does but DeepSpeed-Zero-2 does not.
 
 `--mixed_precision=no` is required. The released checkpoint already pins `proj_out` / `audio_proj_out` in float32 (`_keep_in_fp32_modules`); the parallel heads built from them stay float32 master weights over a bfloat16 backbone, and the run does not use autocast.
 
+**fl2va (from a prompt cache — the default recipe):**
+
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -179,12 +188,14 @@ accelerate launch --mixed_precision="no" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
     --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/minimax_h3_fun/train_pdd_lora.py \
+    scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   --video_sample_n_frames=124 \
-  --video_sample_height=768 \
-  --video_sample_width=1344 \
+  --fix_sample_size 768 1344 \
   --train_batch_size=1 \
   --max_train_steps=3000 \
   --checkpointing_steps=200 \
@@ -206,6 +217,76 @@ accelerate launch --mixed_precision="no" --use_fsdp \
   --pdd_block_size=4 \
   --validation_steps=200 \
   --resume_from_checkpoint=latest
+```
+
+#### 3.2.1 Ref2VA Training
+
+`--train_mode=ref2va` conditions on reference media (images / videos / audio) in addition to the prompt, and loads `transformer_ref` by default. It runs on either conditioning route; both commands below are the FSDP Quick Start with only the mode / data flags changed.
+
+**Route A — direct load (no request cache).** Point `--train_data_meta` straight at a request annotation: either the explicit `{"prompt", "references"}` schema or the official `X-Fun-Videos-Audios-Demo` annotation, whose own video + audio become the references (see **2.4**). The run loads the Qwen3-VL conditioner and the two VAEs and encodes every request on the fly, so keep `--low_vram` — they are onloaded only while encoding.
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
+export REQUEST_META="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="no" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/minimax_h3/train_pdd_lora.py \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_mode="ref2va" \
+  --train_data_meta=$REQUEST_META \
+  --val_data_meta=$REQUEST_META \
+  --video_sample_n_frames=124 \
+  --fix_sample_size 768 1344 \
+  --train_batch_size=1 \
+  --max_train_steps=3000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-5 \
+  --lora_learning_rate=1e-4 \
+  --seed=43 \
+  --output_dir="output_dir_minimax_h3_pdd_ref2va_lora" \
+  --gradient_checkpointing \
+  --gradient_checkpointing_save_on_cpu \
+  --mixed_precision="no" \
+  --adam_weight_decay=0.0 \
+  --max_grad_norm=1.0 \
+  --rank=64 \
+  --network_alpha=64 \
+  --low_vram \
+  --target_name="to_q,to_k,to_v,to_out.0,ff.net.0.proj,ff.net.2,adaln_proj.linear" \
+  --pdd_num_steps=32 \
+  --pdd_block_size=4 \
+  --validation_steps=200 \
+  --resume_from_checkpoint=latest
+```
+
+> ⚠️ Route A keeps the ~62 GB Qwen3-VL conditioner resident in the run (sharded by FSDP alongside the transformer) and VAE-encodes each request's references on every trajectory reset. For long or repeated runs, pre-encode once with Route B so training never loads the conditioner.
+
+**Route B — request cache (recommended for long / repeated runs).** Pre-encode the requests once with `generate_ref2va_request_cache.sh` (**2.3**), then train with `--enable_preprocess_training`; the ~62 GB conditioner stays out of the run:
+
+```bash
+# 1) Pre-encode the ref2va requests once (multi-GPU): prompt embeds + reference latents → safetensors
+bash scripts/minimax_h3/generate_ref2va_request_cache.sh
+
+# 2) Train off the cache — Route A with these flags changed
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
+export REQUEST_CACHE_META="datasets/minimax_h3_pdd_request_cache/outputs.json"
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="no" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/minimax_h3/train_pdd_lora.py \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_mode="ref2va" \
+  --enable_preprocess_training \
+  --train_data_meta=$REQUEST_CACHE_META \
+  --val_data_meta=$REQUEST_CACHE_META \
+  ... # the remaining arguments identical to Route A
 ```
 
 ### 3.3 PDD Training Parameters
@@ -232,15 +313,18 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 | Parameter | Description | Example Value |
 |-----------|-------------|----------------|
 | `--pretrained_model_name_or_path` | Path to pretrained model | `models/Diffusion_Transformer/MiniMax-H3` |
-| `--prompt_cache` | Cached Qwen3-VL folder with `train/` and `val/` (`fl2va`) | `datasets/minimax_h3_pdd_prompt_cache` |
-| `--request_cache` | Cached Ref2VA requests with `train/` and `val/` (`ref2va`) | `datasets/minimax_h3_pdd_ref2va_cache` |
-| `--train_mode` | `fl2va` (t2va layout + `--prompt_cache`) or `ref2va` (`transformer_ref` + `--request_cache`) | `fl2va` |
+| `--enable_preprocess_training` | Train on the pre-processed safetensors cache instead of encoding the conditioning on the fly; both `fl2va` and `ref2va` support either route | on |
+| `--train_data_dir` | Optional root prepended to each `file_path` of `--train_data_meta`; empty when it stores repo-relative/absolute paths | `""` |
+| `--train_data_meta` | With the flag: the cache `outputs.json`. Without it: the on-the-fly annotation (`fl2va`: `{"text": ...}`; `ref2va`: the request list) | `datasets/minimax_h3_pdd_prompt_cache/outputs.json` |
+| `--val_data_meta` | Mirrors `--train_data_meta`: with the flag the cache `outputs.json`, without it the on-the-fly annotation (`fl2va`: `{"text": ...}`; `ref2va`: the request list). Skipped when empty | `datasets/minimax_h3_pdd_prompt_cache/outputs.json` |
+| `--train_mode` | `fl2va` (t2va layout) or `ref2va` (`transformer_ref` + reference media); both run on the cache or the direct-load route | `fl2va` |
 | `--transformer_subfolder` | Transformer subfolder. Default: `transformer_ref` for `ref2va`, else `transformer` | None |
 | `--train_batch_size` | Must be 1: each rank carries one trajectory | 1 |
-| `--num_train_epochs` | Training epochs when `--max_train_steps` is omitted. One epoch is one pass through the prompt cache | 100 |
+| `--num_train_epochs` | Training epochs when `--max_train_steps` is omitted. One epoch is one pass through the conditioning set | 100 |
 | `--max_train_steps` | Total optimization steps. If set, overrides `--num_train_epochs` | 3000 |
 | `--video_sample_n_frames` | Number of frames, must follow the `17*n+5` form of the video VAE (duration stays between 5 and 15 seconds) | 124 |
-| `--video_sample_height` / `--video_sample_width` | Canvas size; both must be multiples of 32 | 768 / 1344 |
+| `--video_sample_size` | Square canvas size (height = width); must be a multiple of 32 | 1280 |
+| `--fix_sample_size` | Fixed `[height, width]` overriding `--video_sample_size` for a non-square canvas; both must be multiples of 32 | 768 1344 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 200 |
 | `--seed` | Random seed | 43 |
@@ -258,7 +342,7 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 
 ### 3.4 Training Validation
 
-Validation does **not** take `--validation_prompts`. It generates every entry in the `val/` cache, sharded across ranks, at `--validation_nfe`.
+Validation does **not** take `--validation_prompts`. It generates every entry of `--val_data_meta`, sharded across ranks, at `--validation_nfe`: the cache `outputs.json` under `--enable_preprocess_training`, or the on-the-fly annotation without it — mirroring the training route for both `fl2va` (prompts) and `ref2va` (requests). Validation is skipped when `--val_data_meta` is empty.
 
 | Parameter | Description | Recommended Value |
 |-----------|-------------|-------------------|
@@ -286,12 +370,17 @@ FSDP stage 3 / ZeRO-3 also write `accelerator.save_state` into the same folder (
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3_fun/train_pdd_lora.py \
+accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # the same train_pdd_lora.py arguments as the Quick Start
 ```
 
@@ -301,12 +390,17 @@ accelerate launch --mixed_precision="no" --use_deepspeed --deepspeed_config_file
 
 ```sh
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="no" scripts/minimax_h3_fun/train_pdd_lora.py \
+accelerate launch --mixed_precision="no" scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # the same train_pdd_lora.py arguments as the Quick Start
 ```
 
@@ -321,7 +415,9 @@ Assuming 2 machines with 8 GPUs each:
 **Machine 0 (Master)**:
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 export MASTER_ADDR="192.168.1.100"  # Master machine IP
 export MASTER_PORT=10086
 export WORLD_SIZE=2                  # Total number of machines
@@ -336,9 +432,12 @@ accelerate launch --mixed_precision="no" --main_process_ip=$MASTER_ADDR --main_p
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
     --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/minimax_h3_fun/train_pdd_lora.py \
+    scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   ... # the same train_pdd_lora.py arguments as the Quick Start
 ```
 
@@ -360,7 +459,7 @@ export RANK=1  # Note this is 1
      export NCCL_P2P_DISABLE=1
      ```
 
-- **Data Synchronization**: All machines must be able to access the same prompt cache and model paths (NFS/shared storage)
+- **Data Synchronization**: All machines must be able to access the same conditioning cache and model paths (NFS/shared storage)
 
 ## 4. Inference Testing
 

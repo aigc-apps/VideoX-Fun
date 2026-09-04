@@ -1,17 +1,23 @@
-export MODEL_NAME="/root/models/MiniMax-H3/FL2VA"
-export PROMPT_CACHE="datasets/minimax_h3_pdd_prompt_cache"
+# fl2va off a pre-encoded prompt cache (README_TRAIN_PDD_LORA.md §3.2, `--enable_preprocess_training`).
+# For ref2va — direct load (Route A) or request cache (Route B) — see §3.2.1 and generate_ref2va_request_cache.sh.
+export MODEL_NAME="models/Diffusion_Transformer/MiniMax-H3"
+export DATA_DIR=""
+export PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
+export VAL_PROMPT_CACHE_META="datasets/minimax_h3_pdd_prompt_cache/outputs.json"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="no" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
     --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/minimax_h3_fun/train_pdd_lora.py \
+    scripts/minimax_h3/train_pdd_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --prompt_cache=$PROMPT_CACHE \
+  --enable_preprocess_training \
+  --train_data_dir=$DATA_DIR \
+  --train_data_meta=$PROMPT_CACHE_META \
+  --val_data_meta=$VAL_PROMPT_CACHE_META \
   --video_sample_n_frames=124 \
-  --video_sample_height=768 \
-  --video_sample_width=1344 \
+  --fix_sample_size 768 1344 \
   --train_batch_size=1 \
   --max_train_steps=3000 \
   --checkpointing_steps=200 \

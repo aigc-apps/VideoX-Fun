@@ -12,6 +12,12 @@ from .group_offload import (register_auto_device_hook,
                             safe_remove_group_offloading)
 from .lora_utils import (convert_peft_lora_to_kohya_lora, create_network,
                          merge_lora, unmerge_lora)
+from .lora_utils_pdd import (PDD_EMA_WEIGHTS_NAME, PDD_WEIGHTS_NAME,
+                             PDDLoRALinear, PDDParallelHead, add_pdd_lora,
+                             load_pdd_config, pdd_num_inference_steps,
+                             pdd_sampling_plan, pdd_state_dict,
+                             pdd_teacher_mode, pdd_time_grid,
+                             pdd_training_plan, resolve_pdd_lora_path)
 from .sd3_sde_with_logprob import sde_step_with_logprob
 from .trigflow_sampler import (RectifiedFlow_TrigFlowWrapper,
                                sample_trigflow_timesteps)
