@@ -65,11 +65,13 @@ model_name          = "models/Diffusion_Transformer/MiniMax-H3"
 # The `ref2va` weights ship in their own subfolder, same architecture as the base transformer. A full finetune goes
 # in `transformer_path`, either as the `transformer` folder a training checkpoint writes (config.json included) or
 # as a single safetensors file, overriding the `transformer_ref` subfolder. A LoRA goes in `lora_path`: handed to
-# `transformer_path` it would match no key at all and load nothing.
+# `transformer_path` it would match no key at all and load nothing. A PDD LoRA (parallel decoder) goes in
+# `pdd_lora_path` and cannot be combined with `lora_path`; use a checkpoint trained with `--train_mode=ref2va`.
 transformer_subfolder = "transformer_ref"
 transformer_path    = None
 vae_path            = None
 lora_path           = None
+pdd_lora_path       = None
 
 # Other params
 # MiniMax-H3 generates at a fixed 24 fps, only accepts multiples of 32 as height / width, and snaps video_length up
@@ -142,6 +144,16 @@ if transformer_path is not None:
             f"{transformer_path} holds {len(u)} key(s) the transformer does not have, e.g. {u[:3]}. A LoRA "
             "checkpoint belongs in `lora_path`, not `transformer_path`."
         )
+
+pdd_config = None
+if pdd_lora_path is not None:
+    if lora_path is not None:
+        raise ValueError("`lora_path` and `pdd_lora_path` cannot be used together.")
+    from videox_fun.models.minimax_h3_pdd import (load_pdd_lora,
+                                                  pdd_num_inference_steps,
+                                                  pdd_step_callback)
+    pdd_config = load_pdd_lora(transformer, pdd_lora_path)
+    num_inference_steps = pdd_num_inference_steps(pdd_config, num_inference_steps, teacher_default=50)
 
 # Video VAE. The released weights are float32 and the decode runs under float16 autocast, so the VAE is not
 # downcast even when the rest of the pipeline is bfloat16 (this is also how the training scripts load it).
@@ -268,6 +280,10 @@ def parse_reference(entry: str):
 # own 24 fps and the audio VAE's sample rate.
 parsed_references = [parse_reference(entry) for entry in references]
 
+pdd_callback = None if pdd_config is None else pdd_step_callback(
+    transformer, scheduler, audio_scheduler, pdd_config, num_inference_steps
+)
+
 with torch.no_grad():
     output = pipeline(
         prompt=prompt,
@@ -281,6 +297,7 @@ with torch.no_grad():
         guidance_scale=guidance_scale,
         generator=generator,
         output_type="pt",
+        callback_on_step_end=pdd_callback,
     )
 print(f"[{os.environ.get('RANK', '0')}] generation done, decoding", flush=True)
 

@@ -3,6 +3,10 @@ export DATASET_NAME="datasets/X-Fun-Videos-Audios-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
+# Resolution: --video_sample_size is the square bucket ceiling used with --random_hw_adapt / --enable_bucket.
+# To pin every sample to a fixed non-square canvas instead, add "--fix_sample_size <height> <width>" (e.g. 768 1344);
+# it overrides --video_sample_size and turns off --random_hw_adapt / --training_with_video_token_length.
+
 accelerate launch --mixed_precision="bf16" --use_fsdp \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=MiniMaxH3TransformerBlock \
     --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \

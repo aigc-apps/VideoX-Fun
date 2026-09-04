@@ -38,12 +38,15 @@ Environment variables:
     VIDEOX_PERF_PEAK_TFLOPS: per-device hardware bf16 peak to compute MFU against, overriding the built-in device
         table. Under multi-GPU the MFU is taken against this times the world size.
     VIDEOX_PERF_DIT_PARAMS: exact transformer parameter count, overriding the FSDP-aware inference below.
+    VIDEOX_PERF_FLOPS_ATTN: `0` to price only the linear layers, leaving out the quadratic core-attention term the
+        FLOPs figures include by default. Worth reaching for on the causal models, whose masked attention costs about
+        half of what the term charges them.
     VIDEOX_PERF_EVERY: training only, default 50. Global steps per aggregated log line; a line per step is
         unreadable over the tens of thousands of steps a real run takes.
     VIDEOX_PERF_TOTAL_STEPS: training only. Total planned steps, enabling a remaining-time estimate. Not guessed
         when unset -- `max_train_steps` lives in the entry script's argparse and cannot be read from here.
     VIDEOX_PERF_FLOPS_COEF: training only. Overrides the automatically chosen FLOPs multiplier; see
-        [`_train_flops_coef`].
+        [`flops_coef`]. Setting it collapses the reported MFU and HFU onto each other.
 
 Note that when enabled this module calls `torch.cuda.reset_peak_memory_stats()` on the compute device once per
 request (inference) or once per window (training), so any caller reading the peak memory counters itself sees them
@@ -191,6 +194,10 @@ class _MetricsState:
         self.log_all_ranks = (os.environ.get("VIDEOX_PERF_RANKS", "0").strip().lower() == "all")
         self.peak_tflops_override = _env_float("VIDEOX_PERF_PEAK_TFLOPS")
         self.dit_params_override = _env_int("VIDEOX_PERF_DIT_PARAMS", 0) or None
+        # On by default: leaving core attention out understates a video step by two thirds and, worse, by a factor
+        # that moves with the sequence length. Off is for the causal models, where charging the full square is an
+        # overcount of nearly two, and for anyone who wants the old linear-only bound back.
+        self.attn_flops = _env_int("VIDEOX_PERF_FLOPS_ATTN", 1) != 0
         self.num_requests = 0
         self.history: List[Dict[str, Any]] = []
         self._rank = 0
@@ -423,6 +430,135 @@ def _count_params(module: torch.nn.Module, world_size: int) -> int:
     return total
 
 
+# The naming conventions the attention projections go by across the families here: `q`/`k`/`v` in the Wan models,
+# `to_q`/`to_k`/`to_v` in the diffusers ones, `q_proj`/`k_proj`/`v_proj` in the ones that came from a transformers
+# tower.
+_ATTN_PROJECTIONS = (("q", "to_q", "q_proj"), ("k", "to_k", "k_proj"), ("v", "to_v", "v_proj"))
+
+# The fused form, where one matrix produces all three: `nn.Linear(dim, dim * 3)` in the LongCat and HiDream blocks.
+# The query is the first of three equal shares of its output, which is why an output width that is not a multiple of
+# three is not read as one of these.
+_ATTN_FUSED = ("qkv", "to_qkv", "qkv_proj")
+
+# Attention stacks that refine the *text* embedding before the blocks run. They are attention by structure, but they
+# never see the latent sequence -- they run over a few hundred text rows -- so charging them the latent square is a
+# pure overcount. Named in full rather than matched on "refiner": Z-Image has a `noise_refiner` beside its
+# `context_refiner`, and that one does run over the latents, so a substring test would drop real work.
+_ATTN_TEXT_TOWERS = ("token_refiner", "context_refiner")
+
+# `QK^T` and `AV`, each a multiply-accumulate. The two products are what "core attention" means here, as against the
+# q, k, v and output projections, whose cost is linear in the sequence and already inside the parameter count.
+_ATTN_CORE_FACTOR = 4.0
+
+
+def _query_width(module: torch.nn.Module) -> Optional[int]:
+    """The width of one module's query projection if it is an attention, or `None` if it is not.
+
+    Duck-typed on `out_features` rather than `isinstance(nn.Linear)`, so that a wrapped projection -- a peft
+    `lora.Linear`, or anything else holding a base layer -- is still recognized. Requiring all three of q, k and v
+    keeps the looser test from matching a module that merely happens to own an attribute named `v`.
+
+    The separate q, k and v are looked for first and the fused matrix only after, because a model may have both: the
+    HiDream tower fuses its own attention and holds an unfused `q_proj` elsewhere, and the unfused reading is the
+    one that needs no assumption about how the output is divided.
+    """
+    found = []
+    for candidates in _ATTN_PROJECTIONS:
+        for attr in candidates:
+            child = getattr(module, attr, None)
+            if isinstance(getattr(child, "out_features", None), int):
+                found.append(child)
+                break
+    if len(found) == len(_ATTN_PROJECTIONS):
+        return found[0].out_features
+    for attr in _ATTN_FUSED:
+        width = getattr(getattr(module, attr, None), "out_features", None)
+        if isinstance(width, int) and width % 3 == 0:
+            return width // 3
+    return None
+
+
+def _attn_widths(module: torch.nn.Module) -> Dict[str, int]:
+    """The query-projection width of a model's attention, split by what its keys and values run over.
+
+    The analytic `2 * params * tokens` cost prices the linear layers and nothing else, and at video lengths the
+    attention it leaves out is the larger half of the work: core attention grows with the square of the sequence
+    while the linear part grows linearly, so it is a third of a step at 8k tokens and two thirds at 28k. That is
+    also why a bound that omits it cannot be used to compare two runs at different lengths, which is what it was
+    previously documented as being good for. This reads the widths needed to price it back, the way Megatron keeps
+    its `self_attn_core_term` separate from its per-token terms rather than folding attention into a parameter
+    count.
+
+    Widths come from `in_features` / `out_features` rather than from any config, because those are set in
+    `nn.Linear.__init__` and survive what a config does not: the families here name their dimensions a dozen
+    different ways, and under FSDP the weights have been flattened away while these remain. They are also the
+    *logical* widths, so unlike a parameter count they need no unsharding -- sharding in this repo splits weights
+    across ranks (FSDP) or the sequence across ranks (ulysses, ring), and neither narrows a projection.
+
+    Which modules count, and what their query width is, is [`_query_width`]; both the separate and the fused forms
+    of the projection are recognized. The query width is what both `QK^T` and `AV` are wide in, including under GQA:
+    the fewer key heads are repeated up to the query heads before the product, so the key width does not enter.
+
+    The text-refiner stacks are skipped -- `token_refiner` in MiniMax-H3 and HunyuanVideo, `context_refiner` in
+    Z-Image. They are attention over a few hundred text rows, not over the latents, so pricing them by the latent
+    sequence overstates them by the ratio of the two lengths squared. They are matched by name in full because
+    Z-Image also has a `noise_refiner`, which does run over the latents and must keep counting.
+
+    Keys over the latent sequence and keys over the text are counted apart because only the first is quadratic. A
+    module is taken to be cross-attention when its qualified name says so -- `cross_attn` in the Wan blocks, `attn2`
+    in the diffusers convention -- and self-attention otherwise. Guessing self-attention is the conservative
+    direction for the joint attention that MMDiT runs over text and latents concatenated: its true length is a
+    little above the latent count, so charging it the latent count alone understates rather than inflates.
+
+    Nothing here can see whether the attention is masked, and that is the one direction in which this overcounts.
+    The models in this repo are bidirectional over the latent sequence and so pay the full square, but the causal
+    variants -- `wan_flex_causal_attn`, the self-forcing transformers -- compute about half of it, and Megatron
+    halves its own core term for exactly that reason. Reach for `VIDEOX_PERF_FLOPS_ATTN=0` on those runs to fall
+    back to the linear-only bound rather than read a figure that is too high by nearly a factor of two.
+    """
+    widths = {"self": 0, "cross": 0, "modules": 0}
+    for name, sub in module.named_modules():
+        lowered = name.lower()
+        if any(tower in lowered for tower in _ATTN_TEXT_TOWERS):
+            continue
+        query = _query_width(sub)
+        if query is None:
+            continue
+        cross = "cross" in lowered or lowered.rsplit(".", 1)[-1] == "attn2"
+        widths["cross" if cross else "self"] += query
+        widths["modules"] += 1
+    return widths
+
+
+def _attn_flops(widths: Optional[Dict[str, int]], tokens: int, text_tokens: int) -> float:
+    """Core attention FLOPs of one forward over `tokens` latent tokens, or zero when the widths were unreadable.
+
+    Zero rather than a guess: a model whose attention this could not find falls back to the linear-only bound it
+    always reported, which is wrong in a known direction by a known mechanism, and the caller says which of the two
+    it used.
+
+    The cross-attention term needs the text length, which is a property of the run and not of the module, so it is
+    dropped when unknown. It is worth much less than the self term -- a few percent of the core at video lengths,
+    being linear in the sequence where the other is quadratic -- so dropping it moves the total very little.
+    """
+    if not widths or not widths["self"]:
+        return 0.0
+    total = _ATTN_CORE_FACTOR * float(tokens) * float(tokens) * widths["self"]
+    if text_tokens:
+        total += _ATTN_CORE_FACTOR * float(tokens) * float(text_tokens) * widths["cross"]
+    return total
+
+
+def _text_tokens(module: torch.nn.Module) -> int:
+    """The padded text length a model's cross-attention runs against, or 0 when it does not advertise one.
+
+    Only the Wan family states it (`text_len`, 512), which is the family whose cross-attention is a separate module
+    and therefore the family where the distinction changes anything.
+    """
+    value = getattr(module, "text_len", None)
+    return int(value) if isinstance(value, int) and value > 0 else 0
+
+
 def _attach_hooks(pipe) -> None:
     """Hook the module components of a pipeline, picking up any that were swapped since the last request.
 
@@ -433,6 +569,7 @@ def _attach_hooks(pipe) -> None:
     """
     state = _STATE
     dit_params: Dict[str, int] = {}
+    dit_attn: Dict[str, Tuple[Optional[Dict[str, int]], int]] = {}
 
     try:
         components = dict(pipe.components)
@@ -452,6 +589,15 @@ def _attach_hooks(pipe) -> None:
                 component._videox_perf_params = params
             if params:
                 dit_params[name] = params
+            # Cached on the module beside the parameter count and for the same reason: reading the projection widths
+            # walks every submodule, and they cannot change once the model is built.
+            attn = getattr(component, "_videox_perf_attn", None)
+            if attn is None:
+                widths = _attn_widths(component) if state.attn_flops else None
+                widths = widths if widths and widths["self"] else None
+                attn = (widths, _text_tokens(component) if widths else 0)
+                component._videox_perf_attn = attn
+            dit_attn[name] = attn
 
         # The guard is on the module rather than on the pipeline, so that a module shared by two pipelines -- a
         # base and a refiner over the same vae -- is hooked once. Hooking it twice would append two marker pairs
@@ -482,6 +628,7 @@ def _attach_hooks(pipe) -> None:
         component.register_forward_hook(_make_post_hook(name), with_kwargs=True)
 
     pipe._videox_perf_dit_params = dit_params
+    pipe._videox_perf_dit_attn = dit_attn
 
 
 def _make_pre_hook(name: str):
@@ -616,11 +763,13 @@ def _settle_request(pipe, request: _Request, e2e: float) -> None:
 
 
 def _dit_throughput(pipe, request: _Request, stages: Dict[str, Dict[str, float]]) -> Optional[Dict[str, Any]]:
-    """Achieved TFLOPS and MFU from the analytic `2 * params * tokens` cost of a transformer forward.
+    """Achieved TFLOPS and MFU from an analytic cost of a transformer forward.
 
-    This counts the linear layers only -- the quadratic attention term is left out -- so it is a lower bound on
-    the real work and the numbers it yields are best used for comparing configurations against each other rather
-    than as an absolute.
+    The cost is `2 * params * tokens` for the linear layers plus a separate quadratic term for core attention, read
+    from the model's projection widths by [`_attn_widths`] and dropped when those cannot be read -- in which case the
+    figure is the linear-only lower bound this reported for every model before, understating a long video sequence by
+    roughly two thirds. There is no MFU / HFU split here: inference has no backward and nothing to recompute, so the
+    model and hardware costs coincide.
 
     The rate is a *job* rate, not a per-device one. Multi-GPU inference here splits the sequence across ranks with
     ulysses / ring attention, so the length one rank is handed covers the whole job while that rank computes only
@@ -629,7 +778,9 @@ def _dit_throughput(pipe, request: _Request, stages: Dict[str, Dict[str, float]]
     figure well above 100%.
     """
     params_by_stage = getattr(pipe, "_videox_perf_dit_params", {}) or {}
+    attn_by_stage = getattr(pipe, "_videox_perf_dit_attn", {}) or {}
     total_flops = 0.0
+    attn_flops = 0.0
     total_ms = 0.0
     total_count = 0
     tokens_seen: List[int] = []
@@ -639,7 +790,10 @@ def _dit_throughput(pipe, request: _Request, stages: Dict[str, Dict[str, float]]
         summary = stages.get(name)
         if stat is None or summary is None or not stat.tokens:
             continue
-        total_flops += 2.0 * params * stat.tokens * stat.batch * summary["count"]
+        widths, text_tokens = attn_by_stage.get(name, (None, 0))
+        per_forward = 2.0 * params * stat.tokens + _attn_flops(widths, stat.tokens, text_tokens)
+        total_flops += per_forward * stat.batch * summary["count"]
+        attn_flops += _attn_flops(widths, stat.tokens, text_tokens) * stat.batch * summary["count"]
         total_ms += summary["total_ms"]
         total_count += summary["count"]
         tokens_seen.append(stat.tokens)
@@ -656,6 +810,7 @@ def _dit_throughput(pipe, request: _Request, stages: Dict[str, Dict[str, float]]
         "batch": max(batches_seen),
         "devices": devices,
         "flops_per_fwd": total_flops / total_count,
+        "attn_share": (attn_flops / total_flops) if total_flops else 0.0,
         "tflops": achieved,
         "peak_tflops": peak,
         "mfu": (achieved / peak) if peak else None,
@@ -682,7 +837,10 @@ def _format_record(state: _MetricsState, record: Dict[str, Any]) -> str:
         )
     dit = record.get("dit")
     if dit:
-        segment = f"DiT {dit['flops_per_fwd']:.2e} FLOPs/fwd -> {dit['tflops']:.1f} TFLOPS"
+        segment = (
+            f"DiT {dit['flops_per_fwd']:.2e} FLOPs/fwd (attn {dit['attn_share'] * 100:.0f}%) "
+            f"-> {dit['tflops']:.1f} TFLOPS"
+        )
         if dit["mfu"] is not None:
             over = f" over {dit['devices']} GPUs" if dit["devices"] > 1 else ""
             segment += f" (MFU {dit['mfu'] * 100:.1f}% @{dit['peak_tflops']:.0f}{over})"
@@ -885,6 +1043,8 @@ class _TrainState:
         self.dit_module: Optional[torch.nn.Module] = None
         self.dit_params = 0
         self.dit_trainable = 0
+        self.attn_widths: Optional[Dict[str, int]] = None
+        self.text_tokens = 0
         self._dit_resolved = False
         self._ckpt = False
         self._device: Optional[torch.device] = None
@@ -1068,25 +1228,40 @@ class _TrainState:
         scale = world if world > 1 and _is_sharded(module) else 1
         self.dit_trainable = sum(p.numel() for p in module.parameters() if p.requires_grad) * scale
         self._ckpt = any(getattr(sub, "gradient_checkpointing", False) for sub in module.modules())
+        if self.state.attn_flops:
+            # Walked once, here, for the same reason the trainable fraction is: it is a walk of every submodule of a
+            # 14B transformer and nothing about it changes from one step to the next.
+            widths = _attn_widths(module)
+            self.attn_widths = widths if widths["self"] else None
+            self.text_tokens = _text_tokens(module) if self.attn_widths else 0
 
     @property
     def dit_ckpt(self) -> bool:
         self._resolve_dit()
         return self._ckpt
 
-    def flops_coef(self) -> Tuple[float, str]:
-        """The multiplier on the `2 * params * tokens` forward cost that a whole step comes to, and why.
+    def flops_coef(self) -> Tuple[float, float, str]:
+        """The two multipliers on a forward's cost that a whole step comes to, and why.
 
-        A forward costs 2PT across the linear layers. A full-parameter backward costs twice that -- one pass for the
-        input gradients, one for the weight gradients -- so a full step is 3x the forward. Freezing the base
-        weights, as LoRA does, drops the weight-gradient pass over them and brings the backward to about 1x, for 2x
-        total. Gradient checkpointing then adds one more forward on top of whichever applies.
+        A forward costs one pass over the model. A full-parameter backward costs two more -- one for the input
+        gradients, one for the weight gradients -- so a full step is 3x the forward, which is the flat 3 Megatron
+        applies as its `forward_backward_expansion_factor`. Freezing the base weights, as LoRA does, drops the
+        weight-gradient pass over them and brings the backward to about 1x, for 2x total.
 
-        The trainable fraction decides, with 0.5 as the split: every LoRA configuration here trains well under a
-        percent of the weights and every full-parameter one trains all of them, so nothing real lands near the
-        threshold. `VIDEOX_PERF_FLOPS_COEF` overrides the result, which is what to reach for when a run mixes the
-        two -- or when FSDP has flattened frozen and trainable weights into one parameter, where the fraction
-        cannot be read apart.
+        Gradient checkpointing adds one more forward, recomputed during the backward. It is returned as a *second*
+        coefficient rather than folded into the first, because the two answer different questions and the industry
+        gave them different names. MFU, as PaLM defined it, is the work the model needs against the hardware peak,
+        and it deliberately excludes recomputation: a run that recomputes has not become more useful for it. HFU is
+        the work the hardware actually issued, recomputation included. Reporting one figure under the name of the
+        other is what this did: every run here trains with checkpointing on, so every `mfu` it ever printed was an
+        HFU, a quarter high. Megatron sidesteps the distinction by never counting recomputation at all -- its
+        `num_floating_point_operations` has no term for it -- and by reporting TFLOP/s rather than a utilization.
+
+        The trainable fraction decides between 3x and 2x, with 0.5 as the split: every LoRA configuration here trains
+        well under a percent of the weights and every full-parameter one trains all of them, so nothing real lands
+        near the threshold. `VIDEOX_PERF_FLOPS_COEF` overrides both coefficients at once, which collapses `mfu` and
+        `hfu` onto each other by construction; it is what to reach for when a run mixes the two -- or when FSDP has
+        flattened frozen and trainable weights into one parameter, where the fraction cannot be read apart.
 
         The fraction is `requires_grad`, not the set of weights the optimizer updates, and those come apart: the
         multiviews scripts pass `--trainable_modules view` yet flip `requires_grad_(True)` over the whole stack under
@@ -1097,13 +1272,19 @@ class _TrainState:
         self._resolve_dit()
         ckpt = self._ckpt
         full = not self.dit_params or self.dit_trainable >= 0.5 * self.dit_params
-        coef = (3.0 if full else 2.0) + (1.0 if ckpt else 0.0)
-        reason = (
-            f"{'full' if full else 'lora'}, ckpt {'on' if ckpt else 'off'} -> {coef:g}x"
-        )
+        coef = 3.0 if full else 2.0
+        hw_coef = coef + (1.0 if ckpt else 0.0)
+        if self.attn_widths:
+            attn = f"attn from dims ({self.attn_widths['modules']} modules)"
+        elif self.state.attn_flops:
+            attn = "attn omitted (widths unreadable)"
+        else:
+            attn = "attn omitted (disabled)"
+        reason = f"{'full' if full else 'lora'}, ckpt {'on' if ckpt else 'off'} -> {coef:g}x/{hw_coef:g}x, {attn}"
         if self.coef_override is not None:
-            return self.coef_override, f"{reason}, overridden to {self.coef_override:g}x"
-        return coef, reason
+            override = self.coef_override
+            return override, override, f"{reason}, overridden to {override:g}x"
+        return coef, hw_coef, reason
 
     # -- windowing ---------------------------------------------------------
 
@@ -1182,11 +1363,24 @@ class _TrainState:
         divide by are reported as `wall_s` and `priced_s`, so that either rate can be checked against the record it
         came from. They differ only by the steps that carried no token count.
 
-        The cost model is `2 * params * tokens`, which prices the linear layers and leaves out the quadratic
-        attention term, so every TFLOPS and MFU below is a lower bound on the real work. How loose a bound depends
-        on the sequence: attention grows with the square of the token count while this grows linearly, so a small
-        model on a long sequence is understated by much more than a large model on a short one, and two runs at
-        different lengths are not comparable on this figure alone.
+        The cost model is `2 * params * tokens` for the linear layers plus a separate quadratic term for core
+        attention, read from the model's projection widths by [`_attn_widths`]. The split is Megatron's: it multiplies
+        its per-token terms by the token count and its `self_attn_core_term` by the sum of the squared lengths,
+        because one grows linearly in the sequence and the other quadratically. Folding attention into a parameter
+        count, as this used to, understates a 28k-token video step by about two thirds and an 8k-token one by about a
+        third -- which is why the old figure could not be used to compare two runs at different lengths, whatever its
+        docstring claimed. When the widths cannot be read the attention term is dropped and `flops_coef_reason` says
+        so; the figure is then the old lower bound.
+
+        The linear half is priced from parameters, and that is loose in the opposite direction: it charges every
+        weight against every latent token, while the cross-attention key and value projections run on the few hundred
+        text tokens and the timestep and text embeddings on fewer still. On Wan that is worth about a fifth of the
+        linear half, which the attention term now dwarfs.
+
+        Two utilizations are reported and they are not interchangeable. `mfu` counts the forward and backward the
+        model needs; `hfu` also counts the forward that gradient checkpointing recomputes. `tflops` pairs with the
+        first and `hw_tflops` with the second, so that either rate divided by `peak_tflops` reproduces its own
+        utilization. See [`flops_coef`] for why the two are kept apart.
 
         Two widths matter and they are not the same. `samples` is what this rank alone consumed, and it is reported
         as such: under sequence parallel one sample is spread over several ranks, so summing it across the world
@@ -1210,9 +1404,18 @@ class _TrainState:
         priced_s = sum(entry["total_s"] for entry in priced)
         if not (priced and priced_s > 0 and self.dit_params):
             return result
-        coef, reason = self.flops_coef()
-        flops_total = sum(coef * 2.0 * self.dit_params * entry["tokens"] * entry["samples"] for entry in priced)
+        coef, hw_coef, reason = self.flops_coef()
+        linear = 0.0
+        attention = 0.0
+        for entry in priced:
+            tokens = entry["tokens"]
+            linear += 2.0 * self.dit_params * tokens * entry["samples"]
+            attention += _attn_flops(self.attn_widths, tokens, self.text_tokens) * entry["samples"]
+        per_forward = linear + attention
+        flops_total = coef * per_forward
+        hw_flops_total = hw_coef * per_forward
         achieved = flops_total * dp / priced_s / 1e12
+        hw_achieved = hw_flops_total * dp / priced_s / 1e12
         per_device_peak = self.state.peak_tflops(self.device)
         peak = per_device_peak * self.state.world_size if per_device_peak else None
         result.update(
@@ -1223,12 +1426,18 @@ class _TrainState:
                 "priced_steps": len(priced),
                 "priced_s": priced_s,
                 "flops_coef": coef,
+                "flops_coef_hw": hw_coef,
                 "flops_coef_reason": reason,
                 "flops_per_step": flops_total / len(priced),
+                # What share of the figure is the quadratic term, so that a reader can see how much of it rests on
+                # the width introspection rather than on the parameter count.
+                "attn_share": (attention / per_forward) if per_forward else 0.0,
                 "devices": self.state.world_size,
                 "tflops": achieved,
+                "hw_tflops": hw_achieved,
                 "peak_tflops": peak,
                 "mfu": (achieved / peak) if peak else None,
+                "hfu": (hw_achieved / peak) if peak else None,
             }
         )
         return result
@@ -1579,12 +1788,19 @@ def _format_train_window(state: _MetricsState, record: Dict[str, Any]) -> str:
         trainable = throughput["trainable"] / throughput["params"] * 100.0 if throughput["params"] else 0.0
         segment = (
             f"DiT {throughput['params'] / 1e9:.1f}B params "
-            f"(trainable {trainable:.3g}%, {throughput['flops_coef_reason']}) "
+            f"(trainable {trainable:.3g}%, {throughput['flops_coef_reason']}, "
+            f"attn {throughput['attn_share'] * 100:.0f}%) "
             f"{throughput['flops_per_step']:.2e} FLOPs/step -> {throughput['tflops']:.1f} TFLOPS"
         )
         if throughput["mfu"] is not None:
             over = f" over {throughput['devices']} GPUs" if throughput["devices"] > 1 else ""
-            segment += f" (MFU {throughput['mfu'] * 100:.1f}% @{throughput['peak_tflops']:.0f}{over})"
+            # MFU first because it is the figure that compares across runs, HFU beside it because with gradient
+            # checkpointing on the hardware really did issue that much and the gap between the two is the
+            # recomputation. They coincide when checkpointing is off.
+            segment += (
+                f" (MFU {throughput['mfu'] * 100:.1f}% / HFU {throughput['hfu'] * 100:.1f}%"
+                f" @{throughput['peak_tflops']:.0f}{over})"
+            )
         else:
             segment += " (MFU n/a)"
         if throughput["priced_steps"] < record["steps"]:

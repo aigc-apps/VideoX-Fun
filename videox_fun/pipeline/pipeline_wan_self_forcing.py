@@ -1,5 +1,6 @@
 # Modified from https://github.com/guandeh17/Self-Forcing/blob/main/pipeline/causal_diffusion_inference.py
 import inspect
+import json
 import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -418,6 +419,79 @@ class WanSelfForcingPipeline(DiffusionPipeline):
     def interrupt(self):
         return self._interrupt
 
+    def _unwrap_transformer(self):
+        """Return the bare transformer, undoing FSDP/DDP/torch.compile wraps."""
+        transformer = self.transformer
+        while hasattr(transformer, "module"):
+            transformer = transformer.module
+        if hasattr(transformer, "_orig_mod"):
+            transformer = transformer._orig_mod
+        return transformer
+
+    def set_forcing_kv_config(self, enable, head_profile=None, ar_start=1,
+                              spatial_context_length=1, temporal_context_length=1,
+                              dynamic_context_length=1, num_frame_patch=6,
+                              sim_retention_ratio=0.33):
+        """Enable/disable Forcing-KV hybrid KV cache compression (arXiv 2605.09681).
+
+        Args:
+            enable: Master switch. False restores the original full-window
+                attention path bit-identically.
+            head_profile: Offline head classification - the official
+                {"layers": [{"layer_idx", "static_head", "dynamic_head"}]}
+                format, a plain {layer: {"static": [...]}} mapping, or a path
+                to a JSON file.
+            ar_start: First AR step (chunk index) after which grouped head
+                compression activates.
+            spatial_context_length: History frames kept for static heads.
+            temporal_context_length: Recent frames kept for dynamic heads.
+            dynamic_context_length: Compressed segment cache capacity (frames).
+            num_frame_patch: Token segments per latent frame.
+            sim_retention_ratio: Fraction of candidate segments kept.
+        """
+        if isinstance(head_profile, str):
+            with open(head_profile, "r") as f:
+                head_profile = json.load(f)
+        self._unwrap_transformer().set_forcing_kv_config(
+            enable, head_profile,
+            ar_start=ar_start,
+            spatial_context_length=spatial_context_length,
+            temporal_context_length=temporal_context_length,
+            dynamic_context_length=dynamic_context_length,
+            num_frame_patch=num_frame_patch,
+            sim_retention_ratio=sim_retention_ratio)
+
+    def _forcing_kv_enabled(self):
+        """True when Forcing-KV is active (enabled and a head profile is set)."""
+        try:
+            attn = self._unwrap_transformer().blocks[0].self_attn
+        except (AttributeError, IndexError):
+            return False
+        return bool(getattr(attn, "forcing_kv_enable", False)
+                    and getattr(attn, "forcing_kv_static_heads", None) is not None)
+
+    def _forcing_kv_cache_tokens(self, frame_seq_length):
+        """Per-layer rolling KV budget (tokens) under Forcing-KV.
+
+        The shared rolling buffer only needs to cover the largest grouped
+        read: sink + max(spatial, temporal) history frames + the current
+        chunk. The dynamic heads' compressed segment cache is allocated
+        lazily per layer and lives outside this buffer.
+        """
+        cfg = self.transformer.config
+        local_attn_size = getattr(cfg, 'local_attn_size', -1)
+        if local_attn_size == -1:
+            # No rolling window: keep the full buffer; the speed-up then
+            # comes purely from the grouped short-KV reads.
+            return None
+        sink_size = getattr(cfg, 'sink_size', 0)
+        attn = self._unwrap_transformer().blocks[0].self_attn
+        spatial_ctx = int(getattr(attn, "forcing_kv_spatial_context_length", 1))
+        temporal_ctx = int(getattr(attn, "forcing_kv_temporal_context_length", 1))
+        fpb = max(1, int(getattr(self._unwrap_transformer(), "num_frame_per_block", 1)))
+        budget_frames = sink_size + max(spatial_ctx, temporal_ctx) + fpb
+        return budget_frames * frame_seq_length
+
     def _initialize_kv_cache(self, batch_size, dtype, device, frame_seq_length, num_latent_frames):
         """
         Initialize KV cache for causal self-attention.
@@ -428,6 +502,11 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         local_attn_size = getattr(self.transformer.config, 'local_attn_size', -1)
         if local_attn_size != -1:
             kv_cache_size = local_attn_size * frame_seq_length
+            if self._forcing_kv_enabled():
+                # Forcing-KV: shrink the rolling window to the per-head budget
+                fkv_cache_size = self._forcing_kv_cache_tokens(frame_seq_length)
+                if fkv_cache_size is not None:
+                    kv_cache_size = fkv_cache_size
         else:
             kv_cache_size = num_latent_frames * frame_seq_length
         
@@ -512,6 +591,14 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         stochastic_sampling: bool = True,
         streaming: bool = False,
         decode_callback: Optional[Callable[[torch.Tensor, int], None]] = None,
+        forcing_kv_enable: Optional[bool] = None,
+        forcing_kv_head_profile: Optional[Union[str, Dict[str, Any]]] = None,
+        forcing_kv_ar_start: Optional[int] = None,
+        forcing_kv_spatial_context_length: Optional[int] = None,
+        forcing_kv_temporal_context_length: Optional[int] = None,
+        forcing_kv_dynamic_context_length: Optional[int] = None,
+        forcing_kv_num_frame_patch: Optional[int] = None,
+        forcing_kv_sim_retention_ratio: Optional[float] = None,
     ) -> Union[WanSelfForcingPipelineOutput, Tuple]:
         r"""
         Function invoked when calling the pipeline for Self-Forcing causal generation.
@@ -534,6 +621,24 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                 tensor of shape [B, C, F_pixels, H, W] in [0, 1]. When provided, chunks are NOT
                 accumulated in memory and the returned `videos` is an empty tensor (the caller is
                 responsible for consuming/saving each chunk). Only used when `streaming` is True.
+            forcing_kv_enable: Optional Forcing-KV (arXiv 2605.09681) master switch.
+                None keeps the transformer's current configuration untouched.
+            forcing_kv_head_profile: Offline head profile - the official
+                {"layers": [{"layer_idx", "static_head", "dynamic_head"}]}
+                format, a plain mapping, or a path to a JSON file. Required
+                when enabling Forcing-KV.
+            forcing_kv_ar_start: AR step (chunk index) after which grouped
+                head compression activates (default 1).
+            forcing_kv_spatial_context_length: History frames for static heads
+                (default 1).
+            forcing_kv_temporal_context_length: Recent frames for dynamic
+                heads (default 1).
+            forcing_kv_dynamic_context_length: Compressed cache capacity in
+                frames (default 1).
+            forcing_kv_num_frame_patch: Token segments per latent frame
+                (default 6).
+            forcing_kv_sim_retention_ratio: Fraction of candidate segments
+                kept (default 0.33).
         
         Examples:
             ```python
@@ -688,9 +793,37 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         current_start_frame = start_frame_index
         cache_start_frame = 0
 
+        # Forcing-KV (arXiv 2605.09681): apply requested configuration before
+        # the KV cache is allocated so the rolling window can be budget-sized.
+        if forcing_kv_enable is not None:
+            fkv_kwargs = {}
+            if forcing_kv_ar_start is not None:
+                fkv_kwargs["ar_start"] = forcing_kv_ar_start
+            if forcing_kv_spatial_context_length is not None:
+                fkv_kwargs["spatial_context_length"] = forcing_kv_spatial_context_length
+            if forcing_kv_temporal_context_length is not None:
+                fkv_kwargs["temporal_context_length"] = forcing_kv_temporal_context_length
+            if forcing_kv_dynamic_context_length is not None:
+                fkv_kwargs["dynamic_context_length"] = forcing_kv_dynamic_context_length
+            if forcing_kv_num_frame_patch is not None:
+                fkv_kwargs["num_frame_patch"] = forcing_kv_num_frame_patch
+            if forcing_kv_sim_retention_ratio is not None:
+                fkv_kwargs["sim_retention_ratio"] = forcing_kv_sim_retention_ratio
+            self.set_forcing_kv_config(
+                forcing_kv_enable,
+                head_profile=forcing_kv_head_profile,
+                **fkv_kwargs)
+        # Anchor frame window in the attention layers follows the causal block size
+        self._unwrap_transformer().num_frame_per_block = num_frame_per_block
+
         # 8. Initialize KV cache and cross-attention cache
         # Reset caches if they exist (for multiple inference calls)
         required_kv_size = num_latent_frames * frame_seq_length
+        if (self._forcing_kv_enabled()
+                and getattr(self.transformer.config, 'local_attn_size', -1) != -1):
+            fkv_cache_size = self._forcing_kv_cache_tokens(frame_seq_length)
+            if fkv_cache_size is not None:
+                required_kv_size = fkv_cache_size
         if self.kv_cache_pos is not None and self.kv_cache_pos[0]["k"].shape[1] >= required_kv_size:
             for block_index in range(len(self.kv_cache_pos)):
                 self.kv_cache_pos[block_index]["global_end_index"] = torch.tensor(
@@ -701,6 +834,10 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                     [0], dtype=torch.long, device=device)
                 self.kv_cache_neg[block_index]["local_end_index"] = torch.tensor(
                     [0], dtype=torch.long, device=device)
+                # Drop per-cache Forcing-KV state so the keep-mask restarts clean
+                for cache in (self.kv_cache_pos[block_index], self.kv_cache_neg[block_index]):
+                    for key in ("forcing_kv", "_fkv_last_q", "_fkv_window_start", "_fkv_local_end"):
+                        cache.pop(key, None)
             for block_index in range(len(self.crossattn_cache_pos)):
                 self.crossattn_cache_pos[block_index]["is_init"] = False
                 self.crossattn_cache_neg[block_index]["is_init"] = False
@@ -863,6 +1000,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=current_start_frame * frame_seq_length,
                             cache_start=None,
+                            forcing_kv_state={"clean_pass": True},
                         )
                         self.transformer(
                             x=denoised_pred,
@@ -873,6 +1011,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             crossattn_cache=self.crossattn_cache_neg,
                             current_start=current_start_frame * frame_seq_length,
                             cache_start=None,
+                            forcing_kv_state={"clean_pass": True},
                         )
                 else:
                     with torch.cuda.amp.autocast(dtype=weight_dtype):
@@ -885,6 +1024,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=current_start_frame * frame_seq_length,
                             cache_start=None,
+                            forcing_kv_state={"clean_pass": True},
                         )
 
             current_start_frame += current_num_frames

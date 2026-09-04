@@ -256,6 +256,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--train_data_meta` | 训练数据元信息文件 | `datasets/X-Fun-Videos-Audios-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每批样本数 | 1 |
 | `--video_sample_size` | 训练的最大视频分辨率 | 960 |
+| `--fix_sample_size` | 固定的 `[高, 宽]` 画布（都为 32 的倍数），覆盖 `--video_sample_size`；需配合 `--enable_bucket`，并关闭 `--random_hw_adapt` / `--training_with_video_token_length` | None |
 | `--token_sample_size` | token 长度采样尺寸 | 960 |
 | `--video_sample_stride` | 抽帧步长（MiniMax-H3 为 24 fps） | 1 |
 | `--video_sample_n_frames` | 采样帧数，须满足视频 VAE 的 `17*n+5` 形式（时长保持在 5 到 15 秒之间） | 124 |
@@ -606,5 +607,6 @@ torchrun --nproc_per_node=2 examples/minimax_h3/predict_t2v.py
 
 ## 五、更多资源
 
+- **MiniMax-H3 PDD LoRA 训练**：`scripts/minimax_h3/README_TRAIN_PDD_LORA_zh-CN.md`
 - **MiniMax-H3 官方 GitHub**：https://github.com/MiniMax-AI/MiniMax-H3
 - **官方 GitHub**：https://github.com/aigc-apps/VideoX-Fun
