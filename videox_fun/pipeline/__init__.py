@@ -53,3 +53,9 @@ WanI2VPipeline = WanFunInpaintPipeline
 
 Wan2_2FunPipeline = Wan2_2Pipeline
 Wan2_2I2VPipeline = Wan2_2FunInpaintPipeline
+
+# Must stay last: `install` measures the pipeline classes present in this namespace, so it has to see all of them.
+# It returns on its first line unless `VIDEOX_PERF` is set, so a default import is untouched.
+from ..utils.perf_metrics import install as _install_perf_metrics
+
+_install_perf_metrics()
