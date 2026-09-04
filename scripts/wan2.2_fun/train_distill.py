@@ -1211,6 +1211,9 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     spatial_compression_ratio = vae.config.spatial_compression_ratio
+    # Determine if the model is 5B by checking the transformer config's dim field.
+    # dim == 3072 → 5B model; dim == 5120 → 14B model.
+    is_5b = generator_transformer3d.config.dim == 3072
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1739,6 +1742,10 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         train_denoising_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
@@ -1998,11 +2005,21 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+            if args.train_mode == "inpaint" and is_5b:
                 mask_conditions[:, :, 1:, :, :] = 1
                 _has_first_frame = not mask_conditions[:, :, 0, :, :].any()
 
-            with accelerator.accumulate(generator_transformer3d):
+            generator_update = step % args.gen_update_interval == 0
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2078,7 +2095,7 @@ def main():
 
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
-                if step % args.gen_update_interval == 0:
+                if generator_update:  # generator_update computed before the accumulate ctx above
                     generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                     num_denoising_steps = len(denoising_step_list)
                     final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
@@ -2102,7 +2119,7 @@ def main():
                             with context_manager:
                                 _timestep = timestep
                                 _generator_noise = generator_noise
-                                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                                if args.train_mode == "inpaint" and is_5b:
                                     _generator_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_noise
                                     if _has_first_frame:
                                         _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
@@ -2147,7 +2164,7 @@ def main():
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
                         _generator_timestep = generator_timestep
                         _generator_denoised_input = generator_denoised_input
-                        if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                        if args.train_mode == "inpaint" and is_5b:
                             _generator_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _generator_denoised_input
                             if _has_first_frame:
                                 _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _generator_timestep[:, None, None, None]).flatten(1)
@@ -2234,7 +2251,8 @@ def main():
                         reduction="mean"
                     )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
@@ -2274,7 +2292,7 @@ def main():
                         with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                             _timestep = timestep
                             _fake_score_critic_noise = fake_score_critic_noise
-                            if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                            if args.train_mode == "inpaint" and is_5b:
                                 _fake_score_critic_noise = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * _fake_score_critic_noise
                                 if _has_first_frame:
                                     _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _timestep[:, None, None, None]).flatten(1)
@@ -2320,7 +2338,7 @@ def main():
                     critic_timestep
                 )
                 _critic_timestep = critic_timestep
-                if args.train_mode == "inpaint" and spatial_compression_ratio >= 16:
+                if args.train_mode == "inpaint" and is_5b:
                     fake_score_denoised_input = (1 - mask_conditions) * inpaint_latents[:, -vae.latent_channels:] + mask_conditions * fake_score_denoised_input
                     if _has_first_frame:
                         _temp_ts = (mask_conditions[:, 0, :, ::2, ::2] * _critic_timestep[:, None, None, None]).flatten(1)
@@ -2369,8 +2387,9 @@ def main():
 
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
+                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}, step=global_step)
                 train_dmd_loss = 0.0
+                train_gen_log_count = 0
                 train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:

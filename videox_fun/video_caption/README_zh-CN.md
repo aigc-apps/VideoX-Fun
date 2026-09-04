@@ -22,7 +22,7 @@
 
 ## 快速开始
 ### 安装
-推荐使用阿里云 DSW 和 Docker 来安装环境，请参考 [快速开始](../../README_zh-CN.md#1-云使用-aliyundswdocker). 你也可以参考 [Dockerfile](../../Dockerfile.ds) 中的镜像构建流程在本地安装对应的 conda 环境和其余依赖。
+推荐使用阿里云 DSW 和 Docker 来安装环境，请参考 [快速开始](../../README_zh-CN.md#quick-start). 你也可以参考 [Dockerfile](../../Dockerfile.ds) 中的镜像构建流程在本地安装对应的 conda 环境和其余依赖。
 
 ```shell
 # pull image

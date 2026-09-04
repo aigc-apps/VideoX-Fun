@@ -1096,6 +1096,9 @@ def main():
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
     spatial_compression_ratio = vae.config.spatial_compression_ratio
+    # Determine if the model is 5B by checking the transformer config's dim field.
+    # dim == 3072 → 5B model; dim == 5120 → 14B model.
+    is_5b = transformer3d.config.dim == 3072
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1991,7 +1994,7 @@ def main():
                     target_shape[1]
                 )
 
-                if spatial_compression_ratio >= 16:
+                if is_5b:
                     mask_conditions_bs = mask_conditions.size()[0]
                     mask_conditions[:, :, 1:, :, :] = 1
                     if not mask_conditions[:, :, 0, :, :].any():

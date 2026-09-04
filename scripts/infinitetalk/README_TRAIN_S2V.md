@@ -185,10 +185,10 @@ mkdir -p models/Personalized_Model
 modelscope download --model Wan-AI/Wan2.1-I2V-14B-480P --local_dir models/Diffusion_Transformer/Wan2.1-I2V-14B-480P
 
 # Download audio encoder (chinese-wav2vec2)
-modelscope download --model AI-ModelScope/chinese-wav2vec2-base --local_dir models/Diffusion_Transformer/chinese-wav2vec2-base
+modelscope download --model TencentGameMate/chinese-wav2vec2-base --local_dir models/Diffusion_Transformer/chinese-wav2vec2-base
 
 # Download InfiniteTalk pretrained weights
-modelscope download --model amap_cvlab/InfiniteTalk --local_dir models/Personalized_Model/InfiniteTalk/
+modelscope download --model MeiGen-AI/InfiniteTalk --local_dir models/Personalized_Model/InfiniteTalk/
 ```
 
 ### 3.2 Quick Start (DeepSpeed-Zero-2)

@@ -181,7 +181,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 mkdir -p models/Diffusion_Transformer
 
 # 下载 MiniMax-H3 官方权重
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 ```
 
 > 💡 加载器既支持上述转换后的 diffusers 布局，也支持*原始的* MiniMax-H3 分片布局（如 `MiniMax-H3/FL2VA`）；原始分片会在加载时在线转换，不会在磁盘上产生中间副本。

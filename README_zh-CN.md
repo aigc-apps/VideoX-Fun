@@ -11,84 +11,37 @@ Wan-Fun:
 [English](./README.md) | 简体中文 | [日本語](./README_ja-JP.md)
 
 # 目录
-- [简介](#简介)
-- [快速启动](#快速启动)
-- [视频作品](#视频作品)
-- [如何使用](#如何使用)
-- [模型地址](#模型地址)
-- [参考文献](#参考文献)
-- [引用](#引用)
-- [限制与风险](#限制与风险)
-- [许可证](#许可证)
+- [一、简介](#一简介)
+- [二、快速开始与使用](#二快速开始与使用)
+  - [1. 环境准备](#1-环境准备)
+  - [2. 推理生成](#2-推理生成)
+  - [3. 模型训练](#3-模型训练)
+- [三、已支持的模型](#三已支持的模型)
+- [四、视频作品](#四视频作品)
+- [五、参考文献](#五参考文献)
+- [六、引用](#六引用)
+- [七、限制与风险](#七限制与风险)
+- [八、许可证](#八许可证)
 
-# 简介
-VideoX-Fun是一个视频生成的pipeline，可用于生成AI图片与视频、训练Diffusion Transformer的基线模型与Lora模型，我们支持从已经训练好的基线模型直接进行预测，生成不同分辨率，不同秒数、不同FPS的视频，也支持用户训练自己的基线模型与Lora模型，进行一定的风格变换。
+# 一、简介
+VideoX-Fun是一个图片与视频生成的pipeline，可用于生成AI图片与视频、训练Diffusion Transformer的基线模型与Lora模型。我们同时支持视频与图片两类Diffusion Transformer模型：视频侧涵盖Wan2.1/Wan2.2（含Fun、VACE、Animate、S2V等变体）、CogVideoX-Fun、HunyuanVideo、MiniMax-H3、LTX-2、LongCat-Video、FantasyTalking与LingBot等，图片侧涵盖Qwen-Image（含Edit）、Z-Image（含Turbo）、Flux/Flux2与ERNIE-Image等，完整列表见[已支持的模型](#三已支持的模型)。在此基础上，我们支持从已经训练好的基线模型直接进行预测，生成不同分辨率、不同秒数、不同FPS的视频与不同分辨率的图片，也支持用户训练自己的基线模型与Lora模型，进行一定的风格变换。
 
-我们会逐渐支持从不同平台快速启动，请参阅 [快速启动](#快速启动)。
 
-新特性：
-- 更新支持Wan2.2系列模型、Wan-VACE控制模型、支持Fantasy Talking数字人模型、Qwen-Image和Flux图片生成模型等。[2025.10.16]。
-- 更新Wan2.1-Fun-V1.1版本：支持14B与1.3B模型Control+参考图模型，支持镜头控制，另外Inpaint模型重新训练，性能更佳。[2025.04.25]
-- 更新Wan2.1-Fun-V1.0版本：支持14B与1.3B模型的I2V和Control模型，支持首尾图预测。[2025.03.26]
-- 更新CogVideoX-Fun-V1.5版本：上传I2V模型与相关训练预测代码。[2024.12.16]
-- 奖励Lora支持：通过奖励反向传播技术训练Lora，以优化生成的视频，使其更好地与人类偏好保持一致，[更多信息](scripts/README_TRAIN_REWARD.md)。新版本的控制模型，支持不同的控制条件，如Canny、Depth、Pose、MLSD等。[2024.11.21]
-- diffusers支持：CogVideoX-Fun Control现在在diffusers中得到了支持。感谢 [a-r-r-o-w](https://github.com/a-r-r-o-w)在这个 [PR](https://github.com/huggingface/diffusers/pull/9671)中贡献了支持。查看[文档](https://huggingface.co/docs/diffusers/main/en/api/pipelines/cogvideox)以了解更多信息。[2024.10.16]
-- 更新CogVideoX-Fun-V1.1版本：重新训练i2v模型，添加Noise，使得视频的运动幅度更大。上传控制模型训练代码与Control模型。[2024.09.29]
-- 更新CogVideoX-Fun-V1.0版本：创建代码！现在支持 Windows 和 Linux。支持2b与5b最大256x256x49到1024x1024x49的任意分辨率的视频生成。[2024.09.18]
+# 二、快速开始与使用
 
-功能概览：
-- [数据预处理](#data-preprocess)
-- [训练DiT](#dit-train)
-- [模型生成](#video-gen)
+<a id="quick-start"></a>
 
-我们的ui界面如下:
-![ui](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/ui.jpg)
+## 1. 环境准备
 
-# 快速启动
-### 1. 云使用: AliyunDSW/Docker
-#### a. 通过阿里云 DSW
+### 1.1 云使用: AliyunDSW
 DSW 有免费 GPU 时间，用户可申请一次，申请后3个月内有效。
 
-阿里云在[Freetier](https://free.aliyun.com/?product=9602825&crowd=enterprise&spm=5176.28055625.J_5831864660.1.e939154aRgha4e&scm=20140722.M_9974135.P_110.MO_1806-ID_9974135-MID_9974135-CID_30683-ST_8512-V_1)提供免费GPU时间，获取并在阿里云PAI-DSW中使用，5分钟内即可启动CogVideoX-Fun。
+阿里云在[Freetier](https://free.aliyun.com/?product=9602825&crowd=enterprise&spm=5176.28055625.J_5831864660.1.e939154aRgha4e&scm=20140722.M_9974135.P_110.MO_1806-ID_9974135-MID_9974135-CID_30683-ST_8512-V_1)提供免费GPU时间，获取并在阿里云PAI-DSW中使用，5分钟内即可启动VideoX-Fun。
 
 [![DSW Notebook](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/easyanimate/asset/dsw.png)](https://gallery.pai-ml.com/#/preview/deepLearning/cv/cogvideox_fun)
 
-#### b. 通过ComfyUI
-我们的ComfyUI界面如下，具体查看[ComfyUI README](comfyui/README.md)。
-![workflow graph](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/cogvideoxfunv1_workflow_i2v.jpg)
+### 1.2 本地依赖安装
 
-#### c. 通过docker
-使用docker的情况下，请保证机器中已经正确安装显卡驱动与CUDA环境，然后以此执行以下命令：
-
-```
-# pull image
-docker pull mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
-
-# enter image
-docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unconfined --shm-size 200g mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
-
-# clone code
-git clone https://github.com/aigc-apps/VideoX-Fun.git
-
-# enter VideoX-Fun's dir
-cd VideoX-Fun
-
-# download weights
-mkdir models/Diffusion_Transformer
-mkdir models/Personalized_Model
-
-# Please use the hugginface link or modelscope link to download the model.
-# CogVideoX-Fun
-# https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP
-# https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP
-
-# Wan
-# https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP
-# https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP
-```
-
-### 2. 本地安装: 环境检查/下载/安装
-#### a. 环境检查
 我们已验证该库可在以下环境中执行：
 
 Windows 的详细信息：
@@ -105,12 +58,71 @@ Linux 的详细信息：
 - pytorch: torch2.2.0
 - CUDA: 11.8 & 12.1
 - CUDNN: 8+
-- GPU：Nvidia-V100 16G & Nvidia-A10 24G & Nvidia-A100 40G & Nvidia-A100 80G
+- GPU：Nvidia-V100 16G & Nvidia-A10 24G & Nvidia-A100 40G & Nvidia-A100 80G & Nvidia-H800 80G 
 
-我们需要大约 60GB 的可用磁盘空间，请检查！
+**方式一：使用requirements.txt**
 
-#### b. 权重放置
-我们最好将[权重](#model-zoo)按照指定路径进行放置：
+```bash
+pip install -r requirements.txt
+```
+
+**方式二：手动安装依赖**
+
+```bash
+# 核心依赖，与requirements.txt保持一致
+pip install Pillow einops safetensors timm tomesd albumentations librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
+pip install omegaconf SentencePiece imageio[ffmpeg] imageio[pyav] tensorboard beautifulsoup4 ftfy func_timeout onnxruntime
+pip install "peft>=0.17.0" "accelerate>=0.25.0" "gradio>=3.41.2" "diffusers>=0.30.1" "transformers>=4.46.2"
+# 权重下载
+pip install modelscope
+# 多卡并行推理需要，推荐固定版本，单卡可跳过
+pip install "xfuser==0.4.2"
+# opencv统一使用headless版本，避免部分环境下的GUI依赖
+pip uninstall opencv-python opencv-contrib-python opencv-python-headless -y
+pip install opencv-python-headless
+# 训练可选：DeepSpeed训练需要，固定numpy版本以避免兼容性问题
+pip install deepspeed==0.17.0 numpy==1.26.4
+# 加速可选：安装后注意力自动使用Flash Attention后端，未安装时回退到SDPA
+pip install flash-attn --no-build-isolation
+```
+
+> 说明：`torch`与`flash-attn`建议按照本机的CUDA版本从官方渠道安装指定版本，国内网络可追加`-i https://mirrors.aliyun.com/pypi/simple/`加速，具体依赖请以[requirements.txt](requirements.txt)为准。
+
+### 1.3 使用Docker
+使用docker的情况下，请保证机器中已经正确安装显卡驱动与CUDA环境，然后以此执行以下命令：
+
+```
+# pull image
+docker pull mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
+
+# enter image
+docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unconfined --shm-size 200g mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
+
+# clone code
+git clone https://github.com/aigc-apps/VideoX-Fun.git
+
+# enter VideoX-Fun's dir
+cd VideoX-Fun
+```
+
+### 1.4 权重放置
+我们最好将[权重](#三已支持的模型)按照指定路径进行放置：
+
+**运行自身的python文件或ui界面**:
+```
+📦 models/
+├── 📂 Diffusion_Transformer/
+│   ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
+│   ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
+│   ├── 📂 Wan2.1-Fun-V1.1-14B-InP
+│   ├── 📂 Wan2.1-Fun-V1.1-1.3B-InP/
+│   ├── 📂 Z-Image/
+│   └── 📂 Qwen-Image/
+├── 📂 Personalized_Model/
+│   └── your trained trainformer model / your trained lora model (for UI load)
+```
+
+视频模型与图片模型的权重均统一放在`models/Diffusion_Transformer/`下，文件夹名与[已支持的模型](#三已支持的模型)中的权重名保持一致。
 
 **通过comfyui**：
 将模型放入Comfyui的权重文件夹`ComfyUI/models/Fun_Models/`：
@@ -124,21 +136,216 @@ Linux 的详细信息：
 │       └── 📂 Wan2.1-Fun-V1.1-1.3B-InP/
 ```
 
-**运行自身的python文件或ui界面**:
-```
-📦 models/
-├── 📂 Diffusion_Transformer/
-│   ├── 📂 CogVideoX-Fun-V1.1-2b-InP/
-│   ├── 📂 CogVideoX-Fun-V1.1-5b-InP/
-│   ├── 📂 Wan2.1-Fun-V1.1-14B-InP
-│   └── 📂 Wan2.1-Fun-V1.1-1.3B-InP/
-├── 📂 Personalized_Model/
-│   └── your trained trainformer model / your trained lora model (for UI load)
+## 2. 推理生成
+
+<a id="video-gen"></a>
+视频模型与图片模型的推理入口完全一致，均由`examples/{model_name}/`下的脚本或界面提供，模型清单见[已支持的模型](#三已支持的模型)。
+
+### 2.1 入口选择
+| 使用入口 | 适合场景 | 可配置粒度 |
+|--|--|--|
+| python文件 | 批量生成、参数写在脚本里调试 | 全量参数，含`GPU_memory_mode`、`transformer_path`、`lora_path` |
+| webui | 交互体验、快速切换模型 | 常见参数，显存方案仅4档，见2.2 |
+| ComfyUI | 已有ComfyUI工作流、节点化组合 | 节点参数，权重放置见1.5 |
+
+### 2.2 显存节省方案
+基线模型的参数量普遍很大，为适应消费级显卡，每个预测文件都提供了GPU_memory_mode，视频模型与图片模型通用。可选项按省显存程度从高到低排列，与代码中的判断顺序一致：
+
+- sequential_cpu_offload：模型的每一层在使用后会进入cpu，速度较慢，节省大量显存。
+- model_group_offload：以leaf层级在cpu与gpu之间搬运权重，并借助stream异步预取，兼顾速度与显存。
+- model_cpu_offload_and_qfloat8：整个模型在使用后会进入cpu，并且对transformer模型进行了float8的量化，可以节省更多的显存。
+- model_cpu_offload：整个模型在使用后会进入cpu，可以节省部分显存。
+- model_full_load_and_qfloat8：模型常驻gpu，仅对transformer做float8量化，显存临界且对速度要求较高时可选。
+- 默认（传入model_full_load或其他取值）：模型全部进入gpu，速度最快，显存需求最高。
+
+qfloat8会部分降低模型的性能，但可以节省更多的显存。如果显存足够，推荐使用model_cpu_offload。
+
+> 注意：`app.py`中仅提供model_full_load、model_cpu_offload、model_cpu_offload_and_qfloat8、sequential_cpu_offload四种模式，`model_group_offload`与`model_full_load_and_qfloat8`需在python预测文件中使用；另外compile类加速与`sequential_cpu_offload`、fsdp_dit不兼容。
+
+### 2.3 通过python文件
+推理脚本统一命名为`predict_{任务}.py`，在脚本内修改`model_name`、prompt等参数后直接运行，结果保存到脚本中`save_path`指定的目录。视频模型与图片模型的差别只在任务后缀，例如`examples/cogvideox_fun/predict_t2v.py`、`examples/wan2.2_fun/predict_i2v.py`与`examples/z_image/predict_t2i.py`、`examples/qwenimage/predict_t2i_edit.py`。具体某个模型支持哪些任务，以`examples/{model_name}/`下实际存在的脚本为准。
+
+**i、单卡运行**：以CogVideoX-Fun为例。
+
+- 步骤1：下载对应[权重](#三已支持的模型)并按1.5放入models文件夹。
+- 步骤2：根据不同的权重与预测目标使用不同的文件进行预测。
+  - 文生视频：
+    - 使用examples/cogvideox_fun/predict_t2v.py文件中修改prompt、neg_prompt、guidance_scale和seed。
+    - 而后运行examples/cogvideox_fun/predict_t2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos-t2v文件夹中。
+  - 图生视频：
+    - 使用examples/cogvideox_fun/predict_i2v.py文件中修改validation_image_start、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
+    - validation_image_start是视频的开始图片，validation_image_end是视频的结尾图片。
+    - 而后运行examples/cogvideox_fun/predict_i2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_i2v文件夹中。
+  - 视频生视频：
+    - 使用examples/cogvideox_fun/predict_v2v.py文件中修改validation_video、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
+    - validation_video是视频生视频的参考视频。您可以使用以下视频运行演示：[演示视频](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/play_guitar.mp4)
+    - 而后运行examples/cogvideox_fun/predict_v2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_v2v文件夹中。
+  - 普通控制生视频（Canny、Pose、Depth等）：
+    - 使用examples/cogvideox_fun/predict_v2v_control.py文件中修改control_video、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
+    - control_video是控制生视频的控制视频，是使用Canny、Pose、Depth等算子提取后的视频。您可以使用以下视频运行演示：[演示视频](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4)
+    - 而后运行examples/cogvideox_fun/predict_v2v_control.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_control文件夹中。
+- 步骤3：如果想结合自己训练的其他backbone与Lora，则在对应的`examples/{model_name}/predict_*.py`中设置`transformer_path`与`lora_path`（Wan2.2双 Transformer模型另有`transformer_high_path`与`lora_high_path`，分别对应high noise阶段）。
+
+**ii、多卡运行**：
+多卡并行推理所需的`xfuser`已列入1.3，推荐固定为`xfuser==0.4.2`。
+
+请确保ulysses_degree和ring_degree的乘积等于使用的GPU数量。例如，如果您使用8个GPU，则可以设置ulysses_degree=2和ring_degree=4，也可以设置ulysses_degree=4和ring_degree=2。
+
+ulysses_degree是在head进行切分后并行生成，ring_degree是在sequence上进行切分后并行生成。ring_degree相比ulysses_degree有更大的通信成本，在设置参数时需要结合序列长度和模型的head数进行设置。
+
+以8卡并行预测为例。
+- 以Wan2.1-Fun-V1.1-14B-InP为例，其head数为40，ulysses_degree需要设置为其可以整除的数如2、4、8等。因此在使用8卡并行预测时，可以设置ulysses_degree=8和ring_degree=1.
+- 以Wan2.1-Fun-V1.1-1.3B-InP为例，其head数为12，ulysses_degree需要设置为其可以整除的数如2、4等。因此在使用8卡并行预测时，可以设置ulysses_degree=4和ring_degree=2.
+
+设置完成后，使用如下指令进行并行预测：
+```sh
+torchrun --nproc-per-node=8 examples/wan2.1_fun/predict_t2v.py
 ```
 
-# 视频作品
+### 2.4 通过ui界面
+webui支持文生视频、图生视频、视频生视频和普通控制生视频（Canny、Pose、Depth等）。当前提供`app.py`的是CogVideoX-Fun、Wan2.1、Wan2.1-Fun、Wan2.2、Wan2.2-Fun（界面实现位于`videox_fun/ui/`），其余模型（包含图片模型）请使用python文件进行预测。以CogVideoX-Fun为例。
 
-### Wan2.1-Fun-V1.1-14B-InP && Wan2.1-Fun-V1.1-1.3B-InP
+- 步骤1：下载对应[权重](#三已支持的模型)并按1.5放入models文件夹。
+- 步骤2：运行examples/cogvideox_fun/app.py文件，进入gradio页面。
+- 步骤3：根据页面选择生成模型，填入prompt、neg_prompt、guidance_scale和seed等，点击生成，等待生成结果，结果保存在sample文件夹中。
+
+### 2.5 通过ComfyUI
+具体查看[ComfyUI README](comfyui/README.md)，我们的ComfyUI界面如下：
+![workflow graph](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/cogvideoxfunv1_workflow_i2v.jpg)
+
+## 3. 模型训练
+一个完整的模型训练链路应该包括数据预处理和Video DiT训练。不同模型的训练流程类似，数据格式也类似。
+
+<a id="data-preprocess"></a>
+### 3.1 数据预处理
+各模型的 LoRA 训练文档统一放在 `scripts/{model_name}/` 下，中文版以 `_zh-CN` 结尾，详情见[3.3 各模型训练文档](#33-各模型训练文档)。
+
+一个完整的长视频切分、清洗、描述的数据预处理链路可以参考video caption部分的[README](videox_fun/video_caption/README_zh-CN.md)进行。
+
+如果期望训练一个文生图视频的生成模型，您需要以这种格式排列数据集。
+```
+📦 project/
+├── 📂 datasets/
+│   ├── 📂 internal_datasets/
+│       ├── 📂 train/
+│       │   ├── 📄 00000001.mp4
+│       │   ├── 📄 00000002.jpg
+│       │   └── 📄 .....
+│       └── 📄 json_of_internal_datasets.json
+```
+
+json_of_internal_datasets.json是一个标准的json文件。json中的file_path可以被设置为相对路径，如下所示：
+```json
+[
+    {
+      "file_path": "train/00000001.mp4",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "video"
+    },
+    {
+      "file_path": "train/00000002.jpg",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "image"
+    },
+    .....
+]
+```
+
+你也可以将路径设置为绝对路径：
+```json
+[
+    {
+      "file_path": "/mnt/data/videos/00000001.mp4",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "video"
+    },
+    {
+      "file_path": "/mnt/data/train/00000001.jpg",
+      "text": "A group of young men in suits and sunglasses are walking down a city street.",
+      "type": "image"
+    },
+    .....
+]
+```
+
+<a id="dit-train"></a>
+### 3.2 Video DiT训练
+各模型的训练脚本与启动sh均位于`scripts/{model_name}/`下，sh的命名随任务而变，如`train.sh`、`train_lora.sh`、`train_control.sh`、`train_control_distill.sh`等，以目录内实际文件为准。
+
+如果数据预处理时，数据的格式为相对路径，则进入对应的`scripts/{model_name}/train.sh`进行如下设置。
+```
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/json_of_internal_datasets.json"
+```
+
+如果数据的格式为绝对路径，则在同一个脚本中设置如下（此时`DATASET_NAME`置空，不再拼接数据集目录前缀）。
+```
+export DATASET_NAME=""
+export DATASET_META_NAME="/mnt/data/json_of_internal_datasets.json"
+```
+
+最后运行对应的脚本。
+```sh
+sh scripts/{model_name}/train.sh
+```
+
+### 3.3 各模型训练文档
+关于参数设置细节，各模型的训练文档统一放在`scripts/{model_name}/`下，`README_TRAIN*`为基线训练，`README_TRAIN_LORA*`为LoRA训练，`README_TRAIN_CONTROL*`为控制训练，中文版以`_zh-CN`结尾。常用模型如下：
+
+| 模型 | 基线训练 | LoRA训练 | 其他 |
+|--|--|--|--|
+| Wan2.1-Fun | [中文](scripts/wan2.1_fun/README_TRAIN_zh-CN.md) / [EN](scripts/wan2.1_fun/README_TRAIN.md) | [中文](scripts/wan2.1_fun/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/wan2.1_fun/README_TRAIN_LORA.md) | [Control 中文](scripts/wan2.1_fun/README_TRAIN_CONTROL_zh-CN.md)、[Reward LoRA](scripts/wan2.1_fun/README_TRAIN_REWARD.md) |
+| Wan2.2 | [中文](scripts/wan2.2/README_TRAIN_zh-CN.md) / [EN](scripts/wan2.2/README_TRAIN.md) | [中文](scripts/wan2.2/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/wan2.2/README_TRAIN_LORA.md) | [蒸馏 中文](scripts/wan2.2/README_TRAIN_DISTILL_zh-CN.md)、[S2V](scripts/wan2.2/README_TRAIN_S2V_zh-CN.md)、[Animate](scripts/wan2.2/README_TRAIN_ANIMATE.md) |
+| Wan2.2-Fun | [中文](scripts/wan2.2_fun/README_TRAIN_zh-CN.md) / [EN](scripts/wan2.2_fun/README_TRAIN.md) | [中文](scripts/wan2.2_fun/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/wan2.2_fun/README_TRAIN_LORA.md) | [Control LoRA 中文](scripts/wan2.2_fun/README_TRAIN_CONTROL_LORA_zh-CN.md) |
+| CogVideoX-Fun | [中文](scripts/cogvideox_fun/README_TRAIN_zh-CN.md) / [EN](scripts/cogvideox_fun/README_TRAIN.md) | [中文](scripts/cogvideox_fun/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/cogvideox_fun/README_TRAIN_LORA.md) | [Control 中文](scripts/cogvideox_fun/README_TRAIN_CONTROL_zh-CN.md)、[Reward LoRA](scripts/cogvideox_fun/README_TRAIN_REWARD.md) |
+| Qwen-Image | [中文](scripts/qwenimage/README_TRAIN_zh-CN.md) / [EN](scripts/qwenimage/README_TRAIN.md) | [中文](scripts/qwenimage/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/qwenimage/README_TRAIN_LORA.md) | [Edit 中文](scripts/qwenimage/README_TRAIN_EDIT_zh-CN.md) |
+| Z-Image | [中文](scripts/z_image/README_TRAIN_zh-CN.md) / [EN](scripts/z_image/README_TRAIN.md) | [中文](scripts/z_image/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/z_image/README_TRAIN_LORA.md) | [GRPO LoRA 中文](scripts/z_image/README_TRAIN_GRPO_LORA_zh-CN.md) |
+
+其余模型（如HunyuanVideo、MiniMax-H3、Flux2-Fun、InfiniteTalk、LingBot等）同理，直接查看对应`scripts/{model_name}/`下的README即可。
+
+
+# 三、已支持的模型
+下表按模型系列汇总目前已支持的权重，视频模型与图片模型共用同一套推理与训练入口。每个系列一行，第四列为内嵌的四列表格，依次为权重、Hugging Face、ModelScope、对应说明；🤗 为 Hugging Face、🤖 为 ModelScope（国内网络推荐），`-` 表示该渠道确认无对应仓库或需登录授权。各模型训练文档见[3.3 各模型训练文档](#33-各模型训练文档)。
+
+| 模型系列 | 模态 | 支持任务 | 权重 / 下载 / 说明 |
+|--|--|--|--|
+| Wan2.2-Fun | 视频 | 本项目在Wan2.2上训练的系列，覆盖文生视频、图生视频、首尾图、控制生成、相机控制 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-A14B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">14B MoE双阶段文/图生视频，多分辨率训练、81帧16fps，支持首尾图</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-A14B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">14B控制生成，支持Canny、Depth、Pose、MLSD与轨迹控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-A14B-Control-Camera</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control-Camera">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-Control-Camera">🤖</a></td><td valign="top" style="padding:2px 0;">在14B Control基础上增加相机运动控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-5B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">5B统一VAE文/图生视频，121帧24fps，支持首尾图</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-5B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">5B控制生成，控制条件与14B一致</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-5B-Control-Camera</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-Control-Camera">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-Control-Camera">🤖</a></td><td valign="top" style="padding:2px 0;">5B相机运动控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Fun-Reward-LoRAs</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-Fun-Reward-LoRAs">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-Fun-Reward-LoRAs">🤖</a></td><td valign="top" style="padding:2px 0;">奖励反向传播训练的对齐LoRA，叠加在上述权重上使用</td></tr></table> |
+| Wan2.2-VACE-Fun | 视频 | 本项目以VACE方案训练的系列，覆盖控制生成、主体参考 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-VACE-Fun-A14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.2-VACE-Fun-A14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.2-VACE-Fun-A14B">🤖</a></td><td valign="top" style="padding:2px 0;">以Wan2.2-T2V-A14B为基础，支持Canny、Depth、Pose、MLSD、轨迹控制与主体参考生视频</td></tr></table> |
+| Wan2.2 | 视频 | 万象官方权重，覆盖文生视频、图生视频、音频驱动、角色动画，可作为Wan2.2-Fun系列的训练基线 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-TI2V-5B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.2-TI2V-5B">🤖</a></td><td valign="top" style="padding:2px 0;">5B统一VAE，文生图生视频通用权重</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-T2V-A14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.2-T2V-A14B">🤖</a></td><td valign="top" style="padding:2px 0;">14B MoE文生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-I2V-A14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.2-I2V-A14B">🤖</a></td><td valign="top" style="padding:2px 0;">14B MoE图生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-S2V-14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.2-S2V-14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Wan-AI/Wan2.2-S2V-14B">🤖</a></td><td valign="top" style="padding:2px 0;">语音驱动数字人</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.2-Animate-14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.2-Animate-14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Wan-AI/Wan2.2-Animate-14B">🤖</a></td><td valign="top" style="padding:2px 0;">角色替换与动作迁移，仓库含多精度文件</td></tr></table> |
+| Wan2.1-Fun V1.1 | 视频 | 本项目在Wan2.1上训练的V1.1版本，多分辨率（512/768/1024）、81帧16fps，覆盖文生视频、图生视频、首尾图、控制生成、相机控制 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-1.3B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">1.3B轻量文/图生视频，支持首尾图</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-14B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">14B文/图生视频，支持首尾图</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-1.3B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">1.3B控制生成，同时支持参考图+控制条件组合</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-14B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">14B控制生成，同时支持参考图+控制条件组合</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-1.3B-Control-Camera</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control-Camera">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera">🤖</a></td><td valign="top" style="padding:2px 0;">1.3B相机运动控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-V1.1-14B-Control-Camera</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control-Camera">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control-Camera">🤖</a></td><td valign="top" style="padding:2px 0;">14B相机运动控制</td></tr></table> |
+| Wan2.1-Fun V1.0 | 视频 | 本项目在Wan2.1上训练的V1.0版本，能力与V1.1相同但无相机控制 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-1.3B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-1.3B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的1.3B文/图生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-14B-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的14B文/图生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-1.3B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-1.3B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的1.3B控制生成</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-14B-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-Control">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的14B控制生成</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-Fun-Reward-LoRAs</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Wan2.1-Fun-Reward-LoRAs">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Wan2.1-Fun-Reward-LoRAs">🤖</a></td><td valign="top" style="padding:2px 0;">奖励反向传播训练的对齐LoRA</td></tr></table> |
+| Wan2.1 | 视频 | 万象官方权重，覆盖文生视频、图生视频、控制生成，可作为Wan2.1-Fun系列的训练基线 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-T2V-1.3B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-1.3B">🤖</a></td><td valign="top" style="padding:2px 0;">1.3B文生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-T2V-14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-14B">🤖</a></td><td valign="top" style="padding:2px 0;">14B文生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-I2V-14B-480P</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P">🤖</a></td><td valign="top" style="padding:2px 0;">480P图生视频，是InfiniteTalk的基础模型</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-I2V-14B-720P</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P">🤖</a></td><td valign="top" style="padding:2px 0;">720P图生视频，是FantasyTalking的基础模型</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-VACE-1.3B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Wan-AI/Wan2.1-VACE-1.3B">🤖</a></td><td valign="top" style="padding:2px 0;">1.3B VACE控制与主体参考</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Wan2.1-VACE-14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Wan-AI/Wan2.1-VACE-14B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Wan-AI/Wan2.1-VACE-14B">🤖</a></td><td valign="top" style="padding:2px 0;">14B VACE控制与主体参考</td></tr></table> |
+| Self-Forcing / Causal-Forcing | 视频 | 自回归蒸馏方案，覆盖流式生成、交互式生成 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Self-Forcing</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/gdhe17/Self-Forcing">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/AI-ModelScope/Self-Forcing">🤖</a></td><td valign="top" style="padding:2px 0;">官方发布的蒸馏权重，配合Wan2.1-T2V使用；也可由`scripts/wan2.1_self_forcing`与`scripts/wan2.1_causal_forcing`自行训练得到</td></tr></table> |
+| CogVideoX-Fun V1.5 | 视频 | V1.5官方权重，多分辨率（512/768/1024）、85帧8fps，覆盖图生视频、奖励对齐 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.5-5b-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.5-5b-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.5-5b-InP">🤖</a></td><td valign="top" style="padding:2px 0;">5b图生视频权重</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.5-Reward-LoRAs</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.5-Reward-LoRAs">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.5-Reward-LoRAs">🤖</a></td><td valign="top" style="padding:2px 0;">奖励反向传播训练的对齐LoRA</td></tr></table> |
+| CogVideoX-Fun V1.1 | 视频 | V1.1官方权重，多分辨率（512/768/1024/1280）、49帧8fps，覆盖图生视频、姿态控制、控制生成、奖励对齐 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-2b-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-InP">🤖</a></td><td valign="top" style="padding:2px 0;">2b图生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-5b-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP">🤖</a></td><td valign="top" style="padding:2px 0;">5b图生视频，添加Noise，运动幅度大于V1.0</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-2b-Pose</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-Pose">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-Pose">🤖</a></td><td valign="top" style="padding:2px 0;">2b姿态控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-5b-Pose</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-Pose">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-Pose">🤖</a></td><td valign="top" style="padding:2px 0;">5b姿态控制</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-2b-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-Control">🤖</a></td><td valign="top" style="padding:2px 0;">2b控制生成，支持Canny、Depth、Pose、MLSD</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-5b-Control</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-Control">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-Control">🤖</a></td><td valign="top" style="padding:2px 0;">5b控制生成，支持Canny、Depth、Pose、MLSD</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-V1.1-Reward-LoRAs</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-Reward-LoRAs">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-Reward-LoRAs">🤖</a></td><td valign="top" style="padding:2px 0;">奖励反向传播训练的对齐LoRA</td></tr></table> |
+| CogVideoX-Fun V1.0 | 视频 | 旧版权重，仍以49帧8fps训练，已被V1.1/V1.5取代 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-2b-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-2b-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-2b-InP">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的2b图生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">CogVideoX-Fun-5b-InP</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/CogVideoX-Fun-5b-InP">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/CogVideoX-Fun-5b-InP">🤖</a></td><td valign="top" style="padding:2px 0;">V1.0的5b图生视频</td></tr></table> |
+| HunyuanVideo | 视频 | 官方diffusers格式权重，本项目直接支持预测与LoRA训练 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">HunyuanVideo</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/hunyuanvideo-community/HunyuanVideo">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Tencent-Hunyuan/HunyuanVideo">🤖</a></td><td valign="top" style="padding:2px 0;">文生视频</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">HunyuanVideo-I2V</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Tencent-Hunyuan/HunyuanVideo-I2V">🤖</a></td><td valign="top" style="padding:2px 0;">图生视频</td></tr></table> |
+| MiniMax-H3 | 视频 | 官方视频生成权重与本项目训练的ControlNet | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">MiniMax-H3</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/MiniMax/MiniMax-H3">🤖</a></td><td valign="top" style="padding:2px 0;">官方基线权重，仓库含多种精度与组件，可按需下载</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">MiniMax-H3-Fun-Controlnet-Union</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/MiniMax-H3-Fun-Controlnet-Union">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/MiniMax-H3-Fun-Controlnet-Union">🤖</a></td><td valign="top" style="padding:2px 0;">本项目训练的ControlNet，支持多种控制条件与轨迹控制</td></tr></table> |
+| LTX-2 | 视频+音频 | 官方DiT音视频联合生成权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">LTX-2</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Lightricks/LTX-2">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Lightricks/LTX-2">🤖</a></td><td valign="top" style="padding:2px 0;">音视频联合生成的官方权重，仓库含多种精度</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">LTX-2.3-Diffusers</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/dg845/LTX-2.3-Diffusers">🤗</a></td><td valign="top" style="padding:2px 8px;">-</td><td valign="top" style="padding:2px 0;">2.3版本需使用社区转换的diffusers格式权重，官方原始权重见<a href="https://huggingface.co/Lightricks/LTX-2.3">Lightricks/LTX-2.3</a></td></tr></table> |
+| LongCat-Video | 视频 | 官方长视频生成权重，支持LoRA训练 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">LongCat-Video</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/meituan-longcat/LongCat-Video">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/meituan-longcat/LongCat-Video">🤖</a></td><td valign="top" style="padding:2px 0;">文/图生长视频基线</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">LongCat-Video-Avatar</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/meituan-longcat/LongCat-Video-Avatar">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/meituan-longcat/LongCat-Video-Avatar">🤖</a></td><td valign="top" style="padding:2px 0;">数字人权重</td></tr></table> |
+| FantasyTalking | 音频驱动视频 | 音频条件增量权重，需搭配基础视频权重与音频编码器 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">FantasyTalking</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/acvlab/FantasyTalking">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/amap_cvlab/FantasyTalking">🤖</a></td><td valign="top" style="padding:2px 0;">需搭配Wan2.1-I2V-14B-720P使用</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">wav2vec2-base-960h</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/facebook/wav2vec2-base-960h">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h">🤖</a></td><td valign="top" style="padding:2px 0;">音频编码器，放入基础权重目录并命名为audio_encoder</td></tr></table> |
+| InfiniteTalk | 音频驱动视频 | 音频条件增量权重，需搭配基础视频权重与音频编码器 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">InfiniteTalk</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/MeiGen-AI/InfiniteTalk">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/MeiGen-AI/InfiniteTalk">🤖</a></td><td valign="top" style="padding:2px 0;">需搭配Wan2.1-I2V-14B-480P使用，仓库含多个版本</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">chinese-wav2vec2-base</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/TencentGameMate/chinese-wav2vec2-base">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/TencentGameMate/chinese-wav2vec2-base">🤖</a></td><td valign="top" style="padding:2px 0;">中文音频编码器</td></tr></table> |
+| FlashHead | 音频驱动视频 | 官方头部动作数字人权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">SoulX-FlashHead-1_3B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Soul-AILab/SoulX-FlashHead-1_3B">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Soul-AILab/SoulX-FlashHead-1_3B">🤖</a></td><td valign="top" style="padding:2px 0;">语音驱动头部数字人，同样需要wav2vec音频编码器</td></tr></table> |
+| MOVA | 视频+音频 | 官方MOVA权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">MOVA-360p</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/OpenMOSS-Team/MOVA-360p">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/OpenMOSS/MOVA-360p">🤖</a></td><td valign="top" style="padding:2px 0;">图生视频与音视频联合生成</td></tr></table> |
+| LingBot | 视频 | 相机可控世界模型，目录结构与Wan2.2-I2V-A14B一致 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">lingbot-world-base-cam</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Robbyant/lingbot-world-base-cam">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Robbyant/lingbot-world-base-cam">🤖</a></td><td valign="top" style="padding:2px 0;">相机控制基线权重</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">lingbot-video-rewriter-lora</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Robbyant/lingbot-video-rewriter-lora">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Robbyant/lingbot-video-rewriter-lora">🤖</a></td><td valign="top" style="padding:2px 0;">rewriter LoRA，搭配Qwen3.6-27B生成结构化caption</td></tr></table> |
+| Phantom | 视频 | 多主体参考生视频的增量权重，基于Wan2.1-T2V | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Phantom-Wan-1.3B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/bytedance-research/Phantom">🤗</a></td><td valign="top" style="padding:2px 8px;">-</td><td valign="top" style="padding:2px 0;">1.3B版，官方以.pth发布，放入Personalized_Model后按预测脚本的transformer_path引用</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Phantom-Wan-14B</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/bytedance-research/Phantom">🤗</a></td><td valign="top" style="padding:2px 8px;">-</td><td valign="top" style="padding:2px 0;">14B版，官方以分片safetensors发布</td></tr></table> |
+| Qwen-Image | 图片 | 官方文生图与图像编辑权重，支持基线与LoRA训练 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Qwen/Qwen-Image">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Qwen/Qwen-Image">🤖</a></td><td valign="top" style="padding:2px 0;">文生图基础权重</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image-2512</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Qwen/Qwen-Image-2512">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Qwen/Qwen-Image-2512">🤖</a></td><td valign="top" style="padding:2px 0;">文生图更新版本</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image-Edit</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Qwen/Qwen-Image-Edit">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Qwen/Qwen-Image-Edit">🤖</a></td><td valign="top" style="padding:2px 0;">图像编辑</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image-Edit-2509</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509">🤖</a></td><td valign="top" style="padding:2px 0;">图像编辑更新版本</td></tr></table> |
+| Qwen-Image ControlNet | 图片 | 图片控制生成，支持Canny、Depth、Pose、MLSD、Scribble | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image-2512-Fun-Controlnet-Union</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Qwen-Image-2512-Fun-Controlnet-Union">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Qwen-Image-2512-Fun-Controlnet-Union">🤖</a></td><td valign="top" style="padding:2px 0;">本项目训练的ControlNet</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen-Image-ControlNet-Union</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/InstantX/Qwen-Image-ControlNet-Union">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/InstantX/Qwen-Image-ControlNet-Union">🤖</a></td><td valign="top" style="padding:2px 0;">InstantX提供的同类型ControlNet</td></tr></table> |
+| Z-Image | 图片 | 官方文生图权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Tongyi-MAI/Z-Image">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Tongyi-MAI/Z-Image">🤖</a></td><td valign="top" style="padding:2px 0;">基础版</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image-Turbo</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/Tongyi-MAI/Z-Image-Turbo">🤖</a></td><td valign="top" style="padding:2px 0;">加速版</td></tr></table> |
+| Z-Image-Fun | 图片 | 本项目在Z-Image上训练的ControlNet与蒸馏LoRA，控制条件支持Canny、Depth、Pose、MLSD、Scribble、Gray | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image-Fun-Controlnet-Union-2.1</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Z-Image-Fun-Controlnet-Union-2.1">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Z-Image-Fun-Controlnet-Union-2.1">🤖</a></td><td valign="top" style="padding:2px 0;">基于基础版的ControlNet，2.1版层数更多、训练更充分</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image-Turbo-Fun-Controlnet-Union</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union">🤖</a></td><td valign="top" style="padding:2px 0;">基于Turbo的ControlNet</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image-Turbo-Fun-Controlnet-Union-2.1</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1">🤖</a></td><td valign="top" style="padding:2px 0;">基于Turbo的2.1版ControlNet，仓库含多精度文件</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Z-Image-Fun-Lora-Distill</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/Z-Image-Fun-Lora-Distill">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/Z-Image-Fun-Lora-Distill">🤖</a></td><td valign="top" style="padding:2px 0;">同时蒸馏步数与CFG，推理仅需8步</td></tr></table> |
+| Flux | 图片 | 官方FLUX.1/FLUX.2权重与本项目训练的ControlNet | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">FLUX.1-dev</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev">🤖</a></td><td valign="top" style="padding:2px 0;">文生图与图像编辑</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">FLUX.2-dev</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://www.modelscope.cn/models/black-forest-labs/FLUX.2-dev">🤖</a></td><td valign="top" style="padding:2px 0;">第二代官方权重</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">FLUX.2-dev-Fun-Controlnet-Union</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PAI/FLUX.2-dev-Fun-Controlnet-Union">🤖</a></td><td valign="top" style="padding:2px 0;">本项目为FLUX.2-dev训练的ControlNet，支持Canny、Depth、Pose、MLSD等</td></tr></table> |
+| ERNIE-Image | 图片 | 百度官方文生图权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">ERNIE-Image</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/baidu/ERNIE-Image">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/PaddlePaddle/ERNIE-Image">🤖</a></td><td valign="top" style="padding:2px 0;">单流DiT文生图，Hugging Face为baidu组织、ModelScope为PaddlePaddle组织</td></tr></table> |
+| Lens | 图片 | 微软官方文生图权重 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">Lens</td><td valign="top" style="padding:2px 8px;">-</td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/microsoft/Lens">🤖</a></td><td valign="top" style="padding:2px 0;">3.8B文生图，仓库内含GPT-OSS文本编码器；Hugging Face侧无公开下载仓库，请从ModelScope获取</td></tr></table> |
+| 辅助模型 | - | 非生成模型，服务于奖励对齐与数据打标 | <table style="width:100%;border-collapse:collapse;"><tr><td valign="top" style="padding:2px 8px 2px 0;">HPSv3</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/MizzenAI/HPSv3">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/MizzenAI/HPSv3">🤖</a></td><td valign="top" style="padding:2px 0;">奖励反向传播使用的打分模型</td></tr><tr><td valign="top" style="padding:2px 8px 2px 0;">Qwen2-VL-7B-Instruct</td><td valign="top" style="padding:2px 8px;"><a href="https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct">🤗</a></td><td valign="top" style="padding:2px 8px;"><a href="https://modelscope.cn/models/Qwen/Qwen2-VL-7B-Instruct">🤖</a></td><td valign="top" style="padding:2px 0;">视频打标流程使用的多模态编码器</td></tr></table> |
+
+> 补充说明：
+> - 音频驱动与参考类模型（FantasyTalking、InfiniteTalk、Phantom）本身只是增量权重，必须同时下载表中对应的基础视频权重与音频编码器。
+> - TurboDiffusion等蒸馏方案没有公开发布的权重，按`scripts/{model_name}/README_TRAIN*.md`训练后即可得到，可直接填入预测文件中的`transformer_path`。
+> - 权重名与`models/Diffusion_Transformer/`下的文件夹名一一对应；同一系列内各权重互不通用，需按预测任务选择，若某个权重未在此列出，说明它由本项目训练产出或需从上游官方仓库获取。
+
+# 四、视频作品
+
+Image to Video:
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
@@ -157,24 +364,6 @@ Linux 的详细信息：
   </tr>
 </table>
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/747b6ab8-9617-4ba2-84a0-b51c0efbd4f8" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/ae94dcda-9d5e-4bae-a86f-882c4282a367" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/a4aa1a82-e162-4ab5-8f05-72f79568a191" width="100%" controls preload loop></video>
-     </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/83c005b8-ccbc-44a0-a845-c0472763119c" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
-
-### Wan2.1-Fun-V1.1-14B-Control && Wan2.1-Fun-V1.1-1.3B-Control
 
 Generic Control Video + Reference Image:
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
@@ -247,450 +436,52 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
   </tr>
 </table>
 
-### Wan2.1-Fun-V1.1-14B-Control-Camera && Wan2.1-Fun-V1.1-1.3B-Control-Camera
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          Pan Up
-      </td>
-      <td>
-          Pan Left
-      </td>
-       <td>
-          Pan Right
-     </td>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/869fe2ef-502a-484e-8656-fe9e626b9f63" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/2d4185c8-d6ec-4831-83b4-b1dbfc3616fa" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/7dfb7cad-ed24-4acc-9377-832445a07ec7" width="100%" controls preload loop></video>
-     </td>
-  <tr>
-      <td>
-          Pan Down
-      </td>
-      <td>
-          Pan Up + Pan Left
-      </td>
-       <td>
-          Pan Up + Pan Right
-     </td>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/3ea3a08d-f2df-43a2-976e-bf2659345373" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/4a85b028-4120-4293-886b-b8afe2d01713" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/ad0d58c1-13ef-450c-b658-4fed7ff5ed36" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
+# 五、参考文献
+本节列出[已支持的模型](#三已支持的模型)中各模型系列的官方仓库，以及本项目在实现与流程中参考的代码来源，感谢这些开源工作。
 
-### CogVideoX-Fun-V1.1-5B
-
-Resolution-1024
-
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/34e7ec8f-293e-4655-bb14-5e1ee476f788" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/7809c64f-eb8c-48a9-8bdc-ca9261fd5434" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/8e76aaa4-c602-44ac-bcb4-8b24b72c386c" width="100%" controls preload loop></video>
-     </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/19dba894-7c35-4f25-b15c-384167ab3b03" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
-
-
-Resolution-768
-
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/0bc339b9-455b-44fd-8917-80272d702737" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/70a043b9-6721-4bd9-be47-78b7ec5c27e9" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/d5dd6c09-14f3-40f8-8b6d-91e26519b8ac" width="100%" controls preload loop></video>
-     </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/9327e8bc-4f17-46b0-b50d-38c250a9483a" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
-
-Resolution-512
-
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/ef407030-8062-454d-aba3-131c21e6b58c" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/7610f49e-38b6-4214-aa48-723ae4d1b07e" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/1fff0567-1e15-415c-941e-53ee8ae2c841" width="100%" controls preload loop></video>
-     </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/bcec48da-b91b-43a0-9d50-cf026e00fa4f" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
-
-### CogVideoX-Fun-V1.1-5B-Control
-
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/53002ce2-dd18-4d4f-8135-b6f68364cabd" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/a1a07cf8-d86d-4cd2-831f-18a6c1ceee1d" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls preload loop></video>
-     </td>
-  <tr>
-      <td>
-          A young woman with beautiful clear eyes and blonde hair, wearing white clothes and twisting her body, with the camera focused on her face. High quality, masterpiece, best quality, high resolution, ultra-fine, dreamlike.
-      </td>
-      <td>
-          A young woman with beautiful clear eyes and blonde hair, wearing white clothes and twisting her body, with the camera focused on her face. High quality, masterpiece, best quality, high resolution, ultra-fine, dreamlike.
-      </td>
-       <td>
-          A young bear.
-     </td>
-  </tr>
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/ea908454-684b-4d60-b562-3db229a250a9" width="100%" controls preload loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/ffb7c6fc-8b69-453b-8aad-70dfae3899b9" width="100%" controls preload loop></video>
-      </td>
-       <td>
-          <video src="https://github.com/user-attachments/assets/d3f757a3-3551-4dcb-9372-7a61469813f5" width="100%" controls preload loop></video>
-     </td>
-  </tr>
-</table>
-
-# 如何使用
-
-<h3 id="video-gen">1. 生成 </h3>
-
-#### a、显存节省方案
-由于Wan2.1的参数非常大，我们需要考虑显存节省方案，以节省显存适应消费级显卡。我们给每个预测文件都提供了GPU_memory_mode，可以在model_cpu_offload，model_cpu_offload_and_qfloat8，sequential_cpu_offload中进行选择。该方案同样适用于CogVideoX-Fun的生成。
-
-- model_cpu_offload代表整个模型在使用后会进入cpu，可以节省部分显存。
-- model_cpu_offload_and_qfloat8代表整个模型在使用后会进入cpu，并且对transformer模型进行了float8的量化，可以节省更多的显存。
-- sequential_cpu_offload代表模型的每一层在使用后会进入cpu，速度较慢，节省大量显存。
-
-qfloat8会部分降低模型的性能，但可以节省更多的显存。如果显存足够，推荐使用model_cpu_offload。
-
-#### b、通过comfyui
-具体查看[ComfyUI README](comfyui/README.md)。
-
-#### c、运行python文件
-
-##### i、单卡运行:
-
-- 步骤1：下载对应[权重](#model-zoo)放入models文件夹。
-- 步骤2：根据不同的权重与预测目标使用不同的文件进行预测。当前该库支持CogVideoX-Fun、Wan2.1和Wan2.1-Fun，在examples文件夹下用文件夹名以区分，不同模型支持的功能不同，请视具体情况予以区分。以CogVideoX-Fun为例。
-  - 文生视频：
-    - 使用examples/cogvideox_fun/predict_t2v.py文件中修改prompt、neg_prompt、guidance_scale和seed。
-    - 而后运行examples/cogvideox_fun/predict_t2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos文件夹中。
-  - 图生视频：
-    - 使用examples/cogvideox_fun/predict_i2v.py文件中修改validation_image_start、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
-    - validation_image_start是视频的开始图片，validation_image_end是视频的结尾图片。
-    - 而后运行examples/cogvideox_fun/predict_i2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_i2v文件夹中。
-  - 视频生视频：
-    - 使用examples/cogvideox_fun/predict_v2v.py文件中修改validation_video、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
-    - validation_video是视频生视频的参考视频。您可以使用以下视频运行演示：[演示视频](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1/play_guitar.mp4)
-    - 而后运行examples/cogvideox_fun/predict_v2v.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_v2v文件夹中。
-  - 普通控制生视频（Canny、Pose、Depth等）：
-    - 使用examples/cogvideox_fun/predict_v2v_control.py文件中修改control_video、validation_image_end、prompt、neg_prompt、guidance_scale和seed。
-    - control_video是控制生视频的控制视频，是使用Canny、Pose、Depth等算子提取后的视频。您可以使用以下视频运行演示：[演示视频](https://pai-aigc-photog.oss-cn-hangzhou.aliyuncs.com/cogvideox_fun/asset/v1.1/pose.mp4)
-    - 而后运行examples/cogvideox_fun/predict_v2v_control.py文件，等待生成结果，结果保存在samples/cogvideox-fun-videos_v2v_control文件夹中。
-- 步骤3：如果想结合自己训练的其他backbone与Lora，则看情况修改examples/{model_name}/predict_t2v.py中的examples/{model_name}/predict_i2v.py和lora_path。
-
-##### ii、多卡运行:
-在使用多卡预测时请注意安装xfuser仓库，推荐安装xfuser==0.4.2和yunchang==0.6.2。
-```
-pip install xfuser==0.4.2 --progress-bar off -i https://mirrors.aliyun.com/pypi/simple/
-pip install yunchang==0.6.2 --progress-bar off -i https://mirrors.aliyun.com/pypi/simple/
-```
-
-请确保ulysses_degree和ring_degree的乘积等于使用的GPU数量。例如，如果您使用8个GPU，则可以设置ulysses_degree=2和ring_degree=4，也可以设置ulysses_degree=4和ring_degree=2。
-
-ulysses_degree是在head进行切分后并行生成，ring_degree是在sequence上进行切分后并行生成。ring_degree相比ulysses_degree有更大的通信成本，在设置参数时需要结合序列长度和模型的head数进行设置。
-
-以8卡并行预测为例。
-- 以Wan2.1-Fun-V1.1-14B-InP为例，其head数为40，ulysses_degree需要设置为其可以整除的数如2、4、8等。因此在使用8卡并行预测时，可以设置ulysses_degree=8和ring_degree=1.
-- 以Wan2.1-Fun-V1.1-1.3B-InP为例，其head数为12，ulysses_degree需要设置为其可以整除的数如2、4等。因此在使用8卡并行预测时，可以设置ulysses_degree=4和ring_degree=2.
-
-设置完成后，使用如下指令进行并行预测：
-```sh
-torchrun --nproc-per-node=8 examples/wan2.1_fun/predict_t2v.py
-```
-
-#### d、通过ui界面
-
-webui支持文生视频、图生视频、视频生视频和普通控制生视频（Canny、Pose、Depth等）。当前该库支持CogVideoX-Fun、Wan2.1和Wan2.1-Fun，在examples文件夹下用文件夹名以区分，不同模型支持的功能不同，请视具体情况予以区分。以CogVideoX-Fun为例。
-
-- 步骤1：下载对应[权重](#model-zoo)放入models文件夹。
-- 步骤2：运行examples/cogvideox_fun/app.py文件，进入gradio页面。
-- 步骤3：根据页面选择生成模型，填入prompt、neg_prompt、guidance_scale和seed等，点击生成，等待生成结果，结果保存在sample文件夹中。
-
-### 2. 模型训练
-一个完整的模型训练链路应该包括数据预处理和Video DiT训练。不同模型的训练流程类似，数据格式也类似：
-
-<h4 id="data-preprocess">a.数据预处理</h4>
-我们给出了一个简单的demo通过图片数据训练lora模型，详情可以查看[wiki](https://github.com/aigc-apps/CogVideoX-Fun/wiki/Training-Lora)。
-
-一个完整的长视频切分、清洗、描述的数据预处理链路可以参考video caption部分的[README](cogvideox/video_caption/README.md)进行。
-
-如果期望训练一个文生图视频的生成模型，您需要以这种格式排列数据集。
-```
-📦 project/
-├── 📂 datasets/
-│   ├── 📂 internal_datasets/
-│       ├── 📂 train/
-│       │   ├── 📄 00000001.mp4
-│       │   ├── 📄 00000002.jpg
-│       │   └── 📄 .....
-│       └── 📄 json_of_internal_datasets.json
-```
-
-json_of_internal_datasets.json是一个标准的json文件。json中的file_path可以被设置为相对路径，如下所示：
-```json
-[
-    {
-      "file_path": "train/00000001.mp4",
-      "text": "A group of young men in suits and sunglasses are walking down a city street.",
-      "type": "video"
-    },
-    {
-      "file_path": "train/00000002.jpg",
-      "text": "A group of young men in suits and sunglasses are walking down a city street.",
-      "type": "image"
-    },
-    .....
-]
-```
-
-你也可以将路径设置为绝对路径：
-```json
-[
-    {
-      "file_path": "/mnt/data/videos/00000001.mp4",
-      "text": "A group of young men in suits and sunglasses are walking down a city street.",
-      "type": "video"
-    },
-    {
-      "file_path": "/mnt/data/train/00000001.jpg",
-      "text": "A group of young men in suits and sunglasses are walking down a city street.",
-      "type": "image"
-    },
-    .....
-]
-```
-<h4 id="dit-train">b. Video DiT训练 </h4>
-
-如果数据预处理时，数据的格式为相对路径，则进入scripts/{model_name}/train.sh进行如下设置。
-```
-export DATASET_NAME="datasets/internal_datasets/"
-export DATASET_META_NAME="datasets/internal_datasets/json_of_internal_datasets.json"
-```
-
-如果数据的格式为绝对路径，则进入scripts/train.sh进行如下设置。
-```
-export DATASET_NAME=""
-export DATASET_META_NAME="/mnt/data/json_of_internal_datasets.json"
-```
-
-最后运行scripts/train.sh。
-```sh
-sh scripts/train.sh
-```
-
-关于一些参数的设置细节：
-Wan2.1-Fun可以查看[Readme Train](scripts/wan2.1_fun/README_TRAIN.md)与[Readme Lora](scripts/wan2.1_fun/README_TRAIN_LORA.md)。
-Wan2.1可以查看[Readme Train](scripts/wan2.1/README_TRAIN.md)与[Readme Lora](scripts/wan2.1/README_TRAIN_LORA.md)。
-CogVideoX-Fun可以查看[Readme Train](scripts/cogvideox_fun/README_TRAIN.md)与[Readme Lora](scripts/cogvideox_fun/README_TRAIN_LORA.md)。
-
-
-# 模型地址
-## 1.Wan2.2-Fun
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Wan2.2-Fun-A14B-InP | 64.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-InP) | Wan2.2-Fun-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.2-Fun-A14B-Control | 64.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-Control)| Wan2.2-Fun-14B视频控制权重，支持不同的控制条件，如Canny、Depth、Pose、MLSD等，同时支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.2-Fun-A14B-Control-Camera | 64.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control-Camera) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-A14B-Control-Camera)| Wan2.2-Fun-14B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.2-VACE-Fun-A14B | 64.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-VACE-Fun-A14B) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-VACE-Fun-A14B)| 以VACE方案训练的Wan2.2控制权重，基础模型为Wan2.2-T2V-A14B，支持不同的控制条件，如Canny、Depth、Pose、MLSD、轨迹控制等。支持通过主体指定生视频。支持多分辨率（512，768，1024）的视频预测，支持多分辨率（512，768，1024）的视频预测，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.2-Fun-5B-InP | 23.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-InP) | Wan2.2-Fun-5B文图生视频权重，以121帧、每秒24帧进行训练支持首尾图预测。 |
-| Wan2.2-Fun-5B-Control | 23.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-Control)| Wan2.2-Fun-5B视频控制权重，支持不同的控制条件，如Canny、Depth、Pose、MLSD等，同时支持使用轨迹控制。以121帧、每秒24帧进行训练，支持多语言预测 |
-| Wan2.2-Fun-5B-Control-Camera | 23.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.2-Fun-5B-Control-Camera) | [😄Link](https://modelscope.cn/models/PAI/Wan2.2-Fun-5B-Control-Camera)| Wan2.2-Fun-5B相机镜头控制权重。以121帧、每秒24帧进行训练，支持多语言预测 |
-
-## 2. Wan2.2
-
-| 名称  | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|
-| Wan2.2-TI2V-5B | [🤗Link](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.2-TI2V-5B) | 万象2.2-5B文生视频权重 |
-| Wan2.2-T2V-A14B | [🤗Link](https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.2-T2V-A14B) | 万象2.2-14B文生视频权重 |
-| Wan2.2-I2V-A14B | [🤗Link](https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.2-I2V-A14B) | 万象2.2-14B图生视频权重 |
-
-## 3. Wan2.1-Fun
-
-V1.1:
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Wan2.1-Fun-V1.1-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-InP) | Wan2.1-Fun-V1.1-1.3B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun-V1.1-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-InP) | Wan2.1-Fun-V1.1-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun-V1.1-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control)| Wan2.1-Fun-V1.1-1.3B视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun-V1.1-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control)| Wan2.1-Fun-V1.1-14B视视频控制权重支持不同的控制条件，如Canny、Depth、Pose、MLSD等，支持参考图 + 控制条件进行控制，支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun-V1.1-1.3B-Control-Camera | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-1.3B-Control-Camera) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera)| Wan2.1-Fun-V1.1-1.3B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun-V1.1-14B-Control-Camera | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-V1.1-14B-Control-Camera) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-V1.1-14B-Control-Camera)| Wan2.1-Fun-V1.1-14B相机镜头控制权重。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-
-V1.0:
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Wan2.1-Fun-1.3B-InP | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-1.3B-InP) | Wan2.1-Fun-1.3B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun-14B-InP | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-InP) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-InP) | Wan2.1-Fun-14B文图生视频权重，以多分辨率训练，支持首尾图预测。 |
-| Wan2.1-Fun-1.3B-Control | 19.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-1.3B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-1.3B-Control)| Wan2.1-Fun-1.3B视频控制权重，支持不同的控制条件，如Canny、Depth、Pose、MLSD等，同时支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-| Wan2.1-Fun-14B-Control | 47.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/Wan2.1-Fun-14B-Control) | [😄Link](https://modelscope.cn/models/PAI/Wan2.1-Fun-14B-Control)| Wan2.1-Fun-14B视频控制权重，支持不同的控制条件，如Canny、Depth、Pose、MLSD等，同时支持使用轨迹控制。支持多分辨率（512，768，1024）的视频预测，，以81帧、每秒16帧进行训练，支持多语言预测 |
-
-## 4. Wan2.1
-
-| 名称  | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|
-| Wan2.1-T2V-1.3B | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-1.3B) | 万象2.1-1.3B文生视频权重 |
-| Wan2.1-T2V-14B | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-T2V-14B) | 万象2.1-14B文生视频权重 |
-| Wan2.1-I2V-14B-480P | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-480P) | 万象2.1-14B-480P图生视频权重 |
-| Wan2.1-I2V-14B-720P| [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720P图生视频权重 |
-
-## 5. FantasyTalking
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Wan2.1-I2V-14B-720P | - | [🤗Link](https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P) | [😄Link](https://www.modelscope.cn/models/Wan-AI/Wan2.1-I2V-14B-720P) | 万象2.1-14B-720P图生视频权重 |
-| Wav2Vec |  -  | [🤗Link](https://huggingface.co/facebook/wav2vec2-base-960h) | [😄Link](https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h) | Wav2Vec模型，请放在Wan2.1-I2V-14B-720P文件夹下，命名为audio_encoder |
-| FantasyTalking model	 | - | [🤗Link](https://huggingface.co/acvlab/FantasyTalking/) | [😄Link](https://www.modelscope.cn/models/amap_cvlab/FantasyTalking/) | 官方Audio Condition的权重。 |
-
-## 6. Qwen-Image
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Qwen-Image | [🤗Link](https://huggingface.co/Qwen/Qwen-Image) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image) | Qwen-Image官方权重 |
-| Qwen-Image-Edit | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit) | Qwen-Image-Edit官方权重 |
-| Qwen-Image-Edit-2509 | [🤗Link](https://huggingface.co/Qwen/Qwen-Image-Edit-2509) | [😄Link](https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2509) | Qwen-Image-Edit-2509官方权重 |
-
-## 7. Qwen-Image-Fun
-
-| 名称 | 存储 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Qwen-Image-2512-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/Qwen-Image-2512-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/Qwen-Image-2512-Fun-Controlnet-Union) | Qwen-Image-2512的ControlNet权重,支持多种控制条件,如Canny、Depth、Pose、MLSD、Scribble等。 |
-
-## 8. Z-Image
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Z-Image | [🤗Link](https://huggingface.co/Tongyi-MAI/Z-Image) | [😄Link](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image) | Z-Image官方权重 |
-| Z-Image-Turbo | [🤗Link](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) | [😄Link](https://www.modelscope.cn/models/Tongyi-MAI/Z-Image-Turbo) | Z-Image-Turbo官方权重 |
-
-## 9. Z-Image-Fun
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| Z-Image-Fun-Controlnet-Union-2.1 | - | [🤗Link](https://huggingface.co/alibaba-pai/Z-Image-Fun-Controlnet-Union-2.1) | [😄Link](https://modelscope.cn/models/PAI/Z-Image-Fun-Controlnet-Union-2.1) | Z-Image 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD、Scribble和Gray 等多种控制条件。 |
-| Z-Image-Fun-Lora-Distill | - | [🤗Link](https://huggingface.co/alibaba-pai/Z-Image-Fun-Lora-Distill) | [😄Link](https://modelscope.cn/models/PAI/Z-Image-Fun-Lora-Distill) | 这是Z-Image的蒸馏LoRA，同时蒸馏了步数和CFG。该模型不需要CFG，推理仅使用8步。 |
-| Z-Image-Turbo-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union) | Z-Image-Turbo 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
-| Z-Image-Turbo-Fun-Controlnet-Union-2.1 | - | [🤗链接](https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | [😄链接](https://modelscope.cn/models/PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1) | Z-Image-Turbo 的 ControlNet 权重，相比第一版在更多层进行添加，也训练了更长时间，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
-
-## 10. Flux
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| FLUX.1-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.1-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev) | FLUX.1-dev官方权重 |
-| FLUX.2-dev | [🤗Link](https://huggingface.co/black-forest-labs/FLUX.2-dev) | [😄Link](https://www.modelscope.cn/models/black-forest-labs/FLUX.2-dev) | FLUX.2-dev官方权重 |
-
-## 11. Flux-Fun
-
-| 名称 | 存储 | Hugging Face | 魔搭社区（ModelScope） | 描述 |
-|--|--|--|--|--|
-| Flux.2-dev-Fun-Controlnet-Union | - | [🤗链接](https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union) | [😄链接](https://modelscope.cn/models/PAI/FLUX.2-dev-Fun-Controlnet-Union) | Flux.2-dev 的 ControlNet 权重，支持 Canny、Depth、Pose、MLSD 等多种控制条件。 |
-
-## 12. HunyuanVideo
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| HunyuanVideo | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo) | - | HunyuanVideo-diffusers权重 |
-| HunyuanVideo-I2V | [🤗Link](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-I2V) | - | HunyuanVideo-I2V-diffusers权重 |
-
-## 13. CogVideoX-Fun
-
-V1.5:
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| CogVideoX-Fun-V1.5-5b-InP |  20.0 GB  | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.5-5b-InP) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.5-5b-InP) | 官方的图生视频权重。支持多分辨率（512，768，1024）的视频预测，以85帧、每秒8帧进行训练 |
-| CogVideoX-Fun-V1.5-Reward-LoRAs | - | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-Reward-LoRAs) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.5-Reward-LoRAs) | 官方的奖励反向传播技术模型，优化CogVideoX-Fun-V1.5生成的视频，使其更好地符合人类偏好。 |
-
-
-V1.1:
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| CogVideoX-Fun-V1.1-2b-InP | 13.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-InP) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-InP) | 官方的图生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-| CogVideoX-Fun-V1.1-5b-InP | 20.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-InP) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-InP) | 官方的图生视频权重。添加了Noise，运动幅度相比于V1.0更大。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-| CogVideoX-Fun-V1.1-2b-Pose | 13.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-Pose) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-Pose) | 官方的姿态控制生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-| CogVideoX-Fun-V1.1-2b-Control | 13.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-2b-Control) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-2b-Control) | 官方的控制生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练。支持不同的控制条件，如Canny、Depth、Pose、MLSD等 |
-| CogVideoX-Fun-V1.1-5b-Pose | 20.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-Pose) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-Pose) | 官方的姿态控制生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-| CogVideoX-Fun-V1.1-5b-Control | 20.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-5b-Control) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-5b-Control) | 官方的控制生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练。支持不同的控制条件，如Canny、Depth、Pose、MLSD等 |
-| CogVideoX-Fun-V1.1-Reward-LoRAs | - | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.1-Reward-LoRAs) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-V1.1-Reward-LoRAs) | 官方的奖励反向传播技术模型，优化CogVideoX-Fun-V1.1生成的视频，使其更好地符合人类偏好。 |
-
-<details>
-  <summary>(Obsolete) V1.0:</summary>
-
-| 名称 | 存储空间 | Hugging Face | Model Scope | 描述 |
-|--|--|--|--|--|
-| CogVideoX-Fun-2b-InP | 13.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-2b-InP) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-2b-InP) | 官方的图生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-| CogVideoX-Fun-5b-InP | 20.0 GB | [🤗Link](https://huggingface.co/alibaba-pai/CogVideoX-Fun-5b-InP) | [😄Link](https://modelscope.cn/models/PAI/CogVideoX-Fun-5b-InP) | 官方的图生视频权重。支持多分辨率（512，768，1024，1280）的视频预测，以49帧、每秒8帧进行训练 |
-</details>
-
-# 参考文献
 - CogVideo: https://github.com/THUDM/CogVideo/
 - EasyAnimate: https://github.com/aigc-apps/EasyAnimate
 - Wan2.1: https://github.com/Wan-Video/Wan2.1/
 - Wan2.2: https://github.com/Wan-Video/Wan2.2/
-- Diffusers: https://github.com/huggingface/diffusers
+- HunyuanVideo: https://github.com/Tencent-Hunyuan/HunyuanVideo
+- HunyuanVideo-I2V: https://github.com/Tencent-Hunyuan/HunyuanVideo-I2V
+- MiniMax-H3: https://github.com/MiniMax-AI/MiniMax-H3
+- LTX-Video: https://github.com/Lightricks/LTX-Video
+- LTX-2: https://github.com/Lightricks/LTX-2
+- LongCat-Video: https://github.com/meituan-longcat/LongCat-Video
+- FantasyTalking: https://github.com/Fantasy-AMAP/fantasy-talking
+- InfiniteTalk: https://github.com/MeiGen-AI/InfiniteTalk
+- FlashHead: https://github.com/Soul-AILab/SoulX-FlashHead
+- MOVA: https://github.com/OpenMOSS/MOVA
+- LingBot-Video: https://github.com/Robbyant/lingbot-video
+- LingBot-World: https://github.com/Robbyant/lingbot-world
+- Phantom: https://github.com/Phantom-video/Phantom
 - Qwen-Image: https://github.com/QwenLM/Qwen-Image
-- Self-Forcing: https://github.com/guandeh17/Self-Forcing
+- Z-Image: https://github.com/Tongyi-MAI/Z-Image
 - Flux: https://github.com/black-forest-labs/flux
 - Flux2: https://github.com/black-forest-labs/flux2
-- HunyuanVideo: https://github.com/Tencent-Hunyuan/HunyuanVideo
+- ERNIE-Image: https://github.com/baidu/ernie-image
+- Lens: https://www.microsoft.com/en-us/research/publication/lens-rethinking-training-efficiency-for-foundational-text-to-image-models/
+- VACE: https://github.com/ali-vilab/VACE
+- CameraCtrl: https://github.com/hehao13/CameraCtrl
+- ComfyUI-CameraCtrl-Wrapper: https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper
+- DWPose: https://github.com/IDEA-Research/DWPose
+- MiDaS: https://github.com/isl-org/MiDaS
+- Self-Forcing: https://github.com/guandeh17/Self-Forcing
+- Causal-Forcing: https://github.com/thu-ml/Causal-Forcing
+- TurboDiffusion: https://github.com/thu-ml/TurboDiffusion
+- TAEHV: https://github.com/madebyollin/taehv
+- HPS v2: https://github.com/tgxs002/HPSv2
+- HPSv3: https://github.com/MizzenAI/HPSv3
+- MPS: https://github.com/Kwai-Kolors/MPS
+- Qwen2-VL: https://github.com/QwenLM/Qwen2-VL
+- AnimateDiff: https://github.com/guoyww/AnimateDiff
 - ComfyUI-KJNodes: https://github.com/kijai/ComfyUI-KJNodes
 - ComfyUI-EasyAnimateWrapper: https://github.com/kijai/ComfyUI-EasyAnimateWrapper
-- ComfyUI-CameraCtrl-Wrapper: https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper
-- CameraCtrl: https://github.com/hehao13/CameraCtrl
+- Diffusers: https://github.com/huggingface/diffusers
 
-# 引用
+# 六、引用
 
 如果您在研究或项目中使用了 VideoX-Fun，请按以下格式引用：
 
@@ -704,7 +495,7 @@ V1.1:
 }
 ```
 
-# 限制与风险
+# 七、限制与风险
 
 - 生成的视频可能存在伪影或质量问题，尤其在复杂场景中。
 - 模型在处理精细细节、文字渲染或特定艺术风格时可能有困难。
@@ -715,7 +506,7 @@ V1.1:
 
 我们鼓励负责任地使用该技术，并建议在生产环境中实施安全措施。
 
-# 许可证
+# 八、许可证
 本项目采用 [Apache License (Version 2.0)](https://github.com/modelscope/modelscope/blob/master/LICENSE).
 
 CogVideoX-2B 模型 (包括其对应的Transformers模块，VAE模块) 根据 [Apache 2.0 协议](LICENSE) 许可证发布。

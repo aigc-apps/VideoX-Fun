@@ -441,6 +441,11 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
             control_rows = self.align_control_rows_width(control_rows)
             control_rows = control_rows[None].to(device)
 
+        # The conditioning has been reduced to `control_rows`; drop the pixel-space copies (a full-canvas float32
+        # video is ~1.3 GB apiece) so they do not ride along through the whole denoising loop. This releases the
+        # pipeline's reference alone — the caller must not hold on to them either for the memory to actually go.
+        del control_video, mask_video, inpaint_video
+
         # 5. Draw the noise of the generated rows.
         latents, audio_latents = self.prepare_latents(
             num_latent_frames,

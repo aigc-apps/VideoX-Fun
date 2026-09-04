@@ -1686,6 +1686,10 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         train_denoising_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
@@ -1943,7 +1947,17 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            with accelerator.accumulate(generator_transformer3d):
+            generator_update = step % args.gen_update_interval == 0
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2019,7 +2033,7 @@ def main():
 
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
-                if step % args.gen_update_interval == 0:
+                if generator_update:  # generator_update computed before the accumulate ctx above
                     generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                     num_denoising_steps = len(denoising_step_list)
                     final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
@@ -2162,7 +2176,8 @@ def main():
                         reduction="mean"
                     )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
@@ -2282,8 +2297,9 @@ def main():
 
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
+                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}, step=global_step)
                 train_dmd_loss = 0.0
+                train_gen_log_count = 0
                 train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
