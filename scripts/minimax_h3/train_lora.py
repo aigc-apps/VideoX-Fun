@@ -754,6 +754,11 @@ def parse_args():
         help="Sample size of the video.",
     )
     parser.add_argument(
+        "--fix_sample_size",
+        nargs=2, type=int, default=None,
+        help="Fix Sample size [height, width] when using bucket and collate_fn.",
+    )
+    parser.add_argument(
         "--video_sample_stride",
         type=int,
         default=1,
@@ -833,6 +838,11 @@ def main():
     if args.video_sample_size % 32:
         raise ValueError(
             f"`video_sample_size` {args.video_sample_size} must be a multiple of 32: the canvas is patched "
+            "2x2 into the transformer and its RoPE grid keys off that."
+        )
+    if args.fix_sample_size is not None and (args.fix_sample_size[0] % 32 or args.fix_sample_size[1] % 32):
+        raise ValueError(
+            f"`fix_sample_size` {args.fix_sample_size} must be multiples of 32: the canvas is patched "
             "2x2 into the transformer and its RoPE grid keys off that."
         )
     aligned_frames = align_num_frames(int(args.video_sample_n_frames))
@@ -1154,6 +1164,14 @@ def main():
     # once with the pipeline's torchaudio pass onto the audio VAE's sample rate (32 kHz, 40 latents/s), stereo kept
     # as released, over the `num_frames / fps` span the audio latent grid keys off.
     audio_sr = getattr(audio_vae.config, "sampling_rate", 32000)
+
+    # A fixed canvas overrides the bucket's aspect-ratio search: pin every sample to `fix_sample_size`, so the
+    # dataset's resize ceiling must cover it and the random-resolution paths turn off.
+    if args.fix_sample_size is not None and args.enable_bucket:
+        args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+        args.training_with_video_token_length = False
+        args.random_hw_adapt = False
+
     train_dataset = VideoSpeechDataset(
         args.train_data_meta, args.train_data_dir,
         video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride,
@@ -1281,8 +1299,11 @@ def main():
 
             aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            closest_size = [int(x / 32) * 32 for x in closest_size]
+            if args.fix_sample_size is not None:
+                closest_size = [int(x / 32) * 32 for x in args.fix_sample_size]
+            else:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                closest_size = [int(x / 32) * 32 for x in closest_size]
 
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
