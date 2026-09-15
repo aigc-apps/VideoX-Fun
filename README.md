@@ -93,7 +93,7 @@ mkdir models/Personalized_Model
 #### a. Environment Check
 We have verified this repo execution on the following environment:
 
-The detailed of Windows:
+Windows environment details:
 - OS: Windows 10
 - python: python3.10 & python3.11
 - pytorch: torch2.2.0
@@ -101,7 +101,7 @@ The detailed of Windows:
 - CUDNN: 8+
 - GPU： Nvidia-3060 12G & Nvidia-3090 24G
 
-The detailed of Linux:
+Linux environment details:
 - OS: Ubuntu 20.04, CentOS
 - python: python3.10 & python3.11
 - pytorch: torch2.2.0
