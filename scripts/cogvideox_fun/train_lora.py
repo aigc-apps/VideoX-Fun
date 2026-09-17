@@ -842,7 +842,8 @@ def main():
         )
 
     transformer3d = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="transformer"
+        args.pretrained_model_name_or_path, subfolder="transformer",
+        low_cpu_mem_usage=True,
     )
 
     # Freeze vae and text_encoder and set transformer3d to trainable

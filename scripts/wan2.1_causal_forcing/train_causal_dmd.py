@@ -1125,6 +1125,7 @@ def main():
                     load_model = WanTransformer3DModel_SelfForcing.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel_SelfForcing, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -1139,7 +1140,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = WanTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 

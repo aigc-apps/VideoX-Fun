@@ -513,7 +513,7 @@ class VideoAlignReward(BaseReward):
         num_frames=None,
         use_norm=True,
         return_all_dims=False,
-        use_legacy_video_io=True,
+        use_legacy_video_io=False,
         differentiable=False,
     ):
         from .video_align_predictor import VideoVLMRewardInference

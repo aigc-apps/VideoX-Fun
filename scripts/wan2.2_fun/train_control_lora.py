@@ -169,6 +169,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                     transformer3d_2 = Wan2_2Transformer3DModel.from_pretrained(
                         os.path.join(args.pretrained_model_name_or_path, sub_path),
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     ).to(weight_dtype)
                     
                 else:
@@ -176,6 +177,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                     transformer3d_1 = Wan2_2Transformer3DModel.from_pretrained(
                         os.path.join(args.pretrained_model_name_or_path, sub_path),
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     ).to(weight_dtype)
 
                     transformer3d_2 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
@@ -910,6 +912,7 @@ def main():
     transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable

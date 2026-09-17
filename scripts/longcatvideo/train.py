@@ -851,6 +851,7 @@ def main():
     # Get Transformer
     transformer3d = LongCatVideoTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, 'dit'),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
@@ -905,6 +906,7 @@ def main():
 
         ema_transformer3d = LongCatVideoTransformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, 'dit'),
+            low_cpu_mem_usage=True,
         ).to(weight_dtype)
 
         ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LongCatVideoTransformer3DModel, model_config=ema_transformer3d.config)
@@ -952,6 +954,7 @@ def main():
                     _, ema_kwargs = LongCatVideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = LongCatVideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=LongCatVideoTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -966,7 +969,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = LongCatVideoTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 

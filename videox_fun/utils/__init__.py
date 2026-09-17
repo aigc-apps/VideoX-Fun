@@ -22,3 +22,4 @@ from .utils import (SegmentVideoSaver, StreamVideoSaver, calculate_dimensions,
                     filter_kwargs, get_autocast_dtype, get_image_latent,
                     get_image_to_video_latent, get_video_to_video_latent,
                     save_videos_grid, save_videos_with_audio_grid)
+from .utils_yolo import ObjectDetector, ObjectInstanceDetector

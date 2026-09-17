@@ -1109,23 +1109,27 @@ def main():
         if args.boundary_type == "high" or args.boundary_type == "full":
             if "transformer_2" in components_to_train:
                 ema_transformer_2 = WanTransformer3DModel.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="video_dit"
+                    args.pretrained_model_name_or_path, subfolder="video_dit",
+                    low_cpu_mem_usage=True,
                 ).to(weight_dtype)
         
         if args.boundary_type == "low" or args.boundary_type == "full":
             if "transformer" in components_to_train:
                 ema_transformer = WanTransformer3DModel.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="video_dit_2"
+                    args.pretrained_model_name_or_path, subfolder="video_dit_2",
+                    low_cpu_mem_usage=True,
                 ).to(weight_dtype)
         
         if "transformer_audio" in components_to_train:
             ema_transformer_audio = WanAudioTransformer3DModel.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="audio_dit"
+                args.pretrained_model_name_or_path, subfolder="audio_dit",
+                low_cpu_mem_usage=True,
             ).to(weight_dtype)
         
         if "dual_tower_bridge" in components_to_train:
             ema_dual_tower_bridge = MOVADualTowerConditionalBridge.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="dual_tower_bridge"
+                args.pretrained_model_name_or_path, subfolder="dual_tower_bridge",
+                low_cpu_mem_usage=True,
             ).to(weight_dtype)
         
         # Collect parameters for EMA
@@ -1230,13 +1234,13 @@ def main():
                 if args.use_ema:
                     # Load EMA models (only for trained components)
                     if ema_transformer is not None and "transformer" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer")):
-                        ema_transformer.from_pretrained(os.path.join(input_dir, "ema_transformer")).to(accelerator.device)
+                        ema_transformer.from_pretrained(os.path.join(input_dir, "ema_transformer"), low_cpu_mem_usage=True).to(accelerator.device)
                     if ema_transformer_2 is not None and "transformer_2" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer_2")):
-                        ema_transformer_2.from_pretrained(os.path.join(input_dir, "ema_transformer_2")).to(accelerator.device)
+                        ema_transformer_2.from_pretrained(os.path.join(input_dir, "ema_transformer_2"), low_cpu_mem_usage=True).to(accelerator.device)
                     if "transformer_audio" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer_audio")):
-                        ema_transformer_audio.from_pretrained(os.path.join(input_dir, "ema_transformer_audio")).to(accelerator.device)
+                        ema_transformer_audio.from_pretrained(os.path.join(input_dir, "ema_transformer_audio"), low_cpu_mem_usage=True).to(accelerator.device)
                     if "dual_tower_bridge" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_dual_tower_bridge")):
-                        ema_dual_tower_bridge.from_pretrained(os.path.join(input_dir, "ema_dual_tower_bridge")).to(accelerator.device)
+                        ema_dual_tower_bridge.from_pretrained(os.path.join(input_dir, "ema_dual_tower_bridge"), low_cpu_mem_usage=True).to(accelerator.device)
 
                 for i in range(len(models)):
                     models.pop()

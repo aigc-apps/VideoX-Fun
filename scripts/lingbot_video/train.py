@@ -826,6 +826,7 @@ def main():
                     _, ema_kwargs = LingBotVideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = LingBotVideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=LingBotVideoTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -840,7 +841,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = LingBotVideoTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 

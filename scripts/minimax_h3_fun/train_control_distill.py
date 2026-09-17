@@ -932,7 +932,8 @@ def main():
             raise NotImplementedError("FSDP does not support EMA.")
 
         ema_transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer", **transformer_load_kwargs
+            args.pretrained_model_name_or_path, subfolder="transformer", **transformer_load_kwargs,
+            low_cpu_mem_usage=True,
         ).to(weight_dtype)
 
         ema_transformer = EMAModel(ema_transformer.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=ema_transformer.config)
@@ -1006,6 +1007,7 @@ def main():
                     _, ema_kwargs = MiniMaxH3ControlTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -1020,7 +1022,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 

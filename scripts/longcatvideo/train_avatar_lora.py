@@ -887,6 +887,7 @@ def main():
     # Get Transformer
     transformer3d = LongCatVideoAvatarTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_avatar_model_name_or_path, 'avatar_single'),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable

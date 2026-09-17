@@ -98,6 +98,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network,
 
         transformer3d_val = CogVideoXTransformer3DModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="transformer",
+            low_cpu_mem_usage=True,
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
         scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
@@ -875,7 +876,8 @@ def main():
         )
 
     transformer3d = CogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="transformer"
+        args.pretrained_model_name_or_path, subfolder="transformer",
+        low_cpu_mem_usage=True,
     )
 
     # Freeze vae and text_encoder and set transformer3d to trainable

@@ -120,6 +120,7 @@ class LoadCogVideoXFunModel:
         transformer = CogVideoXTransformer3DModel.from_pretrained(
             model_name, 
             subfolder="transformer",
+            low_cpu_mem_usage=True,
             torch_dtype=torch.float8_e4m3fn if GPU_memory_mode == "model_cpu_offload_and_qfloat8" else weight_dtype,
         ).to(weight_dtype)
         # Update pbar

@@ -816,6 +816,7 @@ def main():
         args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=weight_dtype,
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Configure Lens text encoder to expose the selected layers consumed by

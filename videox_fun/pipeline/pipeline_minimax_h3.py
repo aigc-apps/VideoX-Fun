@@ -1048,6 +1048,7 @@ def build_multiview_packed_sequence(
     latent_width: int,
     patch_size: Tuple[int, int, int],
     num_audio_latents: int = 0,
+    num_ref_frames_per_view: int = 0,
 ) -> MiniMaxH3PackedSequence:
     r"""
     Build the `[text | target audio | target video]` layout of a multiview request.
@@ -1071,6 +1072,11 @@ def build_multiview_packed_sequence(
             Number of target audio latents per channel. The nuScenes rig has no soundtrack, so the multiview
             layout defaults to an audio-free sequence; a nonzero count packs the audio rows between the text and
             the video exactly like `build_packed_sequence` does.
+        num_ref_frames_per_view (`int`, defaults to `0`):
+            Number of leading first-frame reference rows of every view. The rows sit at the head of each view's
+            chunk, on the view's first-frame rotary position; whether they carry a clean reference or a dropped
+            (fully noised) slot is not a layout property but expressed by the per-row timesteps of
+            `build_row_timesteps`. `0` reproduces the plain target layout bit-for-bit.
 
     Returns:
         [`MiniMaxH3PackedSequence`] whose `video_view_tags` tags every video row with its view id.
@@ -1079,12 +1085,15 @@ def build_multiview_packed_sequence(
         raise ValueError(f"`num_views` must be positive, got {num_views}.")
     if num_latent_frames_per_view < 1:
         raise ValueError(f"`num_latent_frames_per_view` must be positive, got {num_latent_frames_per_view}.")
+    if num_ref_frames_per_view < 0:
+        raise ValueError(f"`num_ref_frames_per_view` must be non-negative, got {num_ref_frames_per_view}.")
 
     _, patch_h, patch_w = patch_size
     rows_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
     num_text_tokens = text_token_tags.shape[0]
     num_audio_rows = num_audio_latents * MINIMAX_H3_AUDIO_CHANNELS
-    rows_per_view = num_latent_frames_per_view * rows_per_frame
+    rows_per_ref = num_ref_frames_per_view * rows_per_frame
+    rows_per_view = rows_per_ref + num_latent_frames_per_view * rows_per_frame
     num_video_rows = num_views * rows_per_view
     sequence_length = num_text_tokens + num_audio_rows + num_video_rows
 
@@ -1113,8 +1122,11 @@ def build_multiview_packed_sequence(
         )
 
     view_time_grid = _temporal_position_grid(num_latent_frames_per_view, float(num_text_tokens))
-    view_position_ids = torch.empty(num_latent_frames_per_view, rows_per_frame, 3, dtype=torch.float64)
-    view_position_ids[:, :, 0] = view_time_grid[:, None]
+    view_position_ids = torch.empty(num_ref_frames_per_view + num_latent_frames_per_view, rows_per_frame, 3, dtype=torch.float64)
+    # The reference rows share the view's first-frame rotary position with target frame 0; the two are told
+    # apart by their per-row timesteps (clean vs. noised), as with the base model's keyframe conditions.
+    view_position_ids[:num_ref_frames_per_view, :, 0] = float(num_text_tokens)
+    view_position_ids[num_ref_frames_per_view:, :, 0] = view_time_grid[:, None]
     view_position_ids[:, :, 1:] = frame_grid[None]
     view_position_ids = view_position_ids.reshape(-1, 3)
     for view in range(num_views):
@@ -1151,6 +1163,7 @@ def build_row_timesteps(
     audio_timestep: float,
     condition_video_timestep: float,
     condition_audio_timestep: float,
+    video_row_timesteps: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Assign a timestep to every row of the packed sequence and reduce it to the transformer's `(timestep,
@@ -1166,12 +1179,24 @@ def build_row_timesteps(
         audio_timestep (`float`): Timestep of the generated audio rows.
         condition_video_timestep (`float`): Timestep of the video conditioning rows.
         condition_audio_timestep (`float`): Timestep of the audio reference rows.
+        video_row_timesteps (`torch.Tensor`, *optional*):
+            One timestep per entry of `layout.video_indices`, in order. Overrides both `video_timestep` and the
+            leading-condition-rows rule for the video rows, so every video row may sit on its own noise level —
+            the multiview i2v layout uses it for the per-view reference slots.
 
     Returns:
         `tuple[torch.Tensor, torch.Tensor]`: the distinct timesteps, sorted, and the index of every row into them.
     """
     row_timesteps = torch.full((layout.sequence_length,), video_timestep, dtype=torch.float32)
-    row_timesteps[layout.video_indices[: layout.num_condition_video_rows]] = condition_video_timestep
+    if video_row_timesteps is not None:
+        if video_row_timesteps.shape[0] != layout.video_indices.shape[0]:
+            raise ValueError(
+                f"`video_row_timesteps` must hold one entry per video row, got {video_row_timesteps.shape[0]} "
+                f"for {layout.video_indices.shape[0]} video rows."
+            )
+        row_timesteps[layout.video_indices] = video_row_timesteps.to(row_timesteps.device, torch.float32)
+    else:
+        row_timesteps[layout.video_indices[: layout.num_condition_video_rows]] = condition_video_timestep
     row_timesteps[layout.audio_indices[layout.num_condition_audio_rows :]] = audio_timestep
     row_timesteps[layout.audio_indices[: layout.num_condition_audio_rows]] = condition_audio_timestep
     return torch.unique(row_timesteps, sorted=True, return_inverse=True)
@@ -1709,10 +1734,8 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
     def attention_kwargs(self):
         return self._attention_kwargs
 
-    def check_inputs(self, prompt, height, width, num_frames, num_inference_steps, prompt_embeds=None, text_token_tags=None):
-        if (prompt_embeds is None) != (text_token_tags is None):
-            raise ValueError("`prompt_embeds` and `text_token_tags` have to be passed together.")
-        if prompt_embeds is None and not isinstance(prompt, str):
+    def check_inputs(self, prompt, height, width, num_frames, num_inference_steps):
+        if not isinstance(prompt, str):
             raise ValueError(
                 f"MiniMax-H3 packs one request into one sequence, so `prompt` must be a single string, got "
                 f"{type(prompt)}."
@@ -2271,11 +2294,6 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
         audio_latents: Optional[torch.Tensor] = None,
-        prompt_embeds: Optional[torch.Tensor] = None,
-        text_token_tags: Optional[torch.Tensor] = None,
-        normalized_references: Optional[List[Any]] = None,
-        condition_latents: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
-        audio_condition_latents: Optional[List[torch.Tensor]] = None,
         output_type: str = "pt",
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
@@ -2337,22 +2355,6 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
                 instead of the draw.
             audio_latents (`torch.Tensor`, *optional*):
                 Pre-generated audio noise of shape `(2, 32, num_audio_latents)`.
-            prompt_embeds (`torch.Tensor`, *optional*):
-                A pre-computed conditioning of shape `(1, num_text_tokens, 5120)`, used instead of running the
-                conditioner. Passed together with `text_token_tags`, it lets a caller that has cached its prompts keep
-                the 62 GB Qwen3-VL conditioner out of the run entirely.
-            text_token_tags (`torch.Tensor`, *optional*):
-                The `(num_text_tokens,)` per-row modality tags that go with `prompt_embeds`.
-            normalized_references (`list`, *optional*):
-                References already put through [`normalize_ref2va_references`], used instead of normalizing
-                `references` again. Together with `condition_latents` the only fields read off them are `kind` and
-                `has_audio`, so a caller working from a cache may pass lightweight stand-ins.
-            condition_latents (`torch.Tensor` or `list[torch.Tensor]`, *optional*):
-                Pre-encoded visual conditioning. A list is the `ref2va` reference latents already produced by
-                [`~MiniMaxH3Pipeline.encode_reference_latents`]; a tensor is the `fl2va` keyframe rows.
-            audio_condition_latents (`list[torch.Tensor]`, *optional*):
-                Pre-encoded `ref2va` soundtrack latents, used together with `condition_latents` so the video VAE
-                encoder stays out of the request.
             output_type (`str`, defaults to `"pt"`):
                 Output format: `"pil"`, `"np"`, `"pt"`, or `"latent"` for the raw latents.
             return_dict (`bool`, defaults to `True`):
@@ -2369,14 +2371,13 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
                 The generated video, the stereo soundtrack of shape `(1, 2, num_samples)` and its sample rate. Muxing
                 the two into one file is left to the caller, e.g. with `save_videos_with_audio_grid`.
         """
-        self.check_inputs(prompt, height, width, num_frames, num_inference_steps, prompt_embeds, text_token_tags)
+        self.check_inputs(prompt, height, width, num_frames, num_inference_steps)
         self._attention_kwargs = attention_kwargs
         device = self._execution_device
 
         # `ref2va` is a task of its own: the keyframes of `fl2va` are mutually exclusive with it, and the released
         # `ref2va` checkpoint is guidance-distilled with no unconditional branch, so there is no CFG to run.
-        # Cached requests pass `normalized_references` (and usually pre-encoded latents) instead of raw media.
-        do_ref2va = bool(references) or normalized_references is not None
+        do_ref2va = bool(references)
         if do_ref2va:
             if image is not None or last_image is not None:
                 raise ValueError(
@@ -2388,8 +2389,7 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
                     "The `ref2va` checkpoint is guidance-distilled and has no unconditional branch, so `references` "
                     f"needs `guidance_scale <= 1`, got {guidance_scale}."
                 )
-            if normalized_references is None:
-                references = check_ref2va_references(list(references))
+            references = check_ref2va_references(list(references))
 
         # 1. Resolve the plan: the canvas, the frame count the video VAE can decode, the latent geometry every later
         # step keys off, and the keyframes put onto that canvas.
@@ -2418,11 +2418,8 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
         num_audio_latents = audio_latent_num_frames(num_frames)
         if do_ref2va:
             # The references never bind the generated geometry: they are normalized onto their own resolutions, with
-            # soundtracks truncated to the resolved duration. A cached request already carries normalized stand-ins.
-            if normalized_references is None:
-                references = normalize_ref2va_references(references, num_frames, self.audio_sampling_rate)
-            else:
-                references = normalized_references
+            # soundtracks truncated to the resolved duration.
+            references = normalize_ref2va_references(references, num_frames, self.audio_sampling_rate)
         else:
             keyframes = [
                 prepare_keyframe_image(keyframe, height, width, stretch=index == 0)
@@ -2431,34 +2428,28 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
 
         # 2. Encode MiniMax-H3's presentation of the request. The released checkpoint is guidance-distilled, so the
         # default guidance_scale of 1 runs one forward pass per step with no CFG; a guidance_scale above 1 enables
-        # classifier-free guidance with a negative prompt. Cached `prompt_embeds` skip the 62 GB conditioner.
+        # classifier-free guidance with a negative prompt.
         do_cfg = guidance_scale > 1.0
-        if prompt_embeds is None:
-            if do_ref2va:
-                prompt_embeds, text_token_tags = self.encode_prompt(
-                    prompt, references=references, device=device, dtype=self.transformer.dtype
-                )
-            else:
-                prompt_embeds, text_token_tags = self.encode_prompt(
-                    prompt, keyframes, device=device, dtype=self.transformer.dtype
-                )
-        else:
-            prompt_embeds = prompt_embeds.to(device=device, dtype=self.transformer.dtype)
-        if do_cfg:
-            if do_ref2va:
-                raise ValueError("The `ref2va` checkpoint has no unconditional branch, so CFG cannot run.")
-            negative_prompt = negative_prompt if negative_prompt is not None else ""
-            negative_prompt_embeds, negative_text_token_tags = self.encode_prompt(
-                negative_prompt, keyframes, device=device, dtype=self.transformer.dtype
+        if do_ref2va:
+            prompt_embeds, text_token_tags = self.encode_prompt(
+                prompt, references=references, device=device, dtype=self.transformer.dtype
             )
+        else:
+            prompt_embeds, text_token_tags = self.encode_prompt(
+                prompt, keyframes, device=device, dtype=self.transformer.dtype
+            )
+            if do_cfg:
+                negative_prompt = negative_prompt if negative_prompt is not None else ""
+                negative_prompt_embeds, negative_text_token_tags = self.encode_prompt(
+                    negative_prompt, keyframes, device=device, dtype=self.transformer.dtype
+                )
 
         # 3. Encode the conditioning and noise it to MiniMax-H3's conditioning level. The anchors are the whole
         # denoising loop's invariant: the loop only ever writes the generated rows.
+        audio_condition_latents = []
+        condition_latents = None
         if do_ref2va:
-            if condition_latents is None:
-                condition_latents, audio_condition_latents = self.encode_reference_latents(references, device=device)
-            elif audio_condition_latents is None:
-                audio_condition_latents = []
+            condition_latents, audio_condition_latents = self.encode_reference_latents(references, device=device)
         elif keyframes:
             condition_latents = self.encode_keyframes(keyframes, device=device)
             noise = keyframe_condition_noise(
