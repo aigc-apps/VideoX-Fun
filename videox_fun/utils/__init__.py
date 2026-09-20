@@ -7,6 +7,7 @@ from .fp8_optimization import (autocast_model_forward,
                                convert_model_weight_to_float8,
                                convert_weight_dtype_wrapper,
                                replace_parameters_by_name)
+from .fsdp_ema import FSDPEMA
 from .group_offload import (register_auto_device_hook,
                             safe_enable_group_offload,
                             safe_remove_group_offloading)
@@ -16,6 +17,7 @@ from .perf_metrics import install as install_perf_metrics
 from .perf_metrics import install_training as install_perf_training
 from .perf_metrics import instrument_pipeline
 from .sd3_sde_with_logprob import sde_step_with_logprob
+from .tqdm_bar import PauseAwareTqdm
 from .trigflow_sampler import (RectifiedFlow_TrigFlowWrapper,
                                sample_trigflow_timesteps)
 from .utils import (SegmentVideoSaver, StreamVideoSaver, calculate_dimensions,

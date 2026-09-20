@@ -100,7 +100,8 @@ class MiniMaxH3Scheduler(SchedulerMixin, ConfigMixin):
 
         subfolder = kwargs.pop("subfolder", None)
         if subfolder in ("scheduler", "audio_scheduler") and pretrained_model_name_or_path is not None:
-            from ..models.minimax_h3_conversion import is_raw_minimax_h3_format, read_original_sigma_shifts
+            from ..models.minimax_h3_conversion import (
+                is_raw_minimax_h3_format, read_original_sigma_shifts)
 
             if os.path.isdir(pretrained_model_name_or_path) and is_raw_minimax_h3_format(pretrained_model_name_or_path):
                 shifts = read_original_sigma_shifts(pretrained_model_name_or_path)
