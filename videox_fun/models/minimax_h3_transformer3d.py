@@ -780,3 +780,446 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
         if not return_dict:
             return (video_output, audio_output)
         return MiniMaxH3TransformerOutput(sample=video_output, audio_sample=audio_output)
+
+
+# ---------------------------------------------------------------------------
+# TaoMate-H3 streaming inference: persistent clean audio/video KV cache.
+#
+# This mirrors the official `taomate_h3.streaming` design: a "clean commit"
+# forward pass over freshly generated audio/video latents stages the K/V rows
+# of every main block into a transactional cache, and later streaming chunks
+# attend to `[text KV; persistent history; current chunk KV]` instead of
+# re-running the whole growing sequence. The modality tag contract is the
+# checkpoint's own (0 = video, 1 = text, 2 = audio), shared with
+# `videox_fun.pipeline.pipeline_minimax_h3`.
+#
+# The streaming processor is a single-GPU feature: sequence parallelism shards
+# heads across ranks while the cache stores full-head tensors, so streaming
+# requires `sp_world_size == 1` (the default).
+# ---------------------------------------------------------------------------
+
+MINIMAX_H3_STREAMING_VIDEO_TAG = 0
+MINIMAX_H3_STREAMING_TEXT_TAG = 1
+MINIMAX_H3_STREAMING_AUDIO_TAG = 2
+
+
+class MiniMaxH3StreamingKVCache:
+    r"""
+    Transactional persistent cache holding *clean* audio/video K/V rows, one entry per main
+    attention layer.
+
+    The lifecycle mirrors the official streaming runtime: every generated chunk is committed
+    through one extra "clean commit" transformer pass whose media K/V rows are staged layer by
+    layer and appended atomically; retention keeps the first chunk's video rows as a long-term
+    sink plus the two most recent committed chunks; the audio history can be dropped
+    independently (the official runtime resets it every `audio_kv_reset_window_requests`
+    requests) while every retained video row is preserved.
+
+    The cache doubles as the per-forward context for `MiniMaxH3StreamingKVCacheAttnProcessor`:
+    `begin_live` / `begin_clean_commit` set the attention mode of the next transformer pass and
+    `end_forward` clears it.
+
+    Args:
+        num_layers (`int`): The number of main transformer blocks (50 for the released H3).
+        dtype (`torch.dtype`, defaults to `torch.bfloat16`): The dtype the clean K/V is stored at.
+    """
+
+    def __init__(self, num_layers: int, dtype: torch.dtype = torch.bfloat16):
+        self.layer_names = tuple(f"transformer_blocks.{index}.attn" for index in range(num_layers))
+        self.dtype = dtype
+        self._history: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._staged: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._commit_active = False
+        self._staged_row_count: Optional[int] = None
+        self._commit_row_indices: Optional[torch.Tensor] = None
+        self._commit_tags: Tuple[int, ...] = ()
+        self._commit_token_counts: list = []
+        self._commit_token_tags: list = []
+        # Per-forward attention mode: None ("plain"), "live" or "commit".
+        self.mode: Optional[str] = None
+        self.token_tags: Optional[torch.Tensor] = None
+
+    # ------------------------------------------------------------------
+    # Per-forward setup consumed by the streaming processor.
+    # ------------------------------------------------------------------
+    def begin_live(self, token_tags: torch.Tensor) -> None:
+        r"""Arm the next transformer pass as a denoising "live document" pass."""
+        if self._commit_active:
+            raise RuntimeError("cannot begin a live pass during an active clean commit")
+        self.mode = "live"
+        self.token_tags = token_tags
+
+    def begin_clean_commit(self, token_tags: torch.Tensor, commit_mask: torch.Tensor) -> None:
+        r"""
+        Arm the next transformer pass as a clean commit pass.
+
+        `commit_mask` selects the rows whose K/V enters the persistent history; it must select
+        both video and audio rows of one streaming chunk.
+        """
+        if self._commit_active:
+            raise RuntimeError("a clean KV commit is already active")
+        indices = torch.nonzero(commit_mask.to(torch.bool), as_tuple=False).flatten()
+        if indices.numel() == 0:
+            raise RuntimeError("clean commit did not contain audio/video rows")
+        tags = token_tags.index_select(0, indices).detach().cpu().tolist()
+        if frozenset(tags) != frozenset(
+            (MINIMAX_H3_STREAMING_VIDEO_TAG, MINIMAX_H3_STREAMING_AUDIO_TAG)
+        ):
+            raise RuntimeError("each clean chunk must contain both video and audio KV")
+        self._commit_active = True
+        self._staged_row_count = None
+        self._commit_row_indices = indices.to(token_tags.device)
+        self._commit_tags = tuple(int(tag) for tag in tags)
+        self.mode = "commit"
+        self.token_tags = token_tags
+
+    def end_forward(self) -> None:
+        r"""Clear the per-forward attention mode."""
+        self.mode = None
+        self.token_tags = None
+        self._commit_row_indices = None
+
+    @property
+    def commit_row_indices(self) -> torch.Tensor:
+        if self._commit_row_indices is None:
+            raise RuntimeError("no clean commit is armed")
+        return self._commit_row_indices
+
+    # ------------------------------------------------------------------
+    # Processor hooks.
+    # ------------------------------------------------------------------
+    def stage(self, layer_name: str, key: torch.Tensor, value: torch.Tensor) -> None:
+        r"""Stage the clean `(rows, heads, dim)` K/V rows produced by one layer."""
+        if not self._commit_active:
+            raise RuntimeError("begin_clean_commit() must be called before stage()")
+        if layer_name not in self.layer_names:
+            raise KeyError(f"unexpected transformer layer: {layer_name}")
+        if layer_name in self._staged:
+            raise RuntimeError(f"{layer_name}: KV was staged more than once")
+        if key.ndim != 3 or key.shape != value.shape:
+            raise RuntimeError(f"{layer_name}: key/value must have matching rank-3 shapes")
+        if self._staged_row_count is None:
+            self._staged_row_count = int(key.shape[0])
+        elif int(key.shape[0]) != self._staged_row_count:
+            raise RuntimeError(f"{layer_name}: staged row count differs across layers")
+        self._staged[layer_name] = (key, value)
+
+    def history_pair(self, layer_name: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        r"""Return the persistent `(key, value)` of one layer, or `None` when empty."""
+        return self._history.get(layer_name)
+
+    # ------------------------------------------------------------------
+    # Transaction control.
+    # ------------------------------------------------------------------
+    def commit(self) -> None:
+        r"""Atomically append all staged layers to the persistent history."""
+        if not self._commit_active:
+            raise RuntimeError("no clean KV commit is active")
+        missing = [name for name in self.layer_names if name not in self._staged]
+        if missing:
+            raise RuntimeError(f"clean KV commit is missing {len(missing)} transformer layers")
+        # Update one layer at a time so old and new caches are never resident together at the
+        # steady-state memory peak.
+        for layer_name in self.layer_names:
+            current = self._staged.pop(layer_name)
+            previous = self._history.pop(layer_name, None)
+            if previous is None:
+                combined = current
+            else:
+                combined = (
+                    torch.cat((previous[0], current[0]), dim=0),
+                    torch.cat((previous[1], current[1]), dim=0),
+                )
+            self._history[layer_name] = combined
+        self._commit_token_counts.append(len(self._commit_tags))
+        self._commit_token_tags.append(self._commit_tags)
+        self._commit_active = False
+        self._staged_row_count = None
+        self._commit_tags = ()
+        self.end_forward()
+
+    def rollback(self) -> None:
+        r"""Discard the currently staged clean chunk."""
+        self._staged.clear()
+        self._commit_active = False
+        self._staged_row_count = None
+        self._commit_tags = ()
+        self.end_forward()
+
+    @property
+    def clean_commit_active(self) -> bool:
+        return self._commit_active
+
+    @property
+    def committed_blocks(self) -> int:
+        r"""Logical number of clean chunks committed since the last clear."""
+        return len(self._commit_token_counts)
+
+    @property
+    def history_tokens(self) -> int:
+        if not self._history:
+            return 0
+        return int(next(iter(self._history.values()))[0].shape[0])
+
+    @property
+    def history_audio_tokens(self) -> int:
+        return sum(
+            tag == MINIMAX_H3_STREAMING_AUDIO_TAG
+            for tags in self._commit_token_tags
+            for tag in tags
+        )
+
+    @property
+    def history_video_tokens(self) -> int:
+        return sum(
+            tag == MINIMAX_H3_STREAMING_VIDEO_TAG
+            for tags in self._commit_token_tags
+            for tag in tags
+        )
+
+    def retain_sink_and_recent_commits(self) -> None:
+        r"""
+        Keep the first chunk's video rows as a sink plus the two most recent clean chunks.
+
+        A no-op while fewer than three chunks are committed.
+        """
+        if self._commit_active:
+            raise RuntimeError("cannot trim persistent KV during an active clean commit")
+        block_count = len(self._commit_token_counts)
+        if block_count <= 2:
+            return
+        recent_start = max(1, block_count - 2)
+        selection = [(0, True)] + [(index, False) for index in range(recent_start, block_count)]
+        self._retain_commit_rows(selection)
+
+    def drop_audio_history(self) -> int:
+        r"""Remove every retained audio row while preserving the video rows; returns the count."""
+        if self._commit_active:
+            raise RuntimeError("cannot drop audio history during an active clean commit")
+        removed_tokens = self.history_audio_tokens
+        if not self._commit_token_counts:
+            return 0
+        self._retain_commit_rows([(index, True) for index in range(len(self._commit_token_counts))])
+        return removed_tokens
+
+    def clear(self) -> None:
+        r"""Clear persistent and staged KV and reset the logical chunk count."""
+        self._history.clear()
+        self._commit_token_counts.clear()
+        self._commit_token_tags.clear()
+        self._staged.clear()
+        self._commit_active = False
+        self._staged_row_count = None
+        self._commit_tags = ()
+        self.end_forward()
+
+    def _retain_commit_rows(self, selection) -> None:
+        offsets = [0]
+        for count in self._commit_token_counts:
+            offsets.append(offsets[-1] + count)
+
+        selected_rows: list = []
+        selected_counts: list = []
+        selected_tags: list = []
+        for block_index, video_only in selection:
+            tags = self._commit_token_tags[block_index]
+            start = offsets[block_index]
+            local_rows = [
+                row for row, tag in enumerate(tags) if not video_only or tag == MINIMAX_H3_STREAMING_VIDEO_TAG
+            ]
+            if not local_rows:
+                continue
+            selected_rows.extend(start + row for row in local_rows)
+            selected_counts.append(len(local_rows))
+            selected_tags.append(tuple(tags[row] for row in local_rows))
+
+        if not selected_rows:
+            self._history.clear()
+            self._commit_token_counts.clear()
+            self._commit_token_tags.clear()
+            return
+
+        # The trim rebuilds every layer's retained K/V into a smaller copy. A whole-history rebuild keeps the
+        # entire old history and every new copy resident at the same time, which on a single 80 GB card is the
+        # exact OOM a multi-request streaming run hits at the first continuation chunk; so the allocator's
+        # unused cached blocks are returned to the driver first, and each layer is rebuilt in place with its
+        # source released as soon as the replacement is in `self._history`.
+        torch.cuda.empty_cache()
+        for layer_name in list(self._history.keys()):
+            key, value = self._history.pop(layer_name)
+            indices = torch.tensor(selected_rows, dtype=torch.long, device=key.device)
+            self._history[layer_name] = (
+                key.index_select(0, indices),
+                value.index_select(0, indices),
+            )
+            del key, value
+        self._commit_token_counts = selected_counts
+        self._commit_token_tags = selected_tags
+
+
+class MiniMaxH3StreamingKVCacheAttnProcessor:
+    r"""
+    Attention processor driving the TaoMate-H3 streaming contract on top of one
+    `MiniMaxH3Attention` module.
+
+    Three modes, selected by the bound cache's per-forward state:
+
+    * *plain* (no mode armed, or a padded sequence): identical to
+      [`MiniMaxH3AttnProcessor`];
+    * *live*: text rows self-attend, while media rows attend to
+      `[text K/V; persistent clean history; current chunk K/V]`;
+    * *commit*: a plain pass whose output is discarded, staging the media rows' K/V of
+      every layer into the cache (the K/V of a row depends only on that row's input, so
+      the commit pass's attention output is irrelevant).
+
+    Live and commit passes must be padless (`attention_mask is None`); the streaming
+    packed sequences are single documents by construction.
+    """
+
+    def __init__(self, cache: MiniMaxH3StreamingKVCache, layer_name: str):
+        self.cache = cache
+        self.layer_name = layer_name
+
+    def __call__(
+        self,
+        attn: "MiniMaxH3Attention",
+        hidden_states: torch.Tensor,
+        rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        valid_length: Optional[int] = None,
+    ) -> torch.Tensor:
+        cache = self.cache
+        if cache.mode is None or attention_mask is not None:
+            return _minimax_h3_plain_attention(attn, hidden_states, rotary_emb, attention_mask)
+
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(hidden_states)
+        value = attn.to_v(hidden_states)
+
+        query = query.unflatten(-1, (attn.heads, -1))
+        key = key.unflatten(-1, (attn.heads, -1))
+        value = value.unflatten(-1, (attn.heads, -1))
+
+        query = attn.norm_q(query)
+        key = attn.norm_k(key)
+
+        if rotary_emb is not None:
+            query = apply_minimax_h3_rotary_emb(query, *rotary_emb)
+            key = apply_minimax_h3_rotary_emb(key, *rotary_emb)
+
+        if cache.mode == "commit":
+            # The committed rows' K/V depend only on their own inputs; the attention output
+            # of a commit pass is discarded by the caller.
+            output = attention(query, key, value, causal=False)
+            rows = cache.commit_row_indices.to(key.device)
+            staged_key = key.index_select(1, rows).squeeze(0)
+            staged_value = value.index_select(1, rows).squeeze(0)
+            cache.stage(
+                self.layer_name,
+                staged_key.detach().to(cache.dtype).contiguous(),
+                staged_value.detach().to(cache.dtype).contiguous(),
+            )
+        else:  # live
+            tags = cache.token_tags
+            text_rows = tags == MINIMAX_H3_STREAMING_TEXT_TAG
+            media_rows = ~text_rows
+            output = torch.empty_like(query)
+            if bool(text_rows.any()):
+                output[:, text_rows] = F.scaled_dot_product_attention(
+                    query[:, text_rows].transpose(1, 2),
+                    key[:, text_rows].transpose(1, 2),
+                    value[:, text_rows].transpose(1, 2),
+                ).transpose(1, 2)
+            if bool(media_rows.any()):
+                # [text KV; persistent clean history; current chunk KV], mirroring the
+                # official live document.
+                keys = []
+                values = []
+                if bool(text_rows.any()):
+                    keys.append(key[:, text_rows])
+                    values.append(value[:, text_rows])
+                history = cache.history_pair(self.layer_name)
+                if history is not None:
+                    history_key, history_value = history
+                    keys.append(history_key.to(device=key.device, dtype=key.dtype).unsqueeze(0))
+                    values.append(history_value.to(device=key.device, dtype=key.dtype).unsqueeze(0))
+                keys.append(key[:, media_rows])
+                values.append(value[:, media_rows])
+                keys = torch.cat(keys, dim=1)
+                values = torch.cat(values, dim=1)
+                output[:, media_rows] = F.scaled_dot_product_attention(
+                    query[:, media_rows].transpose(1, 2),
+                    keys.transpose(1, 2),
+                    values.transpose(1, 2),
+                ).transpose(1, 2)
+
+        output = output.flatten(2, 3).type_as(query)
+        output = attn.to_out[0](output)
+        output = attn.to_out[1](output)
+        return output
+
+
+def _minimax_h3_plain_attention(
+    attn: "MiniMaxH3Attention",
+    hidden_states: torch.Tensor,
+    rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]],
+    attention_mask: Optional[torch.Tensor],
+) -> torch.Tensor:
+    r"""The standard `MiniMaxH3AttnProcessor` arithmetic, shared by the fallback path."""
+    query = attn.to_q(hidden_states)
+    key = attn.to_k(hidden_states)
+    value = attn.to_v(hidden_states)
+
+    query = query.unflatten(-1, (attn.heads, -1))
+    key = key.unflatten(-1, (attn.heads, -1))
+    value = value.unflatten(-1, (attn.heads, -1))
+
+    query = attn.norm_q(query)
+    key = attn.norm_k(key)
+
+    if rotary_emb is not None:
+        query = apply_minimax_h3_rotary_emb(query, *rotary_emb)
+        key = apply_minimax_h3_rotary_emb(key, *rotary_emb)
+
+    if attention_mask is None:
+        hidden_states = attention(query, key, value, causal=False)
+    else:
+        hidden_states = F.scaled_dot_product_attention(
+            query.transpose(1, 2),
+            key.transpose(1, 2),
+            value.transpose(1, 2),
+            attn_mask=attention_mask[None, None],
+        ).transpose(1, 2)
+
+    hidden_states = hidden_states.flatten(2, 3).type_as(query)
+    hidden_states = attn.to_out[0](hidden_states)
+    hidden_states = attn.to_out[1](hidden_states)
+    return hidden_states
+
+
+def install_minimax_h3_streaming_kv_cache(
+    transformer: "MiniMaxH3Transformer3DModel",
+    *,
+    dtype: torch.dtype = torch.bfloat16,
+) -> MiniMaxH3StreamingKVCache:
+    r"""
+    Swap every main block's attention processor for the streaming one and return the shared
+    cache.
+
+    The token refiner keeps its standard processor: the streaming contract only concerns the
+    main block stack over the media sequence.
+    """
+    cache = MiniMaxH3StreamingKVCache(
+        num_layers=len(transformer.transformer_blocks), dtype=dtype
+    )
+    for index, block in enumerate(transformer.transformer_blocks):
+        block.attn.set_processor(
+            MiniMaxH3StreamingKVCacheAttnProcessor(cache, cache.layer_names[index])
+        )
+    return cache
+
+
+def uninstall_minimax_h3_streaming_kv_cache(transformer: "MiniMaxH3Transformer3DModel") -> None:
+    r"""Restore the standard attention processor on every main block."""
+    for block in transformer.transformer_blocks:
+        block.attn.set_processor(MiniMaxH3AttnProcessor())

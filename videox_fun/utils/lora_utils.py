@@ -5,11 +5,13 @@
 # https://github.com/bmaltais/kohya_ss
 
 import hashlib
+import json
 import math
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from io import BytesIO
-from typing import List, Optional, Type, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Type, Union
 
 import safetensors.torch
 import torch
@@ -430,6 +432,259 @@ def convert_peft_lora_to_kohya_lora(state_dict):
         new_state_dict[key] = value
     return new_state_dict
 
+# ---------------------------------------------------------------------------
+# Official TaoMate-H3 adapter support
+# ---------------------------------------------------------------------------
+_TAOMATE_H3_LORA_TARGET_SUFFIXES = (
+    "attn.qkv_proj",
+    "attn.out_proj",
+    "mlp.fc1",
+    "mlp.fc2",
+)
+_TAOMATE_H3_REFINER_BLOCKS = 2
+_TAOMATE_H3_MAIN_BLOCKS = 50
+
+
+class TaomateH3LoRACheckpointError(RuntimeError):
+    """The adapter directory does not match the released TaoMate-H3 contract."""
+
+
+def canonical_taomate_h3_lora_targets() -> Tuple[str, ...]:
+    """Return the adapter's exact 52-block x 4-projection inventory."""
+    blocks = [f"token_refiner.blocks.{index}" for index in range(_TAOMATE_H3_REFINER_BLOCKS)]
+    blocks.extend(f"blocks.{index}" for index in range(_TAOMATE_H3_MAIN_BLOCKS))
+    return tuple(
+        f"{block}.{suffix}" for block in blocks for suffix in _TAOMATE_H3_LORA_TARGET_SUFFIXES
+    )
+
+
+@dataclass(frozen=True)
+class LoadedTaomateH3LoRA:
+    """The validated official adapter, in its own `{module}.lora_a/lora_b` layout."""
+
+    rank: int
+    alpha: float
+    state: Mapping[str, torch.Tensor]
+    loaded_tensor_count: int
+
+    @property
+    def scale(self) -> float:
+        return self.alpha / self.rank
+
+
+def load_taomate_h3_adapter(adapter_dir: str) -> LoadedTaomateH3LoRA:
+    r"""
+    Load and validate the official TaoMate-H3 LoRA adapter from a directory.
+
+    The directory must hold `config.json` (or `adapter_config.json`) with the
+    integer `rank` and the positive `alpha`, and `adapter_model.safetensors`
+    whose key set is exactly the canonical 52-block x 4-projection inventory
+    with `.lora_a` / `.lora_b` leaves. Every tensor must be float32 with
+    `lora_a` shaped `(rank, in_features)` and `lora_b` shaped
+    `(out_features, rank)`.
+
+    Args:
+        adapter_dir (`str`): The adapter directory.
+
+    Returns:
+        [`LoadedTaomateH3LoRA`]
+    """
+    from safetensors import safe_open
+
+    root = os.path.expanduser(str(adapter_dir))
+    if not os.path.isdir(root):
+        raise TaomateH3LoRACheckpointError(f"adapter directory does not exist: {root}")
+
+    config_path = os.path.join(root, "config.json")
+    if not os.path.isfile(config_path):
+        config_path = os.path.join(root, "adapter_config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise TaomateH3LoRACheckpointError(f"cannot read adapter config: {error}") from error
+    if not isinstance(config, Mapping):
+        raise TaomateH3LoRACheckpointError("adapter config must be a JSON object")
+
+    rank = config.get("rank")
+    alpha = config.get("alpha")
+    if (
+        isinstance(rank, bool)
+        or not isinstance(rank, int)
+        or rank <= 0
+        or isinstance(alpha, bool)
+        or not isinstance(alpha, (int, float))
+        or not math.isfinite(float(alpha))
+        or float(alpha) <= 0
+    ):
+        raise TaomateH3LoRACheckpointError(f"adapter rank/alpha is invalid: {config}")
+
+    weights_path = os.path.join(root, "adapter_model.safetensors")
+    if not os.path.isfile(weights_path):
+        raise TaomateH3LoRACheckpointError(f"adapter weights are absent: {weights_path}")
+
+    targets = canonical_taomate_h3_lora_targets()
+    leaves = ("lora_a", "lora_b")
+    expected = {f"{target}.{leaf}" for target in targets for leaf in leaves}
+    selected: Dict[str, torch.Tensor] = {}
+    with safe_open(weights_path, framework="pt", device="cpu") as handle:
+        present = set(handle.keys())
+        if present != expected:
+            raise TaomateH3LoRACheckpointError(
+                "adapter tensor inventory differs: "
+                f"missing={len(expected - present)}, unexpected={len(present - expected)}"
+            )
+        for name in sorted(expected):
+            tensor = handle.get_tensor(name)
+            leaf = name.rsplit(".", 1)[-1]
+            if (
+                tensor.ndim != 2
+                or tensor.dtype != torch.float32
+                or (leaf == "lora_a" and int(tensor.shape[0]) != rank)
+                or (leaf == "lora_b" and int(tensor.shape[1]) != rank)
+            ):
+                raise TaomateH3LoRACheckpointError(f"adapter tensor shape/dtype differs: {name}")
+            selected[name] = tensor.contiguous()
+
+    return LoadedTaomateH3LoRA(
+        rank=int(rank),
+        alpha=float(alpha),
+        state=selected,
+        loaded_tensor_count=len(selected),
+    )
+
+
+def _taomate_h3_diffusers_block_path(official_block: str) -> str:
+    """Map an official block stem onto this repository's module tree."""
+    if official_block.startswith("token_refiner.blocks."):
+        index = official_block[len("token_refiner.blocks.") :]
+        return f"token_refiner.refiner_blocks.{index}"
+    if official_block.startswith("blocks."):
+        index = official_block[len("blocks.") :]
+        return f"transformer_blocks.{index}"
+    raise TaomateH3LoRACheckpointError(f"unknown adapter block stem: {official_block}")
+
+
+def official_to_kohya_lora_state_dict(loaded: LoadedTaomateH3LoRA) -> Dict[str, torch.Tensor]:
+    r"""
+    Convert the official adapter onto the kohya layout this module consumes.
+
+    Keys follow `LoRANetwork`'s naming: `lora_unet` + the diffusers module
+    path with dots replaced by underscores, e.g.
+    `lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight`. The effective
+    update of every entry is `(alpha / rank) * up @ down(x)`, which is the
+    official `(alpha / rank) * lora_b @ lora_a`.
+
+    Every fused projection is split from its own tensor shape — the qkv
+    `lora_b` into three contiguous thirds, the gated fc1 `lora_b` into two
+    halves — so no per-block dimension table is involved. The released
+    adapter ships one geometry for all 52 blocks, the 50 main and the 2
+    token-refiner blocks alike: hidden size 5376, attention inner dim 7168
+    and ffn 14336, hence `lora_b` row counts of 3 * 7168 (qkv), 5376
+    (out_proj / fc2) and 2 * 14336 (fc1).
+
+    Args:
+        loaded ([`LoadedTaomateH3LoRA`]): The validated official adapter.
+
+    Returns:
+        `dict[str, torch.Tensor]`: the kohya state dict, float32 on CPU.
+    """
+    alpha = loaded.alpha
+    state_dict: Dict[str, torch.Tensor] = {}
+
+    def emit(diffusers_path: str, lora_a: torch.Tensor, lora_b: torch.Tensor) -> None:
+        stem = "lora_unet_" + diffusers_path.replace(".", "_")
+        state_dict[f"{stem}.lora_down.weight"] = lora_a.contiguous()
+        state_dict[f"{stem}.lora_up.weight"] = lora_b.contiguous()
+        state_dict[f"{stem}.alpha"] = torch.tensor(alpha, dtype=torch.float32)
+
+    for target in canonical_taomate_h3_lora_targets():
+        # Targets end with one of the known dotted projections; split on that,
+        # not on the last dot ("attn.qkv_proj" itself contains a dot).
+        suffix = next(
+            candidate
+            for candidate in _TAOMATE_H3_LORA_TARGET_SUFFIXES
+            if target.endswith("." + candidate)
+        )
+        block_stem = target[: -(len(suffix) + 1)]
+        lora_a = loaded.state[f"{target}.lora_a"]
+        lora_b = loaded.state[f"{target}.lora_b"]
+        path = _taomate_h3_diffusers_block_path(block_stem)
+
+        if suffix == "attn.qkv_proj":
+            # Contiguous thirds, exactly like the checkpoint's fused qkv weight
+            # (`minimax_h3_conversion.split_fused_qkv`). The three projections
+            # share `lora_a` and the thirds are views of one storage, so clone
+            # every entry to keep the kohya tensors standalone (safetensors
+            # refuses overlapping storages).
+            fused_rows = int(lora_b.shape[0])
+            if fused_rows % 3 != 0:
+                raise TaomateH3LoRACheckpointError(
+                    f"fused qkv lora_b rows do not split into three equal parts: {target}")
+            inner_dim = fused_rows // 3
+            query_b, key_b, value_b = lora_b.split(inner_dim, dim=0)
+            emit(f"{path}.attn.to_q", lora_a.clone(), query_b.clone())
+            emit(f"{path}.attn.to_k", lora_a.clone(), key_b.clone())
+            emit(f"{path}.attn.to_v", lora_a.clone(), value_b.clone())
+        elif suffix == "attn.out_proj":
+            # `out_proj` maps the attention inner dim back to the hidden size and
+            # diffusers' `to_out.0` is the matching projection, so both leaves
+            # carry over as they are.
+            emit(f"{path}.attn.to_out.0", lora_a, lora_b)
+        elif suffix == "mlp.fc1":
+            if int(lora_b.shape[0]) % 2 != 0:
+                raise TaomateH3LoRACheckpointError(
+                    f"fused fc1 lora_b rows do not split into two equal halves: {target}")
+            # The reference fuses `[gate; value]`; diffusers' `SwiGLU` reads
+            # `[value; gate]` — swap the halves, as `minimax_h3_conversion` does.
+            gate_b, value_b = lora_b.chunk(2, dim=0)
+            emit(f"{path}.ff.net.0.proj", lora_a, torch.cat([value_b, gate_b], dim=0))
+        elif suffix == "mlp.fc2":
+            # `fc2` maps the ffn width back to the hidden size and diffusers'
+            # `ff.net.2` is the same projection, so both leaves carry over.
+            emit(f"{path}.ff.net.2", lora_a, lora_b)
+        else:  # pragma: no cover - the suffix list above is closed
+            raise TaomateH3LoRACheckpointError(f"unknown adapter projection: {suffix}")
+
+    return state_dict
+
+
+def convert_taomate_h3_adapter(
+    adapter_dir: str,
+    output_path: str,
+) -> Dict[str, Any]:
+    r"""
+    Convert the official adapter directory into a kohya safetensors file.
+
+    The produced file plugs straight into `merge_lora` / `unmerge_lora`, so a
+    converted adapter behaves like any other LoRA checkpoint of this
+    repository.
+
+    Args:
+        adapter_dir (`str`): The official adapter directory.
+        output_path (`str`): Destination `.safetensors` path.
+
+    Returns:
+        `dict`: a small receipt with the rank/alpha and tensor count.
+    """
+    from safetensors.torch import save_file
+
+    loaded = load_taomate_h3_adapter(adapter_dir)
+    state_dict = official_to_kohya_lora_state_dict(loaded)
+    output_path = os.path.expanduser(str(output_path))
+    parent = os.path.dirname(output_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    save_file(state_dict, output_path)
+    return {
+        "rank": loaded.rank,
+        "alpha": loaded.alpha,
+        "scale": loaded.scale,
+        "tensor_count": len(state_dict),
+        "output_path": output_path,
+    }
+
+
 def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     if lora_path is None:
         return pipeline
@@ -441,7 +696,13 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
     if state_dict is None:
-        if lora_path.endswith("safetensors"):
+        if os.path.isdir(lora_path):
+            # An official TaoMate-H3 adapter directory: validated and converted to the kohya layout
+            # in memory, then merged like any other checkpoint.
+            print(f"[LoRA Merge] Detected an official TaoMate-H3 adapter directory, converting...")
+            loaded = load_taomate_h3_adapter(lora_path)
+            state_dict = official_to_kohya_lora_state_dict(loaded)
+        elif lora_path.endswith("safetensors"):
             print(f"[LoRA Merge] Loading safetensors file...")
             state_dict = load_file(lora_path)
         else:
@@ -625,7 +886,13 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
-    if lora_path.endswith("safetensors"):
+    if os.path.isdir(lora_path):
+        # Same detection as `merge_lora`: an official TaoMate-H3 adapter directory is converted to
+        # the kohya layout in memory first.
+        print(f"[LoRA Unmerge] Detected an official TaoMate-H3 adapter directory, converting...")
+        loaded = load_taomate_h3_adapter(lora_path)
+        state_dict = official_to_kohya_lora_state_dict(loaded)
+    elif lora_path.endswith("safetensors"):
         print(f"[LoRA Unmerge] Loading safetensors file...")
         state_dict = load_file(lora_path)
     else:

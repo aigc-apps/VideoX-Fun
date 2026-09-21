@@ -18,6 +18,7 @@
 import argparse
 import contextlib
 import gc
+import hashlib
 import logging
 import math
 import os
@@ -296,9 +297,21 @@ def sample_with_cfg(
     noise_level: float = 0.7,
     sde_window_size: int = 0,
     sde_window_range: tuple[int, int] = (0, 5),
+    noise_generator=None,
+    diffusion_clip=False,
+    diffusion_clip_value=0.45,
 ):
+    # noise_generator: rank-aware torch.Generator driving the rollout stochasticity, i.e. the
+    # SDE window start and the per-step variance noise. When it is None the previous behaviour
+    # is kept (draws from the process-global `random` / torch RNGs).
     batch_size = noise.shape[0]
-    image_seq_len = (noise.shape[2] // 2) * (noise.shape[3] // 2)
+    # The noise/latents here are 5D (B, C, 1, H, W) -- a frame dim is inserted for the
+    # Wan-style wrapper -- so the spatial extent must be read from the last two axes.
+    # Indexing shape[2]/shape[3] read (1 // 2) * (H // 2) == 0, which pinned `mu` at the
+    # base value instead of the resolution-derived one. It is inert with the shipped Z-Image
+    # scheduler (`use_dynamic_shifting: false`, static `shift`, which ignores `mu`), but it
+    # silently under-shifts the schedule as soon as a dynamic-shifting scheduler is used.
+    image_seq_len = (noise.shape[-2] // 2) * (noise.shape[-1] // 2)
     latents = noise.clone().to(torch.float32)
 
     mu = calculate_shift(
@@ -309,6 +322,15 @@ def sample_with_cfg(
         noise_scheduler.config.get("max_shift", 1.15),
     )
     scheduler_kwargs = {"mu": mu}
+    # NOTE: do NOT set `noise_scheduler.sigma_min = 0.0` here, even though
+    # `diffusers.ZImagePipeline` / `videox_fun/pipeline/pipeline_z_image.py` do it before
+    # `set_timesteps`. It moves the grid from [..., 0.44151, 0.03478, 0.0] to
+    # [..., 0.42857, 0.0, 0.0], i.e. the last *executed* step ends up with sigma == 0, and
+    # `sde_step_with_logprob` divides by sigma in its `prev_sample_mean` term -> 0/0 = NaN,
+    # which poisons the latent that is decoded afterwards (black image). Inference is
+    # unaffected because `FlowMatchEulerDiscreteScheduler.step` never divides by sigma (its
+    # terminal sigma == 0 step is a plain dt == 0 no-op). The default grid already ends on
+    # sigma == 0 as `sigma_prev`, so the last real jump still lands on clean x0.
     timesteps, num_inference_steps = retrieve_timesteps(
         noise_scheduler,
         num_steps,
@@ -322,10 +344,24 @@ def sample_with_cfg(
             f"sde_window_range {sde_window_range} 与 sde_window_size {sde_window_size} 不兼容，"
             f"请保证 range[1] - window_size >= range[0]"
         )
-        start = random.randint(
-            sde_window_range[0],
-            sde_window_range[1] - sde_window_size
-        )
+        # Draw the window start from the rank-aware generator instead of the process-global
+        # `random` module: with a non device_specific `set_seed(args.seed)` every rank picked
+        # the same window at the same training step, so the whole cluster stacked its rollouts
+        # on one window simultaneously. The window length stays exactly `sde_window_size` on
+        # every rank, so the per-rank backward / gradient-sync counts match.
+        if noise_generator is not None:
+            start = int(torch.randint(
+                sde_window_range[0],
+                sde_window_range[1] - sde_window_size + 1,
+                (1,),
+                generator=noise_generator,
+                device=device,
+            ).item())
+        else:
+            start = random.randint(
+                sde_window_range[0],
+                sde_window_range[1] - sde_window_size
+            )
         end = start + sde_window_size
         sde_window = (start, end)
     else:
@@ -390,6 +426,12 @@ def sample_with_cfg(
             t.unsqueeze(0).repeat(batch_size),
             latents.float(),
             noise_level=cur_noise_level,
+            diffusion_clip=diffusion_clip,
+            diffusion_clip_value=diffusion_clip_value,
+            # Rank-aware noise for the transition actually taken. The training side later
+            # re-evaluates log_prob of the *recorded* transition (prev_sample=next_latents),
+            # so no matching draw is needed there and on-policy consistency is preserved.
+            generator=noise_generator,
         )
         if sde_window[0] <= i < sde_window[1]:
             all_latents.append(latents.clone())
@@ -427,6 +469,8 @@ def compute_log_prob(
     noise_level=0.7,
     dtype=torch.float32,
     ref_model=None,
+    diffusion_clip=False,
+    diffusion_clip_value=0.45,
 ):
     """
     Compute log probability for GRPO training.
@@ -503,6 +547,8 @@ def compute_log_prob(
         prev_sample=next_latents.float(),
         noise_level=noise_level,
         return_sqrt_dt=True,
+        diffusion_clip=diffusion_clip,
+        diffusion_clip_value=diffusion_clip_value,
     )
     
     # Compute reference model prediction if provided
@@ -541,6 +587,8 @@ def compute_log_prob(
                 latents.float(),
                 prev_sample=next_latents.float(),
                 noise_level=noise_level,
+                diffusion_clip=diffusion_clip,
+                diffusion_clip_value=diffusion_clip_value,
             )
     
     return log_prob, prev_sample_mean, std_dev_t, sqrt_dt, ref_prev_sample_mean
@@ -578,9 +626,20 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
                 generator = torch.Generator(device=accelerator.device).manual_seed(rank_seed)
                 logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
-            for i in range(len(args.validation_prompts)):
+            n_prompts = len(args.validation_prompts)
+            if accelerator.num_processes > n_prompts:
+                # Fewer prompts than ranks: keep one seed-variant per rank of a single prompt
+                # (the previous behaviour), so the multi-seed view is not lost.
+                prompts_local = [(accelerator.process_index % n_prompts,
+                                  args.validation_prompts[accelerator.process_index % n_prompts])]
+            else:
+                # Stride the list by rank: every rank used to loop over the *whole* list with a
+                # rank-distinct seed, which produced num_processes near-duplicates of the same
+                # prompt and re-rendered longer lists num_processes times over.
+                prompts_local = list(enumerate(args.validation_prompts))[accelerator.process_index::accelerator.num_processes]
+            for i, prompt in prompts_local:
                 sample = pipeline(
-                    args.validation_prompts[i], 
+                    prompt, 
                     negative_prompt = "bad detailed",
                     height      = args.image_sample_size,
                     width       = args.image_sample_size,
@@ -1009,6 +1068,28 @@ def parse_args():
         help="Noise level for SDE sampling in GRPO.",
     )
     parser.add_argument(
+        "--diffusion_clip",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Truncated noise schedule (GenRL/flow_grpo): cap the per-step transition noise "
+             "std (std_dev_t*sqrt(-dt)) at --diffusion_clip_value. Tames overshoot at high "
+             "noise_level / high-noise steps. 0-effect when disabled.",
+    )
+    parser.add_argument(
+        "--diffusion_clip_value",
+        type=float,
+        default=0.45,
+        help="Max per-step transition noise std when --diffusion_clip is enabled.",
+    )
+    parser.add_argument(
+        "--same_latent",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="GRPO variance reduction: make every rollout of the same prompt start from an "
+             "identical initial latent (seeded by epoch+prompt) instead of an independent draw, "
+             "mirroring GenRL/flow_grpo same_latent.",
+    )
+    parser.add_argument(
         "--sde_window_size",
         type=int,
         default=2,
@@ -1041,15 +1122,15 @@ def parse_args():
     )
     parser.add_argument(
         "--per_prompt_stat_tracking",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Whether to use per-prompt statistics tracking for advantage normalization.",
+        help="Whether to use per-prompt statistics tracking for advantage normalization. Use --no-per_prompt_stat_tracking to disable it.",
     )
     parser.add_argument(
         "--global_std",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Whether to use global std for advantage normalization.",
+        help="Divide advantages by the std over all rewards of the round instead of the per-prompt group std. Use --no-global_std for strict group-relative normalization.",
     )
     parser.add_argument(
         "--num_image_per_prompt",
@@ -1184,9 +1265,17 @@ def main():
         set_seed(args.seed)
         rng = np.random.default_rng(np.random.PCG64(args.seed + accelerator.process_index))
         torch_rng = torch.Generator(accelerator.device).manual_seed(args.seed + accelerator.process_index)
+        # Dedicated rank-aware stream for the rollout stochasticity (SDE window start +
+        # per-step variance noise). `set_seed` is not device_specific, so the process-global
+        # torch/Python RNGs are seeded identically on every rank; drawing the injected SDE
+        # noise from them made all ranks inject bit-identical noise, which (together with the
+        # shared window start) collapsed cross-rank sample diversity. The offset keeps this
+        # stream disjoint from the initial-latent stream drawn from `torch_rng`.
+        sde_rng = torch.Generator(accelerator.device).manual_seed(args.seed + accelerator.process_index + 1_000_003)
     else:
         rng = None
         torch_rng = None
+        sde_rng = None
     index_rng = np.random.default_rng(np.random.PCG64(43))
     print(f"Init rng with seed {args.seed + accelerator.process_index}. Process_index is {accelerator.process_index}")
 
@@ -1805,12 +1894,27 @@ def main():
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
 
-            shared_noise = torch.randn(
-                target_shape, 
-                device=accelerator.device, 
-                generator=torch_rng, 
-                dtype=weight_dtype
-            )
+            # same_latent: seed the initial latent from (epoch, prompt) so every rollout of
+            # the same prompt -- on every rank and step -- draws an identical x_T. Within-group
+            # advantage then reflects only trajectory differences (policy + per-step SDE noise
+            # via sde_rng), not different starting latents. Mirrors GenRL/flow_grpo same_latent.
+            if args.same_latent:
+                _seed_key = f"{epoch}_{list(text)}".encode("utf-8")
+                _prompt_seed = int.from_bytes(hashlib.md5(_seed_key).digest()[:8], "little") & 0x7FFFFFFF
+                _latent_gen = torch.Generator(device=accelerator.device).manual_seed(_prompt_seed)
+                shared_noise = torch.randn(
+                    target_shape,
+                    device=accelerator.device,
+                    generator=_latent_gen,
+                    dtype=weight_dtype,
+                )
+            else:
+                shared_noise = torch.randn(
+                    target_shape, 
+                    device=accelerator.device, 
+                    generator=torch_rng, 
+                    dtype=weight_dtype
+                )
 
             with torch.no_grad():
                 collected_data = sample_with_cfg(
@@ -1827,6 +1931,9 @@ def main():
                     noise_level=args.noise_level,
                     sde_window_size=args.sde_window_size,
                     sde_window_range=tuple(args.sde_window_range),
+                    noise_generator=sde_rng,
+                    diffusion_clip=args.diffusion_clip,
+                    diffusion_clip_value=args.diffusion_clip_value,
                 )
 
             latents = torch.stack(collected_data["all_latents"], dim=1) 
@@ -2136,6 +2243,8 @@ def main():
                             noise_level=args.noise_level,
                             dtype=weight_dtype,
                             ref_model=ref_transformer3d if args.grpo_beta > 0 else None,
+                            diffusion_clip=args.diffusion_clip,
+                            diffusion_clip_value=args.diffusion_clip_value,
                         )
 
                         # GRPO loss computation

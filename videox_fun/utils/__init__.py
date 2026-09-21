@@ -11,8 +11,10 @@ from .fsdp_ema import FSDPEMA
 from .group_offload import (register_auto_device_hook,
                             safe_enable_group_offload,
                             safe_remove_group_offloading)
-from .lora_utils import (convert_peft_lora_to_kohya_lora, create_network,
-                         merge_lora, unmerge_lora)
+from .lora_utils import (LoadedTaomateH3LoRA, TaomateH3LoRACheckpointError,
+                         canonical_taomate_h3_lora_targets, convert_peft_lora_to_kohya_lora,
+                         convert_taomate_h3_adapter, create_network, load_taomate_h3_adapter,
+                         merge_lora, official_to_kohya_lora_state_dict, unmerge_lora)
 from .perf_metrics import install as install_perf_metrics
 from .perf_metrics import install_training as install_perf_training
 from .perf_metrics import instrument_pipeline
