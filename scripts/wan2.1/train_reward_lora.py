@@ -65,6 +65,7 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
 from videox_fun.utils.lora_utils import create_network, merge_lora
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -1117,7 +1118,7 @@ def main():
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1346,61 +1347,77 @@ def main():
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            if not args.save_state:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            else:
+                                accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                                accelerator.save_state(accelerator_save_path)
+                                logger.info(f"Saved state to {accelerator_save_path}")
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                 
                 # Validation (distributed)
                 if do_validation and (global_step % args.validation_steps) == 0:
-                    if args.validation_prompts is None and args.validation_prompt_path.endswith(".txt"):
-                        validation_prompts = []
-                        with open(args.validation_prompt_path, "r") as f:
-                            for line in f:
-                                validation_prompts.append(line.strip())
-                        # Do not select randomly to ensure that `args.validation_prompts` is the same for each process.
-                        args.validation_prompts = validation_prompts[:args.validation_batch_size]
-                    validation_prompts_idx = [(i, p) for i, p in enumerate(args.validation_prompts)]
+                    with progress_bar.paused():
+                        if args.validation_prompts is None and args.validation_prompt_path.endswith(".txt"):
+                            validation_prompts = []
+                            with open(args.validation_prompt_path, "r") as f:
+                                for line in f:
+                                    validation_prompts.append(line.strip())
+                            # Do not select randomly to ensure that `args.validation_prompts` is the same for each process.
+                            args.validation_prompts = validation_prompts[:args.validation_batch_size]
+                        validation_prompts_idx = [(i, p) for i, p in enumerate(args.validation_prompts)]
 
-                    if hasattr(vae, "enable_cache_in_vae"):
-                        vae.enable_cache_in_vae()
-                    accelerator.wait_for_everyone()
-                    with accelerator.split_between_processes(validation_prompts_idx) as splitted_prompts_idx:
-                        validation_loss, validation_reward = log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            transformer3d,
-                            network,
-                            loss_fn,
-                            config,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                            splitted_prompts_idx
-                        )
-                        if validation_loss is not None and validation_reward is not None:
-                            avg_validation_loss = accelerator.gather(validation_loss).mean()
-                            avg_validation_reward = accelerator.gather(validation_reward).mean()
-                            accelerator.print(avg_validation_loss, avg_validation_reward)
-                            if accelerator.is_main_process:
-                                accelerator.log(
-                                    {"validation_loss": avg_validation_loss, "validation_reward": avg_validation_reward},
-                                    step=global_step
-                                )
-                    
-                    accelerator.wait_for_everyone()
+                        if hasattr(vae, "enable_cache_in_vae"):
+                            vae.enable_cache_in_vae()
+                        accelerator.wait_for_everyone()
+                        with accelerator.split_between_processes(validation_prompts_idx) as splitted_prompts_idx:
+                            validation_loss, validation_reward = log_validation(
+                                vae,
+                                text_encoder,
+                                tokenizer,
+                                transformer3d,
+                                network,
+                                loss_fn,
+                                config,
+                                args,
+                                accelerator,
+                                weight_dtype,
+                                global_step,
+                                splitted_prompts_idx
+                            )
+                            if validation_loss is not None and validation_reward is not None:
+                                avg_validation_loss = accelerator.gather(validation_loss).mean()
+                                avg_validation_reward = accelerator.gather(validation_reward).mean()
+                                accelerator.print(avg_validation_loss, avg_validation_reward)
+                                if accelerator.is_main_process:
+                                    accelerator.log(
+                                        {"validation_loss": avg_validation_loss, "validation_reward": avg_validation_reward},
+                                        step=global_step
+                                    )
+
+                        accelerator.wait_for_everyone()
             
             logs = {"step_loss": loss.detach().item(), "step_reward": reward.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             
             if global_step >= args.max_train_steps:
                 break
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
+
 
 if __name__ == "__main__":
     main()

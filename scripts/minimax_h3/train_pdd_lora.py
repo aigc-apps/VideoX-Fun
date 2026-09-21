@@ -67,7 +67,6 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils.torch_utils import is_compiled_module
 from packaging import version
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 current_file_path = os.path.abspath(__file__)
@@ -101,6 +100,7 @@ from videox_fun.pipeline.pipeline_minimax_h3 import (
     check_ref2va_references, normalize_ref2va_references,
     patchify_video_latents, video_latent_num_frames)
 from videox_fun.utils import MiniMaxH3Scheduler
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import save_videos_with_audio_grid
 
 # The on-the-fly route (without `--enable_preprocess_training`) encodes conditioning with the canonical MiniMax-H3
@@ -1562,7 +1562,7 @@ def main():
     if ema is not None:
         ema.to(device)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1684,74 +1684,81 @@ def main():
             step_started = time.time()
 
             if global_step % args.checkpointing_steps == 0:
-                if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-                    # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                    if args.checkpoints_total_limit is not None:
-                        checkpoints = os.listdir(args.output_dir)
-                        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                with progress_bar.paused():
+                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if args.checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(args.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                        # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                        if len(checkpoints) >= args.checkpoints_total_limit:
-                            num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                            removing_checkpoints = checkpoints[0:num_to_remove]
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= args.checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoints[0:num_to_remove]
 
-                            logger.info(
-                                f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                            )
-                            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                            for removing_checkpoint in removing_checkpoints:
-                                removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                shutil.rmtree(removing_checkpoint)
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                    if args.use_deepspeed or args.use_fsdp or args.save_state:
-                        accelerator.save_state(save_path)
-                    else:
-                        save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator)
-                        dump_pdd_config(args, save_path)
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        if args.use_deepspeed or args.use_fsdp or args.save_state:
+                            accelerator.save_state(save_path)
+                        else:
+                            save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator)
+                            dump_pdd_config(args, save_path)
 
-                if ema is not None:
-                    ema.store(trainable_params)
-                    ema.copy_to(trainable_params)
-                    checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                    if args.use_deepspeed or args.use_fsdp:
-                        state_dict = gather_full_state_dict(transformer, accelerator)
-                        if accelerator.is_main_process and state_dict is not None:
+                    if ema is not None:
+                        ema.store(trainable_params)
+                        ema.copy_to(trainable_params)
+                        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        if args.use_deepspeed or args.use_fsdp:
+                            state_dict = gather_full_state_dict(transformer, accelerator)
+                            if accelerator.is_main_process and state_dict is not None:
+                                save_pdd_weights(
+                                    os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                                    pdd_state_dict(unwrap_model(transformer), state_dict),
+                                )
+                                dump_pdd_config(args, checkpoint_dir)
+                        elif accelerator.is_main_process:
                             save_pdd_weights(
                                 os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
-                                pdd_state_dict(unwrap_model(transformer), state_dict),
+                                pdd_state_dict(unwrap_model(transformer)),
                             )
-                            dump_pdd_config(args, checkpoint_dir)
-                    elif accelerator.is_main_process:
-                        save_pdd_weights(
-                            os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
-                            pdd_state_dict(unwrap_model(transformer)),
-                        )
-                    ema.restore(trainable_params)
-                if accelerator.is_main_process:
-                    logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
-                accelerator.wait_for_everyone()
+                        ema.restore(trainable_params)
+                    if accelerator.is_main_process:
+                        logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
+                    accelerator.wait_for_everyone()
 
             if global_step % args.validation_steps == 0 and val_cache:
-                if ema is not None:
-                    ema.store(trainable_params)
-                    ema.copy_to(trainable_params)
-                accelerator.wait_for_everyone()
-                log_validation(
-                    vae, audio_vae, transformer, scheduler, audio_scheduler, args, accelerator,
-                    val_cache, grids, global_step,
-                )
-                accelerator.wait_for_everyone()
-                if ema is not None:
-                    ema.restore(trainable_params)
-                step_started = time.time()
+                with progress_bar.paused():
+                    if ema is not None:
+                        ema.store(trainable_params)
+                        ema.copy_to(trainable_params)
+                    accelerator.wait_for_everyone()
+                    log_validation(
+                        vae, audio_vae, transformer, scheduler, audio_scheduler, args, accelerator,
+                        val_cache, grids, global_step,
+                    )
+                    accelerator.wait_for_everyone()
+                    if ema is not None:
+                        ema.restore(trainable_params)
+                    step_started = time.time()
 
         logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
         progress_bar.set_postfix(**logs)
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

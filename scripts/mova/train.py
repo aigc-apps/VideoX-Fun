@@ -49,7 +49,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 import datasets
@@ -72,6 +71,7 @@ from videox_fun.models import (AutoencoderKLMOVAAudio, AutoencoderKLWan,
                                WanTransformer3DModel)
 from videox_fun.pipeline import MOVAPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid,
@@ -1100,7 +1100,7 @@ def main():
     # Create EMA for the components.
     if args.use_ema:
         if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
         # Create EMA models based on boundary_type and train_components
         ema_transformer = None
@@ -1751,7 +1751,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -2210,40 +2210,50 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        # Collect all trainable parameters for EMA
-                        all_params = []
-                        if transformer is not None:
-                            all_params.extend(transformer.parameters())
-                        if transformer_2 is not None:
-                            all_params.extend(transformer_2.parameters())
-                        all_params.extend(transformer_audio.parameters())
-                        all_params.extend(dual_tower_bridge.parameters())
-                        # Store the parameters temporarily and load the EMA parameters to perform inference.
-                        ema_mova_model.store(all_params)
-                        ema_mova_model.copy_to(all_params)
-                    log_validation(
-                        vae,
-                        audio_vae,
-                        text_encoder,
-                        tokenizer,
-                        transformer,
-                        transformer_2,
-                        transformer_audio,
-                        dual_tower_bridge,
-                        mova_model,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
-                    if args.use_ema:
-                        # Switch back to the original parameters.
-                        ema_mova_model.restore(all_params)
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            # Collect all trainable parameters for EMA
+                            all_params = []
+                            if transformer is not None:
+                                all_params.extend(transformer.parameters())
+                            if transformer_2 is not None:
+                                all_params.extend(transformer_2.parameters())
+                            all_params.extend(transformer_audio.parameters())
+                            all_params.extend(dual_tower_bridge.parameters())
+                            # Store the parameters temporarily and load the EMA parameters to perform inference.
+                            ema_mova_model.store(all_params)
+                            ema_mova_model.copy_to(all_params)
+                        log_validation(
+                            vae,
+                            audio_vae,
+                            text_encoder,
+                            tokenizer,
+                            transformer,
+                            transformer_2,
+                            transformer_audio,
+                            dual_tower_bridge,
+                            mova_model,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
+                        if args.use_ema:
+                            # Switch back to the original parameters.
+                            ema_mova_model.restore(all_params)
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2252,36 +2262,42 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                # Collect all trainable parameters for EMA
-                all_params = []
-                if transformer is not None:
-                    all_params.extend(transformer.parameters())
-                if transformer_2 is not None:
-                    all_params.extend(transformer_2.parameters())
-                all_params.extend(transformer_audio.parameters())
-                all_params.extend(dual_tower_bridge.parameters())
-                # Store the parameters temporarily and load the EMA parameters to perform inference.
-                ema_mova_model.store(all_params)
-                ema_mova_model.copy_to(all_params)
-            log_validation(
-                vae,
-                audio_vae,
-                text_encoder,
-                tokenizer,
-                transformer,
-                transformer_2,
-                transformer_audio,
-                dual_tower_bridge,
-                mova_model,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
-            if args.use_ema:
-                # Switch back to the original parameters.
-                ema_mova_model.restore(all_params)
+            with progress_bar.paused():
+                if args.use_ema:
+                    # Collect all trainable parameters for EMA
+                    all_params = []
+                    if transformer is not None:
+                        all_params.extend(transformer.parameters())
+                    if transformer_2 is not None:
+                        all_params.extend(transformer_2.parameters())
+                    all_params.extend(transformer_audio.parameters())
+                    all_params.extend(dual_tower_bridge.parameters())
+                    # Store the parameters temporarily and load the EMA parameters to perform inference.
+                    ema_mova_model.store(all_params)
+                    ema_mova_model.copy_to(all_params)
+                log_validation(
+                    vae,
+                    audio_vae,
+                    text_encoder,
+                    tokenizer,
+                    transformer,
+                    transformer_2,
+                    transformer_audio,
+                    dual_tower_bridge,
+                    mova_model,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+                if args.use_ema:
+                    # Switch back to the original parameters.
+                    ema_mova_model.restore(all_params)
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

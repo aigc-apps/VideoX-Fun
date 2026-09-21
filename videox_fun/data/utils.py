@@ -88,20 +88,21 @@ def get_random_mask(shape, image_start_only=False):
 
     if not image_start_only:
         if f != 1:
-            mask_index = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], p=[0.10, 0.2, 0.2, 0.15, 0.05, 0.05, 0.05, 0.1, 0.05, 0.05]) 
+            mask_index = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], p=[0.20, 0.2, 0.15, 0.10, 0.05, 0.05, 0.05, 0.1, 0.05, 0.05]) 
         else:
             mask_index = np.random.choice([0, 1, 7, 8], p = [0.2, 0.7, 0.05, 0.05])
         if mask_index == 0:
-            center_x = torch.randint(0, w, (1,)).item()
-            center_y = torch.randint(0, h, (1,)).item()
-            block_size_x = torch.randint(w // 4, w // 4 * 3, (1,)).item()  # Width range of the block
-            block_size_y = torch.randint(h // 4, h // 4 * 3, (1,)).item()  # Height range of the block
+            # Full-frame static rectangle, widened so large regions are reachable: side ratio in
+            # [1/2, 9/10] gives an area span of ~[25%, 81%], covering the ~64% (0.8 x 0.8) inpaint
+            # masks used at inference. The block is placed fully in-frame (start sampled within
+            # [0, dim - block]) so the intended coverage materializes instead of being clipped by a
+            # random center near the border.
+            block_size_x = torch.randint(w // 2, w * 9 // 10, (1,)).item()  # Width range of the block
+            block_size_y = torch.randint(h // 2, h * 9 // 10, (1,)).item()  # Height range of the block
 
-            start_x = max(center_x - block_size_x // 2, 0)
-            end_x = min(center_x + block_size_x // 2, w)
-            start_y = max(center_y - block_size_y // 2, 0)
-            end_y = min(center_y + block_size_y // 2, h)
-            mask[:, :, start_y:end_y, start_x:end_x] = 1
+            start_x = torch.randint(0, w - block_size_x + 1, (1,)).item()
+            start_y = torch.randint(0, h - block_size_y + 1, (1,)).item()
+            mask[:, :, start_y:start_y + block_size_y, start_x:start_x + block_size_x] = 1
         elif mask_index == 1:
             mask[:, :, :, :] = 1
         elif mask_index == 2:

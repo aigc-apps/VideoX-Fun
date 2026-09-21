@@ -50,7 +50,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 import datasets
@@ -69,6 +68,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              random_degradation_video)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                WanLatentUpsamplerModel)
+from videox_fun.utils.fsdp_ema import FSDPEMA
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import save_videos_grid
 
 # Will error if the minimal version of diffusers is not installed.
@@ -780,14 +781,20 @@ def main():
     if args.use_ema:
         from diffusers.training_utils import EMAModel
         if zero_stage == 3:
-            raise NotImplementedError("DeepSpeed ZeRO-3 does not support EMA.")
-        ema_upsampler = WanLatentUpsamplerModel(
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
+        ema_module = WanLatentUpsamplerModel(
             in_channels=vae.config.latent_channels,
             **lu_kwargs,
-        ).to(weight_dtype)
-        if args.latent_upsampler_path is not None:
-            ema_upsampler.load_state_dict(latent_upsampler.state_dict())
-        ema_upsampler = EMAModel(ema_upsampler.parameters(), model_cls=WanLatentUpsamplerModel, model_config=ema_upsampler.config)
+        )
+        if args.use_fsdp:
+            # The EMA copy gets the same FSDP wrap as the live model so that
+            # every local shard of the copy pairs 1:1 with the live shard.
+            ema_upsampler = FSDPEMA(ema_module, source=latent_upsampler, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
+        else:
+            ema_module = ema_module.to(weight_dtype)
+            if args.latent_upsampler_path is not None:
+                ema_module.load_state_dict(latent_upsampler.state_dict())
+            ema_upsampler = EMAModel(ema_module.parameters(), model_cls=WanLatentUpsamplerModel, model_config=ema_module.config)
 
     # ==================== Save/Load Hooks ====================
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -801,8 +808,13 @@ def main():
                     save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                if args.use_ema:
+                    # Every rank joins the FULL_STATE_DICT all-gather inside.
+                    ema_upsampler.save_pretrained(os.path.join(output_dir, "latent_upsampler_ema"))
 
             def load_model_hook(models, input_dir):
+                if args.use_ema:
+                    ema_upsampler.load_pretrained(os.path.join(input_dir, "latent_upsampler_ema"))
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -1119,7 +1131,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps), initial=initial_global_step, desc="Steps",
         disable=not accelerator.is_local_main_process,
     )
@@ -1281,17 +1293,26 @@ def main():
                         gc.collect()
                         torch.cuda.empty_cache()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
                         logger.info(f"Saved state to {save_path}")
 
                 # Validation
                 if args.validation_paths is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        ema_upsampler.store(latent_upsampler.parameters())
-                        ema_upsampler.copy_to(latent_upsampler.parameters())
-                    log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, global_step)
-                    if args.use_ema:
-                        ema_upsampler.restore(latent_upsampler.parameters())
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            ema_upsampler.store(latent_upsampler.parameters())
+                            ema_upsampler.copy_to(latent_upsampler.parameters())
+                        log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, global_step)
+                        if args.use_ema:
+                            ema_upsampler.restore(latent_upsampler.parameters())
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1301,18 +1322,29 @@ def main():
 
         # Epoch-level validation
         if args.validation_paths is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                ema_upsampler.store(latent_upsampler.parameters())
-                ema_upsampler.copy_to(latent_upsampler.parameters())
-            log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, global_step)
-            if args.use_ema:
-                ema_upsampler.restore(latent_upsampler.parameters())
+            with progress_bar.paused():
+                if args.use_ema:
+                    ema_upsampler.store(latent_upsampler.parameters())
+                    ema_upsampler.copy_to(latent_upsampler.parameters())
+                log_validation(vae, latent_upsampler, args, accelerator, weight_dtype, global_step)
+                if args.use_ema:
+                    ema_upsampler.restore(latent_upsampler.parameters())
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Final save
     accelerator.wait_for_everyone()
+    if args.use_ema and args.use_fsdp:
+        # Under FSDP every rank must write its own shards, and the shards only
+        # exist while the model is still wrapped, so this runs before the
+        # `unwrap_model` below.
+        ema_upsampler.copy_to(latent_upsampler.parameters())
     if accelerator.is_main_process:
         latent_upsampler_unwrapped = unwrap_model(latent_upsampler)
-        if args.use_ema:
+        if args.use_ema and not args.use_fsdp:
             ema_upsampler.copy_to(latent_upsampler_unwrapped.parameters())
 
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:

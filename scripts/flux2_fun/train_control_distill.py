@@ -58,7 +58,6 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from torch.utils.data import Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
@@ -83,6 +82,7 @@ from videox_fun.models import (AutoencoderKLFlux2, AutoProcessor,
                                PixtralProcessor)
 from videox_fun.pipeline import Flux2ControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
@@ -1498,7 +1498,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1804,28 +1804,38 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
 
-                        for name, param in generator_transformer3d.named_parameters():
-                            for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
-                                if trainable_module_name not in name:
-                                    param.requires_grad = False
-                                    break
-                        accelerator.save_state(save_path)
+                            for name, param in generator_transformer3d.named_parameters():
+                                for trainable_module_name in args.trainable_modules + args.trainable_modules_low_learning_rate:
+                                    if trainable_module_name not in name:
+                                        param.requires_grad = False
+                                        break
+                            accelerator.save_state(save_path)
 
-                        generator_transformer3d.requires_grad_(True)
+                            generator_transformer3d.requires_grad_(True)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        vae,
-                        text_encoder,
-                        tokenizer,
-                        generator_transformer3d,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            generator_transformer3d,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
 
             logs = {"avg_cfg_loss": avg_cfg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1834,16 +1844,22 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                vae,
-                text_encoder,
-                tokenizer,
-                generator_transformer3d,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    generator_transformer3d,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
