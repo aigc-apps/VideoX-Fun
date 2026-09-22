@@ -1,29 +1,16 @@
-import importlib.util
-
 import torch
 import torch.distributed as dist
 
 try:
-    # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
-    if importlib.util.find_spec("paifuser") is not None:
-        import paifuser
-        from paifuser.xfuser.core.distributed import (
-            get_sequence_parallel_rank, get_sequence_parallel_world_size,
-            get_sp_group, get_world_group, init_distributed_environment,
-            initialize_model_parallel, model_parallel_is_initialized)
-        from paifuser.xfuser.core.long_ctx_attention import \
-            xFuserLongContextAttention
-        print("Import PAI DiT Turbo")
-    else:
-        import xfuser
-        from xfuser.core.distributed import (get_sequence_parallel_rank,
-                                             get_sequence_parallel_world_size,
-                                             get_sp_group, get_world_group,
-                                             init_distributed_environment,
-                                             initialize_model_parallel,
-                                             model_parallel_is_initialized)
-        from xfuser.core.long_ctx_attention import xFuserLongContextAttention
-        print("Xfuser import sucessful")
+    import xfuser
+    from xfuser.core.distributed import (get_sequence_parallel_rank,
+                                         get_sequence_parallel_world_size,
+                                         get_sp_group, get_world_group,
+                                         init_distributed_environment,
+                                         initialize_model_parallel,
+                                         model_parallel_is_initialized)
+    from xfuser.core.long_ctx_attention import xFuserLongContextAttention
+    print("Xfuser import sucessful")
 except Exception as ex:
     get_sequence_parallel_world_size = None
     get_sequence_parallel_rank = None
