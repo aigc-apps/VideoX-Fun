@@ -29,27 +29,37 @@ from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from videox_fun.utils.utils import (filter_kwargs, get_video_to_video_latent,
                                     save_videos_grid)
 
-# Flex-Forcing (arXiv 2607.03509) 4.2: any-order / any-timestep editing.
-#
-# A strictly causal rollout can only ever condition on the past, so a finished
-# clip cannot be revisited. Flex-Forcing can: the whole clip is committed to the
-# KV cache as clean context, one span is re-noised to a *low-level refinement*
-# timestep and denoised with the attention window widened to the entire clip, so
-# the edited span conditions on clean tokens from both its past and its future
-# while the high-level planning timesteps (and every other frame) stay untouched.
-#
-# Run predict_t2v.py first, or point `input_video_path` at any clip.
-
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
+# model_full_load means that the entire model will be moved to the GPU.
+#
+# model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
+# and the transformer model has been quantized to float8, which can save more GPU memory.
+#
+# model_cpu_offload means that the entire model will be moved to the CPU after use, which can save some GPU memory.
+#
+# model_cpu_offload_and_qfloat8 indicates that the entire model will be moved to the CPU after use,
+# and the transformer model has been quantized to float8, which can save more GPU memory.
+#
+# model_group_offload transfers internal layer groups between CPU/CUDA,
+# balancing memory efficiency and speed between full-module and leaf-level offloading methods.
+#
+# sequential_cpu_offload means that each layer of the model will be moved to the CPU after use,
+# resulting in slower speeds but saving a large amount of GPU memory.
 GPU_memory_mode     = "model_full_load"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used.
+# For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
+# If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
 ulysses_degree      = 1
 ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
 fsdp_text_encoder   = True
+# Compile will give a speedup in fixed resolution and need a little GPU memory.
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
+# [NOTE]: flex_attention block masks are rebuilt per partition, so compiling the
+# blocks only pays off when the partition is fixed - i.e. when `edit_span` and
+# `num_frame_per_block` stay the same across runs.
 compile_dit         = False
 
 # Config and model path
@@ -59,10 +69,14 @@ model_name          = "models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
-shift               = 5 
-stochastic_sampling = True
+# [NOTE]: Noise schedule shift parameter. Affects temporal dynamics.
+# Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
+shift               = 5
 
 # Load pretrained model if need
+# Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
+# backbone inherits every parameter name and only the new `flex_kproj.*` tensors
+# are reported missing (they are identity-initialised, so step 0 is unchanged).
 transformer_path    = None
 vae_path            = None
 lora_path           = None
@@ -74,10 +88,11 @@ video_length        = 81
 fps                 = 16
 
 # --- 4.2 editing config ----------------------------------------------------
-# Clip to edit. `None` generates one with this same pipeline first (the
-# generate -> edit round trip the paper demonstrates); otherwise an official
-# demo clip under datasets/X-Fun-Videos-Demo/ is loaded.
-input_video_path    = None
+# Clip to edit. Required: this script edits an existing clip and generates
+# nothing. predict_t2v.py writes to samples/wan-videos-flex-forcing-t2v/; any
+# other clip works too. It is resized / truncated to `sample_size` and
+# `video_length` below.
+input_video_path    = "samples/wan-videos-flex-forcing-t2v/00000001.mp4"
 # Half-open range of **latent** frames to regenerate, e.g. (8, 15) for the
 # middle third of a 21-latent-frame clip. `None` edits the whole clip. A middle
 # span is the interesting case: it needs clean context from the future, which a
@@ -87,37 +102,49 @@ edit_span           = (8, 15)
 # planning timestep would restructure the clip instead of refining it. This is
 # the "restrict editing to low-level refinement timesteps" half of 4.2.
 edit_steps          = 1
-# Granularity of the clean-context commit. `None` commits the whole clip in one
-# bidirectional pass; an int or an explicit partition commits chunk by chunk in
-# temporal order, which bounds the peak memory of long clips.
-commit_chunk_spec   = 7
-# Prompt driving the edit (the original prompt is a reasonable default).
-edit_prompt         = None
-# 3.3's K-Projection has no runtime knob at all: the model builds `diag_rank1`
-# and applies it to the cached clean keys on every pass, edit included.
+# Granularity of the clean-context commit - the same uniform block size the
+# Self-Forcing rollout uses, and it does the same job here. `None` commits the
+# whole clip in one bidirectional pass; an int commits chunk by chunk in
+# temporal order, which bounds the peak memory of long clips. It also sizes the
+# transformer's per-block buffers: the block width becomes max(this, edit span
+# width). Match it to the block size the checkpoint was trained at unless memory
+# says otherwise.
+num_frame_per_block = 7
 
 # --- Causal backbone (inherited from Self-Forcing) -------------------------
-# Only used for the optional generation pass above.
-chunk_spec              = None
-denoise_mode            = "pyramid"
-min_num_frame_per_block = 1
-num_frame_per_block     = 3
-# Any-order editing requires the full KV cache: the edited span must see clean
-# tokens on both sides, which a rolling window may already have evicted.
-local_attn_size         = -1
-sink_size               = 0
-independent_first_frame = False
-context_noise           = 0.0
+# The noise level the clean context is committed at - the level the cache is
+# trained to be read back from.
+context_noise       = 0.0
+# Local attention window size (-1 for global attention). Any-order editing
+# requires -1: the edited span must see clean tokens on both sides, which a
+# rolling window may already have evicted, and `edit_video` raises rather than
+# silently degrade. For long *generation* the paper uses a 21-latent-frame
+# window with a 3-frame sink (local_attn_size = 21, sink_size = 3), but that
+# combination cannot edit.
+local_attn_size     = -1
+sink_size           = 0
 
 # Use torch.float16 if GPU does not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 prompt              = "A stylish woman walks down a Tokyo street filled with warm glowing neon and animated city signage. She wears a black leather jacket, a long red dress, and black boots, and carries a black purse. She wears sunglasses and red lipstick. She walks confidently and casually. The street is damp and reflective, creating a mirror effect of the colorful lights. Many pedestrians walk about."
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 guidance_scale      = 1.0
 seed                = 43
-num_inference_steps = 2
+# The paper's 2-step DMD model denoises at [1000, 500]; 4 steps ([1000, 750,
+# 500, 250]) suit the CCD checkpoint. This is the schedule the refinement steps
+# are taken from: `edit_video` runs only its trailing `edit_steps`, so the
+# high-level planning timesteps stay untouched.
+num_inference_steps = 4
 lora_weight         = 0.55
 save_path           = "samples/wan-videos-flex-forcing-edit"
+
+if not input_video_path or not os.path.isfile(input_video_path):
+    raise FileNotFoundError(
+        f"`input_video_path` must point at the clip to edit, got "
+        f"{input_video_path!r}. This script only edits: generate one with "
+        f"predict_t2v.py (it writes to samples/wan-videos-flex-forcing-t2v/) "
+        f"or point at any clip of your own.")
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -246,8 +273,10 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
 else:
     pipeline.to(device=device)
 
+print(f"[Flex-Forcing] local_attn_size={local_attn_size}, sink_size={sink_size}, "
+      f"context_noise={context_noise}")
 print(f"[Flex-Forcing 4.2] edit_span={edit_span} latent frames, edit_steps={edit_steps} "
-      f"of {num_inference_steps}, commit_chunk_spec={commit_chunk_spec}")
+      f"of {num_inference_steps}, num_frame_per_block={num_frame_per_block}")
 
 generator = torch.Generator(device=device).manual_seed(seed)
 
@@ -257,45 +286,24 @@ if lora_path is not None:
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
     latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
+    # Printed before anything expensive runs: `edit_span` is in *latent* frames,
+    # so this is where a span that does not fit the clip shows up.
+    print(f"[Flex-Forcing 4.2] {input_video_path}: {video_length} pixel frames "
+          f"= {latent_frames} latent frames")
 
-    # 1. The clip to edit: either load it or generate it with the same
-    #    pipeline. Both are [B, C, F, H, W] in [0, 1], which is what
-    #    `edit_video` takes.
-    if input_video_path is not None:
-        video, _, _, _ = get_video_to_video_latent(
-            input_video_path, video_length, sample_size, fps=fps)
-        source = video.to(device=device, dtype=weight_dtype)
-    else:
-        torch.cuda.synchronize()
-        start_time = time.time()
-        source = pipeline(
-            prompt, 
-            num_frames = video_length,
-            negative_prompt = negative_prompt,
-            height      = sample_size[0],
-            width       = sample_size[1],
-            generator   = generator,
-            guidance_scale          = guidance_scale,
-            num_inference_steps     = num_inference_steps,
-            shift                   = shift,
-            num_frame_per_block     = num_frame_per_block,
-            independent_first_frame = independent_first_frame,
-            context_noise           = context_noise,
-            stochastic_sampling     = stochastic_sampling,
-            chunk_spec              = chunk_spec,
-            denoise_mode            = denoise_mode,
-            min_num_frame_per_block = min_num_frame_per_block,
-        ).videos
-        torch.cuda.synchronize()
-        print(f"[Timing] generated {video_length} frames ({latent_frames} latent) "
-              f"in {time.time() - start_time:.2f}s")
+    # 1. The clip to edit, [B, C, F, H, W] in [0, 1] - the range
+    #    `decode_latents` returns, so a clip from predict_t2v.py goes straight
+    #    back in.
+    video, _, _, _ = get_video_to_video_latent(
+        input_video_path, video_length, sample_size, fps=fps)
+    source = video.to(device=device, dtype=weight_dtype)
 
     # 2. Edit one span at the refinement timesteps only, conditioning on the
     #    clean context of the whole clip - past and future alike.
     torch.cuda.synchronize()
     start_time = time.time()
     sample = pipeline.edit_video(
-        prompt          = edit_prompt if edit_prompt is not None else prompt,
+        prompt          = prompt,
         video           = source,
         edit_span       = edit_span,
         negative_prompt = negative_prompt,
@@ -304,11 +312,21 @@ with torch.no_grad():
         edit_steps      = edit_steps,
         shift           = shift,
         context_noise   = context_noise,
-        chunk_spec      = commit_chunk_spec,
+        num_frame_per_block = num_frame_per_block,
         generator       = generator,
     ).videos
     torch.cuda.synchronize()
-    print(f"[Timing] edited span {edit_span} in {time.time() - start_time:.2f}s")
+    elapsed = time.time() - start_time
+    print(f"[Timing] edited span {edit_span} in {elapsed:.2f}s")
+    # Same diagnostic as predict_t2v.py, read after the edit: the cache now holds
+    # the whole clip committed as clean context, so `kv_tokens` is the full-clip
+    # width the edited span was able to attend over.
+    if getattr(pipeline, "kv_cache_pos", None) is not None:
+        kv_tokens = pipeline.kv_cache_pos[0]["k"].shape[1]
+        kv_mib = sum(c["k"].numel() + c["v"].numel()
+                     for c in pipeline.kv_cache_pos + pipeline.kv_cache_neg) \
+            * pipeline.kv_cache_pos[0]["k"].element_size() / (1024 ** 2)
+        print(f"[KV cache] {kv_tokens} tokens per layer per branch, total {kv_mib:.1f} MiB (pos+neg, all layers)")
 
 if lora_path is not None:
     pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
@@ -320,15 +338,20 @@ def save_results():
     index = len([path for path in os.listdir(save_path)]) + 1
     prefix = str(index).zfill(8)
     if video_length == 1:
-        image = sample[0, :, 0].transpose(0, 1).transpose(1, 2)
+        image_path = os.path.join(save_path, prefix + ".png")
+
+        image = sample[0, :, 0]
+        image = image.transpose(0, 1).transpose(1, 2)
         image = (image * 255).numpy().astype(np.uint8)
-        Image.fromarray(image).save(os.path.join(save_path, prefix + ".png"))
+        image = Image.fromarray(image)
+        image.save(image_path)
     else:
-        # Keep the source next to the edit so the untouched frames and the
-        # refined span can be compared directly.
-        save_videos_grid(sample, os.path.join(save_path, prefix + "-edited.mp4"), fps=fps)
-        if input_video_path is None:
-            save_videos_grid(source, os.path.join(save_path, prefix + "-source.mp4"), fps=fps)
+        video_path = os.path.join(save_path, prefix + "-edited.mp4")
+        save_videos_grid(sample, video_path, fps=fps)
+        # Keep the source next to the edit, and re-encoded through the same VAE
+        # round trip, so the untouched frames and the refined span compare like
+        # for like rather than against the original file.
+        save_videos_grid(source, os.path.join(save_path, prefix + "-source.mp4"), fps=fps)
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

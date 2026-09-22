@@ -133,7 +133,7 @@ local_attn_size         = -1
 sink_size               = 0
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 prompt              = "A stylish woman walks down a Tokyo street filled with warm glowing neon and animated city signage. She wears a black leather jacket, a long red dress, and black boots, and carries a black purse. She wears sunglasses and red lipstick. She walks confidently and casually. The street is damp and reflective, creating a mirror effect of the colorful lights. Many pedestrians walk about."
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
@@ -142,7 +142,7 @@ seed                = 43
 # The paper's 2-step DMD model denoises at [1000, 500]; 4 steps ([1000, 750,
 # 500, 250]) suit the CCD checkpoint. `denoise_mode = "pyramid"` uses one ladder
 # level per step here, so a deeper pyramid just wants more steps.
-num_inference_steps = 2
+num_inference_steps = 4
 lora_weight         = 0.55
 save_path           = "samples/wan-videos-flex-forcing-t2v"
 
