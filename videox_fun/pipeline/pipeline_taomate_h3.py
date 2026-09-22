@@ -298,7 +298,7 @@ def taomate_h3_streaming_sigma_schedules() -> Tuple[List[float], List[float]]:
 
 
 # The offline Base10 audio teacher: three clean audio milestones per request, produced ahead of inference (see
-# scripts/taomate_h3/generate_base10_teacher.py).
+# examples/taomate_h3/predict_audio.py).
 TAOMATE_H3_TEACHER_GEOMETRY_KEYS = ("width", "height", "video_latent_h", "video_latent_w")
 
 
@@ -888,10 +888,10 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
 
             # 1. Denoise this chunk in `len(video_timesteps)` steps. Text and video rows ride the video clock,
             # audio rows the audio clock; after every step the Base10 milestone replaces the audio rows.
-            for step in range(len(video_timesteps)):
+            for step, t in enumerate(video_timesteps):
                 unique_timesteps, timestep_indices = build_row_timesteps(
-                    layout, float(video_timesteps[step]), float(audio_timesteps[step]),
-                    float(video_timesteps[step]), float(audio_timesteps[step]),
+                    layout, float(t), float(audio_timesteps[step]),
+                    float(t), float(audio_timesteps[step]),
                 )
                 cache.begin_live(token_tags)
                 video_velocity, audio_velocity = transformer_call(
@@ -899,7 +899,7 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
                 )
                 cache.end_forward()
                 phase_video = self.scheduler.step(
-                    video_velocity[0].float(), video_timesteps[step], phase_video, return_dict=False
+                    video_velocity[0].float(), t, phase_video, return_dict=False
                 )[0]
                 phase_audio = self.audio_scheduler.step(
                     audio_velocity[0].float(), audio_timesteps[step], phase_audio, return_dict=False
@@ -1038,9 +1038,8 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
                 One prompt per stream request; a single string repeats over every request. Each prompt is
                 right-aligned on the shared rotary timeline.
             audio_teacher_dir (`str` or `os.PathLike`):
-                The offline Base10 audio-teacher artifact directory (see
-                `scripts/taomate_h3/generate_base10_teacher.py`). The soundtrack *is* the teacher's clean audio;
-                the artifact must match the prompts, seeds and canvas.
+                The offline Base10 audio-teacher artifact directory (see `examples/taomate_h3/predict_audio.py`).
+                The soundtrack *is* the teacher's clean audio; the artifact must match the prompts, seeds and canvas.
             height (`int`, defaults to `864`):
                 Canvas height in pixels. The short edge must be 480, 768 or 1088; both edges 32-aligned.
             width (`int`, defaults to `480`):
@@ -1077,11 +1076,15 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
                 f"single-GPU inference, got sp_world_size={sp_world_size}."
             )
 
+        # 1. Resolve the streaming geometry every request keys off: the latent canvas and the packed-row width of
+        # one video latent frame.
         latent_height = height // self.vae_spatial_compression_ratio
         latent_width = width // self.vae_spatial_compression_ratio
         _, patch_h, patch_w = self.patch_size
         frame_rows = (latent_height // patch_h) * (latent_width // patch_w)
 
+        # 2. Open the offline Base10 audio teacher (it must match these prompts / seeds / canvas) and build the
+        # shared three-step sigma schedules and the direct 5s plan every request is cut from.
         teacher = TaomateH3TeacherArtifact.open(
             audio_teacher_dir,
             prompts=prompts,
@@ -1093,6 +1096,8 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
         sigmas_video, sigmas_audio = taomate_h3_streaming_sigma_schedules()
         base_plan = taomate_h3_direct_5s_plan()
 
+        # 3. Install the persistent streaming K/V cache and run every five-second stream request; the
+        # request -> phase -> step state machine lives in `_stream_request`.
         cache = install_minimax_h3_streaming_kv_cache(self.transformer, dtype=self.transformer.dtype)
         session = _TaomateH3StreamSession()
         try:
@@ -1132,8 +1137,8 @@ class MiniMaxH3StreamingPipeline(MiniMaxH3Pipeline):
             uninstall_minimax_h3_streaming_kv_cache(self.transformer)
             cache.clear()
 
-        # One-shot publication: splice the requests (dropping the transport prefix each continuation repeats) and
-        # decode the full timeline once.
+        # 4. One-shot publication: splice the requests (dropping the transport prefix each continuation repeats)
+        # and decode the full timeline once.
         video_rows = torch.cat(
             [
                 segment if index == 0 else segment[video_prefix_latents[index] * frame_rows :]

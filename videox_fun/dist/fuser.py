@@ -86,3 +86,19 @@ def sequence_parallel_all_gather(x, dim=1):
     sp_group = get_sp_group()
     gathered_x = sp_group.all_gather(x, dim=dim)
     return gathered_x
+
+def ulysses_all_to_all(x, scatter_dim, gather_dim):
+    """Ulysses (head-parallel) all-to-all on a 4D ``[B, S, H, D]`` tensor.
+
+    ``scatter_dim`` / ``gather_dim`` follow yunchang's ``all_to_all_4D`` convention:
+    ``(2, 1)`` turns a sequence-split layout ``[B, S/P, H, D]`` into a head-split one
+    ``[B, S, H/P, D]``; ``(1, 2)`` is the inverse. ``x`` is returned unchanged when sequence
+    parallel is not initialised or the SP world size is 1, so single-GPU paths are unaffected.
+    """
+    if get_sequence_parallel_world_size is None or not model_parallel_is_initialized():
+        return x
+    if get_sequence_parallel_world_size() <= 1:
+        return x
+    from yunchang.comm.all_to_all import all_to_all_4D
+    return all_to_all_4D(x, scatter_idx=scatter_dim, gather_idx=gather_dim,
+                         group=get_sp_group().device_group)

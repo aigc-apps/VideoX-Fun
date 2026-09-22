@@ -1,5 +1,10 @@
 from .cfg_optimization import cfg_skip
 from .discrete_sampler import DiscreteSampling
+from .flex_chunking import (broadcast_chunk_sizes, build_pyramid_partitions,
+                            chunk_boundaries, chunk_ends_tensor,
+                            chunk_sizes_to_block_kwargs, normalize_chunk_spec,
+                            refine_partition, sample_flexible_chunks,
+                            uniform_chunks, validate_nested_partitions)
 from .fm_solvers import FlowDPMSolverMultistepScheduler
 from .fm_solvers_minimax_h3 import MiniMaxH3Scheduler
 from .fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -7,7 +12,7 @@ from .fp8_optimization import (autocast_model_forward,
                                convert_model_weight_to_float8,
                                convert_weight_dtype_wrapper,
                                replace_parameters_by_name)
-from .fsdp_ema import FSDPEMA
+from .fsdp_ema import FSDPEMA, LORAFSDPEMA
 from .group_offload import (register_auto_device_hook,
                             safe_enable_group_offload,
                             safe_remove_group_offloading)

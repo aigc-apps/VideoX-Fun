@@ -106,7 +106,7 @@ seed                = 43
 audio_teacher_dir   = "samples/taomate_h3_teacher/00000000"
 # Merge weight of `lora_path`. The official TaoMate-H3 adapter ships alpha == rank, so 1.0 reproduces the
 # official runtime; lower it (e.g. 0.55) when blending a kohya finetune checkpoint instead.
-lora_weight         = 1.0
+lora_weight         = 0.55
 save_path           = "samples/taomate-h3-videos-t2av-streaming"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)

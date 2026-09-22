@@ -1,10 +1,10 @@
-# FSDP-aware EMA shadow copy shared by the training scripts.
-"""Drop-in replacement for `diffusers.training_utils.EMAModel` under FSDP1."""
+# FSDP-aware EMA shadow copies shared by the training scripts.
+"""FSDP-aware EMA shadows: the full-module `FSDPEMA` and the LoRA-only `LORAFSDPEMA`."""
 import os
 
 import torch
 
-__all__ = ["FSDPEMA"]
+__all__ = ["FSDPEMA", "LORAFSDPEMA"]
 
 
 class FSDPEMA:
@@ -187,3 +187,105 @@ class FSDPEMA:
         del state_dict
         if self.accelerator.is_main_process:
             print(f"Loaded EMA weights from {load_directory}.")
+
+
+class LORAFSDPEMA:
+    r"""A polyak average of the generator's LoRA weights (`--ema_decay`, the official 0.99).
+
+    The full-parameter `FSDPEMA` above cannot be kept here: a second 33 B copy is a third of the
+    training memory, and under FSDP a second full model does not exist at all. Only the LoRA weights
+    are averaged, one local shard per rank — the frozen base weights are never touched, so `step`
+    needs no communication and stays valid under FSDP. The full-precision export happens in the save
+    hook: the shadow is copied back into the parameters, rides the same all-gather as the training
+    weights and is restored afterwards.
+
+    The shadow is built from the `(name, parameter)` pairs *as `accelerator.prepare` left them*:
+    plain tensors in the single-process and DeepSpeed ZeRO-2 runs, rank partitions under ZeRO-3,
+    flat-parameter views under FSDP1 and `DTensor` shards under FSDP2. Each shadow therefore pairs
+    1:1 with its local parameter, every method runs purely on those local shards, and a rank that
+    owns no slice of a parameter (the 0-numel views `use_orig_params=True` leaves) skips it. The
+    shards are disjoint slices of the same tensors, so the copies stay in sync without any
+    all-gather. The shadow is kept in fp32 on purpose: the update term `(1 - decay) * delta`
+    shrinks with the training rate down to ~1e-8, which underflows in bf16 and would freeze the
+    EMA at its initial value.
+
+    `store`/`copy_to`/`restore` swap the shadow in for a validation rollout; `save_shards`/
+    `load_shards` keep the rank-local shadow next to the `accelerator.save_state` checkpoints, so
+    a resumed run continues averaging from where it stopped. Must be built *after*
+    `accelerator.prepare` (from the unwrapped module), so the shadow adopts the sharded layout
+    instead of a full per-rank copy of every parameter.
+    """
+
+    def __init__(self, named_parameters, decay):
+        self.decay = float(decay)
+        self.shadow = {
+            name: param.detach().to(torch.float32).clone()
+            for name, param in named_parameters
+        }
+        if not self.shadow:
+            raise ValueError("LORAFSDPEMA was handed no parameters.")
+        self._backup = None
+
+    @torch.no_grad()
+    def step(self, named_parameters):
+        for name, param in named_parameters:
+            shadow = self.shadow[name]
+            # `use_orig_params=True` can leave 0-numel views on ranks that own no slice of a parameter.
+            if shadow.numel() == 0:
+                continue
+            # Outside forward/backward the shards are the fp32 master weights, so a per-shard polyak
+            # update is bit-identical to a full-tensor update.
+            source = param.detach().to(device=shadow.device, dtype=shadow.dtype)
+            if shadow.dtype.is_floating_point:
+                shadow.mul_(self.decay).add_(source, alpha=1.0 - self.decay)
+            else:
+                shadow.copy_(source)
+
+    @torch.no_grad()
+    def copy_to(self, named_parameters):
+        r"""Overwrite the live weights with the shadow (the validation swap and the EMA export)."""
+        for name, param in named_parameters:
+            if param.numel() == 0:
+                continue
+            param.detach().copy_(self.shadow[name])
+
+    @torch.no_grad()
+    def store(self, named_parameters):
+        r"""Stash the live weights, for a `copy_to` that `restore` undoes (the validation swap)."""
+        self._backup = {name: param.detach().clone() for name, param in named_parameters}
+
+    @torch.no_grad()
+    def restore(self, named_parameters):
+        if self._backup is None:
+            raise RuntimeError("`restore` called without a matching `store`.")
+        for name, param in named_parameters:
+            if param.numel() == 0:
+                continue
+            param.detach().copy_(self._backup[name])
+        self._backup = None
+
+    def save_shards(self, output_dir, rank):
+        r"""Write the rank-local shadow shards next to the checkpoint.
+
+        A `DTensor` shadow (FSDP2) is stored as its plain local tensor, so the file holds ordinary
+        tensors that `load_shards` reads back without a process group.
+        """
+        state = {
+            name: shard.to_local() if hasattr(shard, "to_local") else shard
+            for name, shard in self.shadow.items()
+        }
+        torch.save(state, os.path.join(output_dir, f"lora_ema_shadow.rank{rank}.pt"))
+
+    def load_shards(self, input_dir, rank):
+        r"""Restore the rank-local shadow saved by `save_shards`; a missing file is not an error."""
+        path = os.path.join(input_dir, f"lora_ema_shadow.rank{rank}.pt")
+        if not os.path.exists(path):
+            return False
+        state = torch.load(path, map_location="cpu")
+        for name, value in state.items():
+            shadow = self.shadow.get(name)
+            if shadow is None:
+                continue
+            target = shadow.to_local() if hasattr(shadow, "to_local") else shadow
+            target.copy_(value.to(device=target.device, dtype=target.dtype))
+        return True
