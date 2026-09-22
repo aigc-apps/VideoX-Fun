@@ -142,7 +142,7 @@ transformer = Wan2_2Transformer3DModel_Animate.from_pretrained(
     torch_dtype=weight_dtype,
 )
 if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
-    transformer_2 = Wan2_2Transformer3DModel.from_pretrained(
+    transformer_2 = Wan2_2Transformer3DModel_Animate.from_pretrained(
         os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         low_cpu_mem_usage=True,
