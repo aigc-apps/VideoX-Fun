@@ -81,7 +81,8 @@ from .mova_audio_transformer3d import WanAudioTransformer3DModel
 from .mova_interactionv2 import MOVADualTowerConditionalBridge
 from .mova_model import MOVAModel
 from .mova_vae_audio import AutoencoderKLMOVAAudio
-from .qwenimage21_transformer2d import QwenImage21Transformer2DModel
+from .qwenimage21_transformer2d import (QwenImage21KVCache,
+                                        QwenImage21Transformer2DModel)
 from .qwenimage21_vae import AutoencoderKLQwenImage21
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
