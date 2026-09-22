@@ -388,6 +388,13 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
 # knob the launcher should have to keep in sync.
 COARSE_GLOBAL_PROB = 0.5
 
+# How many steps of a launch report the partition they drew. Counted from this
+# process rather than from `global_step`, so a resumed run still gets its own
+# look at the layout. Two lines come out per step (the generator and the critic
+# each draw one), which is enough to watch the three arms show up in their
+# stated shares; after that they are only noise in a multi-day run.
+FLEX_LAYOUT_LOG_STEPS = 20
+
 
 def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
                            device, verbose=False):
@@ -418,8 +425,7 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
         base = build_pyramid_partitions(
             num_frames, num_levels=1, base_chunks=None,
             independent_first_frame=args.independent_first_frame)[0]
-        if verbose:
-            print(f"level 0 = whole clip ({base}): 3.2 coarse planning layout")
+        arm = "whole clip, the 3.2 coarse planning layout"
     elif u < coarse_prob + UNIFORM_BLOCK_PROB:
         # `uniform_chunks`, not `normalize_chunk_spec`: the latter takes no
         # `independent_first_frame` argument (it encodes that as a leading 1), so
@@ -428,32 +434,37 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
         base = uniform_chunks(
             num_frames, args.num_frame_per_block,
             independent_first_frame=args.independent_first_frame)
-        if verbose:
-            print(f"level 0 = uniform {args.num_frame_per_block}-frame blocks "
-                  f"({base}): the launcher's own layout")
+        arm = f"uniform {args.num_frame_per_block}-frame blocks, the launcher's own layout"
     else:
         base = sample_flexible_chunks(
             num_frames, min_chunk=args.flex_chunk_min, max_chunk=args.flex_chunk_max,
             generator=torch_rng, device=device,
             independent_first_frame=args.independent_first_frame)
+        arm = f"random {args.flex_chunk_min}..{args.flex_chunk_max}-frame blocks, the 3.1 spectrum"
     # Every rank has to train the same layout: the FlexAttention mask, and the
     # `num_frame_per_block` derived from it, must agree across the SP/FSDP group.
     base = broadcast_chunk_sizes(base, device=device)
-    if args.flex_pyramid_levels <= 1:
-        return [base]
-    ladder = build_pyramid_partitions(
-        num_frames, num_levels=args.flex_pyramid_levels,
-        min_num_frame_per_block=args.flex_min_num_frame_per_block, base_chunks=base,
-        independent_first_frame=args.independent_first_frame)
-    if len(ladder) > num_denoising_steps:
-        # Same short-circuit as at inference, where the rollout stops refining at
-        # the last step: deeper levels would never be reached, so drop them
-        # instead of reporting a pyramid that was not actually trained.
-        if verbose:
-            print(f"--flex_pyramid_levels={args.flex_pyramid_levels} builds "
-                  f"{len(ladder)} levels but only {num_denoising_steps} denoising "
-                  f"steps are trained; keeping the first {num_denoising_steps}.")
-        ladder = ladder[:num_denoising_steps]
+    ladder = [base]
+    if args.flex_pyramid_levels > 1:
+        ladder = build_pyramid_partitions(
+            num_frames, num_levels=args.flex_pyramid_levels,
+            min_num_frame_per_block=args.flex_min_num_frame_per_block, base_chunks=base,
+            independent_first_frame=args.independent_first_frame)
+        if len(ladder) > num_denoising_steps:
+            # Same short-circuit as at inference, where the rollout stops refining at
+            # the last step: deeper levels would never be reached, so drop them
+            # instead of reporting a pyramid that was not actually trained.
+            if verbose:
+                print(f"--flex_pyramid_levels={args.flex_pyramid_levels} builds "
+                      f"{len(ladder)} levels but only {num_denoising_steps} denoising "
+                      f"steps are trained; keeping the first {num_denoising_steps}.")
+            ladder = ladder[:num_denoising_steps]
+    if verbose:
+        # Every level, not just the drawn one: level 0 is what the mixture above
+        # picked, the rest are derived from it, and they are the sub-spans the
+        # walk descends into -- i.e. how many extra forwards this step costs.
+        print(f"flex ladder over {num_frames} frames ({arm}): "
+              + ", ".join(f"level {i} = {list(s)}" for i, s in enumerate(ladder)))
     return ladder
 
 
@@ -2598,7 +2609,8 @@ def main():
                         flex_partitions = sample_flex_partitions(
                             args, num_generated_frames, len(denoising_step_list),
                             torch_rng, accelerator.device,
-                            accelerator.is_main_process)
+                            accelerator.is_main_process
+                            and global_step - initial_global_step < FLEX_LAYOUT_LOG_STEPS)
                         if flex_partitions is not None:
                             all_num_frames = flex_partitions[0]
                             assert sum(all_num_frames) == num_generated_frames
@@ -2719,7 +2731,18 @@ def main():
                             # buffer its parent's buffered step already re-noised.
                             start_idx = current_start_frame - num_input_frames
                             end_idx = start_idx + current_num_frames
-                            noisy_input = generator_noise[:, :, start_idx:end_idx]
+                            # The clone is load-bearing, not a defensive copy. This
+                            # slice is a view, so it shares one version counter with
+                            # the whole buffer, and a span that reaches its exit step
+                            # feeds it to the forward whose backward needs it back
+                            # unchanged. The coarser spans' write-back below bumps
+                            # that counter after the fact, which is what makes
+                            # autograd refuse with "modified by an inplace
+                            # operation". Copying gives this span its own counter,
+                            # which the rest of the walk cannot touch. Inference
+                            # never hits the issue: its copy of the walk runs under
+                            # no_grad, so nothing is saved for a backward pass.
+                            noisy_input = generator_noise[:, :, start_idx:end_idx].clone()
                             
                             for local_idx, current_timestep in enumerate(schedule):
                                 global_idx = step_idx + local_idx
@@ -2941,7 +2964,8 @@ def main():
                         if flex_partitions is None:
                             flex_partitions = sample_flex_partitions(
                                 args, num_frames, len(denoising_step_list), torch_rng,
-                                accelerator.device, accelerator.is_main_process)
+                                accelerator.device, accelerator.is_main_process
+                                and global_step - initial_global_step < FLEX_LAYOUT_LOG_STEPS)
                         flex_model = accelerator.unwrap_model(generator_transformer3d)
                         install_flex_partition(flex_model, flex_partitions, 0)
 
@@ -3238,7 +3262,8 @@ def main():
                     critic_partitions = sample_flex_partitions(
                         args, num_generated_frames_critic,
                         len(denoising_step_list), torch_rng,
-                        accelerator.device, accelerator.is_main_process)
+                        accelerator.device, accelerator.is_main_process
+                        and global_step - initial_global_step < FLEX_LAYOUT_LOG_STEPS)
                     if critic_partitions is not None:
                         all_num_frames = critic_partitions[0]
                         assert sum(all_num_frames) == num_generated_frames_critic
@@ -3316,7 +3341,7 @@ def main():
                         current_start_frame = span_start
                         start_idx = current_start_frame - num_input_frames
                         end_idx = start_idx + current_num_frames
-                        noisy_input = fake_score_critic_noise[:, :, start_idx:end_idx]
+                        noisy_input = fake_score_critic_noise[:, :, start_idx:end_idx].clone()
                         
                         for local_idx, current_timestep in enumerate(schedule):
                             global_idx = step_idx + local_idx
@@ -3463,7 +3488,8 @@ def main():
                         if flex_partitions is None:
                             flex_partitions = sample_flex_partitions(
                                 args, num_frames, len(denoising_step_list), torch_rng,
-                                accelerator.device, accelerator.is_main_process)
+                                accelerator.device, accelerator.is_main_process
+                                and global_step - initial_global_step < FLEX_LAYOUT_LOG_STEPS)
                         flex_model = accelerator.unwrap_model(generator_transformer3d)
                         install_flex_partition(flex_model, flex_partitions, 0)
 
