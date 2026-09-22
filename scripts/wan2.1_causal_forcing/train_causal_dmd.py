@@ -56,7 +56,6 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
@@ -79,6 +78,7 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
 from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
                                  WanSelfForcingPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
@@ -115,6 +115,47 @@ def initialize_crossattn_cache_for_training(batch_size, text_len, num_layers, nu
         })
     
     return crossattn_cache
+
+
+def reencode_boundary_latent(vae, pred_latents, weight_dtype, score_num_frames=21):
+    """
+    Re-encode the boundary frame to get a clean latent for the score window.
+    Follows Self-Forcing reference: decode all frames before the score window, take last pixel frame, re-encode.
+    Input: pred_latents [B, C, F, H, W] (all generated latent frames)
+    Output: boundary_latent [B, C, 1, H, W]
+    """
+    with torch.no_grad():
+        # Decode all frames except the last (score_num_frames - 1) to pixels
+        tail_len = score_num_frames - 1
+        latent_to_decode = pred_latents[:, :, :-tail_len]
+        # VAE expects [B, C, F, H, W], decode returns [B, C, F, H, W] pixels
+        pixels = vae.decode(latent_to_decode.to(vae.dtype)).sample  # [B, C, F, H, W]
+        # Take the last frame
+        frame = pixels[:, :, -1:, :, :]  # [B, C, 1, H, W]
+        # Re-encode the last frame to get clean boundary latent
+        boundary_latent = vae.encode(frame)[0].sample().to(weight_dtype)  # [B, C, 1, H, W]
+    return boundary_latent
+
+
+def slice_for_score(pred, vae, weight_dtype, score_num_frames=21, independent_first_frame=False):
+    """
+    Slice the last `score_num_frames` latent frames for score computation.
+    If pred has more than score_num_frames, re-encode boundary frame for clean context.
+    Returns: (pred_for_score, score_num_frames, need_gradient_mask)
+    """
+    num_frames = pred.shape[2]
+    if num_frames <= score_num_frames:
+        return pred, num_frames, False
+
+    # Re-encode boundary for cleaner score input
+    try:
+        boundary_latent = reencode_boundary_latent(vae, pred, weight_dtype, score_num_frames=score_num_frames)
+        pred_for_score = torch.cat([boundary_latent, pred[:, :, -(score_num_frames - 1):]], dim=2)
+    except Exception:
+        # Fallback: simple slice without boundary re-encoding
+        pred_for_score = pred[:, :, -score_num_frames:]
+
+    return pred_for_score, score_num_frames, True
 
 
 def filter_kwargs(cls, kwargs):
@@ -1073,7 +1114,7 @@ def main():
     # Create EMA for the generator_transformer3d.
     if args.use_ema:
         if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
         ema_generator_transformer3d = EMAModel(
             generator_transformer3d.parameters(),
@@ -1125,6 +1166,7 @@ def main():
                     load_model = WanTransformer3DModel_SelfForcing.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel_SelfForcing, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -1139,7 +1181,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = WanTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 
@@ -1738,7 +1781,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1810,6 +1853,10 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         train_denoising_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
@@ -2092,7 +2139,17 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            with accelerator.accumulate(generator_transformer3d):
+            generator_update = step % args.gen_update_interval == 0
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2168,7 +2225,7 @@ def main():
 
                 # --- Main Training Logic ---
                 bsz, channel, num_frames, height, width = target_shape
-                if step % args.gen_update_interval == 0:
+                if generator_update:  # generator_update computed before the accumulate ctx above
                     if args.use_kv_cache_training:
                         # Calculate frame_seq_length
                         patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
@@ -2608,7 +2665,8 @@ def main():
                         )
                         
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
@@ -2961,8 +3019,9 @@ def main():
                     ema_generator_transformer3d.step(generator_transformer3d.parameters())
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
+                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}, step=global_step)
                 train_dmd_loss = 0.0
+                train_gen_log_count = 0
                 train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
@@ -2991,31 +3050,41 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        fake_score_save_path = os.path.join(save_path, "fake_score")
-                        accelerator.save_state(save_path)
-                        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            fake_score_save_path = os.path.join(save_path, "fake_score")
+                            accelerator.save_state(save_path)
+                            accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        # Store the generator parameters temporarily and load the EMA parameters to perform inference.
-                        ema_generator_transformer3d.store(generator_transformer3d.parameters())
-                        ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
-                    log_validation(
-                        vae,
-                        text_encoder,
-                        tokenizer,
-                        clip_image_encoder,
-                        generator_transformer3d,
-                        args,
-                        config,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
-                    if args.use_ema:
-                        # Switch back to the original generator parameters.
-                        ema_generator_transformer3d.restore(generator_transformer3d.parameters())
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            # Store the generator parameters temporarily and load the EMA parameters to perform inference.
+                            ema_generator_transformer3d.store(generator_transformer3d.parameters())
+                            ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
+                        log_validation(
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            clip_image_encoder,
+                            generator_transformer3d,
+                            args,
+                            config,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
+                        if args.use_ema:
+                            # Switch back to the original generator parameters.
+                            ema_generator_transformer3d.restore(generator_transformer3d.parameters())
 
             logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -3024,25 +3093,31 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                # Store the generator parameters temporarily and load the EMA parameters to perform inference.
-                ema_generator_transformer3d.store(generator_transformer3d.parameters())
-                ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
-            log_validation(
-                vae,
-                text_encoder,
-                tokenizer,
-                clip_image_encoder,
-                generator_transformer3d,
-                args,
-                config,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
-            if args.use_ema:
-                # Switch back to the original generator parameters.
-                ema_generator_transformer3d.restore(generator_transformer3d.parameters())
+            with progress_bar.paused():
+                if args.use_ema:
+                    # Store the generator parameters temporarily and load the EMA parameters to perform inference.
+                    ema_generator_transformer3d.store(generator_transformer3d.parameters())
+                    ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
+                log_validation(
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    clip_image_encoder,
+                    generator_transformer3d,
+                    args,
+                    config,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+                if args.use_ema:
+                    # Switch back to the original generator parameters.
+                    ema_generator_transformer3d.restore(generator_transformer3d.parameters())
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

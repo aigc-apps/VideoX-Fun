@@ -50,7 +50,6 @@ from PIL import Image
 from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
@@ -63,8 +62,8 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler, RandomSampler,
-                             TextDataset, get_closest_ratio)
+                             AspectRatioBatchImageVideoSampler, ImageVideoSampler,
+                             RandomSampler, TextDataset, get_closest_ratio)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
@@ -78,6 +77,7 @@ from videox_fun.utils import (DiscreteSampling, RectifiedFlow_TrigFlowWrapper,
                               get_image_latent, get_image_to_video_latent,
                               merge_lora, sample_trigflow_timesteps,
                               save_videos_grid, unmerge_lora)
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 
 if is_wandb_available():
     import wandb
@@ -1285,7 +1285,7 @@ def main():
             return ckpt_file
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1519,6 +1519,10 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_dmd_loss = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         train_denoising_loss = 0.0
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
@@ -1568,8 +1572,8 @@ def main():
                         text_encoder.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
-                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    prompt_embeds = batch['prompt_embeds'].to(dtype=weight_dtype, device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=weight_dtype, device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_embeds = encode_prompt(
@@ -1634,7 +1638,17 @@ def main():
                 denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
 
             # ==================== Generator Update (DMD) ====================
-            with accelerator.accumulate(generator_transformer3d):
+            generator_update = step % args.gen_update_interval == 0
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def generate_and_sync_list(num_denoising_steps, device):
                     indices = torch.randint(low=0, high=num_denoising_steps, size=(1,), generator=torch_rng, device=device)
                     if dist.is_initialized():
@@ -1643,7 +1657,7 @@ def main():
 
                 bsz, channel, num_frames, height, width = target_shape
                 
-                if step % args.gen_update_interval == 0:
+                if generator_update:  # generator_update computed before the accumulate ctx above
                     generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
                     num_denoising_steps = len(denoising_step_list)
                     final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
@@ -1760,7 +1774,8 @@ def main():
                         reduction="mean"
                     )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
@@ -1897,8 +1912,9 @@ def main():
 
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}, step=global_step)
+                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}, step=global_step)
                 train_dmd_loss = 0.0
+                train_gen_log_count = 0
                 train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
@@ -1957,24 +1973,34 @@ def main():
                                 logger.info(f"Saved safetensor to {safetensor_save_path}")
                         else:
                             save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            fake_score_save_path = os.path.join(save_path, "fake_score")
-                            accelerator.save_state(save_path)
-                            accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                            # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                            # otherwise land in the next step's interval and be shown as a slow step. The
+                            # save also stages the whole state in host RAM (safetensors materializes every
+                            # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                            # cache flushes run inside the same window.
+                            with progress_bar.paused():
+                                fake_score_save_path = os.path.join(save_path, "fake_score")
+                                accelerator.save_state(save_path)
+                                accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                torch.cuda.ipc_collect()
                             logger.info(f"Saved state to {save_path}")
 
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        vae,
-                        text_encoder,
-                        tokenizer,
-                        generator_transformer3d,
-                        network,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            generator_transformer3d,
+                            network,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
 
             logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1983,17 +2009,23 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                vae,
-                text_encoder,
-                tokenizer,
-                generator_transformer3d,
-                network,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    generator_transformer3d,
+                    network,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

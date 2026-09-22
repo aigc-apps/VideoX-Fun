@@ -512,7 +512,7 @@ def _attn_widths(module: torch.nn.Module) -> Dict[str, int]:
 
     Nothing here can see whether the attention is masked, and that is the one direction in which this overcounts.
     The models in this repo are bidirectional over the latent sequence and so pay the full square, but the causal
-    variants -- `wan_flex_causal_attn`, the self-forcing transformers -- compute about half of it, and Megatron
+    variants -- the self-forcing transformers -- compute about half of it, and Megatron
     halves its own core term for exactly that reason. Reach for `VIDEOX_PERF_FLOPS_ATTN=0` on those runs to fall
     back to the linear-only bound rather than read a figure that is too high by nearly a factor of two.
     """

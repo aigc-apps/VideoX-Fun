@@ -50,7 +50,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
@@ -72,6 +71,7 @@ from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
                                          create_network, merge_lora,
                                          unmerge_lora)
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
@@ -182,12 +182,14 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, c
                     transformer3d_2 = Wan2_2Transformer3DModel.from_pretrained(
                         os.path.join(args.pretrained_model_name_or_path, sub_path),
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     ).to(weight_dtype)
                 else:
                     sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
                     transformer3d_1 = Wan2_2Transformer3DModel.from_pretrained(
                         os.path.join(args.pretrained_model_name_or_path, sub_path),
                         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
                     ).to(weight_dtype)
 
                     transformer3d_2 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
@@ -940,6 +942,7 @@ def main():
     transformer3d = Wan2_2Transformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, sub_path),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
@@ -1534,7 +1537,7 @@ def main():
             return ckpt_file
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1909,38 +1912,48 @@ def main():
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            if args.use_peft_lora:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
-                                save_model(safetensor_save_path, network_state_dict)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            if not args.save_state:
+                                if args.use_peft_lora:
+                                    safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                    network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer3d))
+                                    save_model(safetensor_save_path, network_state_dict)
 
-                                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
-                                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+                                    safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
+                                    network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict)
+                                    save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
+                                    logger.info(f"Saved safetensor to {safetensor_save_path}")
+                                else:
+                                    safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                    save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                                    logger.info(f"Saved safetensor to {safetensor_save_path}")
                             else:
-                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                                logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                                accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                                accelerator.save_state(accelerator_save_path)
+                                logger.info(f"Saved state to {accelerator_save_path}")
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        vae,
-                        text_encoder,
-                        tokenizer,
-                        transformer3d,
-                        network,
-                        args,
-                        config,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            transformer3d,
+                            network,
+                            args,
+                            config,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1949,18 +1962,24 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                vae,
-                text_encoder,
-                tokenizer,
-                transformer3d,
-                network,
-                args,
-                config,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    transformer3d,
+                    network,
+                    args,
+                    config,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

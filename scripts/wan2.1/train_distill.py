@@ -50,13 +50,9 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
-    ShardedStateDictConfig)
 from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import ContextManagers
 
@@ -77,6 +73,7 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid)
@@ -746,6 +743,23 @@ def parse_args():
         action="store_true",
         help="whether to use randomize timesteps indices in training.",
     )
+    parser.add_argument(
+        "--index_jitter_ratio",
+        type=float,
+        default=0.3,
+        help="Symmetric jitter budget (fraction of the neighboring gap) applied to the "
+             "denoising step indices when --randomize_step_indices is enabled.",
+    )
+    parser.add_argument(
+        "--flow_euler_rollout",
+        action="store_true",
+        help="Simulate the normal flow-matching inference rollout in the generator's multi-step "
+             "self-rollout (LightX2V-style): keep the model prediction in flow/velocity space and "
+             "advance to the next noise level with a deterministic Euler ODE step "
+             "(x_next = x_t + (sigma_next - sigma_t) * v), instead of converting the prediction "
+             "to x0 and re-noising with fresh noise. The final step still converts to x0 since "
+             "the DMD objective is defined on x0.",
+    )
 
     parser.add_argument(
         "--dfd",
@@ -981,14 +995,17 @@ def main():
     generator_transformer3d = WanTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
     real_score_transformer3d = WanTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
     fake_score_transformer3d = WanTransformer3DModel.from_pretrained(
         os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+        low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set generator_transformer3d to trainable
@@ -1119,7 +1136,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = WanTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 
@@ -1271,7 +1289,7 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    # DFD needs paired videos for the teacher-score input, everything else reuses the DMD data path.
+    # DFD needs paired videos for the teacher-score input; everything else reuses the DMD data path.
     need_real_video = args.train_mode != "normal" or args.dfd
     if need_real_video:
         train_dataset = ImageVideoDataset(
@@ -1710,7 +1728,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1791,6 +1809,10 @@ def main():
         train_ca_scale = 0.0
         train_dm_scale = 0.0
         train_latent_std = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
             generator_update = step % args.gen_update_interval == 0
@@ -2003,7 +2025,8 @@ def main():
                             vae.to(accelerator.device)
                         with torch.no_grad():
                             real_latents = vae.encode(pixel_values)[0].sample()
-                        target_shape = real_latents.size()
+                        if dfd_active:
+                            target_shape = real_latents.size()
 
                 if args.low_vram:
                     vae.to('cpu')
@@ -2060,7 +2083,16 @@ def main():
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            with accelerator.accumulate(generator_transformer3d):
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
                     sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
                     schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
@@ -2201,12 +2233,13 @@ def main():
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                         clip_fea=clip_context if args.train_mode != "normal" else None,
                                     )
-                                    generator_pred = convert_flow_pred_to_x0(
-                                        scheduler=noise_scheduler,
-                                        flow_pred=generator_pred,
-                                        xt=generator_noise,
-                                        timestep=timestep
-                                    )
+                                    if not args.flow_euler_rollout or is_final_step:
+                                        generator_pred = convert_flow_pred_to_x0(
+                                            scheduler=noise_scheduler,
+                                            flow_pred=generator_pred,
+                                            xt=generator_noise,
+                                            timestep=timestep
+                                        )
                                 
                                 if is_final_step:
                                     # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
@@ -2216,11 +2249,23 @@ def main():
                                 next_timestep = denoising_step_list[index + 1] * torch.ones(
                                     generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
                                 )
-                                generator_noise = add_noise(
-                                    generator_pred,
-                                    torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                                    next_timestep
-                                )
+                                if args.flow_euler_rollout:
+                                    # Mimic the normal flow-matching inference rollout (LightX2V-style): keep
+                                    # the prediction in flow/velocity space and advance to the next noise level
+                                    # with a deterministic Euler ODE step, no x0 conversion / fresh re-noising.
+                                    # x_next = x_t - sigma_t * v + sigma_n * v = x_t + (sigma_n - sigma_t) * v,
+                                    # matching LightX2V WanStepDistillScheduler.step_post (computed in fp32).
+                                    sigma_t = get_sigmas(timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
+                                    sigma_next = get_sigmas(next_timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
+                                    generator_noise = (
+                                        generator_noise.float() + (sigma_next - sigma_t) * generator_pred.float()
+                                    ).to(generator_noise.dtype)
+                                else:
+                                    generator_noise = add_noise(
+                                        generator_pred,
+                                        torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                        next_timestep
+                                    )
 
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
@@ -2418,27 +2463,29 @@ def main():
                             reduction="mean"
                         )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
-                    train_dmd_loss += avg_dmd_loss.item() / args.gradient_accumulation_steps
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
 
                     monitor = accelerator.gather(
                         torch.stack([ca_scale, dm_scale, generator_pred.float().std()])[None]
                     ).mean(dim=0)
-                    train_ca_scale += monitor[0].item() / args.gradient_accumulation_steps
-                    train_dm_scale += monitor[1].item() / args.gradient_accumulation_steps
-                    train_latent_std += monitor[2].item() / args.gradient_accumulation_steps
+                    train_ca_scale += monitor[0].item()
+                    train_dm_scale += monitor[1].item()
+                    train_latent_std += monitor[2].item()
 
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
                         fake_score_transformer3d = fake_score_transformer3d.to("cpu")
                         torch.cuda.empty_cache()
 
-                    accelerator.backward(dmd_loss)
+                    generator_loss = dmd_loss
+                    accelerator.backward(generator_loss)
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                    
+
                     if args.low_vram:
                         fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
                         torch.cuda.empty_cache()
@@ -2545,11 +2592,12 @@ def main():
 
                 progress_bar.update(1)
                 global_step += 1
-                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss}
-                tracker_logs["train_ca_scale"] = train_ca_scale
-                tracker_logs["train_dm_scale"] = train_dm_scale
+                gen_log_div = max(train_gen_log_count, 1)
+                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / gen_log_div}
+                tracker_logs["train_ca_scale"] = train_ca_scale / gen_log_div
+                tracker_logs["train_dm_scale"] = train_dm_scale / gen_log_div
                 tracker_logs["train_ca_dm_ratio"] = train_ca_scale / (train_dm_scale + 1e-12)
-                tracker_logs["train_latent_std"] = train_latent_std
+                tracker_logs["train_latent_std"] = train_latent_std / gen_log_div
                 if args.dfd:
                     tracker_logs["train_dfd_real_replace"] = train_dfd_real_replace
                     dfd_real_replace_now = train_dfd_real_replace
@@ -2560,6 +2608,7 @@ def main():
                 train_ca_scale = 0.0
                 train_dm_scale = 0.0
                 train_latent_std = 0.0
+                train_gen_log_count = 0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
@@ -2587,24 +2636,34 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        fake_score_save_path = os.path.join(save_path, "fake_score")
-                        accelerator.save_state(save_path)
-                        accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            fake_score_save_path = os.path.join(save_path, "fake_score")
+                            accelerator.save_state(save_path)
+                            accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        vae,
-                        text_encoder,
-                        tokenizer,
-                        clip_image_encoder,
-                        generator_transformer3d,
-                        args,
-                        config,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            clip_image_encoder,
+                            generator_transformer3d,
+                            args,
+                            config,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
 
             if args.dfd:
                 logs = {"lr": (lr_scheduler if generator_update else fake_score_lr_scheduler).get_last_lr()[0], "denoising_loss": denoising_loss.detach().item()}
@@ -2623,18 +2682,24 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                vae,
-                text_encoder,
-                tokenizer,
-                clip_image_encoder,
-                generator_transformer3d,
-                args,
-                config,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    clip_image_encoder,
+                    generator_transformer3d,
+                    args,
+                    config,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

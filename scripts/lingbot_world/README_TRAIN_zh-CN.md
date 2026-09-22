@@ -188,7 +188,7 @@ export DATASET_META_NAME="/mnt/data/lingbot_world/metadata.json"
 mkdir -p models/Diffusion_Transformer
 
 # LingBot-World 相机可控基础权重（目录结构与 Wan2.2-I2V-A14B 一致）
-modelscope download --model your-org/lingbot-world-base-cam --local_dir models/Diffusion_Transformer/lingbot-world-base-cam
+modelscope download --model Robbyant/lingbot-world-base-cam --local_dir models/Diffusion_Transformer/lingbot-world-base-cam
 ```
 
 也可以从原始 Wan2.2-I2V-A14B 出发。此时 LingBot 特有的层（`cam_injector_*`、`cam_scale_layer`、`cam_shift_layer`、`patch_embedding_wancamctrl`、`c2ws_hidden_states_layer{1,2}`）会随机初始化，**必须**加入 `--trainable_modules`（详见 [3.4](#34-可训练模块选择)）。

@@ -49,7 +49,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 import datasets
@@ -71,6 +70,8 @@ from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
                                LTX2VideoTransformer3DModel, LTX2Vocoder)
 from videox_fun.pipeline import LTX2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.fsdp_ema import FSDPEMA
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid,
@@ -928,13 +929,19 @@ def main():
     # Create EMA for the transformer3d.
     if args.use_ema:
         if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
-        ema_transformer3d = LTX2VideoTransformer3DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer"
-        ).to(weight_dtype)
-
-        ema_transformer3d = EMAModel(ema_transformer3d.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=ema_transformer3d.config)
+        ema_module = LTX2VideoTransformer3DModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="transformer",
+            low_cpu_mem_usage=True,
+        )
+        if args.use_fsdp:
+            # The EMA copy gets the same FSDP wrap as the live model so that
+            # every local shard of the copy pairs 1:1 with the live shard.
+            ema_transformer3d = FSDPEMA(ema_module, source=transformer3d, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
+        else:
+            ema_module = ema_module.to(weight_dtype)
+            ema_transformer3d = EMAModel(ema_module.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=ema_module.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -951,8 +958,13 @@ def main():
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                if args.use_ema:
+                    # Every rank joins the FULL_STATE_DICT all-gather inside.
+                    ema_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
 
             def load_model_hook(models, input_dir):
+                if args.use_ema:
+                    ema_transformer3d.load_pretrained(os.path.join(input_dir, "transformer_ema"))
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -979,6 +991,7 @@ def main():
                     _, ema_kwargs = LTX2VideoTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = LTX2VideoTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=LTX2VideoTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -993,7 +1006,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = LTX2VideoTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 
@@ -1505,7 +1519,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1996,30 +2010,40 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                        ema_transformer3d.store(transformer3d.parameters())
-                        ema_transformer3d.copy_to(transformer3d.parameters())
-                    log_validation(
-                        vae,
-                        audio_vae,
-                        text_encoder,
-                        tokenizer,
-                        connectors,
-                        vocoder,
-                        transformer3d,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
-                    if args.use_ema:
-                        # Switch back to the original transformer3d parameters.
-                        ema_transformer3d.restore(transformer3d.parameters())
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                            ema_transformer3d.store(transformer3d.parameters())
+                            ema_transformer3d.copy_to(transformer3d.parameters())
+                        log_validation(
+                            vae,
+                            audio_vae,
+                            text_encoder,
+                            tokenizer,
+                            connectors,
+                            vocoder,
+                            transformer3d,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
+                        if args.use_ema:
+                            # Switch back to the original transformer3d parameters.
+                            ema_transformer3d.restore(transformer3d.parameters())
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2028,32 +2052,43 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                ema_transformer3d.store(transformer3d.parameters())
-                ema_transformer3d.copy_to(transformer3d.parameters())
-            log_validation(
-                vae,
-                audio_vae,
-                text_encoder,
-                tokenizer,
-                connectors,
-                vocoder,
-                transformer3d,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
-            if args.use_ema:
-                # Switch back to the original transformer3d parameters.
-                ema_transformer3d.restore(transformer3d.parameters())
+            with progress_bar.paused():
+                if args.use_ema:
+                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+                    ema_transformer3d.store(transformer3d.parameters())
+                    ema_transformer3d.copy_to(transformer3d.parameters())
+                log_validation(
+                    vae,
+                    audio_vae,
+                    text_encoder,
+                    tokenizer,
+                    connectors,
+                    vocoder,
+                    transformer3d,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+                if args.use_ema:
+                    # Switch back to the original transformer3d parameters.
+                    ema_transformer3d.restore(transformer3d.parameters())
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if args.use_ema and args.use_fsdp:
+        # Under FSDP every rank must write its own shards, and the shards only
+        # exist while the model is still wrapped, so this runs before the
+        # `unwrap_model` below.
+        ema_transformer3d.copy_to(transformer3d.parameters())
     if accelerator.is_main_process:
         transformer3d = unwrap_model(transformer3d)
-        if args.use_ema:
+        if args.use_ema and not args.use_fsdp:
             ema_transformer3d.copy_to(transformer3d.parameters())
 
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:

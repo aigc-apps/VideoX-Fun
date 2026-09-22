@@ -181,7 +181,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 mkdir -p models/Diffusion_Transformer
 
 # Download FlashHead official weights
-modelscope download --model AI-ModelScope/SoulX-FlashHead-1_3B --local_dir models/Diffusion_Transformer/SoulX-FlashHead-1_3B
+modelscope download --model Soul-AILab/SoulX-FlashHead-1_3B --local_dir models/Diffusion_Transformer/SoulX-FlashHead-1_3B
 
 # Download audio encoder (wav2vec2)
 modelscope download --model AI-ModelScope/wav2vec2-base-960h --local_dir models/Diffusion_Transformer/wav2vec2-base-960h

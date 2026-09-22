@@ -816,6 +816,6 @@ class Wan2_2S2VPipeline(DiffusionPipeline):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            return video
+            return videos
 
         return WanPipelineOutput(videos=videos)

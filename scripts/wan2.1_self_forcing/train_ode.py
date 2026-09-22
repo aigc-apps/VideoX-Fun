@@ -48,7 +48,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
 import datasets
@@ -59,9 +58,10 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.data import ImageVideoSafetensorsDataset, RandomSampler
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
-                               WanTransformer3DModel_SelfForcing)
+from videox_fun.models import (AutoencoderKLWan, WanTransformer3DModel,
+                               WanTransformer3DModel_SelfForcing, WanT5EncoderModel)
 from videox_fun.pipeline import WanSelfForcingPipeline
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import save_videos_grid
 
 check_min_version("0.18.0.dev0")
@@ -723,7 +723,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = WanTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 
@@ -998,7 +999,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1294,15 +1295,25 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        transformer3d,
-                        args, config, accelerator, weight_dtype, global_step,
-                        fsdp_stage=fsdp_stage, zero_stage=zero_stage,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            transformer3d,
+                            args, config, accelerator, weight_dtype, global_step,
+                            fsdp_stage=fsdp_stage, zero_stage=zero_stage,
+                        )
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1311,11 +1322,17 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                transformer3d,
-                args, config, accelerator, weight_dtype, global_step,
-                fsdp_stage=fsdp_stage, zero_stage=zero_stage,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    transformer3d,
+                    args, config, accelerator, weight_dtype, global_step,
+                    fsdp_stage=fsdp_stage, zero_stage=zero_stage,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

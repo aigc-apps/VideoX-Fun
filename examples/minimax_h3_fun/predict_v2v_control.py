@@ -69,12 +69,12 @@ model_name          = "models/Diffusion_Transformer/MiniMax-H3"
 # layers the control blocks attach to and `control_in_dim` the channels the control rows carry (49 for an
 # `--enable_inpaint` checkpoint, whose `control_proj_in` is widened with the mask channels). Leaving it None
 # builds the default 24-channel branch, which cannot load an inpaint checkpoint.
-config_path         = "config/minimax_h3/minimax_h3_control.yaml"
+config_path         = "config/minimax_h3/minimax_h3_control_inpaint_post_norm.yaml"
 
 # Load pretrained model if need. The control branch is not part of the released MiniMax-H3 weights, so a base
 # `model_name` starts the side branch as an identity (`after_proj` is zero) and the c ontrol video has no effect;
 # point `transformer_path` at a control checkpoint trained by `scripts/minimax_h3_fun/train_control.py`.
-transformer_path    = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors"
+transformer_path    = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union-2.0/MiniMax-H3-Fun-Controlnet-Union-2.0.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -101,7 +101,7 @@ control_video       = "asset/pose.mp4"
 # the mask channels and the run degrades to pure generation; a mask-less checkpoint rejects them outright.
 inpaint_video       = None
 inpaint_video_mask  = None
-prompt              = "视频中，一位年轻女性站在阳光洒满的沙滩上，背景是无垠碧蓝的大海与澄澈如洗的天空，构成一幅充满夏日度假氛围的画面。她身穿一件深海军蓝吊带泳衣，线条简约贴身，凸显健康匀称的身材曲线；外搭一条纯白色背带短裙，裙摆轻盈飘逸，随风微微扬起，增添了几分俏皮与少女感。她的长发柔顺披肩，发梢微卷，在阳光下泛着自然光泽，耳畔垂挂着一对小巧精致的珍珠吊坠耳环，为整体造型注入一丝温柔优雅的气息。她面带甜美笑容，嘴角上扬，露出整齐洁白的牙齿，眼神清澈明亮，直视镜头时流露出真诚与自信，仿佛在与观众分享此刻的快乐。起初，她双臂向两侧张开，手掌舒展，像是在拥抱整个大海与天空；随后手臂缓缓收回并向前挥动，动作节奏轻快而富有韵律，如同在跳舞或做简单的热身操，展现出轻松自在、无忧无虑的状态。她的腿部微微分开站立，姿态稳健又不失灵动，裙摆随着动作轻轻摇曳，与海风形成自然互动。远处海浪轻拍沙滩，发出柔和的“哗哗”声，虽无声但可想象其韵律，与她的动作相得益彰，营造出宁静而愉悦的听觉联想。"
+prompt              = "视频中，一位年轻女性站在阳光洒满的沙滩上，背景是无垠碧蓝的大海与澄澈如洗的天空，构成一幅充满夏日度假氛围的画面。她身穿一件深海军蓝吊带泳衣，线条简约贴身，凸显健康匀称的身材曲线；外搭一条纯白色背带短裙，裙摆轻盈飘逸，随风微微扬起，增添了几分俏皮与少女感。她的长发柔顺披肩，发梢微卷，在阳光下泛着自然光泽，耳畔垂挂着一对小巧精致的珍珠吊坠耳环，为整体造型注入一丝温柔优雅的气息。她面带甜美笑容，嘴角上扬，露出整齐洁白的牙齿，眼神清澈明亮，直视镜头时流露出真诚与自信，仿佛在与观众分享此刻的快乐。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 seed                = 43
 # Number of denoising steps, i.e. of model evaluations: num_inference_steps = 40 runs 40 of them.

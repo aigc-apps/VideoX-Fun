@@ -81,6 +81,9 @@ from .mova_audio_transformer3d import WanAudioTransformer3DModel
 from .mova_interactionv2 import MOVADualTowerConditionalBridge
 from .mova_model import MOVAModel
 from .mova_vae_audio import AutoencoderKLMOVAAudio
+from .qwenimage21_transformer2d import (QwenImage21KVCache,
+                                        QwenImage21Transformer2DModel)
+from .qwenimage21_vae import AutoencoderKLQwenImage21
 from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel
@@ -89,10 +92,12 @@ from .turbowan_transformer3d import TurboWanTransformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
 from .wan_latent_upsampler import WanLatentUpsamplerModel
+from .wan_tae import AutoencoderTinyWan
 from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
+from .wan_transformer3d_flex_forcing import WanTransformer3DModel_FlexForcing
 from .wan_transformer3d_lingbot_world import WanTransformer3DModel_LingbotWorld
 from .wan_transformer3d_lingbot_world_fast import \
     WanTransformer3DModel_LingbotWorldFast

@@ -968,6 +968,12 @@ class HPSv3RewardInferencer:
         min_pixels = self.data_config.min_pixels
 
         # --- Step 1: Non-differentiable path for text tokens & metadata ---
+        # IMPORTANT: feed the ORIGINAL-resolution frame to the processor and let it do
+        # the single smart_resize, exactly like prepare_batch(). Pre-resizing here causes
+        # a DOUBLE resize: since min_pixels == max_pixels, the first smart_resize can round
+        # down below min_pixels, and the processor then scales the image back UP, landing on
+        # a larger grid than the reference path (observed image_grid_thw 24x46 vs 22x42 and a
+        # systematic ~+1.0 reward bias on real images).
         with torch.no_grad():
             ref_pil_images = []
             ref_sizes = []
@@ -979,13 +985,8 @@ class HPSv3RewardInferencer:
                     min_pixels=min_pixels, max_pixels=max_pixels,
                 )
                 ref_sizes.append((resized_height, resized_width))
-                # Resize detached tensor for reference PIL
-                img_resized = torch.nn.functional.interpolate(
-                    img_det.unsqueeze(0), size=[resized_height, resized_width],
-                    mode="bicubic", antialias=True, align_corners=False,
-                ).squeeze(0)  # [C, rH, rW]
-                # Convert to PIL for processor tokenization
-                frame_np = (img_resized.clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255).astype('uint8')
+                # Convert the ORIGINAL frame to PIL; the processor performs the (single) resize.
+                frame_np = (img_det.clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255).astype('uint8')
                 ref_pil_images.append(Image.fromarray(frame_np))
 
             # Build message list for text tokenization

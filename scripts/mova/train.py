@@ -49,7 +49,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 import datasets
@@ -72,6 +71,7 @@ from videox_fun.models import (AutoencoderKLMOVAAudio, AutoencoderKLWan,
                                WanTransformer3DModel)
 from videox_fun.pipeline import MOVAPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid,
@@ -1100,7 +1100,7 @@ def main():
     # Create EMA for the components.
     if args.use_ema:
         if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
         # Create EMA models based on boundary_type and train_components
         ema_transformer = None
@@ -1109,23 +1109,27 @@ def main():
         if args.boundary_type == "high" or args.boundary_type == "full":
             if "transformer_2" in components_to_train:
                 ema_transformer_2 = WanTransformer3DModel.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="video_dit"
+                    args.pretrained_model_name_or_path, subfolder="video_dit",
+                    low_cpu_mem_usage=True,
                 ).to(weight_dtype)
         
         if args.boundary_type == "low" or args.boundary_type == "full":
             if "transformer" in components_to_train:
                 ema_transformer = WanTransformer3DModel.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="video_dit_2"
+                    args.pretrained_model_name_or_path, subfolder="video_dit_2",
+                    low_cpu_mem_usage=True,
                 ).to(weight_dtype)
         
         if "transformer_audio" in components_to_train:
             ema_transformer_audio = WanAudioTransformer3DModel.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="audio_dit"
+                args.pretrained_model_name_or_path, subfolder="audio_dit",
+                low_cpu_mem_usage=True,
             ).to(weight_dtype)
         
         if "dual_tower_bridge" in components_to_train:
             ema_dual_tower_bridge = MOVADualTowerConditionalBridge.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="dual_tower_bridge"
+                args.pretrained_model_name_or_path, subfolder="dual_tower_bridge",
+                low_cpu_mem_usage=True,
             ).to(weight_dtype)
         
         # Collect parameters for EMA
@@ -1230,13 +1234,13 @@ def main():
                 if args.use_ema:
                     # Load EMA models (only for trained components)
                     if ema_transformer is not None and "transformer" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer")):
-                        ema_transformer.from_pretrained(os.path.join(input_dir, "ema_transformer")).to(accelerator.device)
+                        ema_transformer.from_pretrained(os.path.join(input_dir, "ema_transformer"), low_cpu_mem_usage=True).to(accelerator.device)
                     if ema_transformer_2 is not None and "transformer_2" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer_2")):
-                        ema_transformer_2.from_pretrained(os.path.join(input_dir, "ema_transformer_2")).to(accelerator.device)
+                        ema_transformer_2.from_pretrained(os.path.join(input_dir, "ema_transformer_2"), low_cpu_mem_usage=True).to(accelerator.device)
                     if "transformer_audio" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_transformer_audio")):
-                        ema_transformer_audio.from_pretrained(os.path.join(input_dir, "ema_transformer_audio")).to(accelerator.device)
+                        ema_transformer_audio.from_pretrained(os.path.join(input_dir, "ema_transformer_audio"), low_cpu_mem_usage=True).to(accelerator.device)
                     if "dual_tower_bridge" in components_to_train and os.path.exists(os.path.join(input_dir, "ema_dual_tower_bridge")):
-                        ema_dual_tower_bridge.from_pretrained(os.path.join(input_dir, "ema_dual_tower_bridge")).to(accelerator.device)
+                        ema_dual_tower_bridge.from_pretrained(os.path.join(input_dir, "ema_dual_tower_bridge"), low_cpu_mem_usage=True).to(accelerator.device)
 
                 for i in range(len(models)):
                     models.pop()
@@ -1585,35 +1589,34 @@ def main():
             
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                # Gemma expects left padding for chat-style prompts
-                tokenizer.padding_side = "left"
+                # UMT5 tokenizer (T5-style). Kept consistent with the in-loop
+                # encoding path and MOVAPipeline._get_t5_prompt_embeds so that
+                # precomputed embeddings match the single-layer last_hidden_state
+                # that the transformer consumes via `context`.
+                tokenizer.padding_side = "right"
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
-                    
+
+                cleaned_texts = [whitespace_clean(basic_clean(text)) for text in new_examples['text']]
                 prompt_ids = tokenizer(
-                    new_examples['text'], 
+                    cleaned_texts, 
                     max_length=args.tokenizer_max_length, 
                     padding="max_length", 
                     add_special_tokens=True, 
                     truncation=True, 
                     return_tensors="pt"
                 )
-                text_encoder_outputs = text_encoder(
-                    input_ids=prompt_ids.input_ids,
-                    attention_mask=prompt_ids.attention_mask,
-                    output_hidden_states=True
-                )
-                text_encoder_hidden_states = text_encoder_outputs.hidden_states
-                text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-                
-                # Pack text embeddings (normalized and flattened)
-                sequence_lengths = prompt_ids.attention_mask.sum(dim=-1)
-                prompt_embeds = _pack_text_embeds(
-                    text_encoder_hidden_states,
-                    sequence_lengths,
-                    device=text_encoder_hidden_states.device,
-                    padding_side=tokenizer.padding_side,
-                    scale_factor=8,
+                prompt_attention_mask = prompt_ids.attention_mask
+                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                with torch.no_grad():
+                    prompt_embeds = text_encoder(
+                        input_ids=prompt_ids.input_ids,
+                        attention_mask=prompt_attention_mask,
+                    ).last_hidden_state
+                prompt_embeds = [embed[:seq_len] for embed, seq_len in zip(prompt_embeds, seq_lens)]
+                prompt_embeds = torch.stack(
+                    [torch.cat([embed, embed.new_zeros(args.tokenizer_max_length - embed.size(0), embed.size(1))]) 
+                     for embed in prompt_embeds], dim=0
                 )
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
@@ -1747,7 +1750,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -2206,40 +2209,50 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        # Collect all trainable parameters for EMA
-                        all_params = []
-                        if transformer is not None:
-                            all_params.extend(transformer.parameters())
-                        if transformer_2 is not None:
-                            all_params.extend(transformer_2.parameters())
-                        all_params.extend(transformer_audio.parameters())
-                        all_params.extend(dual_tower_bridge.parameters())
-                        # Store the parameters temporarily and load the EMA parameters to perform inference.
-                        ema_mova_model.store(all_params)
-                        ema_mova_model.copy_to(all_params)
-                    log_validation(
-                        vae,
-                        audio_vae,
-                        text_encoder,
-                        tokenizer,
-                        transformer,
-                        transformer_2,
-                        transformer_audio,
-                        dual_tower_bridge,
-                        mova_model,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
-                    if args.use_ema:
-                        # Switch back to the original parameters.
-                        ema_mova_model.restore(all_params)
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            # Collect all trainable parameters for EMA
+                            all_params = []
+                            if transformer is not None:
+                                all_params.extend(transformer.parameters())
+                            if transformer_2 is not None:
+                                all_params.extend(transformer_2.parameters())
+                            all_params.extend(transformer_audio.parameters())
+                            all_params.extend(dual_tower_bridge.parameters())
+                            # Store the parameters temporarily and load the EMA parameters to perform inference.
+                            ema_mova_model.store(all_params)
+                            ema_mova_model.copy_to(all_params)
+                        log_validation(
+                            vae,
+                            audio_vae,
+                            text_encoder,
+                            tokenizer,
+                            transformer,
+                            transformer_2,
+                            transformer_audio,
+                            dual_tower_bridge,
+                            mova_model,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
+                        if args.use_ema:
+                            # Switch back to the original parameters.
+                            ema_mova_model.restore(all_params)
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2248,36 +2261,42 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                # Collect all trainable parameters for EMA
-                all_params = []
-                if transformer is not None:
-                    all_params.extend(transformer.parameters())
-                if transformer_2 is not None:
-                    all_params.extend(transformer_2.parameters())
-                all_params.extend(transformer_audio.parameters())
-                all_params.extend(dual_tower_bridge.parameters())
-                # Store the parameters temporarily and load the EMA parameters to perform inference.
-                ema_mova_model.store(all_params)
-                ema_mova_model.copy_to(all_params)
-            log_validation(
-                vae,
-                audio_vae,
-                text_encoder,
-                tokenizer,
-                transformer,
-                transformer_2,
-                transformer_audio,
-                dual_tower_bridge,
-                mova_model,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
-            if args.use_ema:
-                # Switch back to the original parameters.
-                ema_mova_model.restore(all_params)
+            with progress_bar.paused():
+                if args.use_ema:
+                    # Collect all trainable parameters for EMA
+                    all_params = []
+                    if transformer is not None:
+                        all_params.extend(transformer.parameters())
+                    if transformer_2 is not None:
+                        all_params.extend(transformer_2.parameters())
+                    all_params.extend(transformer_audio.parameters())
+                    all_params.extend(dual_tower_bridge.parameters())
+                    # Store the parameters temporarily and load the EMA parameters to perform inference.
+                    ema_mova_model.store(all_params)
+                    ema_mova_model.copy_to(all_params)
+                log_validation(
+                    vae,
+                    audio_vae,
+                    text_encoder,
+                    tokenizer,
+                    transformer,
+                    transformer_2,
+                    transformer_audio,
+                    dual_tower_bridge,
+                    mova_model,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+                if args.use_ema:
+                    # Switch back to the original parameters.
+                    ema_mova_model.restore(all_params)
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

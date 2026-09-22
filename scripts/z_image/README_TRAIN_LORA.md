@@ -561,3 +561,4 @@ torchrun --nproc-per-node=2 examples/z_image/predict_t2i.py
 ## 5. Additional Resources
 
 - **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun
+- **GRPO LoRA RL Fine-Tuning**: [README_TRAIN_GRPO_LORA.md](./README_TRAIN_GRPO_LORA.md)

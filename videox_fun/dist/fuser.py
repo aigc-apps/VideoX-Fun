@@ -4,8 +4,11 @@ import torch
 import torch.distributed as dist
 
 try:
-    # The pai_fuser is an internally developed acceleration package, which can be used on PAI.
-    if importlib.util.find_spec("paifuser") is not None:
+    # `turbox` and `paifuser` are two internal accelerators with different module layouts: a turbox install
+    # exposes the stock `xfuser` package, while paifuser keeps the xfuser code inside its own
+    # `paifuser.xfuser` namespace. Only the paifuser path therefore needs its own imports, and it is taken
+    # only when turbox is absent -- the same precedence as in `videox_fun/__init__.py`.
+    if importlib.util.find_spec("turbox") is None and importlib.util.find_spec("paifuser") is not None:
         import paifuser
         from paifuser.xfuser.core.distributed import (
             get_sequence_parallel_rank, get_sequence_parallel_world_size,
@@ -24,15 +27,14 @@ try:
                                              model_parallel_is_initialized)
         from xfuser.core.long_ctx_attention import xFuserLongContextAttention
         print("Xfuser import sucessful")
-except Exception as ex:
-    get_sequence_parallel_world_size = None
-    get_sequence_parallel_rank = None
-    xFuserLongContextAttention = None
-    get_sp_group = None
-    get_world_group = None
-    init_distributed_environment = None
-    initialize_model_parallel = None
+except Exception:
+    # Without an xfuser backend every helper below takes its single-GPU path, which relies on these names
+    # being `None`.
+    get_sequence_parallel_world_size = get_sequence_parallel_rank = None
+    get_sp_group = get_world_group = None
+    init_distributed_environment = initialize_model_parallel = None
     model_parallel_is_initialized = None
+    xFUserLongContextAttention = None
 
 def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance_degree=1):
     if ulysses_degree > 1 or ring_degree > 1 or classifier_free_guidance_degree > 1:
@@ -86,3 +88,19 @@ def sequence_parallel_all_gather(x, dim=1):
     sp_group = get_sp_group()
     gathered_x = sp_group.all_gather(x, dim=dim)
     return gathered_x
+
+def ulysses_all_to_all(x, scatter_dim, gather_dim):
+    """Ulysses (head-parallel) all-to-all on a 4D ``[B, S, H, D]`` tensor.
+
+    ``scatter_dim`` / ``gather_dim`` follow yunchang's ``all_to_all_4D`` convention:
+    ``(2, 1)`` turns a sequence-split layout ``[B, S/P, H, D]`` into a head-split one
+    ``[B, S, H/P, D]``; ``(1, 2)`` is the inverse. ``x`` is returned unchanged when sequence
+    parallel is not initialised or the SP world size is 1, so single-GPU paths are unaffected.
+    """
+    if get_sequence_parallel_world_size is None or not model_parallel_is_initialized():
+        return x
+    if get_sequence_parallel_world_size() <= 1:
+        return x
+    from yunchang.comm.all_to_all import all_to_all_4D
+    return all_to_all_4D(x, scatter_idx=scatter_dim, gather_idx=gather_dim,
+                         group=get_sp_group().device_group)

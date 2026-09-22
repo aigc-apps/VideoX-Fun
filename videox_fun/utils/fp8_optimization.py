@@ -91,8 +91,12 @@ def autocast_model_forward(cls, origin_dtype, *inputs, **kwargs):
     storage_dtype = cls.weight.dtype
     _dequantize_float8_weights(cls, origin_dtype)
 
-    # Convert all inputs to the original dtype
-    inputs = [input.to(origin_dtype) if torch.is_tensor(input) else input for input in inputs]
+    # Convert the float inputs to the original dtype; integer tensors (an embedding's indices, say) must keep
+    # their dtype or the kernel rejects them.
+    inputs = [
+        input.to(origin_dtype) if torch.is_tensor(input) and input.is_floating_point() else input
+        for input in inputs
+    ]
     out = cls.original_forward(*inputs, **kwargs)
 
     _requantize_float8_weights(cls, storage_dtype)
@@ -121,7 +125,9 @@ def convert_weight_dtype_wrapper(module, origin_dtype, fsdp=None):
         fsdp = _is_fsdp_managed(module)
     if not fsdp:
         for name, module in module.named_modules():
-            if name == "" or "embed_tokens" in name:
+            # Embeddings read integer indices and keep their weights full precision; the quantizer excludes them
+            # through the same `embed_tokens` convention, so the wrapper must skip them as well.
+            if name == "" or "embed_tokens" in name or isinstance(module, nn.Embedding):
                 continue
             original_forward = module.forward
             if hasattr(module, "weight") and module.weight is not None:

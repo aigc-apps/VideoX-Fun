@@ -412,6 +412,7 @@ class HPSv3Reward(BaseReward):
         max_reward=1,
         loss_scale=1,
         differentiable=False,
+        general_prompt=None,
     ):
         from .hpsv3_predictor import HPSv3RewardInferencer
 
@@ -421,6 +422,10 @@ class HPSv3Reward(BaseReward):
         self.max_reward = max_reward
         self.loss_scale = loss_scale
         self.differentiable = differentiable
+        # When set (e.g. "A high-quality image"), HPSv3 runs in GenRL's hpsv3_general
+        # mode: the real caption is replaced by this fixed, text-agnostic prompt so the
+        # reward measures pure visual quality instead of caption alignment.
+        self.general_prompt = general_prompt
 
         self.inferencer = HPSv3RewardInferencer(
             checkpoint_path=self.checkpoint_path,
@@ -458,6 +463,10 @@ class HPSv3Reward(BaseReward):
             torch.Tensor: [B] scalar rewards (mu) with grad_fn.
         """
         assert len(batch_frames) == len(batch_prompt)
+        if self.general_prompt is not None:
+            # hpsv3_general mode: replace the real caption with a fixed prompt for
+            # every sample, so the score reflects only visual quality (text-agnostic).
+            batch_prompt = [self.general_prompt] * len(batch_prompt)
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
         total_rewards = []
 
@@ -475,6 +484,10 @@ class HPSv3Reward(BaseReward):
     @torch.no_grad()
     def get_reward(self, batch_frames: torch.Tensor, batch_prompt: list[str]) -> torch.Tensor:
         assert len(batch_frames) == len(batch_prompt)
+        if self.general_prompt is not None:
+            # hpsv3_general mode: replace the real caption with a fixed prompt for
+            # every sample, so the score reflects only visual quality (text-agnostic).
+            batch_prompt = [self.general_prompt] * len(batch_prompt)
         batch_frames = rearrange(batch_frames, "b c t h w -> t b c h w")
         total_rewards = []
 
@@ -513,7 +526,7 @@ class VideoAlignReward(BaseReward):
         num_frames=None,
         use_norm=True,
         return_all_dims=False,
-        use_legacy_video_io=True,
+        use_legacy_video_io=False,
         differentiable=False,
     ):
         from .video_align_predictor import VideoVLMRewardInference

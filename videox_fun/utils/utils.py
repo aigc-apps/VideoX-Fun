@@ -172,9 +172,10 @@ def save_videos_with_audio_grid(
         n_rows: Number of rows for grid layout
         rescale: Whether to rescale from [-1, 1] to [0, 1]
     """
-    import av
     from fractions import Fraction
-    
+
+    import av
+
     # Convert video frames to numpy arrays
     # Support both [b, c, t, h, w] and [b, t, c, h, w]
     if videos.shape[1] != 3:  # shape[1] is T (frames), not C (channels)
