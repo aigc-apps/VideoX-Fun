@@ -58,8 +58,8 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.data import ImageVideoSafetensorsDataset, RandomSampler
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
-                               WanTransformer3DModel_SelfForcing)
+from videox_fun.models import (AutoencoderKLWan, WanTransformer3DModel,
+                               WanTransformer3DModel_SelfForcing, WanT5EncoderModel)
 from videox_fun.pipeline import WanSelfForcingPipeline
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import save_videos_grid

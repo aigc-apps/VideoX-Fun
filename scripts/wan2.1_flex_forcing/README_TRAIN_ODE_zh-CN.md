@@ -25,9 +25,8 @@
 - [四、第二步 — ODE 回归训练](#四第二步--ode-回归训练)
   - [4.1 快速开始](#41-快速开始)
   - [4.2 训练常用参数](#42-训练常用参数)
-  - [4.3 Flex-Forcing 专属参数](#43-flex-forcing-专属参数)
-  - [4.4 使用 DeepSpeed-Zero-2 / FSDP 训练](#44-使用-deepspeed-zero-2--fsdp-训练)
-  - [4.5 多机分布式训练](#45-多机分布式训练)
+  - [4.3 使用 DeepSpeed-Zero-2 / FSDP 训练](#43-使用-deepspeed-zero-2--fsdp-训练)
+  - [4.4 多机分布式训练](#44-多机分布式训练)
 - [五、使用训练好的 ODE 权重](#五使用训练好的-ode-权重)
 - [六、更多资源](#六更多资源)
 
@@ -235,9 +234,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
@@ -246,9 +244,6 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_ode_regression" \
-  --validation_steps=100 \
-  --validation_epochs=500 \
-  --validation_prompts="A stylish woman walks down a Tokyo street filled with warm glowing neon and animated city signage. She wears a black leather jacket, a long red dress, and black boots, and carries a black purse. She wears sunglasses and red lipstick. She walks confidently and casually. The street is damp and reflective, creating a mirror effect of the colorful lights. Many pedestrians walk about." \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -287,7 +282,7 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 | `--train_data_meta` | 第一步生成的标注 JSON | `datasets/ode_pairs_output/outputs.json` |
 | `--fix_sample_size` | 固定 `H W`；论文的 5 秒片段是 432×832 | `432 832` |
 | `--train_batch_size` | 每卡 batch size | 1 |
-| `--gradient_accumulation_steps` | 8 卡 × 8 = 论文的 batch 64 | 8 |
+| `--gradient_accumulation_steps` | 8 卡 × 1 = batch 8 | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存一次 checkpoint | 500 |
@@ -315,6 +310,14 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 | `--independent_first_frame` | 第一帧是否独立（`[1, N, N, ...]` 块模式） | - |
 | `--context_noise` | 上下文噪声等级（与下游蒸馏配置匹配） | 0 |
 
+**Flex-Forcing 参数**：
+
+| 参数 | 论文 | 说明 | 默认值 |
+|-----------|-------|-------------|---------|
+| `--flex_forcing` | §3.1 | 实例化 `WanTransformer3DModel_FlexForcing` 并用 `WanFlexForcingPipeline` 校验。关闭 = 走继承的原路径，行为不变。 | 关 |
+| `--flex_chunk_min` | §3.1 | 每次迭代抽取的最小 chunk 大小。`1` 合法，会让单帧（严格因果）chunk 出现在片段中间；`2` 是论文取值，也能避免采样器把尾部退化成 1 帧的碎块。 | 2 |
+| `--flex_chunk_max` | §3.1 | 每次迭代抽取的最大 chunk 大小。设为与 `--flex_chunk_min` 相等即固定一种布局。与阶段 2 不同，这里没有粗粒度混合机制，所以把这个值抬到 latent 帧数是阶段 1 **唯一**能把“整段作为一个完全双向 chunk”回归出来的途径（21 个 latent 帧时约占 5% 的抽取）；低于帧数则该布局永远不会被抽到。 | 10 |
+
 **验证参数（可选）**：
 
 | 参数 | 说明 | 示例 |
@@ -323,19 +326,11 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 500 |
 | `--validation_prompts` | 验证视频生成使用的提示词 | 英文提示词 |
 
-### 4.3 Flex-Forcing 专属参数
-
-| 参数 | 论文 | 说明 | 默认值 |
-|-----------|-------|-------------|---------|
-| `--flex_forcing` | §3.1 | 实例化 `WanTransformer3DModel_FlexForcing` 并用 `WanFlexForcingPipeline` 校验。关闭 = 走继承的原路径，行为不变。 | 关 |
-| `--flex_chunk_min` | §3.1 | 每次迭代抽取的最小 chunk 大小。`1` 合法，会让单帧（严格因果）chunk 出现在片段中间；`2` 是论文取值，也能避免采样器把尾部退化成 1 帧的碎块。 | 2 |
-| `--flex_chunk_max` | §3.1 | 每次迭代抽取的最大 chunk 大小。设为与 `--flex_chunk_min` 相等即固定一种布局。与阶段 2 不同，这里没有粗粒度混合机制，所以把这个值抬到 latent 帧数是阶段 1 **唯一**能把“整段作为一个完全双向 chunk”回归出来的途径（21 个 latent 帧时约占 5% 的抽取）；低于帧数则该布局永远不会被抽到。 | 10 |
-
 > §3.3 的 K-Projection 同样**不是 launcher 参数**：变体由模型配置（`transformer_additional_kwargs.flex_kproj_mode`，默认 `diag_rank1`）给出，要消融就在那里改成 `none`。它是恒等初始化的，所以阶段 1 直接带着它一起训，和其他层同速、跟 `--learning_rate`。
 
 > 每张卡必须训练同一种布局，否则 FlexAttention 掩码与其派生的 `num_frame_per_block` 在 SP/FSDP 组之间会不一致。trainer 在使用抽取的划分前会先经 `broadcast_chunk_sizes` 广播对齐。
 
-### 4.4 使用 DeepSpeed-Zero-2 / FSDP 训练
+### 4.3 使用 DeepSpeed-Zero-2 / FSDP 训练
 
 多卡训练支持与 Self-Forcing 各阶段相同的显存节约后端。上面的快速开始已经使用 **FSDP**；如需改用 **DeepSpeed-Zero-2**，只需替换启动前缀：
 
@@ -350,9 +345,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
@@ -377,7 +371,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_frame_per_block=3
 ```
 
-### 4.5 多机分布式训练
+### 4.4 多机分布式训练
 
 假设 2 台机器、每台 8 卡：
 
@@ -402,9 +396,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \

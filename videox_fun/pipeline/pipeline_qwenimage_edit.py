@@ -24,8 +24,8 @@ import torch
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import (BaseOutput, is_torch_xla_available, logging,
-                             replace_example_docstring)
+from diffusers.utils import (BaseOutput, deprecate, is_torch_xla_available,
+                             logging, replace_example_docstring)
 from diffusers.utils.torch_utils import randn_tensor
 
 from ..models import (AutoencoderKLQwenImage,

@@ -219,6 +219,7 @@ if partial_video_length is not None:
         additional_frames = transformer.config.patch_size_t - latent_frames % transformer.config.patch_size_t
         partial_video_length += additional_frames * vae.config.temporal_compression_ratio
         
+    validation_image = validation_image_start
     init_frames = 0
     last_frames = init_frames + partial_video_length
     while init_frames < video_length:

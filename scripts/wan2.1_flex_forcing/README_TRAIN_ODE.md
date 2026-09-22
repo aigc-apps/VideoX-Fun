@@ -25,9 +25,8 @@ This document provides the complete workflow for **Flex-Forcing Stage 1 — ODE 
 - [4. Step 2 — Train ODE Regression](#4-step-2--train-ode-regression)
   - [4.1 Quick Start](#41-quick-start)
   - [4.2 Common Training Parameters](#42-common-training-parameters)
-  - [4.3 Flex-Forcing Parameters](#43-flex-forcing-parameters)
-  - [4.4 Training with DeepSpeed-Zero-2 / FSDP](#44-training-with-deepspeed-zero-2--fsdp)
-  - [4.5 Multi-Node Distributed Training](#45-multi-node-distributed-training)
+  - [4.3 Training with DeepSpeed-Zero-2 / FSDP](#43-training-with-deepspeed-zero-2--fsdp)
+  - [4.4 Multi-Node Distributed Training](#44-multi-node-distributed-training)
 - [5. Use the Trained ODE Weights](#5-use-the-trained-ode-weights)
 - [6. Additional Resources](#6-additional-resources)
 
@@ -235,9 +234,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
@@ -246,9 +244,6 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_ode_regression" \
-  --validation_steps=100 \
-  --validation_epochs=500 \
-  --validation_prompts="A stylish woman walks down a Tokyo street filled with warm glowing neon and animated city signage. She wears a black leather jacket, a long red dress, and black boots, and carries a black purse. She wears sunglasses and red lipstick. She walks confidently and casually. The street is damp and reflective, creating a mirror effect of the colorful lights. Many pedestrians walk about." \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -287,7 +282,7 @@ Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 | `--train_data_meta` | Annotation JSON produced by Step 1 | `datasets/ode_pairs_output/outputs.json` |
 | `--fix_sample_size` | Fixed `H W`; the paper's 5 s clip is 432×832 | `432 832` |
 | `--train_batch_size` | Per-GPU batch size | 1 |
-| `--gradient_accumulation_steps` | 8 GPUs × 8 = the paper's batch 64 | 8 |
+| `--gradient_accumulation_steps` | 8 GPUs × 1 = batch 8 | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 500 |
@@ -315,6 +310,14 @@ Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 | `--independent_first_frame` | First frame is independent (`[1, N, N, ...]` block pattern) | - |
 | `--context_noise` | Context noise level (matches downstream distillation config) | 0 |
 
+**Flex-Forcing parameters**:
+
+| Parameter | Paper | Description | Default |
+|-----------|-------|-------------|---------|
+| `--flex_forcing` | §3.1 | Instantiate `WanTransformer3DModel_FlexForcing` and validate with `WanFlexForcingPipeline`. Off = the inherited path, unchanged. | off |
+| `--flex_chunk_min` | §3.1 | Smallest chunk drawn per iteration. `1` is legal and lets single-frame (strictly causal) chunks appear mid-clip; `2` is the paper's and keeps the sampler's tail from degenerating into a sliver. | 2 |
+| `--flex_chunk_max` | §3.1 | Largest chunk drawn per iteration. Set equal to `--flex_chunk_min` to pin one fixed layout. Unlike stage 2 there is no coarse mixture here, so raising this to the latent frame count is the **only** way stage 1 ever regresses the whole clip as one fully bidirectional chunk (about 5% of draws at 21 latent frames); below the frame count that layout is never drawn. | 10 |
+
 **Validation Parameters (Optional)**:
 
 | Parameter | Description | Example |
@@ -323,19 +326,11 @@ Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 | `--validation_epochs` | Run validation every N epochs | 500 |
 | `--validation_prompts` | Prompts used for validation video generation | English prompt |
 
-### 4.3 Flex-Forcing Parameters
-
-| Parameter | Paper | Description | Default |
-|-----------|-------|-------------|---------|
-| `--flex_forcing` | §3.1 | Instantiate `WanTransformer3DModel_FlexForcing` and validate with `WanFlexForcingPipeline`. Off = the inherited path, unchanged. | off |
-| `--flex_chunk_min` | §3.1 | Smallest chunk drawn per iteration. `1` is legal and lets single-frame (strictly causal) chunks appear mid-clip; `2` is the paper's and keeps the sampler's tail from degenerating into a sliver. | 2 |
-| `--flex_chunk_max` | §3.1 | Largest chunk drawn per iteration. Set equal to `--flex_chunk_min` to pin one fixed layout. Unlike stage 2 there is no coarse mixture here, so raising this to the latent frame count is the **only** way stage 1 ever regresses the whole clip as one fully bidirectional chunk (about 5% of draws at 21 latent frames); below the frame count that layout is never drawn. | 10 |
-
 > The §3.3 K-Projection has no launcher flag either: the variant comes from the model config (`transformer_additional_kwargs.flex_kproj_mode`, default `diag_rank1`; set `none` there to ablate). It is identity-initialised, so Stage 1 simply carries it and trains it like any other layer at `--learning_rate`.
 
 > Every rank must train the same layout, otherwise the FlexAttention mask and the `num_frame_per_block` derived from it disagree across the SP/FSDP group. The trainer therefore passes the drawn partition through `broadcast_chunk_sizes` before using it.
 
-### 4.4 Training with DeepSpeed-Zero-2 / FSDP
+### 4.3 Training with DeepSpeed-Zero-2 / FSDP
 
 For multi-GPU training, the same memory-saving backends as the Self-Forcing stages are supported. The Quick Start above already uses **FSDP**; use **DeepSpeed-Zero-2** instead by swapping the launch prefix:
 
@@ -350,9 +345,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \
@@ -377,7 +371,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_frame_per_block=3
 ```
 
-### 4.5 Multi-Node Distributed Training
+### 4.4 Multi-Node Distributed Training
 
 Assuming 2 machines × 8 GPUs:
 
@@ -402,9 +396,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$ODE_DATA_META \
-  --fix_sample_size 432 832 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
   --checkpointing_steps=500 \

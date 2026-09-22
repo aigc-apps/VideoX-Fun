@@ -1589,35 +1589,34 @@ def main():
             
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                # Gemma expects left padding for chat-style prompts
-                tokenizer.padding_side = "left"
+                # UMT5 tokenizer (T5-style). Kept consistent with the in-loop
+                # encoding path and MOVAPipeline._get_t5_prompt_embeds so that
+                # precomputed embeddings match the single-layer last_hidden_state
+                # that the transformer consumes via `context`.
+                tokenizer.padding_side = "right"
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
-                    
+
+                cleaned_texts = [whitespace_clean(basic_clean(text)) for text in new_examples['text']]
                 prompt_ids = tokenizer(
-                    new_examples['text'], 
+                    cleaned_texts, 
                     max_length=args.tokenizer_max_length, 
                     padding="max_length", 
                     add_special_tokens=True, 
                     truncation=True, 
                     return_tensors="pt"
                 )
-                text_encoder_outputs = text_encoder(
-                    input_ids=prompt_ids.input_ids,
-                    attention_mask=prompt_ids.attention_mask,
-                    output_hidden_states=True
-                )
-                text_encoder_hidden_states = text_encoder_outputs.hidden_states
-                text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-                
-                # Pack text embeddings (normalized and flattened)
-                sequence_lengths = prompt_ids.attention_mask.sum(dim=-1)
-                prompt_embeds = _pack_text_embeds(
-                    text_encoder_hidden_states,
-                    sequence_lengths,
-                    device=text_encoder_hidden_states.device,
-                    padding_side=tokenizer.padding_side,
-                    scale_factor=8,
+                prompt_attention_mask = prompt_ids.attention_mask
+                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                with torch.no_grad():
+                    prompt_embeds = text_encoder(
+                        input_ids=prompt_ids.input_ids,
+                        attention_mask=prompt_attention_mask,
+                    ).last_hidden_state
+                prompt_embeds = [embed[:seq_len] for embed, seq_len in zip(prompt_embeds, seq_lens)]
+                prompt_embeds = torch.stack(
+                    [torch.cat([embed, embed.new_zeros(args.tokenizer_max_length - embed.size(0), embed.size(1))]) 
+                     for embed in prompt_embeds], dim=0
                 )
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds

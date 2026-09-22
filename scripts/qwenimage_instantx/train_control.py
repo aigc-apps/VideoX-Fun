@@ -1690,7 +1690,6 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
-                    tokenizer_2,
                     transformer3d,
                     cn_transformer,
                     args,

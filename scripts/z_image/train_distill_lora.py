@@ -62,8 +62,8 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler, RandomSampler,
-                             TextDataset, get_closest_ratio)
+                             AspectRatioBatchImageVideoSampler, ImageVideoSampler,
+                             RandomSampler, TextDataset, get_closest_ratio)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
@@ -1572,8 +1572,8 @@ def main():
                         text_encoder.to(accelerator.device)
 
                 if args.enable_text_encoder_in_dataloader:
-                    prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
-                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
+                    prompt_embeds = batch['prompt_embeds'].to(dtype=weight_dtype, device=accelerator.device)
+                    neg_prompt_embeds = batch['neg_prompt_embeds'].to(dtype=weight_dtype, device=accelerator.device)
                 else:
                     with torch.no_grad():
                         prompt_embeds = encode_prompt(

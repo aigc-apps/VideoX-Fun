@@ -69,7 +69,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              get_closest_ratio, get_random_mask,
                              process_pose_file, process_pose_params)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
-                               CLIPModel, Wan2_2Transformer3DModel_Animate,
+                               CLIPModel, Wan2_2Transformer3DModel,
+                               Wan2_2Transformer3DModel_Animate,
                                WanT5EncoderModel)
 from videox_fun.pipeline import Wan2_2AnimatePipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling

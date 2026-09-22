@@ -885,7 +885,7 @@ def main():
         else:
             state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
-            m, u = transformer.load_state_dict(state_dict, strict=False)
+            m, u = transformer3d.load_state_dict(state_dict, strict=False)
             print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
     if args.vae_path is not None:

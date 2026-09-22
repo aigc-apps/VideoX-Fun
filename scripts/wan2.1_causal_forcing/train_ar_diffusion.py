@@ -61,8 +61,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, RandomSampler,
                              get_closest_ratio)
-from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
-                               WanTransformer3DModel_SelfForcing)
+from videox_fun.models import (AutoencoderKLWan, WanTransformer3DModel,
+                               WanTransformer3DModel_SelfForcing, WanT5EncoderModel)
 from videox_fun.pipeline import WanSelfForcingPipeline
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import save_videos_grid

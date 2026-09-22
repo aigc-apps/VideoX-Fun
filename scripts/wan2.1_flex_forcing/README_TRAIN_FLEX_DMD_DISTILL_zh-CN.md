@@ -24,48 +24,36 @@
 ---
 
 ## 目录
-- [1. 前置条件](#1-前置条件)
-- [2. 环境安装](#2-环境安装)
-- [3. 下载预训练模型](#3-下载预训练模型)
-- [4. 准备训练数据](#4-准备训练数据)
-- [5. 训练](#5-训练)
-  - [5.1 快速开始](#51-快速开始)
-  - [5.2 关键参数](#52-关键参数)
-  - [5.3 Flex-Forcing 专属参数](#53-flex-forcing-专属参数)
-- [6. 使用训练得到的 checkpoint](#6-使用训练得到的-checkpoint)
-- [7. 更多资源](#7-更多资源)
+- [一、环境配置](#一环境配置)
+- [二、数据准备](#二数据准备)
+  - [2.1 快速测试数据集](#21-快速测试数据集)
+  - [2.2 metadata.json 格式](#22-metadatajson-格式)
+- [三、蒸馏训练](#三蒸馏训练)
+  - [3.1 下载预训练模型](#31-下载预训练模型)
+  - [3.2 快速开始（DeepSpeed-Zero-2）](#32-快速开始deepspeed-zero-2)
+  - [3.3 训练常用参数解析](#33-训练常用参数解析)
+  - [3.4 训练验证](#34-训练验证)
+  - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
+  - [3.6 其他后端](#36-其他后端)
+  - [3.7 多机分布式训练](#37-多机分布式训练)
+- [四、推理测试](#四推理测试)
+  - [4.1 推理参数解析](#41-推理参数解析)
+  - [4.2 文生视频（T2V）推理](#42-文生视频t2v推理)
+  - [4.3 多卡并行推理](#43-多卡并行推理)
+  - [4.4 任意序视频编辑](#44-任意序视频编辑)
+- [五、更多资源](#五更多资源)
 
 ---
 
-## 1. 前置条件
+## 一、环境配置
 
-阶段 2 需要：
-
-1. 一个**阶段 1 ODE checkpoint**，用于初始化生成器（与 critic）。
-2. 一个 **Wan2.1-T2V-14B** 模型，充当 DMD 的真实分数教师。
-
-```bash
-# 示例：来自 ODE 回归的阶段 1 checkpoint
-export STAGE1_CKPT="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
-```
-
-该 checkpoint 的产出方式见 [README_TRAIN_ODE_zh-CN.md](./README_TRAIN_ODE_zh-CN.md)。
-
-> §3.2 的金字塔是**按步主导**（step-major，`for step: for sub-chunk:`）的，而 KV-cache rollout 是**按块主导**（block-major，`for block: for step:`）。KV-cache 循环无法表达金字塔阶梯，所以当 `--flex_pyramid_levels > 1` 与 `--use_kv_cache_training` 同时出现时 `train_distill.py` 会直接报错。请走 launcher 默认的块掩码路径，或保持 `--flex_pyramid_levels 1` 只训练灵活划分。
-
-> 术语说明：DMD（Distribution Matching Distillation，分布匹配蒸馏）里，"真实分数"教师指在真实视频分布上打分的教师模型（这里用 14B），它给学生指明真实数据分布的梯度方向；相对地，"fake 分数"来自学生自己——critic（评论家）就是学习这份 fake 分数的网络。
-
----
-
-## 2. 环境安装
-
-**方法一：使用 requirements.txt**
+**方式 1：使用 requirements.txt**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**方法二：手动安装**
+**方式 2：手动安装依赖**
 
 ```bash
 pip install Pillow einops safetensors timm tomesd librosa "torch>=2.1.2" torchdiffeq torchsde decord datasets numpy scikit-image
@@ -77,7 +65,9 @@ pip install opencv-python-headless
 pip install deepspeed==0.17.0 numpy==1.26.4
 ```
 
-**方法三：使用 Docker**
+**方式 3：使用 docker**
+
+使用 docker 时，请确保机器中已正确安装显卡驱动与 CUDA 环境，然后依次执行以下命令：
 
 ```bash
 # 拉取镜像
@@ -91,7 +81,39 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 
 ---
 
-## 3. 下载预训练模型
+## 二、数据准备
+
+### 2.1 快速测试数据集
+
+我们提供了一个测试的数据集，其中包含若干训练数据。
+
+```bash
+# 下载官方示例数据集
+modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun-Videos-Demo
+```
+
+### 2.2 metadata.json 格式
+
+DMD 使用 **TextDataset**（`--train_mode="normal"`）——生成器通过 rollout 自己制造训练样本，所以每个条目只读 `"text"` 字段，任何视频元数据都能当 prompt 列表：
+
+```json
+[
+  {
+    "text": "A beautiful sunset over the ocean, golden hour lighting"
+  },
+  {
+    "text": "A person walking through a forest, cinematic view"
+  }
+]
+```
+
+`train_distill.sh` 默认指向 `datasets/internal_datasets/metadata.json`。真实训练请换成论文使用的 **VidProM extended** prompt 集。
+
+---
+
+## 三、蒸馏训练
+
+### 3.1 下载预训练模型
 
 阶段 2 需要**两个**预训练模型：
 
@@ -109,70 +131,58 @@ modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_
 modelscope download --model Wan-AI/Wan2.1-T2V-14B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-14B
 ```
 
-然后把 `train_distill.sh` 里的 `MODEL_NAME` 指向该 1.3B 目录。
+阶段 2 还需要一个**阶段 1 ODE checkpoint**，用于初始化生成器（与 critic）：
+
+```bash
+# 示例：来自 ODE 回归的阶段 1 checkpoint
+export STAGE1_CKPT="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
+```
+
+阶段 1 的产出方式见 [README_TRAIN_ODE_zh-CN.md](./README_TRAIN_ODE_zh-CN.md)。然后把 `train_distill.sh` 里的 `MODEL_NAME` 指向该 1.3B 目录。
 
 > 用 `WanTransformer3DModel_FlexForcing` 加载普通 Self-Forcing / CausVid checkpoint 时，会报告 `flex_kproj.*` 键**缺失**。这是预期行为：§3.3 的 K-Projection 是恒等初始化的，没有它的老 checkpoint 在训练之前的行为与恒等映射完全一致。
 
----
+### 3.2 快速开始（DeepSpeed-Zero-2）
 
-## 4. 准备训练数据
+如果按照 **2.1 快速测试数据集** 与 **3.1 下载预训练模型** 准备好数据与权重后，直接复制快速开始的启动指令进行启动。
 
-DMD 使用 **TextDataset**（`--train_mode="normal"` 且 `--train_data_dir` 留空）——生成器通过 rollout 自己制造训练样本，所以每个条目只读 `"text"` 字段，任何视频元数据都能当 prompt 列表：
+推荐使用DeepSpeed-Zero-2与FSDP方案进行训练。这里使用DeepSpeed-Zero-2为例配置shell文件。
 
-```json
-[
-  {
-    "text": "A beautiful sunset over the ocean, golden hour lighting"
-  },
-  {
-    "text": "A person walking through a forest, cinematic view"
-  }
-]
-```
-
-`train_distill.sh` 默认指向 `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json`，冒烟跑不需要额外下载。真实训练请换成论文使用的 **VidProM extended** prompt 集。
-
----
-
-## 5. 训练
-
-### 5.1 快速开始
-
-现成的启动脚本是 [train_distill.sh](./train_distill.sh)：
+本文中DeepSpeed-Zero-2与FSDP的差别在于是否对模型权重进行分片，**如果使用多卡且使用DeepSpeed-Zero-2的情况下显存不足**，可以切换使用FSDP进行训练。
 
 ```bash
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
-export DATASET_NAME=""
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
 
-accelerate launch --mixed_precision="bf16" --use_fsdp \
-    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
-    --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
-    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
-    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
-    scripts/wan2.1_flex_forcing/train_distill.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_flex_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
+  --video_sample_size=640 \
   --token_sample_size=640 \
-  --fix_sample_size 432 832 \
+  --fix_sample_size 480 832 \
+  --video_sample_stride=2 \
   --video_sample_n_frames=81 \
   --score_num_frames=21 \
   --video_repeat=1 \
   --train_batch_size=1 \
-  --gradient_accumulation_steps=8 \
+  --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --max_train_steps=600 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
   --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
-  --output_dir="output_dir_wan2.1_flex_forcing_distill_4step_pyramid4_flow_euler_randomize_kproj_diag_rank1" \
+  --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
   --adam_weight_decay=3e-2 \
@@ -195,21 +205,18 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --denoising_step_indices_list 1000 750 500 250 \
   --randomize_step_indices \
   --flow_euler_rollout \
+  --use_kv_cache_training \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
 
-或者直接：
+launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒片段）、分辨率 **480×832**、**4 步**模型（`--denoising_step_indices_list 1000 750 500 250`，并由 `--randomize_step_indices` 每次迭代抖动）、`--flex_pyramid_levels=4` —— 在 21 个 latent 帧上正好复现论文的阶梯 `[[21], [11, 10], [6, 5, 5, 5], [3, 3, 3, 2, 3, 2, 3, 2]]` —— 划分抽取范围 **2..10**（另有半数的迭代以 §3.2 的整段粗粒度布局起步，见下）、`--flow_euler_rollout`、`diag_rank1` K-Projection、batch 8（8 卡 × `--gradient_accumulation_steps=1`）。
 
-```bash
-bash scripts/wan2.1_flex_forcing/train_distill.sh
-```
+输出目录：`output_dir_wan2.1_flex_forcing_distill/`。
 
-launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒片段）、分辨率 **432×832**、**4 步**模型（`--denoising_step_indices_list 1000 750 500 250`，并由 `--randomize_step_indices` 每次迭代抖动）、`--flex_pyramid_levels=4` —— 在 21 个 latent 帧上正好复现论文的阶梯 `[[21], [11, 10], [6, 5, 5, 5], [3, 3, 3, 2, 3, 2, 3, 2]]` —— 划分抽取范围 **2..10**（另有半数的迭代以 §3.2 的整段粗粒度布局起步，见下）、`--flow_euler_rollout`、`diag_rank1` K-Projection、batch 64（8 卡 × `--gradient_accumulation_steps=8`）、`--max_train_steps=600`。
+### 3.3 训练常用参数解析
 
-输出目录：`output_dir_wan2.1_flex_forcing_distill_4step_pyramid4_flow_euler_randomize_kproj_diag_rank1/`。
-
-### 5.2 关键参数
+**关键参数说明**：
 
 | 参数 | 说明 | 示例值 |
 |-----------|-------------|---------------|
@@ -217,11 +224,11 @@ launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒�
 | `--pretrained_model_name_or_path` | 底座模型目录（1.3B） | `$MODEL_NAME` |
 | `--train_data_meta` | prompt JSON（只读 `"text"` 字段） | `$DATASET_META_NAME` |
 | `--ode_transformer_path` | 用于生成器 / critic 初始化的阶段 1 ODE checkpoint | `$STAGE1_CKPT` |
-| `--fix_sample_size` | 固定 `H W`；论文的 5 秒片段是 432×832 | `432 832` |
+| `--fix_sample_size` | 固定训练片段的 `H W` | `480 832` |
 | `--video_sample_n_frames` | 像素帧数；81 → 21 个 latent 帧 | 81 |
 | `--score_num_frames` | 真实分数教师看到的 latent 帧数 | 21 |
 | `--train_batch_size` | 单卡 batch 大小 | 1 |
-| `--gradient_accumulation_steps` | 8 卡 × 8 = 论文的 batch 64 | 8 |
+| `--gradient_accumulation_steps` | 8 卡 × 1 = batch 8 | 1 |
 | `--dataloader_num_workers` | DataLoader 工作进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数（被 `--max_train_steps` 覆盖） | 100 |
 | `--max_train_steps` | 硬性步数上限；论文用 600 | 600 |
@@ -237,23 +244,23 @@ launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒�
 | `--randomize_step_indices` | 每次迭代对除首个索引以外的所有索引做对称抖动，幅度为相邻间隔的 `--index_jitter_ratio`。期望调度不变，单调性由构造保证，所以推理用的固定 t 始终落在每一步的训练包络内。 | 关 |
 | `--index_jitter_ratio` | 抖动预算（相邻间隔的比例）。在 `1000 750 500 250` 且取 0.3 时，20000 次抽取给出 idx `[675,825] / [425,575] / [175,325]`，即 t `[912.2,959.3] / [787.0,871.2] / [514.7,706.5]`；推理点 937.5 / 833.33 / 625 全部落在其中。 | 0.3 |
 | `--flow_euler_rollout` | 生成器自滚用 flow 空间里的确定性 Euler ODE 步推进（`x_next = x_t + (sigma_next - sigma_t) * v`，fp32），而不是转成 x0 再用新噪声重加噪。代数上这**就等于**用同一个隐含噪声重加噪 —— fp64 下实测相差 `8.9e-16`，而重采新噪声最大差 `6.4` —— 因此它消掉了 rollout 的随机性，与正常的 flow-matching 推理一致。最后一步仍然转 x0，因为 DMD 目标定义在 x0 上。critic 重滚生成器，跟随同一开关。 | 关 |
-| `--output_dir` | 输出目录 | `output_dir_wan2.1_flex_forcing_distill_4step_pyramid4_flow_euler_randomize_kproj_diag_rank1` |
+| `--output_dir` | 输出目录 | `output_dir_wan2.1_flex_forcing_distill` |
 | `--gradient_checkpointing` | 用算力换显存 | - |
 | `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
 | `--trainable_modules` | 可训练组的子串匹配（`"."` = 全部） | `"."` |
 | `--train_mode` | `normal`（TextDataset，纯 prompt） | `normal` |
 | `--resume_from_checkpoint` | `"latest"` 自动选择 | `"latest"` |
 
-### 5.3 Flex-Forcing 专属参数
+**Flex-Forcing 专属参数**：
 
 | 参数 | 论文 | 说明 | 默认值 |
 |-----------|-------|-------------|---------|
 | `--flex_forcing` | §3.1 | 实例化 `WanTransformer3DModel_FlexForcing` 并用 `WanFlexForcingPipeline` 校验。关闭 = 走继承的原路径，行为不变。 | 关 |
 | `--flex_chunk_min` | §3.1 | 每次迭代抽取的最小 chunk 大小。金字塔下 `1` 合法但不增加覆盖：2 帧 chunk 细化后本来就会产生 1 帧叶子，而它会让单帧 chunk 出现在片段中间。 | 2 |
 | `--flex_chunk_max` | §3.1 | 每次迭代抽取的最大 chunk 大小。设为与 `--flex_chunk_min` 相等即固定一种布局。**必须小于 latent 帧数**：“整段一个 chunk”这个布局已经由下面的混合机制覆盖，把这个值抬到帧数只是把抽取次数花在一个你已经有的布局上，反而稀释 §3.1（21 个 latent 帧时，`max=21` 只剩 3649 种不同划分，而 `max=10` 有 4882 种）。 | 10 |
-| `--flex_pyramid_levels` | §3.2 | `1` = 每次迭代一个划分。`>1` = 把它嵌套成由粗到细的阶梯，每个去噪步一层。要求走块掩码路径。**仅阶段 2 有。** | 1 |
+| `--flex_pyramid_levels` | §3.2 | `1` = 每次迭代一个划分。`>1` = 把它嵌套成由粗到细的阶梯，每个去噪步一层；两条训练路径都会展开。**仅阶段 2 有。** | 1 |
 | `--flex_min_num_frame_per_block` | §3.2 | 细化终止的块大小（每块二分直到不超过它）；`1` 表示叶子级完全因果。 | 1 |
-| `--flex_self_generated_context` | §3.3 | 把模型自己上一步的 `x0` 预测喂给 K-Projection 当上下文，使其在纯 prompt 训练下也能进入 autograd 图。代价是注意力序列翻倍；从去噪步 1 起生效。 | 关 |
+| `--flex_self_generated_context` | §3.3 | 把模型自己上一步的 `x0` 预测喂给 K-Projection 当上下文，使其在纯 prompt 训练下也能进入 autograd 图。代价是注意力序列翻倍；从去噪步 1 起生效。在 `--use_kv_cache_training` 下不生效 —— 该路径不传 `flex_state`，K-Projection 不会被调用，停在恒等初始化。 | 关 |
 | `--num_frame_per_block` | — | 继承路径（未开 Flex）的均匀 fallback；开了 Flex 后它还是 level 0 三档混合中的一档（`UNIFORM_BLOCK_PROB = 0.1` 的迭代把 level 0 钉成它的均匀划分），且 `--flex_pyramid_levels=1` 时 `log_validation` 就用它采样 —— 见下面两条 bullet。 | 3 |
 | `--independent_first_frame` | — | 在划分前插入一个长度为 1 的 chunk（`[1, N, N, ...]`）；划分采样器会遵守它。 | 关 |
 
@@ -264,26 +271,404 @@ launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒�
 - **`--flow_euler_rollout` 会把预测留在 flow 空间，所以 §3.3 的上下文需要自己那份 x0。** `--flex_self_generated_context` 喂给 K-Projection 的是上一步的**干净**预测；在 Euler rollout 下那个变量是速度，所以两个 rollout 循环都会另外转换一份 detached 副本给上下文用，而 rollout 状态本身仍按 Euler 推进。生成器与 critic 的转换必须完全一致，否则 critic 评的就不是正在被训的那个 rollout。
 - **`--randomize_step_indices` 不会破坏金字塔。** 抖动动的是**时间步**而不是划分，而 `sample_flex_partitions` 只看 `len(denoising_step_list)`，抖动不会改变它。阶梯的每一级仍然对得上自己的去噪步。
 - **`log_validation` 渲染的就是训练渲染的那个布局。** `--flex_pyramid_levels > 1` 时它传 `chunk_spec=None` + `denoise_mode="pyramid"`，阶梯与 `predict_t2v.py` 的完全相同，实测占 `49.999%` 的迭代。它原本把 `chunk_spec` 钉成 `--num_frame_per_block`，那会嵌套出 `[[3]*7, [2,1]*7, [1]*21]` —— 在 4 步调度下只有 **3 级**（细化到全 1 就撞上固定点），而当时那条阶梯 trainer 在 20000 次迭代里抽出 **0 次**，所以那些校验视频根本说明不了正在训练的模型。`--flex_pyramid_levels=1` 时结论反过来：整段那一档为空、`[21]` 一次也抽不到，所以校验用 `--num_frame_per_block` 的均匀划分 —— 它是唯一既跨 checkpoint 固定、又真被训练的一档（`10.066%` 的迭代，而最高频的随机划分只有约 `1.3%`）。顺带说明那条 3 级阶梯：它现在有 `10.034%` 的覆盖率，第 4 步由 `install_flex_partition` 的索引 clamp（`min(step_index, len(partitions) - 1)`）复用最细一级 `[1]*21`，不会越界。
-- §3.3 **没有 launcher 参数**：变体由 config yaml 里的 `transformer_additional_kwargs.flex_kproj_mode` 决定（默认 `diag_rank1`；要消融就在那里改成 `none`，想更省就改 `diag`）。它的参数故意取名 `flex_kproj.proj_out.*` —— 正是这个名字让 `initialize_missing_parameters()` 在 checkpoint 早于 §3.3 时将其置零，从而在 `low_cpu_mem_usage=True` 下保住恒等初始化；除此之外它和其他层一样训，跟 `--learning_rate`。只要构建出的模型带 Pi，trainer 就强制其 `requires_grad`，所以收窄 `--trainable_modules` 也不会把 Pi 悄悄冻在恒等点。
+- §3.3 **没有 launcher 参数**：变体由 config yaml 里的 `transformer_additional_kwargs.flex_kproj_mode` 决定（默认 `diag_rank1`；要消融就在那里改成 `none`，想更省就改 `diag`）。它的参数故意取名 `flex_kproj.proj_out.*` —— 正是这个名字让 `initialize_missing_parameters()` 在 checkpoint 早于 §3.3 时将其置零，从而在 `low_cpu_mem_usage=True` 下保住恒等初始化；除此之外它和其他层一样训，跟 `--learning_rate`。只要构建出的模型带 Pi，trainer 就强制其 `requires_grad`，所以收窄 `--trainable_modules` 也不会把 Pi 悄悄冻在恒等点。在 `--use_kv_cache_training` 下它同样不会被调用，始终停在恒等初始化。
 - 每张卡必须训练同一种布局，否则 FlexAttention 掩码与其派生的 `num_frame_per_block` 在 SP/FSDP 组之间会不一致。trainer 在使用抽取的划分前会先经 `broadcast_chunk_sizes` 广播对齐；`randomize_denoising_step_indices` 同样从 rank 0 广播它抖动后的索引，道理一样。
 
 ---
 
-## 6. 使用训练得到的 checkpoint
+### 3.4 训练验证
+
+训练脚本支持在训练过程中定期生成验证视频，无需单独启动推理任务，即可直观观察模型当前的生成能力。验证相关参数说明如下：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--validation_prompts` | `None` | 验证用的提示词，多个提示词以 `#` 分隔。未提供时使用 `sample_questions.txt` 或内置示例提示词 |
+| `--validation_epochs` | 5 | 每多少个 epoch 执行一次验证 |
+| `--validation_steps` | 2000 | 每多少个 step 执行一次验证 |
+
+验证示例（T2V 蒸馏）：
+
+```bash
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_flex_forcing/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --train_mode="normal" \
+  --validation_prompts="A cat walking on the grass in slow motion#A woman smiling at the camera" \
+  --validation_steps=500 \
+  --validation_epochs=1 \
+  ...训练参数...
+```
+
+> 注意事项：
+> - 验证仅支持 `--train_mode="normal"`（T2V 蒸馏）模式，其他训练模式（如 source / diffusion-refine）下不会执行验证。
+> - 验证使用蒸馏后的去噪步数调度（`--denoising_step_indices_list`），与推理时的设置保持一致。
+> - 多卡环境下验证会在 rank 0 单独执行。
+> - 验证视频会保存到 `output_dir` 的 `sample` 子目录中。
+> - 当 `--flex_pyramid_levels > 1` 时，验证采用 `chunk_spec=None` + `denoise_mode="pyramid"`，与推理脚本的金字塔模式一致。
+
+---
+
+### 3.5 使用 FSDP 训练
+
+**如果使用多卡且使用 DeepSpeed-Zero-2 的情况下显存不足**，可以切换使用 FSDP 进行训练。现成的启动脚本是 [train_distill.sh](./train_distill.sh)：
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" --use_fsdp \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock \
+    --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT \
+    --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False \
+    scripts/wan2.1_flex_forcing/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --fix_sample_size 480 832 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --score_num_frames=21 \
+  --video_repeat=1 \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_flex_forcing_distill" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "." \
+  --flex_forcing \
+  --flex_chunk_min=2 \
+  --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
+  --flex_min_num_frame_per_block=1 \
+  --flex_self_generated_context \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --randomize_step_indices \
+  --flow_euler_rollout \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
+  --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
+```
+
+或者直接：
+
+```bash
+bash scripts/wan2.1_flex_forcing/train_distill.sh
+```
+
+---
+
+### 3.6 其他后端
+
+#### 3.6.1 使用 DeepSpeed-Zero-3 进行训练
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_flex_forcing/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --fix_sample_size 480 832 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --score_num_frames=21 \
+  --video_repeat=1 \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_flex_forcing_distill" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "." \
+  --flex_forcing \
+  --flex_chunk_min=2 \
+  --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
+  --flex_min_num_frame_per_block=1 \
+  --flex_self_generated_context \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --randomize_step_indices \
+  --flow_euler_rollout \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
+  --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
+```
+
+DeepSpeed-Zero-3 训练完成之后，得到 `checkpoint-xxx` 状态的保存权重，我们需要将权重文件合并为单个，可以使用提供的`scripts/zero_to_bf16.py`脚本。
+
+```shell
+python utils/zero_to_bf16.py checkpoint-950 pytorch_model.bin --auto"detect"
+```
+
+#### 3.6.2 不使用 DeepSpeed 与 FSDP 训练
+
+```bash
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" scripts/wan2.1_flex_forcing/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --fix_sample_size 480 832 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --score_num_frames=21 \
+  --video_repeat=1 \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_flex_forcing_distill" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "." \
+  --flex_forcing \
+  --flex_chunk_min=2 \
+  --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
+  --flex_min_num_frame_per_block=1 \
+  --flex_self_generated_context \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --randomize_step_indices \
+  --flow_euler_rollout \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
+  --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
+```
+
+---
+
+### 3.7 多机分布式训练
+
+多机分布式训练代码与单机一致，只需要额外设置`MASTER_ADDR`、`MASTER_PORT`、`RANK`、`WORLD_SIZE`。我们提供了多机训练脚本作为案例展示。
+
+#### 3.7.1 环境配置
+
+**主机 0：**
+
+```shell
+export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export DATASET_NAME="datasets/internal_datasets/"
+export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
+export MASTER_ADDR="192.168.1.100"  # Master machine IP
+export MASTER_PORT=14536
+export WORLD_SIZE=2     # Total number of machines
+export NUM_PROCESS=16   # Total number of processes = number of machines × GPUs per machine
+export RANK=0           # Machine rank, 0/1/2/3...
+# NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
+# export NCCL_IB_DISABLE=1
+# export NCCL_P2P_DISABLE=1
+NCCL_DEBUG=INFO
+
+accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_flex_forcing/train_distill.py \
+  --config_path="config/wan2.1/wan_civitai.yaml" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$DATASET_NAME \
+  --train_data_meta=$DATASET_META_NAME \
+  --image_sample_size=640 \
+  --video_sample_size=640 \
+  --token_sample_size=640 \
+  --fix_sample_size 480 832 \
+  --video_sample_stride=2 \
+  --video_sample_n_frames=81 \
+  --score_num_frames=21 \
+  --video_repeat=1 \
+  --train_batch_size=1 \
+  --gradient_accumulation_steps=1 \
+  --dataloader_num_workers=8 \
+  --num_train_epochs=100 \
+  --checkpointing_steps=50 \
+  --learning_rate=2e-06 \
+  --learning_rate_critic=2e-06 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=100 \
+  --seed=42 \
+  --output_dir="output_dir_wan2.1_flex_forcing_distill" \
+  --gradient_checkpointing \
+  --mixed_precision="bf16" \
+  --adam_weight_decay=3e-2 \
+  --adam_epsilon=1e-10 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=0.05 \
+  --random_hw_adapt \
+  --training_with_video_token_length \
+  --enable_bucket \
+  --uniform_sampling \
+  --train_mode="normal" \
+  --resume_from_checkpoint="latest" \
+  --trainable_modules "." \
+  --flex_forcing \
+  --flex_chunk_min=2 \
+  --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
+  --flex_min_num_frame_per_block=1 \
+  --flex_self_generated_context \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --randomize_step_indices \
+  --flow_euler_rollout \
+  --use_kv_cache_training \
+  --num_frame_per_block=3 \
+  --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
+```
+
+**主机 1：**
+
+```shell
+# Use the same environment variables as Machine 0, only modify RANK
+export RANK=1
+
+# Use the same accelerate launch command as Machine 0
+```
+
+#### 3.7.2 多机训练注意事项
+
+> Note:
+> - `MASTER_ADDR`: IP address of the master node (machine 0).
+> - `MASTER_PORT`: Port number used for communication between machines.
+> - `WORLD_SIZE`: Total number of machines.
+> - `NUM_PROCESS`: Total number of processes across all machines (number of machines × GPUs per machine).
+> - `RANK`: Rank of the current machine (starting from 0).
+> - Ensure all machines have the same environment configuration and model files.
+> - Verify network connectivity between machines, especially the reachability of `MASTER_ADDR` and `MASTER_PORT`.
+> - Use `NCCL_DEBUG=INFO` to troubleshoot issues in multi-machine training.
+> - If there is no RDMA environment, set `export NCCL_IB_DISABLE=1` and `export NCCL_P2P_DISABLE=1` to avoid communication issues.
+
+---
+
+## 四、推理测试
+
+### 4.1 推理参数解析
+
+推理参数 `GPU_memory_mode` 用于控制模型的加载方式：
+
+| GPU_memory_mode | 说明 |
+|-----------------|----------|
+| `model_full_load` | 模型全量加载到GPU显存。速度快，显存占用高。 |
+| `model_cpu_offload` | 模型加载到CPU，运行时逐层交换到显存。显存占用中等，速度较慢。 |
+| `model_cpu_offload_and_qfloat8` | 模型加载到CPU，逐层转换到FLOAT8，降低GPU内存使用。显存占用低，速度中等。 |
+| `model_tiling` | 使用tiling分块计算。降低VRAM使用。 |
+| `sequential_cpu_offload` | 逐层卸载到CPU，支持量化加载。显存占用最低，速度最慢。 |
+| `model_full_load_and_qfloat8` | 模型全量加载到显存，转换到FLOAT8，降低GPU内存使用。显存占用较高，速度快。 |
+
+推理常用参数说明如下：
+
+| 参数 | 说明 | 示例值 |
+|------|------|--------|
+| `--GPU_memory_mode` | 显存管理模式 | `model_full_load` |
+| `--ulysses_degree` / `--ring_degree` | 序列并行度 | 1 / 1 |
+| `--fsdp_dit` / `--fsdp_text_encoder` | DiT / 文本编码器是否使用 FSDP 分片 | False / True |
+| `--compile_dit` | 启用 `torch.compile` 加速 | False |
+| `--model_name` | 模型路径 | `models/Diffusion_Transformer/Wan2.1-T2V-1.3B` |
+| `--sampler_name` / `--shift` | 采样器类型 / Flow shift 值 | `Flow` / 5 |
+| `--transformer_path` | 阶段 2 checkpoint 路径 | `output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors` |
+| `--sample_size` | 输出视频分辨率 `H W` | `[432, 832]` |
+| `--video_length` / `--fps` | 输出视频帧数 / 帧率 | 81 / 16 |
+| `--denoise_mode` | 去噪模式 | `pyramid` |
+| `--min_num_frame_per_block` / `--num_frame_per_block` | 每 block 最小帧数 / 帧数 | 1 / 3 |
+| `--local_attn_size` / `--sink_size` | 局部注意力窗口（-1 = 全局）/ Sink token 数量 | -1 / 0 |
+| `--independent_first_frame` | 首帧是否独立 | False |
+| `--context_noise` | 上下文噪声水平 | 0.0 |
+| `--weight_dtype` | 权重精度 | `torch.bfloat16` |
+| `--guidance_scale` | CFG 引导系数 | 1.0 |
+| `--num_inference_steps` / `--seed` | 推理去噪步数 / 随机种子 | 4 / 43 |
+| `--lora_path` / `--lora_weight` | 可选 LoRA | `None` / 0.55 |
+| `--save_path` | 输出路径 | `samples/wan-videos-flex-forcing-t2v` |
+
+### 4.2 文生视频（T2V）推理
 
 阶段 2 的 checkpoint 就是最终模型。把推理入口里的 `transformer_path` 指向它：
 
 ```bash
 # 3.1 灵活分块 / 3.2 金字塔
 python examples/wan2.1_flex_forcing/predict_t2v.py
-
-# 4.2 任意序、任意时间步编辑
-python examples/wan2.1_flex_forcing/predict_t2v_edit.py
 ```
 
 ```python
 # 在 examples/wan2.1_flex_forcing/predict_t2v.py 里
-transformer_path = "output_dir_wan2.1_flex_forcing_distill_4step_pyramid4_flow_euler_randomize_kproj_diag_rank1/checkpoint-600/diffusion_pytorch_model.safetensors"
+transformer_path = "output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors"
 
 num_inference_steps = 4          # 与 --denoising_step_indices_list 对齐
 video_length        = 81         # 21 个 latent 帧 = 一段 5 秒片段
@@ -303,6 +688,53 @@ min_num_frame_per_block = 1
 
 `predict_t2v.py` 启动时会打印 `PAPER_CHUNK_CONFIGS`——§3.1 评测的十五种布局，从 `[21]`（完全双向）经 `[11, 10]`、`[7, 7, 7]` 一直到 `[3, 2, 2, 2, 2, 2, 2, 2, 2, 2]`。把其中任何一个以连字符分隔的字符串喂给 `chunk_spec`。
 
+### 4.3 多卡并行推理
+
+**适合场景**：高分辨率生成、加速推理
+
+#### 安装并行推理依赖
+
+```bash
+pip install xfuser==0.4.2 yunchang==0.6.2
+```
+
+#### 配置并行策略
+
+编辑 `examples/wan2.1_flex_forcing/predict_t2v.py`：
+
+```python
+# 确保 ulysses_degree × ring_degree = 使用的 GPU 数
+# 例如使用 2 张 GPU：
+ulysses_degree = 2  # Head 维度并行
+ring_degree = 1     # Sequence 维度并行
+```
+
+**配置原则**：
+- `ulysses_degree` 必须能整除模型的 head 数
+- `ring_degree` 是在 sequence 维度切分，会影响通信开销，在 head 能整除的情况下尽量不要用
+
+**配置示例**：
+
+| GPU 数量 | ulysses_degree | ring_degree | 说明 |
+|---------|---------------|-------------|------|
+| 1 | 1 | 1 | 单 GPU |
+| 4 | 4 | 1 | Head 并行 |
+| 8 | 8 | 1 | Head 并行 |
+| 8 | 4 | 2 | 混合并行 |
+
+#### 运行多卡推理
+
+```bash
+torchrun --nproc-per-node=2 examples/wan2.1_flex_forcing/predict_t2v.py
+```
+
+### 4.4 任意序视频编辑
+
+```bash
+# 4.2 任意序、任意时间步编辑
+python examples/wan2.1_flex_forcing/predict_t2v_edit.py
+```
+
 编辑方面，`predict_t2v_edit.py` **只编辑、不生成**，并把重新生成限制在**细化**时间步（`edit_steps = 1`），规划时间步保持不动——这正是中间片段能以来自未来的干净上下文为条件的原因：
 
 ```python
@@ -318,7 +750,7 @@ num_frame_per_block = 7          # 干净上下文的提交粒度；None = 整�
 
 ---
 
-## 7. 更多资源
+## 五、更多资源
 
 - **Flex-Forcing 论文**：https://arxiv.org/abs/2607.03509
 - **阶段 1**：[README_TRAIN_ODE_zh-CN.md](./README_TRAIN_ODE_zh-CN.md)

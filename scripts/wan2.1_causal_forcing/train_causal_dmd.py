@@ -117,6 +117,47 @@ def initialize_crossattn_cache_for_training(batch_size, text_len, num_layers, nu
     return crossattn_cache
 
 
+def reencode_boundary_latent(vae, pred_latents, weight_dtype, score_num_frames=21):
+    """
+    Re-encode the boundary frame to get a clean latent for the score window.
+    Follows Self-Forcing reference: decode all frames before the score window, take last pixel frame, re-encode.
+    Input: pred_latents [B, C, F, H, W] (all generated latent frames)
+    Output: boundary_latent [B, C, 1, H, W]
+    """
+    with torch.no_grad():
+        # Decode all frames except the last (score_num_frames - 1) to pixels
+        tail_len = score_num_frames - 1
+        latent_to_decode = pred_latents[:, :, :-tail_len]
+        # VAE expects [B, C, F, H, W], decode returns [B, C, F, H, W] pixels
+        pixels = vae.decode(latent_to_decode.to(vae.dtype)).sample  # [B, C, F, H, W]
+        # Take the last frame
+        frame = pixels[:, :, -1:, :, :]  # [B, C, 1, H, W]
+        # Re-encode the last frame to get clean boundary latent
+        boundary_latent = vae.encode(frame)[0].sample().to(weight_dtype)  # [B, C, 1, H, W]
+    return boundary_latent
+
+
+def slice_for_score(pred, vae, weight_dtype, score_num_frames=21, independent_first_frame=False):
+    """
+    Slice the last `score_num_frames` latent frames for score computation.
+    If pred has more than score_num_frames, re-encode boundary frame for clean context.
+    Returns: (pred_for_score, score_num_frames, need_gradient_mask)
+    """
+    num_frames = pred.shape[2]
+    if num_frames <= score_num_frames:
+        return pred, num_frames, False
+
+    # Re-encode boundary for cleaner score input
+    try:
+        boundary_latent = reencode_boundary_latent(vae, pred, weight_dtype, score_num_frames=score_num_frames)
+        pred_for_score = torch.cat([boundary_latent, pred[:, :, -(score_num_frames - 1):]], dim=2)
+    except Exception:
+        # Fallback: simple slice without boundary re-encoding
+        pred_for_score = pred[:, :, -score_num_frames:]
+
+    return pred_for_score, score_num_frames, True
+
+
 def filter_kwargs(cls, kwargs):
     import inspect
     sig = inspect.signature(cls.__init__)
