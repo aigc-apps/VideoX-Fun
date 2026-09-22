@@ -1,0 +1,7 @@
+format: diffusers
+pipeline: minimax-h3
+transformer_additional_kwargs:
+    control_blocks_places: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]
+    control_in_dim: 49
+    control_apply_audio: false
+    inpaint_masked_pixel_mode: post_norm

@@ -96,6 +96,7 @@ from .wan_text_encoder import WanT5EncoderModel
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanRMSNorm,
                                 WanSelfAttention, WanTransformer3DModel)
 from .wan_transformer3d_animate import Wan2_2Transformer3DModel_Animate
+from .wan_transformer3d_flex_forcing import WanTransformer3DModel_FlexForcing
 from .wan_transformer3d_lingbot_world import WanTransformer3DModel_LingbotWorld
 from .wan_transformer3d_lingbot_world_fast import \
     WanTransformer3DModel_LingbotWorldFast

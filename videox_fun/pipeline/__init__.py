@@ -25,6 +25,7 @@ from .pipeline_minimax_h3 import (MiniMaxH3AudioReference,
 from .pipeline_minimax_h3_control import MiniMaxH3ControlPipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline
+from .pipeline_qwenimage21 import QwenImage21Pipeline
 from .pipeline_qwenimage_control import QwenImageControlPipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
@@ -43,6 +44,7 @@ from .pipeline_taomate_h3 import (MiniMaxH3StreamingPipeline,
                                   TaomateH3TeacherArtifact,
                                   TaomateH3TeacherError)
 from .pipeline_wan2_2_vace_fun import Wan2_2VaceFunPipeline
+from .pipeline_wan_flex_forcing import WanFlexForcingPipeline
 from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
 from .pipeline_wan_latent_upsample import WanLatentUpsamplePipeline

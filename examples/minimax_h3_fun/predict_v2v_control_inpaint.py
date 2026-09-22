@@ -84,8 +84,8 @@ lora_path           = None
 # a short control video is never padded (the duration has to stay under 15 seconds), capped by video_length.
 # Control inference fits the control video onto this canvas with the training's resize + crop geometry, so
 # sample_size must be set (it cannot be None).
-sample_size         = [1280, 704]
-video_length        = 243
+sample_size         = [704, 1280]
+video_length        = 124
 fps                 = 24
 # Scale applied to every control skip before it is added to the main branch. 0.0 switches the control branch off,
 # values below 1.0 weaken the guidance of the control video.
@@ -94,15 +94,17 @@ control_context_scale = 1.00
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-control_video       = "asset/pose.mp4"
+# Path of the control (e.g. pose) video; leaving it None zeroes the control channels of the side branch. With
+# inpaint inputs given the mask then guides the run on its own (the layout training reaches when it drops the
+# control rows); without them the run degrades to plain base-pipeline generation at `video_length` frames.
+control_video       = None 
 # Inpaint inputs, only read by checkpoints trained with `--enable_inpaint` (control_in_dim widened, e.g. 49):
 # `inpaint_video` is the source video behind the mask and `inpaint_video_mask` marks the regions to regenerate
 # (white = repaint, black = keep). With an inpaint checkpoint but no inpaint inputs given, the pipeline zero-pads
 # the mask channels and the run degrades to pure generation; a mask-less checkpoint rejects them outright.
-inpaint_video       = None
-inpaint_video_mask  = None
-prompt              = "视频中，一位年轻女性站在阳光洒满的沙滩上，背景是无垠碧蓝的大海与澄澈如洗的天空，构成一幅充满夏日度假氛围的画面。她身穿一件深海军蓝吊带泳衣，线条简约贴身，凸显健康匀称的身材曲线；外搭一条纯白色背带短裙，裙摆轻盈飘逸，随风微微扬起，增添了几分俏皮与少女感。她的长发柔顺披肩，发梢微卷，在阳光下泛着自然光泽，耳畔垂挂着一对小巧精致的珍珠吊坠耳环，为整体造型注入一丝温柔优雅的气息。她面带甜美笑容，嘴角上扬，露出整齐洁白的牙齿，眼神清澈明亮，直视镜头时流露出真诚与自信，仿佛在与观众分享此刻的快乐。"
-negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+inpaint_video       = "asset/inpaint_video.mp4"
+inpaint_video_mask  = "asset/inpaint_video_mask.mp4"
+prompt              = "一只狗在沙发上摇头"
 seed                = 43
 # Number of denoising steps, i.e. of model evaluations: num_inference_steps = 40 runs 40 of them.
 num_inference_steps = 40
@@ -219,12 +221,26 @@ fp8_exclude_module_name = [
 ]
 use_qfloat8 = "qfloat8" in GPU_memory_mode
 if use_qfloat8:
+    # Scale-aware fp8 must run before the FSDP wrapping below so the flat buffers hold the fp8 values.
     convert_model_weight_to_float8(transformer, exclude_module_name=fp8_exclude_module_name, device=device)
 
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
+        # The mixed-precision checkpoint pins the patch embedders / timestep MLP / output heads to float32;
+        # FSDP keeps them replicated via ignored_states so the flat buffers stay uniform-dtype.
+        #
+        # Root cause of the temporal flicker, verified by per-step / per-block instrumentation: with
+        # `MixedPrecision(param_dtype=...)` the root FSDP unit applies `cast_root_forward_inputs` (default
+        # True), so the whole root forward runs in `param_dtype`. That casts the root forward inputs — the
+        # sinusoidal timestep embedding, the packed latents, the context — to bfloat16 and forces the fp32-
+        # pinned heads (proj_in / time_embedder / audio_proj_in) to compute on coarsely rounded inputs in
+        # bfloat16 instead of their native fp32; the deviation compounds over the sampling steps and flips
+        # trajectories that sit on the numerical-stability edge into coherent flicker at fixed latent-time
+        # positions, seed-independently.
+        # Sharding with `param_dtype=None` + `cast_dtype=False` casts nothing (no MixedPrecision compute
+        # dtype, no root input cast), keeps the native fp32 hidden path and matches the non-FSDP numerics.
         fp32_modules = [m for m in transformer.modules()
                         if any(p.dtype == torch.float32 for p in m.parameters(recurse=False))]
         shard_fn = partial(shard_model, device_id=device, param_dtype=None, cast_dtype=False,
@@ -279,11 +295,18 @@ with torch.no_grad():
     control_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None, keep_aspect_ratio=True)
 
     # Generate at the control video's actual length, never padding; only control videos below the 5 frames the
-    # video VAE can encode are raised to 5.
-    num_frames = snap_num_frames(control_video.shape[2], video_length)
-    if num_frames != video_length:
-        print(f"[{os.environ.get('RANK', '0')}] control video holds {control_video.shape[2]} frames, generating "
-              f"{num_frames} instead of {video_length}", flush=True)
+    # video VAE can encode are raised to 5. Without a control video the request keeps `video_length`, which the
+    # pipeline snaps up to the next 17 * n + 5 itself (control branch off = plain base-pipeline generation).
+    if control_video is None:
+        num_frames = video_length
+        print(f"[{os.environ.get('RANK', '0')}] no control video given, "
+              + (f"running inpaint alone at {num_frames} frames" if inpaint_video is not None
+                 else f"generating {num_frames} frames without the control branch"), flush=True)
+    else:
+        num_frames = snap_num_frames(control_video.shape[2], video_length)
+        if num_frames != video_length:
+            print(f"[{os.environ.get('RANK', '0')}] control video holds {control_video.shape[2]} frames, generating "
+                  f"{num_frames} instead of {video_length}", flush=True)
 
     mask_video = None
     if inpaint_video is not None:
