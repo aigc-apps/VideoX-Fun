@@ -831,6 +831,14 @@ def main():
         **transformer_load_kwargs,
     )
 
+    # The inpaint recipe flag rides on the model config (yaml `transformer_additional_kwargs` → `register_to_config`
+    # → the checkpoint's config.json), so the training loop zeroes the masked pixels exactly the way the inference
+    # pipeline of this checkpoint will; configs predating the key fall back to the legacy recipe. The student and the
+    # teacher are the same control model, so reading it off `transformer.config` covers both.
+    inpaint_masked_pixel_mode = getattr(transformer.config, "inpaint_masked_pixel_mode", "pre_norm")
+    if args.enable_inpaint:
+        logger.info(f"Inpaint masked pixels zeroed `{inpaint_masked_pixel_mode}`.")
+
     def deepspeed_zero_init_disabled_context_manager():
         """
         returns either a context list that includes one that will disable zero.Init or an empty context list
@@ -1642,7 +1650,15 @@ def main():
                         rescale=False,
                     )
                     if args.enable_inpaint:
-                        mask_pixel_value = batch["mask_pixel_values"][idx].cpu()[None].permute(0, 2, 1, 3, 4)
+                        if inpaint_masked_pixel_mode == "post_norm":
+                            # The model sees mid-gray holes (zero in normalized space), not black ones; mirror
+                            # that in the dump instead of the collated pre-normalization zeroing.
+                            mask_pixel_value = (
+                                batch["pixel_values"][idx] * (1 - batch["mask"][idx])
+                                + 0.5 * batch["mask"][idx]
+                            ).cpu()[None].permute(0, 2, 1, 3, 4)
+                        else:
+                            mask_pixel_value = batch["mask_pixel_values"][idx].cpu()[None].permute(0, 2, 1, 3, 4)
                         mask_value = batch["mask"][idx].cpu()[None].permute(0, 2, 1, 3, 4).repeat(1, 3, 1, 1, 1)
                         save_videos_grid(mask_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask_pixel.mp4", rescale=False)
                         save_videos_grid(mask_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask.mp4", rescale=False)
@@ -1686,8 +1702,17 @@ def main():
                 control_pixels = control_pixel_values.to(device).permute(1, 0, 2, 3)[None]
                 control_pixels = (control_pixels - pixel_mean) / pixel_std
                 if args.enable_inpaint:
-                    mask_pixels = mask_pixel_values.to(device).permute(1, 0, 2, 3)[None]
-                    mask_pixels = (mask_pixels - pixel_mean) / pixel_std
+                    if inpaint_masked_pixel_mode == "post_norm":
+                        # Wan 2.1's recipe: zero the masked pixels *after* the normalization, so the holes sit at
+                        # 0 in the VAE's input space (mid-gray in pixel terms) instead of the legacy
+                        # pre-normalization zero that lands near -2 as an extreme dark signal and contaminates
+                        # the kept regions through the VAE's receptive field. The normalized target video already
+                        # carries the full frames, so mask it in place; the collated `mask_pixel_values` then only
+                        # feed the sanity-check dump.
+                        mask_pixels = pixels * (1 - mask.to(device).permute(1, 0, 2, 3)[None])
+                    else:
+                        mask_pixels = mask_pixel_values.to(device).permute(1, 0, 2, 3)[None]
+                        mask_pixels = (mask_pixels - pixel_mean) / pixel_std
 
                 # Under `low_vram`, load both VAEs at once and keep them on GPU for the video, control and audio
                 # encodes in one session.
