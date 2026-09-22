@@ -370,6 +370,7 @@ Image to Video:
 
 
 Generic Control Video + Reference Image:
+
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
@@ -402,6 +403,7 @@ Generic Control Video + Reference Image:
 
 
 Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
+
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>

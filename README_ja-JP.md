@@ -409,6 +409,7 @@ sh scripts/{model_name}/train.sh
 ### Wan2.1-Fun-V1.1-14B-Control && Wan2.1-Fun-V1.1-1.3B-Control
 
 Generic Control Video + Reference Image:
+
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
@@ -441,6 +442,7 @@ Generic Control Video + Reference Image:
 
 
 Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
+
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
