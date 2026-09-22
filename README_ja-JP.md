@@ -408,15 +408,15 @@ sh scripts/{model_name}/train.sh
 
 ### Wan2.1-Fun-V1.1-14B-Control && Wan2.1-Fun-V1.1-1.3B-Control
 
-Generic Control Video + Reference Image:
+汎用制御動画 + 参照画像：
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          Reference Image
+          参照画像
       </td>
       <td>
-          Control Video
+          制御動画
       </td>
       <td>
           Wan2.1-Fun-V1.1-14B-Control
@@ -424,6 +424,7 @@ Generic Control Video + Reference Image:
       <td>
           Wan2.1-Fun-V1.1-1.3B-Control
       </td>
+  </tr>
   <tr>
       <td>
           <image src="https://github.com/user-attachments/assets/221f2879-3b1b-4fbd-84f9-c3e0b0b3533e" width="100%" controls preload loop></image>
@@ -437,11 +438,11 @@ Generic Control Video + Reference Image:
        <td>
           <video src="https://github.com/user-attachments/assets/1f3fe763-2754-4215-bc9a-ae804950d4b3" width="100%" controls preload loop></video>
      </td>
-  <tr>
+  </tr>
 </table>
 
 
-Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
+汎用制御動画（Canny、Pose、Depth など）と軌跡制御：
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
@@ -454,7 +455,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/972012c1-772b-427a-bce6-ba8b39edcfad" width="100%" controls preload loop></video>
      </td>
-  <tr>
+  </tr>
 </table>
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
@@ -468,6 +469,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/72a43e33-854f-4349-861b-c959510d1a84" width="100%" controls preload loop></video>
      </td>
+  </tr>
   <tr>
       <td>
           <video src="https://github.com/user-attachments/assets/bb0ce13d-dee0-4049-9eec-c92f3ebc1358" width="100%" controls preload loop></video>
@@ -494,6 +496,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           Pan Right
      </td>
+  </tr>
   <tr>
       <td>
           <video src="https://github.com/user-attachments/assets/869fe2ef-502a-484e-8656-fe9e626b9f63" width="100%" controls preload loop></video>
@@ -504,6 +507,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/7dfb7cad-ed24-4acc-9377-832445a07ec7" width="100%" controls preload loop></video>
      </td>
+  </tr>
   <tr>
       <td>
           Pan Down
@@ -514,6 +518,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           Pan Up + Pan Right
      </td>
+  </tr>
   <tr>
       <td>
           <video src="https://github.com/user-attachments/assets/3ea3a08d-f2df-43a2-976e-bf2659345373" width="100%" controls preload loop></video>
@@ -600,6 +605,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/3224804f-342d-4947-918d-d9fec8e3d273" width="100%" controls preload loop></video>
      </td>
+  </tr>
   <tr>
       <td>
           美しい澄んだ目と金髪の若い女性が白い服を着て体をひねり、カメラは彼女の顔に焦点を合わせています。高品質、傑作、最高品質、高解像度、超微細、夢のような。

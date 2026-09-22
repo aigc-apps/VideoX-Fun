@@ -349,7 +349,7 @@ sh scripts/{model_name}/train.sh
 
 # 四、视频作品
 
-Image to Video:
+图生视频：
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
@@ -369,15 +369,15 @@ Image to Video:
 </table>
 
 
-Generic Control Video + Reference Image:
+通用控制视频 + 参考图像：
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
       <td>
-          Reference Image
+          参考图像
       </td>
       <td>
-          Control Video
+          控制视频
       </td>
       <td>
           Wan2.1-Fun-V1.1-14B-Control
@@ -385,6 +385,7 @@ Generic Control Video + Reference Image:
       <td>
           Wan2.1-Fun-V1.1-1.3B-Control
       </td>
+  </tr>
   <tr>
       <td>
           <image src="https://github.com/user-attachments/assets/221f2879-3b1b-4fbd-84f9-c3e0b0b3533e" width="100%" controls preload loop></image>
@@ -398,11 +399,11 @@ Generic Control Video + Reference Image:
        <td>
           <video src="https://github.com/user-attachments/assets/1f3fe763-2754-4215-bc9a-ae804950d4b3" width="100%" controls preload loop></video>
      </td>
-  <tr>
+  </tr>
 </table>
 
 
-Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
+通用控制视频（Canny、Pose、Depth 等）与轨迹控制：
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
   <tr>
@@ -415,7 +416,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/972012c1-772b-427a-bce6-ba8b39edcfad" width="100%" controls preload loop></video>
      </td>
-  <tr>
+  </tr>
 </table>
 
 <table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
@@ -429,6 +430,7 @@ Generic Control Video (Canny, Pose, Depth, etc.) and Trajectory Control:
        <td>
           <video src="https://github.com/user-attachments/assets/72a43e33-854f-4349-861b-c959510d1a84" width="100%" controls preload loop></video>
      </td>
+  </tr>
   <tr>
       <td>
           <video src="https://github.com/user-attachments/assets/bb0ce13d-dee0-4049-9eec-c92f3ebc1358" width="100%" controls preload loop></video>
