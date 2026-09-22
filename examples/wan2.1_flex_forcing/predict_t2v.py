@@ -73,13 +73,12 @@ sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5 
-stochastic_sampling = True
 
 # Load pretrained model if need
 # Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
 # backbone inherits every parameter name and only the new `flex_kproj.*` tensors
 # are reported missing (they are identity-initialised, so step 0 is unchanged).
-transformer_path    = None
+transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -100,8 +99,6 @@ fps                 = 16
 #                so there is no second number to keep in sync. Levels only ever
 #                *add* boundaries, so a KV cache written at a coarse level stays
 #                valid at a finer one.
-# Needs `stochastic_sampling = True` (the buffered step between two levels *is*
-# the schedule's own re-noising) and `local_attn_size = -1` below.
 # An int instead pins a truncated pyramid of exactly that many levels; for 21
 # latent frames (= 81 pixel frames) that ladder is
 #   2 -> [[21], [11, 10]]    3 -> [[21], [11, 10], [6, 5, 5, 5]]
@@ -303,7 +300,6 @@ with torch.no_grad():
         num_frame_per_block     = num_frame_per_block,
         independent_first_frame = independent_first_frame,
         context_noise           = context_noise,
-        stochastic_sampling     = stochastic_sampling,
         denoise_mode            = denoise_mode,
         min_num_frame_per_block = min_num_frame_per_block,
     ).videos

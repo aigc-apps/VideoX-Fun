@@ -77,7 +77,7 @@ shift               = 5
 # Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
 # backbone inherits every parameter name and only the new `flex_kproj.*` tensors
 # are reported missing (they are identity-initialised, so step 0 is unchanged).
-transformer_path    = None
+transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
