@@ -3,6 +3,8 @@ import os
 
 if importlib.util.find_spec("turbox") is not None:
     import turbox
+elif importlib.util.find_spec("paifuser") is not None:
+    import paifuser
 
 # Imported conditionally rather than unconditionally-then-bailing the way `videox_fun.pipeline` does it, because
 # this runs on `import videox_fun` itself: with the variable unset that import does not load `perf_metrics` at all,

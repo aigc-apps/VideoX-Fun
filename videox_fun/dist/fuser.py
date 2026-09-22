@@ -1,25 +1,40 @@
+import importlib.util
+
 import torch
 import torch.distributed as dist
 
 try:
-    import xfuser
-    from xfuser.core.distributed import (get_sequence_parallel_rank,
-                                         get_sequence_parallel_world_size,
-                                         get_sp_group, get_world_group,
-                                         init_distributed_environment,
-                                         initialize_model_parallel,
-                                         model_parallel_is_initialized)
-    from xfuser.core.long_ctx_attention import xFuserLongContextAttention
-    print("Xfuser import sucessful")
-except Exception as ex:
-    get_sequence_parallel_world_size = None
-    get_sequence_parallel_rank = None
-    xFuserLongContextAttention = None
-    get_sp_group = None
-    get_world_group = None
-    init_distributed_environment = None
-    initialize_model_parallel = None
+    # `turbox` and `paifuser` are two internal accelerators with different module layouts: a turbox install
+    # exposes the stock `xfuser` package, while paifuser keeps the xfuser code inside its own
+    # `paifuser.xfuser` namespace. Only the paifuser path therefore needs its own imports, and it is taken
+    # only when turbox is absent -- the same precedence as in `videox_fun/__init__.py`.
+    if importlib.util.find_spec("turbox") is None and importlib.util.find_spec("paifuser") is not None:
+        import paifuser
+        from paifuser.xfuser.core.distributed import (
+            get_sequence_parallel_rank, get_sequence_parallel_world_size,
+            get_sp_group, get_world_group, init_distributed_environment,
+            initialize_model_parallel, model_parallel_is_initialized)
+        from paifuser.xfuser.core.long_ctx_attention import \
+            xFuserLongContextAttention
+        print("Import PAI DiT Turbo")
+    else:
+        import xfuser
+        from xfuser.core.distributed import (get_sequence_parallel_rank,
+                                             get_sequence_parallel_world_size,
+                                             get_sp_group, get_world_group,
+                                             init_distributed_environment,
+                                             initialize_model_parallel,
+                                             model_parallel_is_initialized)
+        from xfuser.core.long_ctx_attention import xFuserLongContextAttention
+        print("Xfuser import sucessful")
+except Exception:
+    # Without an xfuser backend every helper below takes its single-GPU path, which relies on these names
+    # being `None`.
+    get_sequence_parallel_world_size = get_sequence_parallel_rank = None
+    get_sp_group = get_world_group = None
+    init_distributed_environment = initialize_model_parallel = None
     model_parallel_is_initialized = None
+    xFUserLongContextAttention = None
 
 def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance_degree=1):
     if ulysses_degree > 1 or ring_degree > 1 or classifier_free_guidance_degree > 1:
