@@ -1,4 +1,14 @@
-"""Modified from https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
+"""CFG distillation of the Qwen-Image 2.1 control branch -- the image counterpart of
+scripts/minimax_h3_fun/train_control_distill.py (which itself mirrors scripts/flux2_fun/train_control_distill.py).
+A frozen teacher copy of QwenImage21ControlTransformer2DModel (the real score) runs two forward passes per step --
+on the prompt and on an empty negative prompt -- and the two predicted velocities combine with
+--real_guidance_scale into the classifier-free-guided target that the trainable student (the control branch, via
+--trainable_modules control) regresses onto with an MSE loss. Both copies load the same --transformer_path (a
+trained control branch produced by scripts/qwenimage21_fun/train_control.sh). The student takes no guidance input, so
+the guidance is distilled into its control branch and inference needs no CFG.
+
+Original training code modified from
+https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py
 """
 #!/usr/bin/env python
 # coding=utf-8
@@ -66,17 +76,19 @@ for project_root in project_roots:
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
-                             ImageVideoDataset,
+                             ImageVideoControlDataset,
                              ImageVideoSampler, RandomSampler,
                              get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLQwenImage21,
                                Qwen3VLForConditionalGeneration,
-                               Qwen3VLProcessor, QwenImage21Transformer2DModel)
-from videox_fun.pipeline import QwenImage21Pipeline
+                               Qwen3VLProcessor,
+                               QwenImage21ControlTransformer2DModel)
+from videox_fun.pipeline import QwenImage21ControlPipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.fsdp_ema import FSDPEMA
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
+                                    save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -194,7 +206,7 @@ def log_validation(vae, text_encoder, processor, transformer3d, args, accelerato
                 args.pretrained_model_name_or_path, 
                 subfolder="scheduler"
             )
-            pipeline = QwenImage21Pipeline(
+            pipeline = QwenImage21ControlPipeline(
                 vae=vae, 
                 text_encoder=text_encoder,
                 processor=processor,
@@ -211,12 +223,21 @@ def log_validation(vae, text_encoder, processor, transformer3d, args, accelerato
                 logger.info(f"Rank {accelerator.process_index} using seed: {rank_seed}")
 
             for i in range(len(args.validation_prompts)):
+                # Control validation drives generation from a control image: derive the output resolution from that
+                # image's aspect ratio (as in scripts/qwenimage_fun/train_control.py) and load it as a single-frame
+                # (1, 3, h, w) tensor via get_image_latent.
+                control_image = Image.open(args.validation_paths[i])
+                width, height = control_image.width, control_image.height
+                width, height = calculate_dimensions(args.image_sample_size * args.image_sample_size, width / height)
+                control_image = get_image_latent(control_image, sample_size=(height, width))[:, :, 0]
+
                 sample = pipeline(
                     args.validation_prompts[i], 
-                    height      = args.image_sample_size,
-                    width       = args.image_sample_size,
+                    height      = height,
+                    width       = width,
                     generator   = generator,
                     num_inference_steps = 20,
+                    control_image = control_image,
                 ).images
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 # 2.1's VAE decodes to RGBA; JPEG cannot store an alpha channel (it raises "cannot write mode RGBA
@@ -302,6 +323,13 @@ def parse_args():
         default=None,
         nargs="+",
         help=("A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."),
+    )
+    parser.add_argument(
+        "--validation_paths",
+        type=str,
+        default=None,
+        nargs="+",
+        help=("A set of control images evaluated every `--validation_epochs` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -486,6 +514,14 @@ def parse_args():
         ),
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
+    parser.add_argument(
+        "--real_guidance_scale",
+        type=float,
+        default=3.5,
+        help="Classifier-free guidance scale applied to the frozen teacher (the real score) to build the "
+             "distillation target. The student takes no guidance input; guidance enters only via the teacher's "
+             "cond/uncond forward pair.",
+    )
     parser.add_argument(
         "--validation_epochs",
         type=int,
@@ -801,18 +837,37 @@ def main():
         latents_mean = (torch.tensor(vae.config.latents_mean).view(1, vae.config.z_dim, 1, 1, 1)).to(accelerator.device)
         latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, vae.config.z_dim, 1, 1, 1).to(accelerator.device)
 
+    # Load the training config so the control transformer is built with the extra control kwargs
+    # (control_layers / control_in_dim) declared in config/qwenimage21/qwenimage21_control.yaml.
+    config = OmegaConf.load(args.config_path)
+
     # Get Transformer
-    transformer3d = QwenImage21Transformer2DModel.from_pretrained(
+    transformer3d = QwenImage21ControlTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=weight_dtype,
         low_cpu_mem_usage=True,
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
     ).to(weight_dtype)
 
     # Freeze vae and text_encoder and set transformer3d to trainable
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
+
+    # Distillation teacher (the "real score"): a frozen second copy of the same control model. Both it and the
+    # trainable student load the same --transformer_path (a trained control branch), so the teacher reproduces the
+    # model's own conditional score and the CFG of its cond/uncond predictions is the target the student's control
+    # branch regresses onto.
+    real_score_transformer = QwenImage21ControlTransformer2DModel.from_pretrained(
+        args.pretrained_model_name_or_path, 
+        subfolder="transformer",
+        torch_dtype=weight_dtype,
+        low_cpu_mem_usage=True,
+        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+    ).to(weight_dtype)
+    real_score_transformer.requires_grad_(False)
+    real_score_transformer.eval()
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -826,6 +881,11 @@ def main():
         m, u = transformer3d.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
+
+        # Load the SAME trained control branch onto the frozen teacher so its score matches the student's init.
+        m_t, u_t = real_score_transformer.load_state_dict(state_dict, strict=False)
+        print(f"teacher missing keys: {len(m_t)}, unexpected keys: {len(u_t)}")
+        assert len(u_t) == 0
 
     if args.vae_path is not None:
         print(f"From checkpoint: {args.vae_path}")
@@ -859,11 +919,12 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
-        ema_module = QwenImage21Transformer2DModel.from_pretrained(
+        ema_module = QwenImage21ControlTransformer2DModel.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="transformer",
             torch_dtype=weight_dtype,
             low_cpu_mem_usage=True,
+            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         )
         if args.use_fsdp:
             # The EMA copy gets the same FSDP wrap as the live model so that
@@ -871,7 +932,7 @@ def main():
             ema_transformer3d = FSDPEMA(ema_module, source=transformer3d, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
         else:
             ema_module = ema_module.to(weight_dtype)
-            ema_transformer3d = EMAModel(ema_module.parameters(), model_cls=QwenImage21Transformer2DModel, model_config=ema_module.config)
+            ema_transformer3d = EMAModel(ema_module.parameters(), model_cls=QwenImage21ControlTransformer2DModel, model_config=ema_module.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -918,12 +979,12 @@ def main():
             def load_model_hook(models, input_dir):
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = QwenImage21Transformer2DModel.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = QwenImage21Transformer2DModel.from_pretrained(
+                    _, ema_kwargs = QwenImage21ControlTransformer2DModel.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = QwenImage21ControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
                         low_cpu_mem_usage=True,
                     )
-                    load_model = EMAModel(load_model.parameters(), model_cls=QwenImage21Transformer2DModel, model_config=load_model.config)
+                    load_model = EMAModel(load_model.parameters(), model_cls=QwenImage21ControlTransformer2DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
 
                     ema_transformer3d.load_state_dict(load_model.state_dict())
@@ -935,7 +996,7 @@ def main():
                     model = models.pop()
 
                     # load diffusers style into model
-                    load_model = QwenImage21Transformer2DModel.from_pretrained(
+                    load_model = QwenImage21ControlTransformer2DModel.from_pretrained(
                         input_dir, subfolder="transformer",
                         low_cpu_mem_usage=True,
                     )
@@ -1040,10 +1101,13 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    train_dataset = ImageVideoDataset(
+    train_dataset = ImageVideoControlDataset(
         args.train_data_meta, args.train_data_dir,
         image_sample_size=args.image_sample_size,
         enable_bucket=args.enable_bucket,
+        enable_inpaint=True,
+        enable_camera_info=False,
+        enable_subject_info=False,
     )
 
     def worker_init_fn(_seed):
@@ -1100,6 +1164,12 @@ def main():
             new_examples                 = {}
             new_examples["pixel_values"] = []
             new_examples["text"]         = []
+
+            # Used in Control mode
+            new_examples["control_pixel_values"] = []
+            # Used in Inpaint mode
+            new_examples["mask_pixel_values"]    = []
+            new_examples["mask"]                 = []
 
             # Get downsample ratio in image 
             pixel_value     = examples[0]["pixel_values"]
@@ -1178,10 +1248,27 @@ def main():
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
                 new_examples["pixel_values"].append(transform(pixel_values))
+
+                # Control mode: run the SAME spatial transform on the control image, then build the inpaint
+                # mask / masked-image pair from the transformed target. control_pixel_values is (f, c, h, w);
+                # get_random_mask returns a (f, 1, h, w) uint8 mask that broadcasts over channels. This mirrors
+                # scripts/qwenimage_fun/train_control.py's bucket collate.
+                control_pixel_values = torch.from_numpy(example["control_pixel_values"]).permute(0, 3, 1, 2).contiguous()
+                control_pixel_values = control_pixel_values / 255.
+                new_examples["control_pixel_values"].append(transform(control_pixel_values))
+
+                mask = get_random_mask(new_examples["pixel_values"][-1].size())
+                mask_pixel_values = new_examples["pixel_values"][-1] * (1 - mask)
+                new_examples["mask_pixel_values"].append(mask_pixel_values)
+                new_examples["mask"].append(mask)
+
                 new_examples["text"].append(example["text"])
 
             # Limit the number of frames to the same
             new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
+            new_examples["control_pixel_values"] = torch.stack([example for example in new_examples["control_pixel_values"]])
+            new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
+            new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
@@ -1249,6 +1336,24 @@ def main():
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+
+    # The frozen teacher is not accelerator.prepare()-wrapped (only the trainable student is sharded); keep it a
+    # plain bf16 module. Under --low_vram park it on CPU and stream it to the GPU only for its forward passes.
+    real_score_transformer.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+
+    # Precompute the teacher's unconditional (empty-prompt) embedding once; it is constant across steps and is the
+    # uncond branch of the CFG distillation target. Temporarily place the text encoder on the GPU to encode it, then
+    # restore its previous device so the --low_vram / in-dataloader parking below is unchanged.
+    _te_prev_device = next(text_encoder.parameters()).device
+    text_encoder.to(accelerator.device)
+    with torch.no_grad():
+        neg_prompt_embeds, neg_encoder_attention_mask = get_qwen_prompt_embeds(
+            text_encoder, processor, [" "], args.prompt_template_encode,
+            prompt_drop_idx, accelerator.device, weight_dtype,
+        )
+    neg_prompt_embeds = neg_prompt_embeds.to(dtype=weight_dtype)
+    neg_encoder_attention_mask = neg_encoder_attention_mask.to(device=accelerator.device)
+    text_encoder.to(_te_prev_device)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1390,6 +1495,54 @@ def main():
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
+                # --- Control conditioning (control_context) ---
+                # Encode the control image and the inpaint pair (masked image + latent-resolution mask) and concat them
+                # into the (b, 129, 1, h', w') tensor the transformer scatters into the joint stream: 64 control-latent
+                # channels + 1 mask channel + 64 masked-image latent channels. Mirrors
+                # scripts/qwenimage_fun/train_control.py, adapted to 2.1: the VAE reads RGBA (composite an opaque alpha)
+                # and t2v_flag scales with 5D-safe broadcasting. Runs after the base latents encode has synced and
+                # before the VAE is offloaded under --low_vram, so the VAE is never double-booked across CUDA streams.
+                with torch.no_grad():
+                    control_pixel_values = batch["control_pixel_values"].to(weight_dtype)
+                    mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
+                    mask = batch["mask"].to(weight_dtype)
+
+                    control_pixel_values = torch.cat([control_pixel_values, torch.ones_like(control_pixel_values[:, :, :1])], dim=2)
+                    control_latents = _batch_encode_vae(control_pixel_values)
+                    control_latents = ((control_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
+
+                    # Drop the control latents 10% of the time so the adapter also sees the unconditional (t2i) path.
+                    for bs_index in range(control_latents.size()[0]):
+                        zero_init_control_conv_in = (np.random.choice([0, 1], p=[0.90, 0.10]) if rng is None
+                                                     else rng.choice([0, 1], p=[0.90, 0.10]))
+                        if zero_init_control_conv_in:
+                            control_latents[bs_index] = control_latents[bs_index] * 0
+
+                    # Downsample the mask to latent resolution. mask is (b, f=1, 1, h, w); squeeze the frame dim so
+                    # interpolate sees a 4D (b, 1, h, w) tensor, then restore a unit frame dim -> (b, 1, 1, h', w').
+                    mask = mask.squeeze(1)
+                    mask_conditions = F.interpolate(1 - mask[:, :1], size=control_latents.size()[-2:], mode='nearest').to(latents.device, weight_dtype)
+                    mask_conditions = mask_conditions.unsqueeze(2)
+
+                    # A full-frame mask carries no inpaint signal, so gate the masked latents off 90% of the time in
+                    # that case (t2v_flag) to stop the model leaning on them.
+                    t2v_flag = [(_mask == 1).all() for _mask in mask]
+                    new_t2v_flag = []
+                    for _mask in t2v_flag:
+                        if _mask and np.random.rand() < 0.90:
+                            new_t2v_flag.append(0)
+                        else:
+                            new_t2v_flag.append(1)
+                    t2v_flag = torch.from_numpy(np.array(new_t2v_flag)).to(latents.device, dtype=weight_dtype)
+
+                    mask_pixel_values = torch.cat([mask_pixel_values, torch.ones_like(mask_pixel_values[:, :, :1])], dim=2)
+                    mask_latents = _batch_encode_vae(mask_pixel_values)
+                    mask_latents = ((mask_latents - latents_mean) * latents_std).to(dtype=weight_dtype)
+                    mask_latents = t2v_flag[:, None, None, None, None] * mask_latents
+
+                    inpaint_latents = torch.cat([mask_conditions, mask_latents], dim=1)
+                    control_context = torch.cat([control_latents, inpaint_latents], dim=1)
+
                 if args.low_vram:
                     vae.to('cpu')
                     torch.cuda.empty_cache()
@@ -1415,6 +1568,9 @@ def main():
                 bsz, channel, num_frame, height, width = latents.size()
                 latents = _pack_latents(latents, bsz, channel, height, width)
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
+                # Pack the control conditioning into the same (seq, dim) layout the transformer scatters into the joint
+                # image positions: (b, 129, 1, h', w') -> (b, h'*w', 129). 2.1 keeps latents unpatched (no num_frame).
+                control_context = _pack_latents(control_context, bsz, control_context.size(1), height, width)
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1460,8 +1616,8 @@ def main():
                 sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
                 noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
 
-                # Add noise
-                target = noise - latents
+                # NOTE: the flow-matching velocity target (noise - latents) is intentionally not used here -- this
+                # is CFG distillation, so the student regresses onto the teacher's CFG velocity built below.
 
                 # 2.1 keeps latents unpatched, so one img_shapes entry spans the full latent grid, while each
                 # vision-language image slot in img_mask stands for a 2x2 group of those latent tokens.
@@ -1483,8 +1639,52 @@ def main():
                         encoder_hidden_states=prompt_embeds,
                         img_shapes=img_shapes,
                         img_mask=img_mask,
+                        control_context=control_context,
                         return_dict=False,
                     )[0][:, -noisy_latents.size(1):]
+
+                # Distillation target: the frozen teacher scores the SAME noised rows twice (prompt, then empty
+                # prompt); the two velocities combine with --real_guidance_scale into the classifier-free-guided
+                # target the student regresses onto. Runs under no_grad; the teacher is never prepare()-wrapped.
+                if args.low_vram:
+                    real_score_transformer.to(accelerator.device)
+                with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                    teacher_cond = real_score_transformer(
+                        hidden_states=noisy_latents,
+                        timestep=timesteps / 1000,
+                        encoder_hidden_states_mask=encoder_attention_mask,
+                        encoder_hidden_states=prompt_embeds,
+                        img_shapes=img_shapes,
+                        img_mask=img_mask,
+                        control_context=control_context,
+                        return_dict=False,
+                    )[0][:, -noisy_latents.size(1):]
+                    # Uncond: same image/control rows, empty prompt. The joint layout depends on the text length, so
+                    # rebuild img_mask / attention mask for the short negative embedding (expanded to this batch).
+                    neg_embeds_b = neg_prompt_embeds.expand(bsz, -1, -1)
+                    neg_attn_b = neg_encoder_attention_mask.expand(bsz, -1).to(device=latents.device)
+                    neg_img_mask = torch.cat(
+                        [
+                            neg_attn_b.new_zeros(bsz, neg_embeds_b.size(1), dtype=torch.bool),
+                            neg_attn_b.new_ones(bsz, latents.size(1) // 4, dtype=torch.bool),
+                        ],
+                        dim=1,
+                    )
+                    teacher_uncond = real_score_transformer(
+                        hidden_states=noisy_latents,
+                        timestep=timesteps / 1000,
+                        encoder_hidden_states_mask=neg_attn_b,
+                        encoder_hidden_states=neg_embeds_b.to(dtype=weight_dtype),
+                        img_shapes=img_shapes,
+                        img_mask=neg_img_mask,
+                        control_context=control_context,
+                        return_dict=False,
+                    )[0][:, -noisy_latents.size(1):]
+                if args.low_vram:
+                    real_score_transformer.to("cpu")
+                    torch.cuda.empty_cache()
+
+                teacher_cfg_target = teacher_uncond + (teacher_cond - teacher_uncond) * args.real_guidance_scale
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
@@ -1499,7 +1699,8 @@ def main():
                     return final_loss
 
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-                loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
+                # CFG-distillation loss: the student's conditional velocity regresses onto the teacher's CFG velocity.
+                loss = custom_mse_loss(noise_pred.float(), teacher_cfg_target.detach().float(), weighting.float())
                 loss = loss.mean()
 
                 # Gather the losses across all processes for logging (if we use distributed training).

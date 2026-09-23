@@ -78,7 +78,7 @@ shift               = 5
 # Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
 # backbone inherits every parameter name and only the new `flex_kproj.*` tensors
 # are reported missing (they are identity-initialised, so step 0 is unchanged).
-transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors"
+transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-3000/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -99,6 +99,12 @@ fps                 = 16
 #                so there is no second number to keep in sync. Levels only ever
 #                *add* boundaries, so a KV cache written at a coarse level stays
 #                valid at a finer one.
+#   "full_then_blocks" -> first denoising step runs the whole clip as one
+#                bidirectional ("full") chunk, every later step is the block-major
+#                Self-Forcing schedule over `num_frame_per_block`. A fixed 2-level
+#                ladder - coarser than the binary pyramid, no `min_num_frame_per_
+#                block` involvement; needs `num_inference_steps >= 2` for the
+#                block-major steps to actually run.
 # An int instead pins a truncated pyramid of exactly that many levels; for 21
 # latent frames (= 81 pixel frames) that ladder is
 #   2 -> [[21], [11, 10]]    3 -> [[21], [11, 10], [6, 5, 5, 5]]
@@ -109,12 +115,6 @@ denoise_mode        = "pyramid"
 #   3 -> leaves stay 3-frame blocks (classic Self-Forcing granularity); the
 #        ladder then converges early and later steps reuse its finest level.
 min_num_frame_per_block = 1
-# Advanced: the 3.1 partition itself can also be pinned on the pipeline call
-# (`chunk_spec = "18-3" / "ar" / "uniform:3"`); the pyramid above does not need
-# it, since it derives every level from the whole-clip level 0.
-# 3.3's K-Projection (the noise-level aligned Pi_{t<-0} of the cached clean keys)
-# is deliberately not configurable here: the model builds `diag_rank1` and applies
-# it on every call, so there is nothing left to set.
 # --- Causal backbone (inherited from Self-Forcing) -------------------------
 # `num_frame_per_block` only takes effect once the pyramid is off; the rollout
 # derives the block size from the partition itself otherwise. `context_noise`

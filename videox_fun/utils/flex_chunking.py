@@ -40,6 +40,7 @@ __all__ = [
     "sample_flexible_chunks",
     "refine_partition",
     "build_pyramid_partitions",
+    "build_full_then_blocks_partitions",
     "validate_nested_partitions",
     "chunk_ends_tensor",
     "broadcast_chunk_sizes",
@@ -291,6 +292,29 @@ def build_pyramid_partitions(num_frames: int,
         partitions.append(nxt)
         current = nxt
     return partitions
+
+
+def build_full_then_blocks_partitions(num_frames: int,
+                                      num_frame_per_block: int,
+                                      independent_first_frame: bool = False) -> List[ChunkSizes]:
+    """Two-level ladder: one full planning chunk, then block-major refinement.
+
+    Level 0 is a single bidirectional chunk over the whole clip - the *first*
+    denoising step plans everything at once. Level 1 is the classic Self-Forcing
+    uniform ``num_frame_per_block`` partition, which the walk reuses for *every*
+    remaining step, so the rollout turns block-major right after the planning
+    pass. This is the coarse-to-fine special case of the pyramid where the fine
+    level is a fixed block size instead of a binary split.
+
+    ``[F]`` -> blocks is always a valid refinement (the block partition keeps
+    the level-0 boundary at ``F``), so the ladder satisfies
+    :func:`validate_nested_partitions` and the KV cache written by the planning
+    step stays reusable by the block-major steps.
+    """
+    num_frames = int(num_frames)
+    block = uniform_chunks(num_frames, num_frame_per_block,
+                           independent_first_frame)
+    return [[num_frames], block]
 
 
 def validate_nested_partitions(partitions: Sequence[Sequence[int]],
