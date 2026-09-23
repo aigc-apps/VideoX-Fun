@@ -71,8 +71,6 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 > **Qwen-Image 2.1 特有**:文本编码器是 **Qwen3-VL** 模型,因此环境需要一个包含 `qwen3_vl` 结构的 `transformers`
 > 版本(比 `requirements.txt` 里的基线更新)。如果 `Qwen3VLForConditionalGeneration` / `Qwen3VLProcessor` 导入为
 > `None`,说明你的 `transformers` 太旧。
->
-> YOLO 目标掩膜功能(见 [2.3](#23-metadatajson-格式))需要 `ultralytics`;`yolov8x-seg.pt` 会在首次使用时自动下载。
 
 ---
 
@@ -130,10 +128,7 @@ modelscope download --dataset PAI/X-Fun-Images-Controls-Demo --local_dir ./datas
 - `type`:图像数据为 `"image"`。
 
 > **你只需提供目标图 + control 图,不需要提供掩膜。** inpaint 掩膜是即时生成的:
-> - 先在 collate 中用 `get_random_mask` 生成随机矩形遮挡。
-> - 然后在随机约 70% 的帧上,再由 **YOLO-seg** 检测器(`ObjectInstanceDetector`)生成**不规则的目标形状掩膜**,
->   其边缘随机做膨胀 / 腐蚀 / 高斯模糊。这与 `scripts/qwenimage_fun/train_control.py` 一致,能让模型见到真实、
->   目标形状的修补空洞,而不只是矩形。
+> - collate 中用 `get_random_mask` 生成随机矩形遮挡。
 > - 送进 union 分支的被遮罩图始终是 `target * (1 - mask)`。
 
 > **RGBA 说明**:2.1 VAE 读取 RGBA。训练图以 RGB 载入,在编码前会自动合成到不透明 alpha 通道,因此你不需要提供 RGBA 数据。

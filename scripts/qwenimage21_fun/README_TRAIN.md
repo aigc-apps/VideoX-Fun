@@ -73,9 +73,6 @@ docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unc
 > **Qwen-Image 2.1 specific**: the text encoder is a **Qwen3-VL** model, so the environment needs a `transformers`
 > build that ships the `qwen3_vl` architecture (newer than the base pin in `requirements.txt`). If
 > `Qwen3VLForConditionalGeneration` / `Qwen3VLProcessor` import as `None`, your `transformers` is too old.
->
-> The YOLO object-mask feature (see [2.3](#23-metadatajson-format)) needs `ultralytics`; `yolov8x-seg.pt`
-> downloads automatically on first use.
 
 ---
 
@@ -136,10 +133,6 @@ The manifest is the standard image metadata JSON plus one extra `control_file_pa
 > **You only supply the target + control images. You do NOT supply masks.** The inpaint mask is generated on the
 > fly:
 > - A random rectangular hole via `get_random_mask` in the collate.
-> - Then, on a random ~70% subset of frames, an **irregular object-shaped mask** produced by a **YOLO-seg**
->   detector (`ObjectInstanceDetector`), with its edges randomly dilated / eroded / Gaussian-blurred. This mirrors
->   `scripts/qwenimage_fun/train_control.py` and gives the model realistic, object-shaped inpaint holes instead of
->   only rectangles.
 > - The masked image fed to the union branch is always `target * (1 - mask)`.
 
 > **RGBA note**: the 2.1 VAE reads RGBA. Training images are loaded as RGB and automatically composited over an
