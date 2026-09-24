@@ -528,6 +528,7 @@ class VideoAlignReward(BaseReward):
         return_all_dims=False,
         use_legacy_video_io=False,
         differentiable=False,
+        grayscale=False,
     ):
         from .video_align_predictor import VideoVLMRewardInference
 
@@ -549,6 +550,9 @@ class VideoAlignReward(BaseReward):
         self.return_all_dims = return_all_dims  # Return all dimensions instead of single reward_dim
         self.use_legacy_video_io = use_legacy_video_io  # If True, save to temp video then read back (old path)
         self.differentiable = differentiable  # If True, use differentiable path for backprop
+        self.grayscale = grayscale  # If True, desaturate input frames to grayscale before scoring
+        #   (mirrors GenRL videoalign_mq_score: MQ is judged on grayscale video so it focuses on
+        #   motion rather than color). Implemented as a linear luma mix, so it stays differentiable.
 
         self.inferencer = VideoVLMRewardInference(
             load_from_pretrained=self.model_path,
@@ -561,6 +565,28 @@ class VideoAlignReward(BaseReward):
         # The forward pass still builds the computation graph for input gradients.
         if self.differentiable:
             self.inferencer.model.requires_grad_(False)
+
+    def _maybe_grayscale(self, batch_frames: torch.Tensor) -> torch.Tensor:
+        """Optionally convert input frames to grayscale before scoring.
+
+        Mirrors GenRL's videoalign_mq_score, which desaturates the video so the
+        Motion-Quality head judges motion instead of color. Uses the standard luma
+        weights (0.299/0.587/0.114) and replicates the result across 3 channels.
+        The transform is a pure linear combination (no rounding), so it preserves
+        grad_fn for the differentiable path.
+
+        Args:
+            batch_frames: [B, C, T, H, W] tensor in [0, 1] with C >= 3.
+        Returns:
+            [B, 3, T, H, W] grayscale frames if self.grayscale else the input unchanged.
+        """
+        if not self.grayscale:
+            return batch_frames
+        weights = torch.tensor(
+            [0.299, 0.587, 0.114], device=batch_frames.device, dtype=batch_frames.dtype
+        ).view(1, 3, 1, 1, 1)
+        gray = (batch_frames[:, :3] * weights).sum(dim=1, keepdim=True)  # [B, 1, T, H, W]
+        return gray.repeat(1, 3, 1, 1, 1)  # [B, 3, T, H, W]
 
     def _save_frames_to_temp_video(self, frames: torch.Tensor, fps: float = 8.0) -> str:
         """Save tensor frames to a temporary video file with lossless encoding.
@@ -638,6 +664,7 @@ class VideoAlignReward(BaseReward):
 
     def _get_rewards_legacy(self, batch_frames, batch_prompt):
         """Legacy path: save tensors to temp video files, then read back via inferencer.reward()."""
+        batch_frames = self._maybe_grayscale(batch_frames)
         temp_video_paths = []
         try:
             for frames in batch_frames:
@@ -659,6 +686,7 @@ class VideoAlignReward(BaseReward):
 
     def _get_rewards_direct(self, batch_frames, batch_prompt):
         """Direct tensor path: pass tensors to inferencer without file I/O."""
+        batch_frames = self._maybe_grayscale(batch_frames)
         video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
         rewards_output = self.inferencer.reward_from_tensors(
             video_tensors=video_tensors,
@@ -707,6 +735,7 @@ class VideoAlignReward(BaseReward):
             torch.Tensor: [B] scalar rewards with grad_fn.
         """
         assert len(batch_frames) == len(batch_prompt)
+        batch_frames = self._maybe_grayscale(batch_frames)
         video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
         logits = self.inferencer.reward_from_tensors_differentiable(
             video_tensors=video_tensors,
@@ -743,6 +772,7 @@ class VideoAlignReward(BaseReward):
             dict: 'VQ', 'MQ', 'TA', 'Overall' keys, each a [B] tensor with grad_fn.
         """
         assert len(batch_frames) == len(batch_prompt)
+        batch_frames = self._maybe_grayscale(batch_frames)
         video_tensors = [rearrange(frames, "c t h w -> t c h w") for frames in batch_frames]
         logits = self.inferencer.reward_from_tensors_differentiable(
             video_tensors=video_tensors,
@@ -813,6 +843,37 @@ class VideoAlignReward(BaseReward):
             result[dim] = torch.stack(all_rewards[dim], dim=0)
 
         return result
+
+
+class VideoAlignMQReward(VideoAlignReward):
+    """VideoAlign Motion-Quality branch (mirrors GenRL ``videoalign_mq_score``).
+
+    Scores the MQ dimension on a GRAYSCALE version of the video, sampling frames
+    as if the clip were 8 fps (matching GenRL's temp-mp4 fps). Use it as a
+    SEPARATELY-NAMED reward branch alongside VideoAlignTAReward so that
+    train_grpo_lora.py can group-normalize and weight MQ and TA independently
+    (i.e. GenRL's weight_advantages mode).
+    """
+
+    def __init__(self, *args, reward_dim="MQ", grayscale=True, fps=8, num_frames=None, **kwargs):
+        super().__init__(
+            *args, reward_dim=reward_dim, grayscale=grayscale, fps=fps, num_frames=num_frames, **kwargs
+        )
+
+
+class VideoAlignTAReward(VideoAlignReward):
+    """VideoAlign Text-Alignment branch (mirrors GenRL ``videoalign_ta_score``).
+
+    Scores the TA dimension on the ORIGINAL COLOR video, sampling frames as if
+    the clip were 8 fps. Pair with VideoAlignMQReward for GenRL-equivalent
+    two-branch combination.
+    """
+
+    def __init__(self, *args, reward_dim="TA", grayscale=False, fps=8, num_frames=None, **kwargs):
+        super().__init__(
+            *args, reward_dim=reward_dim, grayscale=grayscale, fps=fps, num_frames=num_frames, **kwargs
+        )
+
 
 if __name__ == "__main__":
     import numpy as np
