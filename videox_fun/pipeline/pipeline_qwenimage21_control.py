@@ -502,8 +502,19 @@ class QwenImage21ControlPipeline(DiffusionPipeline):
             prompt (`str` or `list[str]`, *optional*):
                 The prompt to guide image generation. Pass `prompt_embeds` instead to supply embeddings directly.
             image (`PipelineImageInput`, *optional*):
-                One or more condition images, as a PIL image or a numpy array. A list is one set of images shared by
-                every prompt in the batch, not one entry per prompt.
+                The inpaint source, as a PIL image, a numpy array or a (1, 3, h, w) tensor in [0, 1] -- the form
+                `videox_fun.utils.utils.get_image_latent` returns and the training validations use. Unlike in the base
+                pipeline this is never shown to the text encoder; it is masked and VAE-encoded into `control_context`
+                (step 3b), so a preprocessed tensor is accepted here. A list is one set of images shared by every
+                prompt in the batch, not one entry per prompt.
+            mask_image (`PipelineImageInput`, *optional*):
+                Binary mask over `image`, in the same pixel forms. WHITE (>= 0.5) marks the region to regenerate and
+                black the region to keep; omitted, the whole image is regenerated.
+            control_image (`PipelineImageInput`, *optional*):
+                The control signal (pose / depth / canny / ...), in the same pixel forms. Omitted, the control
+                channels of `control_context` are zeros -- the pure-inpaint recipe from training.
+            control_context_scale (`float`, *optional*, defaults to 1.0):
+                Multiplier on the assembled `control_context` conditioning.
             negative_prompt (`str` or `list[str]`, *optional*):
                 The prompt not to guide image generation. Ignored when `true_cfg_scale` is not greater than 1.
             true_cfg_scale (`float`, *optional*, defaults to 1.0):
@@ -555,8 +566,10 @@ class QwenImage21ControlPipeline(DiffusionPipeline):
             with the generated images.
         """
         if image is not None:
-            # The text encoder reads each condition image as vision context, so the pixels have to be there. Normalize
-            # to PIL up front, and everything downstream — the aspect ratio below, the resize, the VAE — sees one type.
+            # `image` is only the inpaint source here: step 1 leaves the condition images that reach the text encoder
+            # empty, and step 3b consumes `image` through the VAE image processor, which also takes tensors. So the
+            # base pipeline's PIL-only requirement (its condition images really do go into the vision slots) does not
+            # apply -- normalize to PIL / tensor and let everything downstream see one of those two types.
             image = image if isinstance(image, list) else [image]
             condition_images = []
             for img in image:
@@ -564,6 +577,8 @@ class QwenImage21ControlPipeline(DiffusionPipeline):
                     condition_images.append(img)
                 elif isinstance(img, np.ndarray):
                     condition_images.append(PILImage.fromarray(img))
+                elif isinstance(img, torch.Tensor):
+                    condition_images.append(img)
                 elif isinstance(img, (list, tuple)):
                     raise ValueError(
                         "`image` is one flat set of condition images that applies to every prompt in the batch, so it "
@@ -572,13 +587,18 @@ class QwenImage21ControlPipeline(DiffusionPipeline):
                     )
                 else:
                     raise ValueError(
-                        f"`image` accepts a PIL image or a numpy array, or a list of either, but got "
-                        f"{type(img).__name__}. Latents cannot stand in for a condition image here, because the text "
-                        f"encoder has to see the image itself."
+                        "`image` accepts a PIL image, a numpy array or a (1, 3, h, w) tensor, or a list of either, but "
+                        f"got {type(img).__name__}."
                     )
             image = condition_images
+            # Aspect ratio of the last condition image: PIL / numpy carry (w, h) in `.size`, a tensor carries
+            # (..., h, w) in its trailing dims.
+            if isinstance(image[-1], torch.Tensor):
+                image_width, image_height = image[-1].shape[-1], image[-1].shape[-2]
+            else:
+                image_width, image_height = image[-1].size
             calculated_width, calculated_height, _ = calculate_dimensions(
-                output_resolution * output_resolution, image[-1].size[0] / image[-1].size[1]
+                output_resolution * output_resolution, image_width / image_height
             )
             height = height or calculated_height
             width = width or calculated_width
@@ -677,7 +697,7 @@ class QwenImage21ControlPipeline(DiffusionPipeline):
         mask_condition = _to_ctrl_batch(mask_condition).to(device)
 
         if image is not None:
-            inpaint_image = self.image_processor.preprocess(image, height=height, width=width)
+            inpaint_image = self.image_processor.preprocess(image, height=height, width=width).to(device)
             inpaint_image = inpaint_image * (mask_condition < 0.5)  # zero out the region to regenerate
             inpaint_latent = self._encode_vae_image(
                 _rgba(inpaint_image).unsqueeze(2).to(device=device, dtype=weight_dtype), generator

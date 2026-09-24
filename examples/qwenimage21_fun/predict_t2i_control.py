@@ -165,10 +165,8 @@ if ulysses_degree > 1 or ring_degree > 1:
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
-        from functools import partial
-        from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.model.language_model.layers)
-        text_encoder = shard_fn(text_encoder)
+        shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=pipeline.text_encoder.model.language_model.layers)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
         print("Add FSDP TEXT ENCODER")
 
 if compile_dit:
@@ -199,9 +197,13 @@ generator = torch.Generator(device=device).manual_seed(seed)
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
-# Load the control image as a single-frame (1, 3, h, w) tensor, matching scripts/qwenimage21_fun/train_control.py
-# validation (get_image_latent(... )[:, :, 0]) so inference preprocessing is identical to training.
-control_image = get_image_latent(control_image, sample_size=(sample_size[0], sample_size[1]))[:, :, 0]
+# Load the control image through get_image_latent -- the same single-frame (1, 3, h, w) tensor that
+# scripts/qwenimage21_fun/train_control.py validation builds, so the resize / normalization the model was trained
+# with is reproduced here instead of relying on the pipeline's own PIL preprocessing.
+if control_image is not None:
+    control_image_input = get_image_latent(control_image, sample_size=sample_size)[:, :, 0]
+else:
+    control_image_input = None
 
 with torch.no_grad():
     sample = pipeline(
@@ -212,7 +214,7 @@ with torch.no_grad():
         generator   = generator,
         true_cfg_scale = guidance_scale,
         num_inference_steps = num_inference_steps,
-        control_image       = control_image,
+        control_image       = control_image_input,
         control_context_scale = control_context_scale,
         use_kv_cache = use_kv_cache,
     ).images
