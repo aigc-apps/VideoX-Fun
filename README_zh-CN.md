@@ -299,7 +299,7 @@ sh scripts/{model_name}/train.sh
 | Wan2.2-Fun | [中文](scripts/wan2.2_fun/README_TRAIN_zh-CN.md) / [EN](scripts/wan2.2_fun/README_TRAIN.md) | [中文](scripts/wan2.2_fun/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/wan2.2_fun/README_TRAIN_LORA.md) | [Control LoRA 中文](scripts/wan2.2_fun/README_TRAIN_CONTROL_LORA_zh-CN.md) |
 | CogVideoX-Fun | [中文](scripts/cogvideox_fun/README_TRAIN_zh-CN.md) / [EN](scripts/cogvideox_fun/README_TRAIN.md) | [中文](scripts/cogvideox_fun/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/cogvideox_fun/README_TRAIN_LORA.md) | [Control 中文](scripts/cogvideox_fun/README_TRAIN_CONTROL_zh-CN.md)、[Reward LoRA](scripts/cogvideox_fun/README_TRAIN_REWARD.md) |
 | Qwen-Image | [中文](scripts/qwenimage/README_TRAIN_zh-CN.md) / [EN](scripts/qwenimage/README_TRAIN.md) | [中文](scripts/qwenimage/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/qwenimage/README_TRAIN_LORA.md) | [Edit 中文](scripts/qwenimage/README_TRAIN_EDIT_zh-CN.md) |
-| Qwen-Image-2.1 | [中文](scripts/qwenimage21/README_TRAIN_zh-CN.md) / [EN](scripts/qwenimage21/README_TRAIN.md) | - | - |
+| Qwen-Image-2.1 | [中文](scripts/qwenimage21/README_TRAIN_zh-CN.md) / [EN](scripts/qwenimage21/README_TRAIN.md) | - | [Control 中文](scripts/qwenimage21_fun/README_TRAIN_zh-CN.md) / [EN](scripts/qwenimage21_fun/README_TRAIN.md) |
 | Z-Image | [中文](scripts/z_image/README_TRAIN_zh-CN.md) / [EN](scripts/z_image/README_TRAIN.md) | [中文](scripts/z_image/README_TRAIN_LORA_zh-CN.md) / [EN](scripts/z_image/README_TRAIN_LORA.md) | [GRPO LoRA 中文](scripts/z_image/README_TRAIN_GRPO_LORA_zh-CN.md) |
 
 其余模型（如HunyuanVideo、MiniMax-H3、Flux2-Fun、InfiniteTalk、LingBot等）同理，直接查看对应`scripts/{model_name}/`下的README即可。
