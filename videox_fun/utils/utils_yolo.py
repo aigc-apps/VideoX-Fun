@@ -12,14 +12,39 @@ import requests
 # (e.g. rank 15 on an 8-GPU node), which crashes the import with "CUDA error: invalid device
 # ordinal". Present the node-local rank to ultralytics just for this import so its barrier
 # targets a valid device, then restore the true RANK so distributed training is unaffected.
-_REAL_RANK = os.environ.get("RANK")
-if _REAL_RANK is not None:
-    os.environ["RANK"] = os.environ.get("LOCAL_RANK", "0")
-try:
-    from ultralytics import YOLO
-finally:
-    if _REAL_RANK is not None:
-        os.environ["RANK"] = _REAL_RANK
+#
+# The import itself is wrapped in try/except as well: ultralytics is an optional dependency
+# that is only needed when a detector is actually instantiated, so a missing/broken install
+# must not make this module unimportable.
+def _import_yolo():
+    """Import ultralytics' YOLO behind the node-local RANK guard; return None on failure."""
+    real_rank = os.environ.get("RANK")
+    if real_rank is not None:
+        os.environ["RANK"] = os.environ.get("LOCAL_RANK", "0")
+    try:
+        from ultralytics import YOLO
+        return YOLO
+    except Exception:
+        return None
+    finally:
+        if real_rank is not None:
+            os.environ["RANK"] = real_rank
+
+
+YOLO = _import_yolo()
+
+
+def _get_yolo():
+    """Return the ultralytics YOLO class, re-importing it lazily if the eager import failed."""
+    if YOLO is not None:
+        return YOLO
+    yolo_cls = _import_yolo()
+    if yolo_cls is None:
+        raise ImportError(
+            "ultralytics is required by the YOLO detectors in this module. "
+            "Install it with `pip install ultralytics`."
+        )
+    return yolo_cls
 
 
 MODEL_DIR = "./models"
@@ -42,7 +67,7 @@ class ObjectInstanceDetector:
         if not os.path.exists(model_path):
             urldownload(instance_url, model_path)
 
-        self.model  = YOLO(model_path).to(device)
+        self.model  = _get_yolo()(model_path).to(device)
         self.cob    = combine_overlap_boxes
         self.overlap_threhold = 0.05
     
@@ -175,7 +200,7 @@ class ObjectDetector:
             os.makedirs(model_dir, exist_ok=True)
             urldownload(yolo26_url.replace("yolo26x-seg.pt", model_name), model_path)
 
-        self.model = YOLO(model_path)
+        self.model = _get_yolo()(model_path)
         if device is not None:
             self.model.to(device)
 

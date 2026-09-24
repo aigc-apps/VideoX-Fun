@@ -81,8 +81,8 @@ from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
                                  WanFlexForcingPipeline,
                                  WanSelfForcingPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.flex_chunking import (UNIFORM_BLOCK_PROB,
-                                            broadcast_chunk_sizes,
+from videox_fun.utils.flex_chunking import (broadcast_chunk_sizes,
+                                            build_full_then_blocks_partitions,
                                             build_pyramid_partitions,
                                             chunk_boundaries,
                                             sample_flexible_chunks,
@@ -317,7 +317,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                             # would validate out of distribution too. The uniform
                             # block layout is the one band that is both fixed
                             # across checkpoints and actually trained:
-                            # UNIFORM_BLOCK_PROB of iterations use it, against
+                            # FLEX_ARM_PROB of iterations use it, against
                             # ~1.3% for the most common random partition.
                             flex_kwargs = dict(
                                 chunk_spec=args.num_frame_per_block,
@@ -379,14 +379,16 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     return torch.clip(t.to(torch.int32), low, high - 1)
 
 
-# Fraction of pyramid iterations whose level 0 is the whole clip as a single
-# chunk, i.e. fully bidirectional. 3.2's coarse planning step is exactly that at
-# inference (`denoise_mode="pyramid"` with no `chunk_spec` builds `[[F], ...]`),
-# so it has to appear in training; the remaining iterations keep the random
-# partition of 3.1 so the causal end and every layout in between stay covered.
-# Deliberately not a CLI flag - it is a property of the paper's schedule, not a
-# knob the launcher should have to keep in sync.
-COARSE_GLOBAL_PROB = 0.5
+# Each training iteration draws its level-0 layout from four equally likely arms
+# (FLEX_ARM_PROB = 25% of iterations each): the whole-clip planning chunk (3.2's
+# coarse step, `[[F], ...]` at inference), the launcher's own uniform
+# `num_frame_per_block`, the fixed "first step full, then block-major" ladder
+# (`denoise_mode="full_then_blocks"`), and a random 3.1 partition. Equal shares
+# keep the coarse, causal and every in-between layout covered while giving the
+# full_then_blocks ladder enough iterations to train the block-major-at-high-noise
+# trajectory the binary pyramid never reaches. Deliberately not a CLI flag - it is
+# a property of the schedule mixture, not a knob the launcher keeps in sync.
+FLEX_ARM_PROB = 0.25
 
 # How many steps of a launch report the partition they drew. Counted from this
 # process rather than from `global_step`, so a resumed run still gets its own
@@ -406,59 +408,143 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
     per denoising step. Returns ``None`` when Flex-Forcing is off, which leaves
     the inherited uniform ``num_frame_per_block`` masks untouched.
 
-    The level-0 layout is a three-way mixture decided by a single uniform draw,
-    so the constants below are the actual iteration shares: ``COARSE_GLOBAL_PROB``
-    of iterations use one chunk over the whole clip (what inference's coarse
-    planning step uses), ``UNIFORM_BLOCK_PROB`` pin the launcher's own uniform
-    ``num_frame_per_block``, and the rest draw a random 2..10 partition. All of
-    them are then refined into the same ladder, so a single set of weights covers
-    `denoise_mode="pyramid"` whether or not the caller pins `chunk_spec`. With no
-    pyramid the coarse band is empty and the split is 10% uniform / 90% random.
+    The level-0 layout is a four-way mixture decided by a single uniform draw,
+    each arm taking ``FLEX_ARM_PROB`` (25%) of iterations: one chunk over the
+    whole clip (inference's coarse planning step), a single-level uniform block
+    grid, the fixed "first step full, then block-major" ladder
+    (`denoise_mode="full_then_blocks"`), and a random 2..10 partition. The coarse
+    and random arms are refined into the same binary pyramid, so a single set of
+    weights covers `denoise_mode="pyramid"` whether or not the caller pins
+    `chunk_spec`. The uniform and full_then_blocks arms bypass that refinement:
+    uniform emits a pure-Self-Forcing ladder in one of three layouts drawn from
+    `num_frame_per_block` (`[3x7]`) and fully causal (`[1x21]`) -- `[3x7]` alone,
+    `[1x21]` alone, or `[3x7]` planning followed by `[1x21]` for every remaining
+    step; full_then_blocks emits its two-level ladder whole, drawing the same
+    block width. With no pyramid the coarse arm is empty (a `[F]` level 0 would be
+    a degenerate single-chunk rollout), so the split is 25% uniform / 25%
+    full_then_blocks / 50% random.
     """
     if not args.flex_forcing:
         return None
-    u = torch.rand((), generator=torch_rng, device=device).item()
-    coarse_prob = COARSE_GLOBAL_PROB if args.flex_pyramid_levels > 1 else 0.0
-    if u < coarse_prob:
+    # The arm selector must be IDENTICAL on every rank, not just its broadcast
+    # count. Only the coarse/random arms funnel through the shared refine tail
+    # below; the uniform and full_then_blocks arms each set the ladder directly
+    # from a different tensor, so a per-rank `u` would leave ranks in different
+    # arms building different ladders
+    # -> different walk forward counts -> FSDP all-gather desync (NCCL hang).
+    # Broadcast rank 0's draw so all ranks take the same arm; the arm's existing
+    # single broadcast then reconciles its within-arm randomness (the random base,
+    # the block width) to rank 0, making every ladder byte-identical.
+    u = torch.rand((), generator=torch_rng, device=device)
+    if dist.is_available() and dist.is_initialized():
+        dist.broadcast(u.reshape(1), src=0)
+    u = u.item()
+    pyramid = args.flex_pyramid_levels > 1
+    # Four equally likely arms; the coarse (whole-clip planning) one only when a
+    # pyramid is on, else its 25% folds into the random arm.
+    coarse_hi = FLEX_ARM_PROB if pyramid else 0.0
+    uniform_hi = coarse_hi + FLEX_ARM_PROB
+    ftb_hi = uniform_hi + FLEX_ARM_PROB
+    ladder = None
+    if u < coarse_hi:
         # Coarse end of 3.1: reuse the ladder builder's own level-0 rule so the
         # `independent_first_frame` handling cannot drift from inference's.
         base = build_pyramid_partitions(
             num_frames, num_levels=1, base_chunks=None,
             independent_first_frame=args.independent_first_frame)[0]
         arm = "whole clip, the 3.2 coarse planning layout"
-    elif u < coarse_prob + UNIFORM_BLOCK_PROB:
-        # `uniform_chunks`, not `normalize_chunk_spec`: the latter takes no
-        # `independent_first_frame` argument (it encodes that as a leading 1), so
-        # it would silently disagree with the two bands around it. This is the
-        # band `log_validation` renders when there is no pyramid.
-        base = uniform_chunks(
-            num_frames, args.num_frame_per_block,
+    elif u < uniform_hi:
+        # Pure Self-Forcing (no binary-pyramid refinement), three layouts drawn
+        # from `num_frame_per_block` (-> [3x7]) and fully causal (1 frame/block,
+        # -> [1x21]): [3x7] alone, [1x21] alone, and [3x7] planning followed by
+        # [1x21] for every remaining step (the coarse-block -> per-frame descent
+        # the pyramid never samples because it halves through [2,1x14] first).
+        # The three change the ladder DEPTH (hence the walk's forward count), so
+        # the choice must be rank-consistent; it is free here because `u` was
+        # already broadcast to rank 0, so slicing its position within the uniform
+        # band gives every rank the same sub-arm with no extra collective. Like
+        # every arm this issues EXACTLY ONE broadcast (the level-0 layout; the
+        # trailing [1x21] levels are deterministic from `num_frames`). Setting
+        # `ladder` here skips the refine tail. `uniform_chunks`, not
+        # `normalize_chunk_spec`: the latter encodes `independent_first_frame` as
+        # a leading 1 and would silently disagree with the bands around it.
+        band = (u - coarse_hi) / FLEX_ARM_PROB          # [0, 1) in the uniform arm
+        sub = min(int(band * 3), 2)                     # 0 / 1 / 2, equiprobable
+        nfpb = max(1, int(args.num_frame_per_block))
+        iff = args.independent_first_frame
+        causal = uniform_chunks(num_frames, 1, independent_first_frame=iff)
+        if sub == 0:
+            base = broadcast_chunk_sizes(causal, device=device)
+            ladder = [base]
+            arm = "uniform 1-frame blocks, single level (fully causal)"
+        elif sub == 1:
+            base = broadcast_chunk_sizes(
+                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
+                device=device)
+            ladder = [base]
+            arm = f"uniform {nfpb}-frame blocks, single level"
+        else:
+            base = broadcast_chunk_sizes(
+                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
+                device=device)
+            ladder = ([base] + [list(causal)
+                                for _ in range(max(0, num_denoising_steps - 1))])
+            arm = (f"uniform {nfpb}-frame plan -> fully causal [1x" f"{num_frames}] "
+                   "for the remaining steps")
+    elif u < ftb_hi:
+        # "First step full, every later step block-major": a fixed two-level
+        # ladder that does NOT go through the binary pyramid refinement, so the
+        # block-major level is reached at high noise (the 2nd step) instead of as
+        # a deep refinement - the one trajectory the pyramid arms never sample.
+        # The block-major width is drawn between fully causal (1 frame / block)
+        # and the launcher's `num_frame_per_block`, so both the tight-AR and the
+        # coarse-block refinement of the whole-clip plan get trained. The block
+        # width is a per-rank draw, so it has to be reconciled with EXACTLY ONE
+        # broadcast - the same collective count every other arm issues (they each
+        # broadcast their single base) - or the ranks desync and NCCL deadlocks.
+        # Level 0 is just [F], identical on every rank and needing no sync, so we
+        # broadcast only the block-major level; rank 0's draw wins and every rank
+        # rebuilds the same two-level ladder locally.
+        block_choices = sorted({1, max(1, int(args.num_frame_per_block))})
+        pick = int(torch.rand((), generator=torch_rng, device=device).item()
+                   * len(block_choices))
+        block = block_choices[min(pick, len(block_choices) - 1)]
+        block = min(block, int(num_frames))
+        ftb = build_full_then_blocks_partitions(
+            num_frames, block,
             independent_first_frame=args.independent_first_frame)
-        arm = f"uniform {args.num_frame_per_block}-frame blocks, the launcher's own layout"
+        ftb[1] = broadcast_chunk_sizes(ftb[1], device=device)
+        ladder = ftb[:num_denoising_steps]
+        arm = (f"full clip -> uniform {max(ftb[1])}-frame blocks, "
+               "the full_then_blocks ladder")
     else:
         base = sample_flexible_chunks(
             num_frames, min_chunk=args.flex_chunk_min, max_chunk=args.flex_chunk_max,
             generator=torch_rng, device=device,
             independent_first_frame=args.independent_first_frame)
         arm = f"random {args.flex_chunk_min}..{args.flex_chunk_max}-frame blocks, the 3.1 spectrum"
-    # Every rank has to train the same layout: the FlexAttention mask, and the
-    # `num_frame_per_block` derived from it, must agree across the SP/FSDP group.
-    base = broadcast_chunk_sizes(base, device=device)
-    ladder = [base]
-    if args.flex_pyramid_levels > 1:
-        ladder = build_pyramid_partitions(
-            num_frames, num_levels=args.flex_pyramid_levels,
-            min_num_frame_per_block=args.flex_min_num_frame_per_block, base_chunks=base,
-            independent_first_frame=args.independent_first_frame)
-        if len(ladder) > num_denoising_steps:
-            # Same short-circuit as at inference, where the rollout stops refining at
-            # the last step: deeper levels would never be reached, so drop them
-            # instead of reporting a pyramid that was not actually trained.
-            if verbose:
-                print(f"--flex_pyramid_levels={args.flex_pyramid_levels} builds "
-                      f"{len(ladder)} levels but only {num_denoising_steps} denoising "
-                      f"steps are trained; keeping the first {num_denoising_steps}.")
-            ladder = ladder[:num_denoising_steps]
+    if ladder is None:
+        # Every rank has to train the same layout: the FlexAttention mask, and the
+        # `num_frame_per_block` derived from it, must agree across the SP/FSDP
+        # group. Only the coarse and random arms reach here; the uniform and
+        # full_then_blocks arms above already set `ladder` (each with its single
+        # broadcast), so they skip this refine path.
+        base = broadcast_chunk_sizes(base, device=device)
+        ladder = [base]
+        if pyramid:
+            ladder = build_pyramid_partitions(
+                num_frames, num_levels=args.flex_pyramid_levels,
+                min_num_frame_per_block=args.flex_min_num_frame_per_block, base_chunks=base,
+                independent_first_frame=args.independent_first_frame)
+            if len(ladder) > num_denoising_steps:
+                # Same short-circuit as at inference, where the rollout stops
+                # refining at the last step: deeper levels would never be reached,
+                # so drop them instead of reporting a pyramid not actually trained.
+                if verbose:
+                    print(f"--flex_pyramid_levels={args.flex_pyramid_levels} builds "
+                          f"{len(ladder)} levels but only {num_denoising_steps} denoising "
+                          f"steps are trained; keeping the first {num_denoising_steps}.")
+                ladder = ladder[:num_denoising_steps]
     if verbose:
         # Every level, not just the drawn one: level 0 is what the mixture above
         # picked, the rest are derived from it, and they are the sub-spans the

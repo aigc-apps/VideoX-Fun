@@ -16,8 +16,10 @@ from ..models import (AutoencoderKLWan, AutoTokenizer, WanT5EncoderModel,
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from ..utils.flex_chunking import (build_pyramid_partitions, chunk_boundaries,
-                                   normalize_chunk_spec, uniform_chunks,
+from ..utils.flex_chunking import (build_full_then_blocks_partitions,
+                                   build_pyramid_partitions,
+                                   chunk_boundaries, normalize_chunk_spec,
+                                   uniform_chunks,
                                    validate_nested_partitions)
 from .pipeline_wan_self_forcing import (WanSelfForcingPipeline,
                                         WanSelfForcingPipelineOutput,
@@ -25,6 +27,12 @@ from .pipeline_wan_self_forcing import (WanSelfForcingPipeline,
                                         stochastic_sampling_timesteps)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+# `denoise_mode` strings that select the "first step full, every later step
+# block-major" ladder built by `build_full_then_blocks_partitions`, i.e. one
+# bidirectional planning chunk followed by the uniform `num_frame_per_block`
+# partition. Kept as a tuple so the aliases stay in one place.
+FULL_THEN_BLOCKS_MODES = ("full_then_blocks", "full_first", "one_shot")
 
 # The partitions evaluated in the paper (5 s / 21 latent frames and the long
 # video regimes), kept as a reference for choosing `chunk_spec`. Any list of
@@ -168,6 +176,10 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                 from ``num_inference_steps`` so the two never need syncing. An
                 int pins a truncated pyramid of exactly that many levels, e.g.
                 ``2`` for the paper's ``[21] -> [11, 10]`` ladder on a 5 s clip.
+                ``"full_then_blocks"`` (aliases ``"full_first"`` /
+                ``"one_shot"``) runs a fixed two-level ladder instead: the first
+                step plans the whole clip in one bidirectional chunk and every
+                later step reuses the uniform ``num_frame_per_block`` partition.
             min_num_frame_per_block: Block size the ladder stops refining at -
                 every level-0 chunk is binary-split until it is at or below this
                 size. ``1`` lets the pyramid reach fully causal (single-frame)
@@ -189,30 +201,37 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
             ```
         """
         # `denoise_mode` -> ladder depth, i.e. how many nested partitions.
-        #   "fixed"   -> 1: one partition held for every denoising step.
-        #   "pyramid" -> one level per denoising step (3.2), so the caller never
-        #                has to keep two numbers in sync. The ladder stops
-        #                earlier at its fixed point; asking for more levels than
-        #                the partition can yield is harmless.
-        #   int       -> an explicitly pinned depth, for callers that must run a
-        #                truncated pyramid (e.g. the trainer's
-        #                `--flex_pyramid_levels`).
-        if isinstance(denoise_mode, str):
-            mode = denoise_mode.strip().lower()
-            if mode == "fixed":
+        #   "fixed"            -> 1: one partition held for every denoising step.
+        #   "pyramid"          -> one level per denoising step (3.2), so the caller
+        #                         never has to keep two numbers in sync. The ladder
+        #                         stops earlier at its fixed point; asking for more
+        #                         levels than the partition can yield is harmless.
+        #   "full_then_blocks" -> 2 levels, built specially below: the first step
+        #                         plans the whole clip in one bidirectional chunk,
+        #                         every later step reuses the uniform
+        #                         `num_frame_per_block` partition.
+        #   int                -> an explicitly pinned pyramid depth, for callers
+        #                         that must run a truncated pyramid (e.g. the
+        #                         trainer's `--flex_pyramid_levels`).
+        ladder_mode = (denoise_mode.strip().lower()
+                       if isinstance(denoise_mode, str) else None)
+        if ladder_mode is not None:
+            if ladder_mode == "fixed":
                 depth = 1
-            elif mode == "pyramid":
+            elif ladder_mode == "pyramid":
                 depth = max(1, int(num_inference_steps or 1))
+            elif ladder_mode in FULL_THEN_BLOCKS_MODES:
+                depth = 2
             else:
                 raise ValueError(
-                    "denoise_mode must be 'fixed', 'pyramid' or an int >= 1, "
-                    f"got {denoise_mode!r}")
+                    "denoise_mode must be 'fixed', 'pyramid', 'full_then_blocks' "
+                    f"or an int >= 1, got {denoise_mode!r}")
         else:
             depth = int(denoise_mode)
             if depth < 1:
                 raise ValueError(
-                    "denoise_mode must be 'fixed', 'pyramid' or an int >= 1, "
-                    f"got {denoise_mode!r}")
+                    "denoise_mode must be 'fixed', 'pyramid', 'full_then_blocks' "
+                    f"or an int >= 1, got {denoise_mode!r}")
 
         if chunk_spec is None and depth <= 1:
             # Nothing Flex-Forcing specific was asked for: hand the call to the
@@ -286,12 +305,21 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
         base = normalize_chunk_spec(chunk_spec, latent_frames) \
             if chunk_spec is not None else None
         if depth > 1:
-            # Level 0 defaults to a single chunk over the whole clip - the
-            # paper's "high-level planning" step - unless the caller pinned it.
-            partitions = build_pyramid_partitions(
-                latent_frames, num_levels=int(depth),
-                min_num_frame_per_block=min_num_frame_per_block, base_chunks=base,
-                independent_first_frame=independent_first_frame)
+            if ladder_mode in FULL_THEN_BLOCKS_MODES:
+                # "First step full, every later step block-major": a fixed
+                # two-level ladder whose fine level is the uniform
+                # `num_frame_per_block` partition rather than a binary split, so
+                # it does not go through `build_pyramid_partitions`.
+                partitions = build_full_then_blocks_partitions(
+                    latent_frames, num_frame_per_block,
+                    independent_first_frame=independent_first_frame)
+            else:
+                # Level 0 defaults to a single chunk over the whole clip - the
+                # paper's "high-level planning" step - unless the caller pinned it.
+                partitions = build_pyramid_partitions(
+                    latent_frames, num_levels=int(depth),
+                    min_num_frame_per_block=min_num_frame_per_block, base_chunks=base,
+                    independent_first_frame=independent_first_frame)
             validate_nested_partitions(partitions, latent_frames)
             chunk_sizes = partitions[0]
         else:

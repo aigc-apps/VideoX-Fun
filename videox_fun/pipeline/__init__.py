@@ -19,18 +19,22 @@ from .pipeline_ltx2 import LTX2Pipeline
 from .pipeline_ltx2_i2v import LTX2I2VPipeline
 from .pipeline_ltx2_latent_upsample import LTX2LatentUpsamplePipeline
 from .pipeline_minimax_h3 import (MiniMaxH3AudioReference,
-                                  MiniMaxH3ImageReference,
-                                  MiniMaxH3Pipeline,
+                                  MiniMaxH3ImageReference, MiniMaxH3Pipeline,
                                   MiniMaxH3VideoReference)
 from .pipeline_minimax_h3_control import MiniMaxH3ControlPipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage21 import QwenImage21Pipeline
+from .pipeline_qwenimage21_control import QwenImage21ControlPipeline
 from .pipeline_qwenimage_control import QwenImageControlPipeline
 from .pipeline_qwenimage_edit import QwenImageEditPipeline
 from .pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
 from .pipeline_qwenimage_instantx import QwenImageControlNetPipeline
 from .pipeline_qwenimage_layered import QwenImageLayeredPipeline
+from .pipeline_taomate_h3 import (MiniMaxH3StreamingPipeline,
+                                  TaomateH3StreamPhase, TaomateH3StreamPlan,
+                                  TaomateH3TeacherArtifact,
+                                  TaomateH3TeacherError)
 from .pipeline_wan import WanPipeline
 from .pipeline_wan2_2 import Wan2_2Pipeline
 from .pipeline_wan2_2_animate import Wan2_2AnimatePipeline
@@ -38,11 +42,6 @@ from .pipeline_wan2_2_fun_control import Wan2_2FunControlPipeline
 from .pipeline_wan2_2_fun_inpaint import Wan2_2FunInpaintPipeline
 from .pipeline_wan2_2_s2v import Wan2_2S2VPipeline
 from .pipeline_wan2_2_ti2v import Wan2_2TI2VPipeline
-from .pipeline_taomate_h3 import (MiniMaxH3StreamingPipeline,
-                                  TaomateH3StreamPhase,
-                                  TaomateH3StreamPlan,
-                                  TaomateH3TeacherArtifact,
-                                  TaomateH3TeacherError)
 from .pipeline_wan2_2_vace_fun import Wan2_2VaceFunPipeline
 from .pipeline_wan_flex_forcing import WanFlexForcingPipeline
 from .pipeline_wan_fun_control import WanFunControlPipeline

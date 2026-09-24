@@ -367,6 +367,7 @@ def save_results():
         image = (image * 255).numpy().astype(np.uint8)
         image = Image.fromarray(image)
         image.save(video_path)
+        print(f"Saved image to: {video_path}")
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         sr = getattr(pipeline.audio_vae.config, "output_sampling_rate", audio_sample_rate)

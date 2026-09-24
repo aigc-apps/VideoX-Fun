@@ -206,7 +206,7 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, 
                           module_to_wrapper=text_encoder.language_model.layers)
-        text_encoder = shard_fn(text_encoder)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
         print("Add FSDP TEXT ENCODER")
 
 if compile_dit:
@@ -313,6 +313,7 @@ def save_results():
         image = (image * 255).numpy().astype(np.uint8)
         image = Image.fromarray(image)
         image.save(video_path)
+        print(f"Saved image to: {video_path}")
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         sr = getattr(pipeline.vocoder.config, "output_sampling_rate", audio_sample_rate)

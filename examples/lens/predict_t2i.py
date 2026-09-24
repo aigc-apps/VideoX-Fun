@@ -217,6 +217,7 @@ def save_results():
     video_path = os.path.join(save_path, prefix + ".png")
     image = sample[0]
     image.save(video_path)
+    print(f"Saved image to: {video_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

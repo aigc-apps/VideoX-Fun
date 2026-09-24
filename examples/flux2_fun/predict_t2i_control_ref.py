@@ -172,7 +172,7 @@ if ulysses_degree > 1 or ring_degree > 1:
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers, ignored_modules=[text_encoder.language_model.embed_tokens], transformer_layer_cls_to_wrap=["MistralDecoderLayer", "PixtralTransformer"])
-        text_encoder = shard_fn(text_encoder)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
         print("Add FSDP TEXT ENCODER")
 
 if compile_dit:
@@ -249,6 +249,7 @@ def save_results():
     video_path = os.path.join(save_path, prefix + ".png")
     image = sample[0]
     image.save(video_path)
+    print(f"Saved image to: {video_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist
