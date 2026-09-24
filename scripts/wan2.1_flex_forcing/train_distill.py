@@ -410,24 +410,27 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
 
     The level-0 layout is a four-way mixture decided by a single uniform draw,
     each arm taking ``FLEX_ARM_PROB`` (25%) of iterations: one chunk over the
-    whole clip (inference's coarse planning step), the launcher's own uniform
-    ``num_frame_per_block``, the fixed "first step full, then block-major" ladder
-    (`denoise_mode="full_then_blocks"`), and a random 2..10 partition. The first,
-    second and last are then refined into the same binary pyramid, so a single set
-    of weights covers `denoise_mode="pyramid"` whether or not the caller pins
-    `chunk_spec`; the full_then_blocks arm bypasses that refinement and emits its
-    two-level ladder whole, drawing the block-major width between fully causal (1
-    frame / block) and `num_frame_per_block`. With no pyramid the coarse arm is
-    empty (a `[F]` level 0 would be a degenerate single-chunk rollout), so the
-    split is 25% uniform / 25% full_then_blocks / 50% random.
+    whole clip (inference's coarse planning step), a single-level uniform block
+    grid, the fixed "first step full, then block-major" ladder
+    (`denoise_mode="full_then_blocks"`), and a random 2..10 partition. The coarse
+    and random arms are refined into the same binary pyramid, so a single set of
+    weights covers `denoise_mode="pyramid"` whether or not the caller pins
+    `chunk_spec`. The uniform and full_then_blocks arms bypass that refinement:
+    uniform emits a pure-Self-Forcing ladder in one of three layouts drawn from
+    `num_frame_per_block` (`[3x7]`) and fully causal (`[1x21]`) -- `[3x7]` alone,
+    `[1x21]` alone, or `[3x7]` planning followed by `[1x21]` for every remaining
+    step; full_then_blocks emits its two-level ladder whole, drawing the same
+    block width. With no pyramid the coarse arm is empty (a `[F]` level 0 would be
+    a degenerate single-chunk rollout), so the split is 25% uniform / 25%
+    full_then_blocks / 50% random.
     """
     if not args.flex_forcing:
         return None
     # The arm selector must be IDENTICAL on every rank, not just its broadcast
-    # count. Each arm now post-processes the received partition its own way (the
-    # coarse/uniform/random trio funnel through the shared refine tail below, but
-    # full_then_blocks sets the ladder directly from a different tensor), so a
-    # per-rank `u` would leave ranks in different arms building different ladders
+    # count. Only the coarse/random arms funnel through the shared refine tail
+    # below; the uniform and full_then_blocks arms each set the ladder directly
+    # from a different tensor, so a per-rank `u` would leave ranks in different
+    # arms building different ladders
     # -> different walk forward counts -> FSDP all-gather desync (NCCL hang).
     # Broadcast rank 0's draw so all ranks take the same arm; the arm's existing
     # single broadcast then reconciles its within-arm randomness (the random base,
@@ -451,14 +454,43 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
             independent_first_frame=args.independent_first_frame)[0]
         arm = "whole clip, the 3.2 coarse planning layout"
     elif u < uniform_hi:
-        # `uniform_chunks`, not `normalize_chunk_spec`: the latter takes no
-        # `independent_first_frame` argument (it encodes that as a leading 1), so
-        # it would silently disagree with the bands around it. This is the band
-        # `log_validation` renders when there is no pyramid.
-        base = uniform_chunks(
-            num_frames, args.num_frame_per_block,
-            independent_first_frame=args.independent_first_frame)
-        arm = f"uniform {args.num_frame_per_block}-frame blocks, the launcher's own layout"
+        # Pure Self-Forcing (no binary-pyramid refinement), three layouts drawn
+        # from `num_frame_per_block` (-> [3x7]) and fully causal (1 frame/block,
+        # -> [1x21]): [3x7] alone, [1x21] alone, and [3x7] planning followed by
+        # [1x21] for every remaining step (the coarse-block -> per-frame descent
+        # the pyramid never samples because it halves through [2,1x14] first).
+        # The three change the ladder DEPTH (hence the walk's forward count), so
+        # the choice must be rank-consistent; it is free here because `u` was
+        # already broadcast to rank 0, so slicing its position within the uniform
+        # band gives every rank the same sub-arm with no extra collective. Like
+        # every arm this issues EXACTLY ONE broadcast (the level-0 layout; the
+        # trailing [1x21] levels are deterministic from `num_frames`). Setting
+        # `ladder` here skips the refine tail. `uniform_chunks`, not
+        # `normalize_chunk_spec`: the latter encodes `independent_first_frame` as
+        # a leading 1 and would silently disagree with the bands around it.
+        band = (u - coarse_hi) / FLEX_ARM_PROB          # [0, 1) in the uniform arm
+        sub = min(int(band * 3), 2)                     # 0 / 1 / 2, equiprobable
+        nfpb = max(1, int(args.num_frame_per_block))
+        iff = args.independent_first_frame
+        causal = uniform_chunks(num_frames, 1, independent_first_frame=iff)
+        if sub == 0:
+            base = broadcast_chunk_sizes(causal, device=device)
+            ladder = [base]
+            arm = "uniform 1-frame blocks, single level (fully causal)"
+        elif sub == 1:
+            base = broadcast_chunk_sizes(
+                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
+                device=device)
+            ladder = [base]
+            arm = f"uniform {nfpb}-frame blocks, single level"
+        else:
+            base = broadcast_chunk_sizes(
+                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
+                device=device)
+            ladder = ([base] + [list(causal)
+                                for _ in range(max(0, num_denoising_steps - 1))])
+            arm = (f"uniform {nfpb}-frame plan -> fully causal [1x" f"{num_frames}] "
+                   "for the remaining steps")
     elif u < ftb_hi:
         # "First step full, every later step block-major": a fixed two-level
         # ladder that does NOT go through the binary pyramid refinement, so the
@@ -494,8 +526,9 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
     if ladder is None:
         # Every rank has to train the same layout: the FlexAttention mask, and the
         # `num_frame_per_block` derived from it, must agree across the SP/FSDP
-        # group. (The full_then_blocks arm above is deterministic given `args` and
-        # already broadcast each level, so it skips this path.)
+        # group. Only the coarse and random arms reach here; the uniform and
+        # full_then_blocks arms above already set `ladder` (each with its single
+        # broadcast), so they skip this refine path.
         base = broadcast_chunk_sizes(base, device=device)
         ladder = [base]
         if pyramid:
