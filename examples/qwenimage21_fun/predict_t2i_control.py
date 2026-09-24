@@ -232,6 +232,7 @@ def save_results():
     image_path = os.path.join(save_path, prefix + f"-{control_context_scale}.png")
     image = sample[0]
     image.save(image_path)
+    print(f"Saved image to: {image_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

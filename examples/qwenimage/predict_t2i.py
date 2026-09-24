@@ -172,7 +172,7 @@ if ulysses_degree > 1 or ring_degree > 1:
         from functools import partial
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
-        text_encoder = shard_fn(text_encoder)
+        pipeline.text_encoder = shard_fn(pipeline.text_encoder)
         print("Add FSDP TEXT ENCODER")
 
 if compile_dit:
@@ -237,6 +237,7 @@ def save_results():
     video_path = os.path.join(save_path, prefix + ".png")
     image = sample[0]
     image.save(video_path)
+    print(f"Saved image to: {video_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

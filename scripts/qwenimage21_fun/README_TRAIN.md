@@ -160,19 +160,38 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 
 ### 3.1 Download Pre-trained Model
 
-Point `MODEL_NAME` at a local **Qwen-Image 2.1** checkpoint directory. Its `transformer/` subfolder supplies the
-frozen base weights; the control modules are zero-initialized on load.
+Place the base weights under `models/Diffusion_Transformer/Qwen-Image-2.1`; its `transformer/` subfolder supplies the
+frozen base weights, and the control branch is zero-initialized so training starts from scratch. The ControlNet-Union
+weights trained by this project live under `models/Personalized_Model` and can be used directly for inference, or
+loaded via `--transformer_path` to continue fine-tuning.
+
+**ModelScope Download**:
 
 ```bash
+# Create model directories
 mkdir -p models/Diffusion_Transformer
-# Place your Qwen-Image 2.1 weights here, e.g.
-# models/Diffusion_Transformer/Qwen-Image-2.1/{transformer,vae,text_encoder,...}
+mkdir -p models/Personalized_Model
+
+# Download Qwen-Image 2.1 official base weights
+modelscope download --model Qwen/Qwen-Image-2.1 --local_dir models/Diffusion_Transformer/Qwen-Image-2.1
+
+# Download Qwen-Image 2.1 Control pretrained weights
+modelscope download --model PAI/Qwen-Image-2.1-Fun-Controlnet-Union --local_dir models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union
 ```
 
-> **No released 2.1 ControlNet-Union checkpoint.** Unlike Qwen-Image 2512, there is currently no published
-> `...-Fun-Controlnet-Union.safetensors` for 2.1, so training starts from scratch with the **zero-initialized**
-> control branch. Consequently the launcher leaves `--transformer_path` out; only add it to resume or fine-tune a
-> control checkpoint you have already trained (or produced with `scripts/*/extract_control_weights.py`).
+**HuggingFace Download**:
+
+```bash
+# Create model directories
+mkdir -p models/Diffusion_Transformer
+mkdir -p models/Personalized_Model
+
+# Download Qwen-Image 2.1 official base weights
+hf download Qwen/Qwen-Image-2.1 --local-dir models/Diffusion_Transformer/Qwen-Image-2.1
+
+# Download Qwen-Image 2.1 Control pretrained weights
+hf download alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union --local-dir models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union
+```
 
 ### 3.2 Quick Start (DeepSpeed-Zero-2)
 
@@ -224,7 +243,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | Base Qwen-Image 2.1 model (frozen weights) | `models/Diffusion_Transformer/Qwen-Image-2.1` |
 | `--train_data_dir` / `--train_data_meta` | Dataset root / manifest JSON | `""` / `/path/metadata.json` |
 | `--trainable_modules` | `"control"` trains only `control_blocks.*` + `control_img_in.*`; base stays frozen | `"control"` |
-| `--transformer_path` | **Omit for from-scratch** training; add only to resume/finetune a trained control branch | *(none)* |
+| `--transformer_path` | Load trained Control weights to continue fine-tuning; omit for from-scratch training | `models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union.safetensors` |
 | `--image_sample_size` | Max training resolution, auto bucketing | `1024` |
 | `--train_batch_size` / `--gradient_accumulation_steps` | Per-device batch / accumulation | `1` / `1` |
 | `--learning_rate` | Initial learning rate | `2e-05` |

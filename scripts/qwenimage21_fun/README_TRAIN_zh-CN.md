@@ -155,19 +155,37 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 
 ### 3.1 下载预训练模型
 
-将 `MODEL_NAME` 指向本地的 **Qwen-Image 2.1** checkpoint 目录。其 `transformer/` 子目录提供冻结的基座权重;控制模块在
-载入时零初始化。
+基座权重放在 `models/Diffusion_Transformer/Qwen-Image-2.1`,其 `transformer/` 子目录提供冻结的基座权重;control 分支在载入时
+零初始化,训练从零开始。本项目训练的 ControlNet-Union 权重放在 `models/Personalized_Model`,可直接用于推理,也可通过
+`--transformer_path` 载入后继续微调。
+
+**ModelScope 下载**：
 
 ```bash
+# 创建模型目录
 mkdir -p models/Diffusion_Transformer
-# 将你的 Qwen-Image 2.1 权重放到这里,例如
-# models/Diffusion_Transformer/Qwen-Image-2.1/{transformer,vae,text_encoder,...}
+mkdir -p models/Personalized_Model
+
+# 下载 Qwen-Image 2.1 官方基座权重
+modelscope download --model Qwen/Qwen-Image-2.1 --local_dir models/Diffusion_Transformer/Qwen-Image-2.1
+
+# 下载 Qwen-Image 2.1 Control 预训练权重
+modelscope download --model PAI/Qwen-Image-2.1-Fun-Controlnet-Union --local_dir models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union
 ```
 
-> **没有公开的 2.1 ControlNet-Union checkpoint。** 与 Qwen-Image 2512 不同,2.1 目前并没有发布的
-> `...-Fun-Controlnet-Union.safetensors`,因此训练从零开始,control 分支**零初始化**。所以启动脚本不写 `--transformer_path`;
-> 只有在你需要 resume / fine-tune 一个已训练好的 control checkpoint(或你自己用 `scripts/*/extract_control_weights.py` 得到的)
-> 时才加上它。
+**HuggingFace 下载**：
+
+```bash
+# 创建模型目录
+mkdir -p models/Diffusion_Transformer
+mkdir -p models/Personalized_Model
+
+# 下载 Qwen-Image 2.1 官方基座权重
+hf download Qwen/Qwen-Image-2.1 --local-dir models/Diffusion_Transformer/Qwen-Image-2.1
+
+# 下载 Qwen-Image 2.1 Control 预训练权重
+hf download alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union --local-dir models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union
+```
 
 ### 3.2 快速开始（DeepSpeed-Zero-2）
 
@@ -219,7 +237,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--pretrained_model_name_or_path` | 基座 Qwen-Image 2.1 模型(冻结权重) | `models/Diffusion_Transformer/Qwen-Image-2.1` |
 | `--train_data_dir` / `--train_data_meta` | 数据根目录 / 清单 JSON | `""` / `/path/metadata.json` |
 | `--trainable_modules` | `"control"` 只训练 `control_blocks.*` + `control_img_in.*`,基座冻结 | `"control"` |
-| `--transformer_path` | **从零训练时省略**;仅在 resume / fine-tune 已训练的 control 分支时加上 | *(无)* |
+| `--transformer_path` | 加载已训练好的 Control 权重继续微调;从零训练时省略 | `models/Personalized_Model/Qwen-Image-2.1-Fun-Controlnet-Union.safetensors` |
 | `--image_sample_size` | 最大训练分辨率,自动 bucket | `1024` |
 | `--train_batch_size` / `--gradient_accumulation_steps` | 单卡 batch / 梯度累积 | `1` / `1` |
 | `--learning_rate` | 初始学习率 | `2e-05` |
