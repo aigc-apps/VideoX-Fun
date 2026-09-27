@@ -1,0 +1,7 @@
+format: diffusers
+pipeline: qwenimage21
+transformer_additional_kwargs:
+    # Dense control: inject a skip at every 2nd block (16 of 32 layers), matching the model's built-in
+    # `control_layers=None` default. Must contain 0. Dial back (e.g. [0, 4, 8, ...]) to shrink the trainable adapter.
+    control_layers: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
+    control_in_dim: 129
