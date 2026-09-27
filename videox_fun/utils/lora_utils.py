@@ -20,6 +20,10 @@ from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from safetensors.torch import load_file
 from transformers import T5EncoderModel
 
+from videox_fun.utils.fp4_optimization import (float4_dequantize_linear,
+                                               float4_quantize_linear)
+from videox_fun.utils.fp8_optimization import (float8_dequantize_linear,
+                                               float8_quantize_linear)
 from videox_fun.utils.group_offload import (_get_top_level_group_offload_hook,
                                             _is_group_offload_enabled,
                                             register_auto_device_hook,
@@ -820,6 +824,15 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                     error_count += 1
                     continue
 
+        # A qfloat4/qfloat8 model stores this layer's weight packed (uint8 nibbles, or
+        # fp8 with a scale buffer). Folding a LoRA delta into those bytes -- or the
+        # `.to(dtype)` below casting them to bf16 numbers -- would silently corrupt the
+        # weight, so dequantize this one layer to full precision first and re-pack it
+        # afterwards. Per layer, not whole model: materializing every layer in bf16
+        # would need the very memory the packing was chosen to save.
+        was_fp4 = float4_dequantize_linear(curr_layer, dtype)
+        was_fp8 = (not was_fp4) and float8_dequantize_linear(curr_layer, dtype)
+
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
 
@@ -845,6 +858,13 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
         else:
             curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+
+        # Re-pack the merged full-precision weight so the model stays quantized for
+        # generation, restoring the per-forward dequant wrapper the merge removed.
+        if was_fp4:
+            float4_quantize_linear(curr_layer, dtype, device=origin_device)
+        elif was_fp8:
+            float8_quantize_linear(curr_layer, dtype, device=origin_device)
         merged_count += 1
 
     print(f"[LoRA Merge] Completed: {merged_count} layers merged, {skipped_count} layers skipped, {error_count} errors")
@@ -998,6 +1018,11 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
                     error_count += 1
                     continue
 
+        # Mirror of merge_lora: dequantize a packed qfloat4/qfloat8 weight before
+        # subtracting the LoRA delta, then re-pack it so the model stays quantized.
+        was_fp4 = float4_dequantize_linear(curr_layer, dtype)
+        was_fp8 = (not was_fp4) and float8_dequantize_linear(curr_layer, dtype)
+
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
 
@@ -1023,6 +1048,11 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         else:
             curr_layer.weight.data -= multiplier * alpha * torch.mm(weight_up, weight_down)
         curr_layer = curr_layer.to(origin_device, origin_dtype)
+
+        if was_fp4:
+            float4_quantize_linear(curr_layer, dtype, device=origin_device)
+        elif was_fp8:
+            float8_quantize_linear(curr_layer, dtype, device=origin_device)
         unmerged_count += 1
 
     print(f"[LoRA Unmerge] Completed: {unmerged_count} layers unmerged, {error_count} errors")

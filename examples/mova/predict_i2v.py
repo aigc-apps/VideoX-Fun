@@ -17,15 +17,10 @@ from videox_fun.models import (AutoencoderKLMOVAAudio, AutoencoderKLWan,
                                UMT5EncoderModel, WanAudioTransformer3DModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import MOVAPipeline
-from videox_fun.utils import (register_auto_device_hook,
-                              safe_enable_group_offload)
-from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper,
-                                               replace_parameters_by_name)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import save_videos_with_audio_grid
+from videox_fun.utils import (FlowDPMSolverMultistepScheduler,
+                              FlowUniPCMultistepScheduler,
+                              apply_gpu_memory_mode, merge_lora,
+                              save_videos_with_audio_grid, unmerge_lora)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -293,31 +288,11 @@ if compile_dit:
             pipeline.transformer_audio.blocks[i] = torch.compile(pipeline.transformer_audio.blocks[i])
         print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(pipeline.transformer, ["modulation",], device=device)
-    replace_parameters_by_name(pipeline.transformer_2, ["modulation",], device=device)
-    pipeline.transformer.freqs = pipeline.transformer.freqs.to(device=device)
-    pipeline.transformer_2.freqs = pipeline.transformer_2.freqs.to(device=device)
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(pipeline.transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(pipeline.transformer_2, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    convert_weight_dtype_wrapper(pipeline.transformer_2, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(pipeline.transformer, exclude_module_name=["modulation",], device=device)
-    convert_model_weight_to_float8(pipeline.transformer_2, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    convert_weight_dtype_wrapper(pipeline.transformer_2, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed, and both transformers of this MoE setup are handled in one call, which
+# is exactly the bookkeeping the old 30-line if/elif chain repeated per script.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype)
 
 generator = torch.Generator(device=device).manual_seed(seed)
 

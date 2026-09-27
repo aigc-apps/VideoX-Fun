@@ -17,12 +17,14 @@ from ..models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
 from ..models.cache_utils import get_teacache_coefficients
 from ..pipeline import (WanFunControlPipeline, WanFunInpaintPipeline,
                         WanFunPipeline)
-from ..utils.fp8_optimization import (convert_model_weight_to_float8,
-                                      convert_weight_dtype_wrapper,
-                                      replace_parameters_by_name)
+from ..utils import apply_gpu_memory_mode
 from ..utils.lora_utils import merge_lora, unmerge_lora
-from ..utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent, timer,
-                           get_video_to_video_latent, save_videos_grid)
+from ..utils.utils import (
+    filter_kwargs,
+    get_image_latent,
+    get_image_to_video_latent,
+    get_video_to_video_latent,
+    timer)
 from .controller import (Fun_Controller, Fun_Controller_Client,
                          all_cheduler_dict, css, ddpm_scheduler_dict,
                          flow_scheduler_dict, gradio_version,
@@ -134,22 +136,10 @@ class Wan_Fun_Controller(Fun_Controller):
                 self.pipeline.transformer.blocks[i] = torch.compile(self.pipeline.transformer.blocks[i])
             print("Add Compile")
 
-        if self.GPU_memory_mode == "sequential_cpu_offload":
-            replace_parameters_by_name(self.transformer, ["modulation",], device=self.device)
-            self.transformer.freqs = self.transformer.freqs.to(device=self.device)
-            self.pipeline.enable_sequential_cpu_offload(device=self.device)
-        elif self.GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
-            convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            self.pipeline.enable_model_cpu_offload(device=self.device)
-        elif self.GPU_memory_mode == "model_cpu_offload":
-            self.pipeline.enable_model_cpu_offload(device=self.device)
-        elif self.GPU_memory_mode == "model_full_load_and_qfloat8":
-            convert_model_weight_to_float8(self.transformer, exclude_module_name=["modulation",], device=self.device)
-            convert_weight_dtype_wrapper(self.transformer, self.weight_dtype)
-            self.pipeline.to(self.device)
-        else:
-            self.pipeline.to(self.device)
+        # Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+        # The order lives inside the helper: quantization has to happen before the offload hooks
+        # are installed.
+        apply_gpu_memory_mode(self.pipeline, self.GPU_memory_mode, self.device, self.weight_dtype)
         print("Update diffusion transformer done")
         return gr.update()
 

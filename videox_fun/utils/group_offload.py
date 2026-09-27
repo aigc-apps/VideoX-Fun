@@ -1496,6 +1496,23 @@ def safe_enable_group_offload(obj, *args, **kwargs):
     # tensor attribute. With the stock hooks that attribute stays on the offload device while the
     # inputs are moved to the accelerator, so the weight-normed conv1d of the MiniMax-H3 audio
     # VAE fails with `Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor)`.
+
+    # Under sequence-parallel FSDP the transformer / text encoder shards are managed by FSDP itself and
+    # group offloading cannot place hooks on the flat params; route to the VAE-only CPU offload (the sharded
+    # modules offload via FSDP's own CPUOffload, enabled at wrap time by the caller). Single-GPU group offload
+    # has no FSDP-wrapped transformer and proceeds normally below.
+    transformer = getattr(obj, "transformer", None)
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel as _FSDP
+    except Exception:
+        _FSDP = None
+    if _FSDP is not None and isinstance(transformer, _FSDP):
+        onload_device = kwargs.get("onload_device") or (args[0] if args else None)
+        names = [n for n in ("vae", "audio_vae") if isinstance(getattr(obj, n, None), torch.nn.Module)]
+        # Sharded modules offload via FSDP's own CPUOffload; only VAE / audio VAE are hook-offloaded here.
+        from ..dist.fsdp import offload_components_cpu
+        return offload_components_cpu(obj, onload_device, names)
+
     obj.enable_group_offload = types.MethodType(enable_group_offload, obj)
 
     result = obj.enable_group_offload(*args, **kwargs)

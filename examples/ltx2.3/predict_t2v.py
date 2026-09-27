@@ -11,23 +11,16 @@ project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dir
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
-                               Gemma3ForConditionalGeneration,
-                               GemmaTokenizerFast, LTX2TextConnectors, Gemma3Processor,
-                               LTX2VideoTransformer3DModel, LTX2VocoderWithBWE)
-from videox_fun.pipeline import LTX2Pipeline
-from videox_fun.utils import (register_auto_device_hook,
-                              safe_enable_group_offload)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper,
-                                               replace_parameters_by_name)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                    save_videos_grid,
-                                    save_videos_with_audio_grid)
+from videox_fun.models import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video,
+                               Gemma3ForConditionalGeneration, Gemma3Processor,
+                               LTX2TextConnectors, LTX2VideoTransformer3DModel,
+                               LTX2VocoderWithBWE)
+from videox_fun.pipeline import LTX2Pipeline
+from videox_fun.utils import (FlowDPMSolverMultistepScheduler,
+                              FlowUniPCMultistepScheduler,
+                              apply_gpu_memory_mode, merge_lora,
+                              save_videos_with_audio_grid, unmerge_lora)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -113,7 +106,7 @@ transformer = LTX2VideoTransformer3DModel.from_pretrained(
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
     if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(transformer_path)
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
@@ -132,7 +125,7 @@ vae = AutoencoderKLLTX2Video.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -222,23 +215,10 @@ if compile_dit:
         pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
     print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["scale_shift_table", "audio_scale_shift_table", "video_a2v_cross_attn_scale_shift_table", "audio_a2v_cross_attn_scale_shift_table", ""], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["scale_shift_table", "audio_scale_shift_table", "video_a2v_cross_attn_scale_shift_table", "audio_a2v_cross_attn_scale_shift_table", ""], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype, exclude_module_name=['scale_shift_table', 'audio_scale_shift_table', 'video_a2v_cross_attn_scale_shift_table', 'audio_a2v_cross_attn_scale_shift_table', ''])
 
 generator = torch.Generator(device=device).manual_seed(seed)
 

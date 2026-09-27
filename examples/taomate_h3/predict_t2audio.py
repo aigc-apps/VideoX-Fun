@@ -29,8 +29,7 @@ from videox_fun.pipeline.pipeline_taomate_h3 import (
     TAOMATE_H3_VIDEO_SIGMA_SHIFT, taomate_h3_canonical_continuation_plan,
     taomate_h3_direct_5s_plan, taomate_h3_select_time_shift_sigmas,
     taomate_h3_teacher_geometry)
-from videox_fun.utils import (MiniMaxH3Scheduler, register_auto_device_hook,
-                              safe_enable_group_offload)
+from videox_fun.utils import MiniMaxH3Scheduler, apply_gpu_memory_mode
 
 # GPU memory mode, which can be chosen in [model_full_load, model_cpu_offload, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -169,20 +168,10 @@ if compile_dit:
         pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
     print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load":
-    pipeline.to(device=device)
-else:
-    raise ValueError(
-        f"`GPU_memory_mode` must be one of ['model_full_load', 'model_cpu_offload', 'model_group_offload', "
-        f"'sequential_cpu_offload'], got {GPU_memory_mode}."
-    )
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype, exclude_module_name=[], strict=True)
 
 
 def official_audio_noise(*, video_latent_t, video_latent_h, video_latent_w, audio_latent_t, seed):
@@ -277,7 +266,6 @@ def audio_only_step_timesteps(t_video, t_audio, *, has_reference):
         return indices
 
     return unique_timesteps, expand
-
 
 _OFFLOAD_MODES = ("model_cpu_offload", "model_group_offload", "sequential_cpu_offload")
 
@@ -551,7 +539,6 @@ def write_teacher_artifact(output_dir, *, pipeline, request_records, request_cou
     with open(os.path.join(output_dir, "complete.json"), "w", encoding="utf-8") as handle:
         json.dump(completion, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
-
 
 # One continuous audio timeline 5 seconds at a time: every request after the first denoises the previous
 # request's clean tail as a frozen reference, and the captured 3/6/9 rows are the Base10 teacher artifact.

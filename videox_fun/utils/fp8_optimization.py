@@ -191,3 +191,69 @@ def _fsdp_dequant_rmsnorm_forward(module, origin_dtype, *inputs, **kwargs):
     if scale is not None:
         weight = weight * scale.to(weight.device, weight.dtype)
     return F.rms_norm(hidden_states, module.normalized_shape, weight, module.eps)
+
+
+def float8_dequantize_linear(module, origin_dtype):
+    """Dequantize ONE layer's FP8 parameters back to ``origin_dtype``, in place.
+
+    ``convert_model_weight_to_float8`` stores *every* parameter of a module in FP8 (the
+    weight and, when present, the bias), each with its own per-row scale, so this walks
+    ``named_parameters(recurse=False)`` rather than touching ``weight`` alone. It also
+    drops this layer's scale buffers and forward wrapper, leaving a plain full-precision
+    module. Returns True if any parameter was FP8 (so the caller knows to re-quantize).
+
+    Per layer, not whole model: a LoRA merge edits one layer at a time and must not need
+    the entire transformer in full precision. Under FSDP the weights are flat-storage
+    views served by the output-side dequant wrapper, which cannot be reversed per layer,
+    so that case is rejected instead of silently corrupting the shard.
+    """
+    params = list(module.named_parameters(recurse=False))
+    if not any(param.dtype == FLOAT8_DTYPE for _, param in params):
+        return False
+    if _is_fsdp_managed(module):
+        raise NotImplementedError(
+            "Cannot dequantize an FP8 weight under FSDP for a LoRA merge: the managed "
+            "parameters are flat-storage DTensor views. Merge the LoRA before the FSDP "
+            "sharding (or before apply_gpu_memory_mode).")
+    if hasattr(module, "original_forward"):
+        setattr(module, "forward", module.original_forward)
+        delattr(module, "original_forward")
+    for param_name, param in params:
+        scale_name = _float8_scale_name(param_name)
+        scale = getattr(module, scale_name, None)
+        if param.dtype == FLOAT8_DTYPE:
+            data = param.data.to(torch.float32)
+            if scale is not None:
+                data = data * scale
+            param.requires_grad_(False)
+            param.data = data.to(origin_dtype)
+        if scale is not None:
+            delattr(module, scale_name)
+    return True
+
+
+def float8_quantize_linear(module, origin_dtype, device=None):
+    """Re-quantize ONE layer's floating parameters to scale-aware FP8 and reinstall the
+    (non-FSDP) dequant wrapper. The exact inverse of :func:`float8_dequantize_linear`,
+    called after a LoRA delta has been folded in so the layer stays FP8 for generation.
+    Returns True if the layer was quantized.
+    """
+    params = list(module.named_parameters(recurse=False))
+    if not params or any(param.dtype == FLOAT8_DTYPE for _, param in params):
+        return False
+    for param_name, param in params:
+        _quantize_param_to_float8(module, param_name, param)
+    if device is not None:
+        for param_name, param in list(module.named_parameters(recurse=False)):
+            param.data = param.data.to(device)
+            scale = getattr(module, _float8_scale_name(param_name), None)
+            if scale is not None:
+                setattr(module, _float8_scale_name(param_name), scale.to(device))
+    if not hasattr(module, "original_forward"):
+        module.original_forward = module.forward
+        setattr(
+            module,
+            "forward",
+            lambda *inputs, m=module, **kwargs: autocast_model_forward(m, origin_dtype, *inputs, **kwargs)
+        )
+    return True

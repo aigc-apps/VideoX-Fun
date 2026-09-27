@@ -32,7 +32,7 @@ from videox_fun.models import (AutoencoderKLWan, AutoTokenizer,
                                WanT5EncoderModel,
                                WanTransformer3DModel_SelfForcing)
 from videox_fun.pipeline import WanSelfForcingPipeline
-from videox_fun.utils.utils import filter_kwargs
+from videox_fun.utils import filter_kwargs
 
 # Config and model path
 config_path         = "config/wan2.1/wan_civitai.yaml"
@@ -90,7 +90,7 @@ transformer = WanTransformer3DModel_SelfForcing.from_pretrained(
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
     if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(transformer_path)
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
