@@ -287,7 +287,6 @@ refiner_pipeline = LingBotVideoPipeline(
 apply_gpu_memory_mode(refiner_pipeline, GPU_memory_mode, device, weight_dtype, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"])
 
 if ulysses_degree > 1 or ring_degree > 1:
-    from functools import partial
     refiner.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)
