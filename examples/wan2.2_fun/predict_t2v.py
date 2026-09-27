@@ -106,7 +106,7 @@ video_length        = 81
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
 # 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
 # 在neg prompt中添加"安静，固定"等词语可以增加动态性。
@@ -202,7 +202,7 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 text_encoder = text_encoder.eval()
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,

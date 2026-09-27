@@ -102,7 +102,7 @@ fps                 = 16
 vace_context_scale  = 1.00
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
 control_video           = None
 start_image             = None
@@ -179,7 +179,7 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 text_encoder = text_encoder.eval()
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,

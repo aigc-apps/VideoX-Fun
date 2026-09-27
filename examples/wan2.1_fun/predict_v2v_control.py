@@ -104,7 +104,7 @@ video_length        = 49
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
 control_video           = "asset/pose.mp4"
 control_camera_txt      = None
@@ -187,7 +187,7 @@ clip_image_encoder = CLIPModel.from_pretrained(
 clip_image_encoder = clip_image_encoder.eval()
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,

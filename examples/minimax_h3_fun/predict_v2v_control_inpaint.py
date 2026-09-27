@@ -86,7 +86,7 @@ fps                 = 24
 control_context_scale = 1.00
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 # Path of the control (e.g. pose) video; leaving it None zeroes the control channels of the side branch. With
 # inpaint inputs given the mask then guides the run on its own (the layout training reaches when it drops the

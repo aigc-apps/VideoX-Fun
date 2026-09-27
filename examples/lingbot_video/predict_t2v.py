@@ -73,7 +73,7 @@ video_length        = 81
 fps                 = 24
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 # prompts
 # Write a plain natural-language prompt: it is ALWAYS rewritten into the
@@ -157,7 +157,7 @@ text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
 )
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow_Unipc": FlowUniPCMultistepScheduler,
 }[sampler_name]
 scheduler = Chosen_Scheduler.from_pretrained(

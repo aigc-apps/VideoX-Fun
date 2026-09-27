@@ -23,7 +23,7 @@ from videox_fun.pipeline import CogVideoXFunControlPipeline
 from videox_fun.utils import (apply_gpu_memory_mode, get_video_to_video_latent,
                               merge_lora, save_videos_grid, unmerge_lora)
 
-# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -71,7 +71,7 @@ video_length        = 49
 fps                 = 8
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype            = torch.bfloat16
 control_video           = "asset/pose.mp4"
 
@@ -132,7 +132,7 @@ text_encoder = T5EncoderModel.from_pretrained(
 )
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Euler": EulerDiscreteScheduler,
     "Euler A": EulerAncestralDiscreteScheduler,
     "DPM++": DPMSolverMultistepScheduler, 
