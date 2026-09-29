@@ -3,7 +3,7 @@ from .ernie_image_xfuser import ErnieImageMultiGPUsAttnProcessor
 from .flashhead_xfuser import usp_attn_flashhead_forward
 from .flux2_xfuser import Flux2MultiGPUsAttnProcessor2_0
 from .flux_xfuser import FluxMultiGPUsAttnProcessor2_0
-from .fsdp import shard_model
+from .fsdp import offload_components_cpu, shard_model
 from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     get_world_group, init_distributed_environment,

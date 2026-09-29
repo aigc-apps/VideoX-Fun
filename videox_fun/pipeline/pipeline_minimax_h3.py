@@ -1517,6 +1517,39 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
     _min_duration = MINIMAX_H3_MIN_DURATION
     _max_duration = MINIMAX_H3_MAX_DURATION
 
+    def _transformer_is_fsdp(self):
+        r"""
+        True when sequence-parallel inference wrapped the denoiser in FSDP. FSDP flattens each wrap unit into a
+        single `flat_param` and manages its storage by itself, so accelerate / diffusers module-level offload
+        hooks cannot (and must not) be placed on it — the shards stay on the GPU anyway and the hook only adds
+        overhead (OOM even on 8 cards). When this is True the whole-model offload entry points below route to a
+        VAE-only offload, leaving the sharded transformer / text encoder to FSDP's own CPUOffload.
+        """
+        try:
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        except Exception:
+            return False
+        return isinstance(getattr(self, "transformer", None), FSDP)
+
+    def _fsdp_offload_components(self, device):
+        from ..dist.fsdp import offload_components_cpu
+        names = [n for n in ("vae", "audio_vae") if isinstance(getattr(self, n, None), torch.nn.Module)]
+        return offload_components_cpu(self, device, names)
+
+    def enable_model_cpu_offload(self, gpu_id=None, device="cuda"):
+        # Under sequence-parallel FSDP the transformer and text encoder already offload through FSDP's own
+        # CPUOffload (enabled at wrap time via shard_model(offload_to_cpu=True)); only the non-FSDP VAE / audio
+        # VAE can be offloaded by accelerate hooks. On a single GPU the transformer is not FSDP and this defers
+        # to diffusers' original whole-model offload behaviour unchanged.
+        if self._transformer_is_fsdp():
+            return self._fsdp_offload_components(device)
+        return super().enable_model_cpu_offload(gpu_id=gpu_id, device=device)
+
+    def enable_sequential_cpu_offload(self, gpu_id=None, device="cuda"):
+        if self._transformer_is_fsdp():
+            return self._fsdp_offload_components(device)
+        return super().enable_sequential_cpu_offload(gpu_id=gpu_id, device=device)
+
     def __init__(
         self,
         vae: AutoencoderKLMiniMaxH3,

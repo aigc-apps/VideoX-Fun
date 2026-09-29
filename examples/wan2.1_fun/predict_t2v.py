@@ -18,16 +18,11 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
 from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
-from videox_fun.utils import (register_auto_device_hook,
-                              safe_enable_group_offload)
-from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper,
-                                               replace_parameters_by_name)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
-                                    save_videos_grid)
+from videox_fun.utils import (FlowDPMSolverMultistepScheduler,
+                              FlowUniPCMultistepScheduler,
+                              apply_gpu_memory_mode, filter_kwargs,
+                              get_image_to_video_latent, merge_lora,
+                              save_videos_grid, unmerge_lora)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -108,7 +103,7 @@ video_length        = 81
 fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
@@ -131,7 +126,7 @@ transformer = WanTransformer3DModel.from_pretrained(
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
     if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(transformer_path)
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
@@ -149,7 +144,7 @@ vae = AutoencoderKLWan.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -183,7 +178,7 @@ else:
     clip_image_processor = None
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
@@ -228,25 +223,10 @@ if compile_dit:
         pipeline.transformer.blocks[i] = torch.compile(pipeline.transformer.blocks[i])
     print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    replace_parameters_by_name(transformer, ["modulation",], device=device)
-    transformer.freqs = transformer.freqs.to(device=device)
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["modulation",], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype)
 
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
 if coefficients is not None:
