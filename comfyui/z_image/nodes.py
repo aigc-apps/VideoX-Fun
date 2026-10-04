@@ -97,6 +97,12 @@ class LoadZImageTransformerModel:
 
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
+        # Some ComfyUI-native checkpoints store every diffusion-model tensor under a
+        # `model.diffusion_model.` prefix (e.g. CivitAI Z-Image fine-tunes). Strip it so
+        # the conversion gate below and `convert_state_dict` receive bare keys.
+        _prefix = "model.diffusion_model."
+        if transformer_state_dict and all(k.startswith(_prefix) for k in transformer_state_dict):
+            transformer_state_dict = {k[len(_prefix):]: v for k, v in transformer_state_dict.items()}
         def convert_state_dict(old_state_dict):
             new_state_dict = {}
             for key, value in old_state_dict.items():
