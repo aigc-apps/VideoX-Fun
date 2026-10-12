@@ -4,7 +4,40 @@ import torch
 from .attention_utils import (RoLASparseAttention, SparseLinearAttention,
                               attention)
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention,
-                               rope_apply_qk)
+                               rope_apply, rope_apply_qk)
+
+
+@torch.compiler.disable()
+def rope_apply_lowrank(x, grid_sizes, freqs, rank):
+    """Rank-truncated 3D RoPE for the RoLa low-rank bottleneck.
+
+    Applies rotary positional embedding to a rank-``r`` bottleneck instead of the full
+    head_dim, reusing a prefix of the pre-trained rotary schedule (per RoLA, arXiv
+    2609.06712) rather than recomputing frequencies. A rank-``r`` feature carries
+    ``r // 2`` complex rotary pairs; those pairs are budgeted across the temporal /
+    height / width axes exactly like ``rope_apply`` (``[c - 2*(c//3), c//3, c//3]``) and
+    each axis takes the FIRST ``n`` columns of its own block in the pre-trained table, so
+    the native t->h->w coordinate ordering and the per-axis band identity are preserved.
+
+    Args:
+        x: [B, H, L, rank] low-rank bottleneck (BHLD), real-valued.
+        grid_sizes: [B, 3] (F, H, W) spatial grid per sample.
+        freqs: pre-trained complex rotary table [M, head_dim // 2] (t|h|w concatenated).
+        rank: bottleneck dimension ``r`` (== ``x.shape[-1]``).
+    Returns:
+        [B, H, L, rank] with RoPE applied (same layout/dtype as ``x``).
+    """
+    c = freqs.shape[1]                    # head_dim // 2
+    c_r = rank // 2                       # rotary pairs the bottleneck can carry
+    # Native ordering: split the pre-trained table into its t/h/w blocks, then keep the
+    # first n columns of each block for the rank budget (n mirrors rope_apply's split).
+    t_full, h_full, w_full = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+    t_n, h_n, w_n = c_r - 2 * (c_r // 3), c_r // 3, c_r // 3
+    freqs_r = torch.cat(
+        [t_full[:, :t_n], h_full[:, :h_n], w_full[:, :w_n]], dim=1)  # [M, c_r]
+    # rope_apply expects [B, L, n_channels, dim]; BHLD -> BSHD and back.
+    out = rope_apply(x.transpose(1, 2), grid_sizes, freqs_r)
+    return out.transpose(1, 2)
 
 
 class SparkWanSelfAttention(WanSelfAttention):

@@ -186,7 +186,7 @@ def usp_attn_sparkwan_forward(self,
         ``[sp_rank * H/P, (sp_rank + 1) * H/P)`` produced by the ulysses all-to-all, so the
         gate slices ``gate_bias`` to that range.
       * the low-rank branch's rank RoPE runs on the FULL (post-all-to-all) sequence with the
-        non-SP ``rope_apply_rank``, so positions are complete and need no sharding.
+        non-SP ``rope_apply_lowrank``, so positions are complete and need no sharding.
 
     Requires a pure-Ulysses split: ``num_heads`` must divide the SP degree and ``ring_degree``
     should be 1 (the SLA kernel has no ring-attention path). ``topk >= 1.0`` (the dense

@@ -528,13 +528,13 @@ class RoLASparseAttention(nn.Module):
         Returns:
             [B, H, L, D], RMS-normalized.
         '''
-        from .wan_transformer3d import rope_apply_rank
+        from .spark_transformer3d import rope_apply_lowrank
 
         q_lr = F.silu(self.proj_q(q_normed))  # [B, H, L, rank]
         k_lr = F.silu(self.proj_k(k_normed))
         # RoPE applied outside the non-linear feature map, on the rank bottleneck.
-        q_lr = rope_apply_rank(q_lr, grid_sizes, freqs, self.rola_rank)
-        k_lr = rope_apply_rank(k_lr, grid_sizes, freqs, self.rola_rank)
+        q_lr = rope_apply_lowrank(q_lr, grid_sizes, freqs, self.rola_rank)
+        k_lr = rope_apply_lowrank(k_lr, grid_sizes, freqs, self.rola_rank)
         c = k_lr.transpose(-2, -1) @ v        # [B, H, rank, D]
         out = q_lr @ c                        # [B, H, L, D]
         return F.rms_norm(out, [out.shape[-1]])
