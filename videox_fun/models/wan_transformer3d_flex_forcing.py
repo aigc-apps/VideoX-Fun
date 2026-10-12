@@ -703,6 +703,24 @@ class WanTransformer3DModel_FlexForcing(WanTransformer3DModel_SelfForcing):
         optionally clipped to ``local_attn_size`` frames.
         """
         chunk_sizes = self._require_exact_partition(chunk_sizes, num_frames)
+        # Read the value the mask below actually uses - not the config mirror, so
+        # the check cannot pass against a window the builder then ignores.
+        local_attn_size = self.local_attn_size
+        # One chunk is one bidirectional unit, so every frame inside it has to see
+        # every other. The clipped window below is anchored at the chunk *end*
+        # (`kv_idx >= ends[q_idx] - local_attn_size * frame_seqlen`), so a chunk
+        # wider than the window quietly loses its own head-to-tail connectivity:
+        # the layout would be trained as if it were partially causal while every
+        # caller describes it as bidirectional. Reject it loudly instead. The same
+        # rule is enforced on the KV-cache read side in the pipelines.
+        if local_attn_size != -1 and max(chunk_sizes) > local_attn_size:
+            raise ValueError(
+                f"A chunk of {max(chunk_sizes)} latent frames exceeds "
+                f"`local_attn_size={local_attn_size}`: the window is anchored at "
+                f"the chunk end, so that chunk's first frames could not attend to "
+                f"its last ones and its intra-chunk bidirectionality (§3.1) would "
+                f"be lost. Use `local_attn_size=-1` or keep every chunk within the "
+                f"window.")
         total_length = num_frames * frame_seqlen
 
         # Padded query rows keep ends=0 exactly like the inherited uniform
@@ -711,8 +729,6 @@ class WanTransformer3DModel_FlexForcing(WanTransformer3DModel_SelfForcing):
             total_length + self._padded_length(total_length),
             device=device, dtype=torch.long)
         ends[:total_length] = chunk_ends_tensor(chunk_sizes, frame_seqlen, device=device)
-
-        local_attn_size = self.local_attn_size
 
         def attention_mask(b, h, q_idx, kv_idx):
             if local_attn_size == -1:
@@ -723,6 +739,17 @@ class WanTransformer3DModel_FlexForcing(WanTransformer3DModel_SelfForcing):
             return ((kv_idx < ends[q_idx]) & (kv_idx >= (ends[q_idx] - local_attn_size * frame_seqlen))) | (q_idx == kv_idx)
 
         self._build_block_mask(attention_mask, total_length, device)
+        # Keep the parent's cached-mask descriptor in sync with the mask just
+        # installed: the guard reuses `self.block_mask` whenever
+        # `_block_mask_expected_len`/`_block_mask_is_teacher_forcing` match the
+        # next call, so a builder that replaced the mask without updating them
+        # would leave them describing a mask that no longer exists. The parent
+        # forward re-records the same two values right after dispatching here,
+        # so this is the invariant being stated at its source rather than a
+        # rebuild saving - `set_flex_chunk_sizes` is what forces one rebuild per
+        # new partition by clearing the length.
+        self._block_mask_expected_len = total_length
+        self._block_mask_is_teacher_forcing = False
 
         # Consumers that still expect the scalar Self-Forcing knobs (Forcing-KV
         # AR stride / rolling-cache budget) get the conservative largest chunk.
@@ -777,6 +804,11 @@ class WanTransformer3DModel_FlexForcing(WanTransformer3DModel_SelfForcing):
             return eye_mask | clean_mask | noise_mask
 
         self._build_block_mask(attention_mask, total_length, device)
+        # Same descriptor sync as the non-teacher-forcing builder above; here
+        # `total_length` already counts clean + noisy, which is exactly what the
+        # parent guard derives when `clean_x is not None`.
+        self._block_mask_expected_len = total_length
+        self._block_mask_is_teacher_forcing = True
 
         self.num_frame_per_block = max(chunk_sizes)
 

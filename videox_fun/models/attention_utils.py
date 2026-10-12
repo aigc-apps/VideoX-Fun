@@ -425,3 +425,129 @@ class SparseLinearAttention(nn.Module):
             return o, real_topk / sparse_map.shape[-1]
         else:
             return o
+
+
+class RoLASparseAttention(nn.Module):
+    R'''
+    RoLa sparse + low-rank self-attention branch (the official SparkDiffusion default).
+
+    Mirrors ``sparkdiffusion/networks/wan_rola_attention.py::WanSelfAttentionRoLa``:
+      - sparse branch   : block-sparse exact softmax via the in-repo SLA Triton kernel
+                          (same ``get_block_map`` + ``_sparse_linear_attention`` used by
+                          ``SparseLinearAttention``; runs on post-RoPE q/k).
+      - low-rank branch : ``proj_q``/``proj_k`` (head_dim -> rank) -> SiLU -> rank-truncated
+                          3D RoPE -> linear attention ``Q_lr (K_lr^T V)`` -> RMSNorm
+                          (runs on PRE-RoPE, qk-normed q/k; RoPE is applied OUTSIDE the
+                          non-linear feature map, on the low-rank bottleneck).
+      - token gate      : ``sigmoid(gate_proj(x) + gate_bias)`` scales the low-rank output
+                          magnitude per token/head; ``gate`` is computed from the raw hidden
+                          states ``x`` (not q/k/v).
+
+    Fusion (per official)::
+
+        scale = sqrt(mean(o_s^2) + 1e-5)          # per-token/head RMS of the sparse output
+        out   = (o_s / scale + gate * o_l) * scale # == o_s + gate * o_l * scale
+
+    New learnable params per layer (all under ``attn_op.*``): ``proj_q``, ``proj_k``,
+    ``gate_proj``, ``gate_bias``. They are absent from a dense checkpoint (loaded with
+    strict=False) and start at their init below. This replaces the earlier PureSLA path
+    (single zero-init ``proj_l`` + softmax feature-map linear attention).
+
+    All forward helpers take/return BHLD (``[B, H, L, *]``) tensors.
+    '''
+    def __init__(self, head_dim, num_heads, topk=0.03, rola_rank=64,
+                 BLKQ=64, BLKK=64, use_bf16=True):
+        R'''
+        Args:
+            head_dim: dimension of each head.
+            num_heads: number of attention heads (sizes ``gate_bias``).
+            topk: ratio of key blocks kept for the sparse branch (0.1 -> 90% sparse).
+            rola_rank: low-rank bottleneck dimension of the linear branch.
+            BLKQ/BLKK: query/key block sizes for the sparse kernel.
+            use_bf16: compute the sparse kernel in bfloat16 (default) or float16.
+        '''
+        super().__init__()
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.topk = topk
+        self.rola_rank = rola_rank
+        self.BLKQ = BLKQ
+        self.BLKK = BLKK
+        self.dtype = torch.bfloat16 if use_bf16 else torch.float16
+
+        r = rola_rank
+        self.proj_q = nn.Linear(head_dim, r, bias=False)
+        self.proj_k = nn.Linear(head_dim, r, bias=False)
+        self.gate_proj = nn.Linear(head_dim, 1, bias=False)
+        # -1.946 -> sigmoid ~= 0.125, so the sparse branch dominates at init.
+        self.gate_bias = nn.Parameter(torch.full((1, num_heads, 1, 1), -1.946))
+
+        self.init_weights_()
+
+    def init_weights_(self):
+        nn.init.kaiming_uniform_(self.proj_q.weight, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.proj_k.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.gate_proj.weight)
+        with torch.no_grad():
+            self.gate_bias.fill_(-1.946)
+
+    def sparse(self, q, k, v):
+        R'''Block-sparse exact softmax attention.
+
+        Args:
+            q, k: [B, H, L, D] POST-RoPE queries/keys.
+            v:    [B, H, L, D] values.
+        Returns:
+            [B, H, L, D], or ``None`` when the sequence is shorter than one block
+            (the caller then falls back to ``gate * o_l``).
+        '''
+        L = q.shape[2]
+        if L < max(self.BLKQ, self.BLKK):
+            return None
+        orig_dtype = q.dtype
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        sparse_map, lut, real_topk = get_block_map(
+            q, k, topk_ratio=self.topk, BLKQ=self.BLKQ, BLKK=self.BLKK)
+        q = q.to(self.dtype)
+        k = k.to(self.dtype)
+        v = v.to(self.dtype)
+        o_s = _sparse_linear_attention.apply(
+            q, k, v, sparse_map, lut, real_topk, self.BLKQ, self.BLKK)
+        return o_s.to(orig_dtype)
+
+    def lowrank(self, q_normed, k_normed, v, grid_sizes, freqs):
+        R'''Low-rank linear attention branch with rank-truncated RoPE.
+
+        Args:
+            q_normed, k_normed: [B, H, L, D] PRE-RoPE, qk-normed queries/keys.
+            v:                  [B, H, L, D] values.
+            grid_sizes:         [B, 3] (F, H, W) for the rank RoPE expansion.
+            freqs:              complex rotary table [M, head_dim // 2].
+        Returns:
+            [B, H, L, D], RMS-normalized.
+        '''
+        from .wan_transformer3d import rope_apply_rank
+
+        q_lr = F.silu(self.proj_q(q_normed))  # [B, H, L, rank]
+        k_lr = F.silu(self.proj_k(k_normed))
+        # RoPE applied outside the non-linear feature map, on the rank bottleneck.
+        q_lr = rope_apply_rank(q_lr, grid_sizes, freqs, self.rola_rank)
+        k_lr = rope_apply_rank(k_lr, grid_sizes, freqs, self.rola_rank)
+        c = k_lr.transpose(-2, -1) @ v        # [B, H, rank, D]
+        out = q_lr @ c                        # [B, H, L, D]
+        return F.rms_norm(out, [out.shape[-1]])
+
+    def gate(self, x_bhld, head_slice=None):
+        R'''Token-wise gate from the raw hidden states.
+
+        Args:
+            x_bhld:    [B, H, L, D] hidden states (attention input), head layout.
+            head_slice: optional slice selecting this rank's head shard (multi-GPU
+                        Ulysses head-parallel), so the per-head ``gate_bias`` lines up.
+        Returns:
+            [B, H, L, 1] gate in (0, 1).
+        '''
+        gb = self.gate_bias if head_slice is None else self.gate_bias[:, head_slice]
+        return torch.sigmoid(self.gate_proj(x_bhld) + gb)
