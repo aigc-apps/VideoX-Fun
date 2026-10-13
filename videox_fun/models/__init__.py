@@ -91,7 +91,8 @@ from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel
 from .qwenimage_vae import AutoencoderKLQwenImage
 from .spark_transformer3d import (SparkWan2_2Transformer3DModel,
-                                  SparkWanSelfAttention)
+                                  SparkWanSelfAttention,
+                                  SparkWanTransformer3DModel)
 from .turbowan_transformer3d import TurboWanTransformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_image_encoder import CLIPModel
