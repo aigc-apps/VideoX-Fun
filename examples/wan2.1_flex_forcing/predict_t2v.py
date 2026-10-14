@@ -67,12 +67,13 @@ sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5 
+stochastic_sampling = False
 
 # Load pretrained model if need
 # Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
 # backbone inherits every parameter name and only the new `flex_kproj.*` tensors
 # are reported missing (they are identity-initialised, so step 0 is unchanged).
-transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-3000/diffusion_pytorch_model.safetensors"
+transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-10000/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -252,7 +253,7 @@ apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype)
 print(f"[Flex-Forcing] denoise_mode={denoise_mode}, "
       f"min_num_frame_per_block={min_num_frame_per_block}, "
       f"local_attn_size={local_attn_size}, sink_size={sink_size}")
-print(f"[Flex-Forcing] partitions measured in the paper: "
+print(f"[Flex-Forcing] partitions evaluated in the paper: "
       f"{[list(c) for c in PAPER_CHUNK_CONFIGS]}")
 
 generator = torch.Generator(device=device).manual_seed(seed)
@@ -281,6 +282,7 @@ with torch.no_grad():
         context_noise           = context_noise,
         denoise_mode            = denoise_mode,
         min_num_frame_per_block = min_num_frame_per_block,
+        stochastic_sampling     = stochastic_sampling,
     ).videos
     torch.cuda.synchronize()
     elapsed = time.time() - start_time
