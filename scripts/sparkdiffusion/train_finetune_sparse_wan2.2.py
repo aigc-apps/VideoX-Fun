@@ -583,9 +583,10 @@ def parse_args():
         "--uniform_sampling", action="store_true", help="Whether or not to use uniform_sampling."
     )
     parser.add_argument(
-        "--student_topk", type=float, default=0.03,
+        "--student_topk", type=float, default=0.05,
         help="Ratio of key blocks kept per query in the sparse student self-attention (sparsity = 1 - topk)."
-             " 0.1 matches TurboDiffusion SLA, SparkDiffusion ~97% sparsity uses 0.03; 1.0 falls back to dense."
+             " 0.1 matches TurboDiffusion SLA; this Wan2.2 chain uses 0.05 (~95% sparsity) and must match"
+             " train_distill_wan2.2.py; 1.0 falls back to dense."
     )
     parser.add_argument(
         "--enable_text_encoder_in_dataloader", action="store_true", help="Whether or not to use text encoder in dataloader."

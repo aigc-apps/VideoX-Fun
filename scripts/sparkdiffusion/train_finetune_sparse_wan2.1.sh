@@ -11,10 +11,10 @@ NCCL_DEBUG=INFO
 # Wan2.1 backbone and briefly warm it up with the plain step-local flow-matching objective, so Stage-2
 # distillation starts from a usable coarse prior instead of a zero-initialized sparse branch. Wan2.1-T2V-1.3B is
 # a single full-range expert (no MoE boundary), so the student warms up over the whole rf-time range [0, 1].
-# --student_topk=0.03 (~97% sparsity) must match the value used later in train_distill_wan2.1.sh. Stage A trains
+# --student_topk=0.10 (~90% sparsity) must match the value used later in train_distill_wan2.1.sh. Stage A trains
 # only "attn_op"; for Stage B (full sparse finetune) set --trainable_modules "." plus --transformer_path=<stage-A
 # ckpt> and a new --output_dir.
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_finetune_sparse_wan2.1.py \
@@ -32,24 +32,24 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --adam_weight_decay=1e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=1.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
   --trainable_modules "attn_op" \
-  --student_topk=0.03 \
+  --student_topk=0.10 \
   --train_mode="normal" \
   --resume_from_checkpoint="latest"

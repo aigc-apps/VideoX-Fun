@@ -68,7 +68,7 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, get_closest_ratio, get_random_mask)
-from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
+from videox_fun.models import (AutoencoderKLWan, CLIPModel,
                                SparkWanTransformer3DModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
@@ -163,7 +163,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer3d, args, config, accelerator, weight_dtype, global_step):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -174,22 +174,22 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             scheduler = FlowMatchEulerDiscreteScheduler(
                 **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
             )
-            transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
-
+        
             if args.train_mode != "normal":
                 pipeline = WanI2VPipeline(
-                    vae=vae,
+                    vae=vae, 
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
-                    transformer=transformer3d_1,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                     scheduler=scheduler,
+                    clip_image_encoder=clip_image_encoder,
                 )
             else:
                 pipeline = WanPipeline(
-                    vae=vae,
+                    vae=vae, 
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
-                    transformer=transformer3d_1,
+                    transformer=accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d,
                     scheduler=scheduler,
                 )
             pipeline = pipeline.to(accelerator.device)
@@ -399,6 +399,12 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--selective_ac",
+        type=float,
+        default=0,
+        help="Rate for transformer block apply checkpointing.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
@@ -558,9 +564,10 @@ def parse_args():
         "--uniform_sampling", action="store_true", help="Whether or not to use uniform_sampling."
     )
     parser.add_argument(
-        "--student_topk", type=float, default=0.03,
+        "--student_topk", type=float, default=0.10,
         help="Ratio of key blocks kept per query in the sparse student self-attention (sparsity = 1 - topk)."
-             " 0.1 matches TurboDiffusion SLA, SparkDiffusion ~97% sparsity uses 0.03; 1.0 falls back to dense."
+             " 0.1 matches TurboDiffusion SLA; this Wan2.1 chain uses 0.10 (~90% sparsity) and must match"
+             " train_distill_wan2.1.py; 1.0 falls back to dense."
     )
     parser.add_argument(
         "--enable_text_encoder_in_dataloader", action="store_true", help="Whether or not to use text encoder in dataloader."
@@ -693,8 +700,8 @@ def parse_args():
         type=str,
         default="normal",
         help=(
-            'The training mode. Support `"normal"` (T2V, default), '
-            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
+            'The format of training data. Support `"normal"`'
+            ' (default), `"i2v"`.'
         ),
     )
     parser.add_argument(
@@ -892,20 +899,23 @@ def main():
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        Chosen_AutoencoderKL = {
-            "AutoencoderKLWan": AutoencoderKLWan,
-            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
-        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
-        vae = Chosen_AutoencoderKL.from_pretrained(
+        vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
         vae.eval()
+        # Get Clip Image Encoder
+        if args.train_mode != "normal":
+            clip_image_encoder = CLIPModel.from_pretrained(
+                os.path.join(args.pretrained_model_name_or_path, config['image_encoder_kwargs'].get('image_encoder_subpath', 'image_encoder')),
+            )
+            clip_image_encoder = clip_image_encoder.eval()
+        else:
+            clip_image_encoder = None
             
     # Get Transformer
-    sub_path = config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')
     transformer3d = SparkWanTransformer3DModel.from_pretrained(
-        os.path.join(args.pretrained_model_name_or_path, sub_path),
+        os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
         low_cpu_mem_usage=True,
     ).to(weight_dtype)
@@ -917,6 +927,8 @@ def main():
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     transformer3d.requires_grad_(False)
+    if args.train_mode != "normal":
+        clip_image_encoder.requires_grad_(False)
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -964,9 +976,8 @@ def main():
         if zero_stage == 3:
             raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
-        # Load the EMA copy from the same subpath as the live model.
         ema_module = SparkWanTransformer3DModel.from_pretrained(
-            os.path.join(args.pretrained_model_name_or_path, sub_path),
+            os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
             low_cpu_mem_usage=True,
         )
@@ -1144,7 +1155,6 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
-    spatial_compression_ratio = vae.config.spatial_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1238,7 +1248,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1248,10 +1258,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
+                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
+                closest_size = [int(x / 16) * 16 for x in closest_size]
 
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
@@ -1314,7 +1324,7 @@ def main():
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
-
+                
                 new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
                 new_examples["text"].append(example["text"])
 
@@ -1407,6 +1417,8 @@ def main():
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
         text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
+    if args.train_mode != "normal":
+        clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1495,12 +1507,7 @@ def main():
         vae_stream_1 = None
         vae_stream_2 = None
 
-    # Calculate the index we need. Wan2.1 is a single expert over the full timestep
-    # range, so there is no MoE boundary to split the schedule at.
-    start_num_idx        = 0
-    train_sampling_steps = args.train_sampling_steps
-
-    idx_sampling = DiscreteSampling(train_sampling_steps, start_num_idx=start_num_idx, uniform_sampling=args.uniform_sampling)
+    idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
@@ -1545,14 +1552,17 @@ def main():
                             batch['text'] = batch['text'] * 2
                 
                 if args.train_mode != "normal":
+                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
                     if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
                         elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
                             mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
                             mask = torch.tile(mask, (2, 1, 1, 1, 1))
 
@@ -1625,6 +1635,8 @@ def main():
                 if args.low_vram:
                     torch.cuda.empty_cache()
                     vae.to(accelerator.device)
+                    if args.train_mode != "normal":
+                        clip_image_encoder.to(accelerator.device)
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to("cpu")
 
@@ -1657,29 +1669,32 @@ def main():
                         )
                         mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
                         mask = mask.transpose(1, 2)
-
-                        if args.train_mode != "ti2v":
-                            mask = resize_mask(1 - mask, latents)
-                        else:
-                            mask = F.interpolate(mask[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(accelerator.device, weight_dtype)
+                        mask = resize_mask(1 - mask, latents)
 
                         # Encode inpaint latents.
                         mask_latents = _batch_encode_vae(mask_pixel_values)
                         if vae_stream_2 is not None:
                             torch.cuda.current_stream().wait_stream(vae_stream_2) 
 
-                        if args.train_mode != "ti2v":
-                            inpaint_latents = torch.concat([mask, mask_latents], dim=1)
-                            inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
-                        else:
-                            inpaint_latents = mask_latents
-                                                    
+                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+                        inpaint_latents = t2v_flag[:, None, None, None, None] * inpaint_latents
+
+                        clip_context = []
+                        for clip_pixel_value in clip_pixel_values:
+                            clip_image = Image.fromarray(np.uint8(clip_pixel_value.float().cpu().numpy()))
+                            clip_image = TF.to_tensor(clip_image).sub_(0.5).div_(0.5).to(clip_image_encoder.device, weight_dtype)
+                            _clip_context = clip_image_encoder([clip_image[:, None, :, :]])
+                            clip_context.append(_clip_context)
+                        clip_context = torch.cat(clip_context)
+                                                
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
                     torch.cuda.current_stream().wait_stream(vae_stream_1)
 
                 if args.low_vram:
                     vae.to('cpu')
+                    if args.train_mode != "normal":
+                        clip_image_encoder.to('cpu')
                     torch.cuda.empty_cache()
                     if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to(accelerator.device)
@@ -1753,21 +1768,6 @@ def main():
                     target_shape[1]
                 )
 
-                if args.train_mode == "ti2v":
-                    if rng is None:
-                        i2v_in_ti2v = np.random.choice([0, 1], p = [0.50, 0.50])
-                    else:
-                        i2v_in_ti2v = rng.choice([0, 1], p = [0.50, 0.50])
-
-                    mask_bs = mask.size()[0]
-                    if i2v_in_ti2v:
-                        noisy_latents = (1 - mask) * inpaint_latents + mask * noisy_latents
-                        
-                        temp_ts = (mask[:, 0, :, ::2, ::2] * timesteps[:, None, None, None]).flatten(1)
-                        timesteps = torch.cat([temp_ts, temp_ts.new_ones(mask_bs, seq_len - temp_ts.size(1)) * timesteps[:, None,]], dim = 1)
-                    else:
-                        timesteps = mask.new_ones(mask_bs, seq_len) * timesteps[:, None,]
-
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
@@ -1775,7 +1775,8 @@ def main():
                         context=prompt_embeds,
                         t=timesteps,
                         seq_len=seq_len,
-                        y=inpaint_latents if args.train_mode != "normal" and args.train_mode != "ti2v" else None,
+                        y=inpaint_latents if args.train_mode != "normal" else None,
+                        clip_fea=clip_context if args.train_mode != "normal" else None,
                     )
                 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1890,6 +1891,7 @@ def main():
                             vae,
                             text_encoder,
                             tokenizer,
+                            clip_image_encoder,
                             transformer3d,
                             args,
                             config,
@@ -1917,6 +1919,7 @@ def main():
                     vae,
                     text_encoder,
                     tokenizer,
+                    clip_image_encoder,
                     transformer3d,
                     args,
                     config,

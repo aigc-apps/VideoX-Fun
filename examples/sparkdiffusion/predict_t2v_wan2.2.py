@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 import numpy as np
@@ -39,11 +40,13 @@ from videox_fun.utils import (FlowDPMSolverMultistepScheduler,
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "model_cpu_offload"
+GPU_memory_mode     = "sequential_cpu_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
 # If you are using 1 GPU, you can set ulysses_degree = 1 and ring_degree = 1.
+# NOTE: the sparse (RoLa) kernel only has an ulysses head-parallel path (no ring attention), so a
+# sparse student requires ring_degree=1; put every GPU into ulysses_degree instead.
 ulysses_degree      = 1
 ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus.
@@ -54,11 +57,15 @@ fsdp_text_encoder   = True
 compile_dit         = False
 
 # TeaCache config
-# Kept off by default: TeaCache / cfg-skip skip whole denoising steps, which does not fit the
-# few-step CFG-free sparse student.
+# Kept off: TeaCache / cfg-skip skip whole denoising steps, which does not fit the few-step
+# CFG-free sparse student.
 enable_teacache     = False
 # Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
 # but it may cause slight differences between the generated content and the original content.
+# # --------------------------------------------------------------------------------------------------- #
+# | Model Name          | threshold | Model Name          | threshold |
+# | Wan2.2-T2V-A14B     | 0.10~0.15 | Wan2.2-I2V-A14B     | 0.15~0.20 |
+# # --------------------------------------------------------------------------------------------------- #
 teacache_threshold  = 0.10
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
@@ -77,32 +84,30 @@ riflex_k            = 6
 
 # Config and model path
 config_path         = "config/wan2.2/wan_civitai_t2v.yaml"
-# model path
+# Base model (Wan-AI/Wan2.2-T2V-A14B): provides config.json + dense low/high experts + VAE + T5.
 model_name          = "models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 
-# SparkDiffusion sparse-student config.
-# student_topk is the ratio of key blocks each query keeps in the sparse (RoLa) attention and
-# MUST match the value used in training (scripts/sparkdiffusion); sparsity = 1 - student_topk.
-student_topk        = 0.03
+# ---- SparkDiffusion sparse-student config -------------------------------------------------
+# Official released checkpoints: SparkWan2.2-T2V-14B-480P-0.95Sparsity-{Low,High}.pth (RoLA sparse
+# attention + CrossDistill few-step distillation, dual-expert MoE). student_topk is the keep-ratio
+# of key blocks per query and MUST equal the value the checkpoints were trained at: topk=0.05 ->
+# 95% sparsity. A mismatch silently mis-attends.
+student_topk        = 0.05
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++".
 # The few-step distilled student uses "Flow" (FlowMatchEulerDiscreteScheduler).
 sampler_name        = "Flow"
-# [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
-# Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
+# [NOTE]: Noise schedule shift parameter. Affects temporal dynamics.
 shift               = 12
 
-# Load pretrained model if need
-# The transformer_path is used for low noise model, the transformer_high_path is used for high noise model.
-# Each path doubles as a per-expert SparkDiffusion sparse-student checkpoint: an expert whose path is
-# set is rebuilt as SparkWan2_2Transformer3DModel (sparse RoLa self-attention) and its checkpoint is
-# loaded after set_student_topk, while a None path keeps that expert dense. Wan2.2 A14B is a two-expert
-# MoE (low_noise -> transformer, high_noise -> transformer_2), so the full student sets both.
-transformer_path        = "output_dir_sparkdiffusion_wan2.2_t2v_low_sparse/checkpoint-2200/diffusion_pytorch_model.safetensors"
-transformer_high_path   = "output_dir_sparkdiffusion_wan2.2_t2v_high_sparse/checkpoint-17000/diffusion_pytorch_model.safetensors"
+# Official released checkpoints (single .pth per expert, bf16, flat 'net.'-prefixed state_dict).
+# transformer_path -> low-noise expert, transformer_high_path -> high-noise expert.
+# Download:
+#   HF_ENDPOINT=https://hf-mirror.com HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
+#     alibabagroup/SparkWan2.2-T2V-14B-480P-0.95Sparsity --local-dir <dir>
+transformer_path        = "models/Personalized_Model/SparkWan2.2-T2V-14B-480P-0.95Sparsity/SparkWan2.2-T2V-14B-480P-0.95Sparsity-Low.pth"
+transformer_high_path   = "models/Personalized_Model/SparkWan2.2-T2V-14B-480P-0.95Sparsity/SparkWan2.2-T2V-14B-480P-0.95Sparsity-High.pth"
 vae_path                = None
-# Load lora model if need
-# The lora_path is used for low noise model, the lora_high_path is used for high noise model.
 lora_path               = None
 lora_high_path          = None
 
@@ -116,26 +121,57 @@ fps                 = 16
 weight_dtype        = torch.bfloat16
 prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-guidance_scale      = 1.0   # the distilled student is CFG-free
+guidance_scale      = 1.0   # the CrossDistill student is CFG-free
 seed                = 43
 num_inference_steps = 4
-# The lora_weight is used for low noise model, the lora_high_weight is used for high noise model.
 lora_weight         = 0.55
 lora_high_weight    = 0.55
-save_path           = "samples/wan-videos-sparkdiffusion-t2v"
+save_path           = "samples/sparkdiffusion-wan2.2-official"
+
+
+def remap_spark_ckpt_to_vxf(state_dict):
+    """Official SparkDiffusion .pth -> VideoX-Fun SparkWan2_2Transformer3DModel key layout.
+
+    The released checkpoint is a flat dict whose keys are all prefixed with ``net.`` and whose
+    RoLa sparse-attention params sit DIRECTLY on ``self_attn`` (proj_q / proj_k / gate_proj /
+    gate_bias). VideoX-Fun keeps the same native Wan backbone naming but nests those four params
+    under a ``self_attn.attn_op`` submodule. Two edits make the keys match 1:1:
+      1) drop the leading ``net.``
+      2) ``blocks.N.self_attn.{proj_q,proj_k,gate_proj,gate_bias}`` -> ``...self_attn.attn_op.{...}``
+    """
+    ROLA = {"proj_q.weight", "proj_k.weight", "gate_proj.weight", "gate_bias"}
+    out = {}
+    for k, v in state_dict.items():
+        nk = k[len("net."):] if k.startswith("net.") else k
+        m = re.match(r"(blocks\.\d+\.self_attn\.)(.+)$", nk)
+        if m and m.group(2) in ROLA:
+            nk = m.group(1) + "attn_op." + m.group(2)
+        out[nk] = v
+    return out
+
+
+def load_spark_ckpt(path):
+    """Load an official .pth and return it in VideoX-Fun key layout (remap + patch reshape)."""
+    if path.endswith("safetensors"):
+        from safetensors.torch import load_file
+        state_dict = load_file(path)
+    else:
+        state_dict = torch.load(path, map_location="cpu")
+    state_dict = state_dict["state_dict"] if isinstance(state_dict, dict) and "state_dict" in state_dict else state_dict
+    return remap_spark_ckpt_to_vxf(state_dict)
+
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
 boundary = config['transformer_additional_kwargs'].get('boundary', 0.875)
 
-# Build one transformer per MoE expert. An expert becomes a SparkWan2_2Transformer3DModel (sparse
-# RoLa self-attention) iff its own sparse checkpoint path is set; otherwise it stays dense.
+# Build one transformer per MoE expert, then REBUILD the sparse kernels at the released keep-ratio
+# BEFORE loading weights. Call order matters: set_student_topk recreates attn_op (resetting the
+# RoLa params to their init), so the trained checkpoint values must be loaded afterwards.
 low_subpath  = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
 high_subpath = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
 
 if transformer_path is not None:
-    # low-noise expert is a sparse student: rebuild the sparse kernels at the training top-k.
-    # Call order matters: set_student_topk recreates attn_op, so its checkpoint is loaded below.
     transformer = SparkWan2_2Transformer3DModel.from_pretrained(
         os.path.join(model_name, low_subpath),
         transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -153,7 +189,6 @@ else:
 
 if config['transformer_additional_kwargs'].get('transformer_combination_type', 'single') == "moe":
     if transformer_high_path is not None:
-        # high-noise expert is a sparse student (see the low-noise branch above).
         transformer_2 = SparkWan2_2Transformer3DModel.from_pretrained(
             os.path.join(model_name, high_subpath),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
@@ -171,36 +206,46 @@ if config['transformer_additional_kwargs'].get('transformer_combination_type', '
 else:
     transformer_2 = None
 
-# Load the per-expert checkpoints AFTER set_student_topk so a sparse student's trained RoLa params
-# overwrite the freshly-init ones; a missing attn_op.* key means the checkpoint is not a sparse student.
+# Load the per-expert official checkpoints AFTER set_student_topk so the trained RoLa params
+# overwrite the freshly-init ones; a missing attn_op.* key means the remap / topk is wrong.
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
-    if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file
-        state_dict = load_file(transformer_path)
-    else:
-        state_dict = torch.load(transformer_path, map_location="cpu")
-    state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
-
+    state_dict = load_spark_ckpt(transformer_path)
+    if len(state_dict["patch_embedding.weight"].size()) == 2:
+        out_channels = state_dict["patch_embedding.weight"].shape[0]
+        in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer.config.patch_size[1] // transformer.config.patch_size[-2]
+        state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
+            out_channels, in_channels, 1, transformer.config.patch_size[1], transformer.config.patch_size[2]
+        )
     m, u = transformer.load_state_dict(state_dict, strict=False)
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-    if len([k for k in m if "attn_op." in k]) > 0:
-        print("WARNING: sparse attn_op keys are missing on the low-noise expert -- check student_topk / ckpt.")
+    attn_op_missing = [k for k in m if "attn_op." in k]
+    if attn_op_missing:
+        raise RuntimeError(
+            f"{len(attn_op_missing)} sparse attn_op keys missing on the low-noise expert "
+            f"(student_topk={student_topk}); e.g. {attn_op_missing[:4]}. Check the remap / topk.")
+    if u:
+        print(f"WARNING: {len(u)} unexpected keys ignored; e.g. {list(u)[:4]}")
 
 if transformer_2 is not None:
     if transformer_high_path is not None:
         print(f"From checkpoint: {transformer_high_path}")
-        if transformer_high_path.endswith("safetensors"):
-            from safetensors.torch import load_file
-            state_dict = load_file(transformer_high_path)
-        else:
-            state_dict = torch.load(transformer_high_path, map_location="cpu")
-        state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
-
+        state_dict = load_spark_ckpt(transformer_high_path)
+        if len(state_dict["patch_embedding.weight"].size()) == 2:
+            out_channels = state_dict["patch_embedding.weight"].shape[0]
+            in_channels = state_dict["patch_embedding.weight"].shape[1] // transformer_2.config.patch_size[1] // transformer_2.config.patch_size[-2]
+            state_dict["patch_embedding.weight"] = state_dict["patch_embedding.weight"].reshape(
+                out_channels, in_channels, 1, transformer_2.config.patch_size[1], transformer_2.config.patch_size[2]
+            )
         m, u = transformer_2.load_state_dict(state_dict, strict=False)
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
-        if len([k for k in m if "attn_op." in k]) > 0:
-            print("WARNING: sparse attn_op keys are missing on the high-noise expert -- check student_topk / ckpt.")
+        attn_op_missing = [k for k in m if "attn_op." in k]
+        if attn_op_missing:
+            raise RuntimeError(
+                f"{len(attn_op_missing)} sparse attn_op keys missing on the high-noise expert "
+                f"(student_topk={student_topk}); e.g. {attn_op_missing[:4]}. Check the remap / topk.")
+        if u:
+            print(f"WARNING: {len(u)} unexpected keys ignored; e.g. {list(u)[:4]}")
 
 # Get Vae
 Chosen_AutoencoderKL = {
@@ -259,8 +304,8 @@ pipeline = Wan2_2Pipeline(
     scheduler=scheduler,
 )
 if ulysses_degree > 1 or ring_degree > 1:
-    # The sparse attention only supports ulysses head-parallel (no ring-attention path); a sparse
-    # expert under ring_degree>1 would silently mis-attend, so require ring_degree=1.
+    # The sparse (RoLa) kernel only supports ulysses head-parallel (no ring-attention path); a
+    # sparse expert under ring_degree>1 would silently mis-attend.
     if ring_degree > 1 and (transformer_path is not None or transformer_high_path is not None):
         raise ValueError(
             "SparkDiffusion sparse multi-GPU requires ring_degree=1; put every GPU into "
@@ -289,8 +334,6 @@ if compile_dit:
     print("Add Compile")
 
 # Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
-# The order lives inside the helper: quantization has to happen before the offload hooks
-# are installed, and both transformers of this MoE setup are handled in one call.
 apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype)
 
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
@@ -325,7 +368,7 @@ with torch.no_grad():
             pipeline.transformer_2.enable_riflex(k = riflex_k, L_test = latent_frames)
 
     sample = pipeline(
-        prompt, 
+        prompt,
         num_frames = video_length,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
@@ -360,6 +403,7 @@ def save_results():
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)
+        print(f"Saved video to: {video_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist

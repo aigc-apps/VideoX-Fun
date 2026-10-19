@@ -50,9 +50,6 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullOptimStateDictConfig, FullStateDictConfig, ShardedOptimStateDictConfig,
-    ShardedStateDictConfig)
 from torch.utils.data import BatchSampler, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -72,11 +69,13 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, TextDataset, get_closest_ratio,
                              get_random_mask)
-from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
-                               CLIPModel, SparkWan2_2Transformer3DModel,
-                               Wan2_2Transformer3DModel, WanT5EncoderModel)
+from videox_fun.models import (AutoencoderKLWan,
+                               SparkWan2_2Transformer3DModel,
+                               SparkWanTransformer3DModel,
+                               Wan2_2Transformer3DModel, WanT5EncoderModel,
+                               WanTransformer3DModel)
 from videox_fun.pipeline import (Wan2_2I2VPipeline, Wan2_2Pipeline,
-                                 Wan2_2TI2VPipeline)
+                                 WanI2VPipeline, WanPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
@@ -184,13 +183,18 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             scheduler = FlowMatchEulerDiscreteScheduler(
                 **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
             )
+            # Full joint few-step trajectory (both experts, boundary-routed): [1.0] + the joint grid knots.
+            val_inference_steps = len(args.joint_backward_timesteps) + 1
+            # Dual-expert (MoE) validation: the pipeline routes rf s >= boundary to transformer_2 (the
+            # HIGH-noise expert) and s < boundary to transformer (the LOW-noise expert). The expert being
+            # trained is the live (possibly FSDP-wrapped) generator; the complementary expert is loaded
+            # fresh from its noise-model subpath so the full trajectory can be sampled.
             if args.boundary_type == "full":
                 transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
                 transformer3d_2 = None
             else:
                 if args.boundary_type == "low":
                     transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
-                    
                     sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
                     transformer3d_2 = (SparkWan2_2Transformer3DModel if args.sparse_student else Wan2_2Transformer3DModel).from_pretrained(
                         os.path.join(args.pretrained_model_name_or_path, sub_path),
@@ -208,21 +212,11 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                     ).to(weight_dtype)
                     if args.sparse_student:
                         transformer3d_1.set_student_topk(args.student_topk)
-
                     transformer3d_2 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
-            
-            if args.train_mode == "ti2v":
-                pipeline = Wan2_2TI2VPipeline(
-                    vae=vae, 
-                    text_encoder=text_encoder,
-                    tokenizer=tokenizer,
-                    transformer=transformer3d_1,
-                    transformer_2=transformer3d_2,
-                    scheduler=scheduler,
-                )
-            elif args.train_mode != "normal":
+
+            if args.train_mode != "normal":
                 pipeline = Wan2_2I2VPipeline(
-                    vae=vae, 
+                    vae=vae,
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
                     transformer=transformer3d_1,
@@ -231,7 +225,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                 )
             else:
                 pipeline = Wan2_2Pipeline(
-                    vae=vae, 
+                    vae=vae,
                     text_encoder=text_encoder,
                     tokenizer=tokenizer,
                     transformer=transformer3d_1,
@@ -275,9 +269,9 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
 
                         video        = input_video,
                         mask_video   = input_video_mask,
-                        num_inference_steps = 4,
+                        num_inference_steps = val_inference_steps,
                         guidance_scale      = 1.0,
-                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.875),
                     ).videos
 
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -296,9 +290,9 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                         height      = args.video_sample_size,
                         width       = args.video_sample_size,
                         generator   = generator,
-                        num_inference_steps = 4,
+                        num_inference_steps = val_inference_steps,
                         guidance_scale      = 1.0,
-                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.900)
+                        boundary            = config['transformer_additional_kwargs'].get('boundary', 0.875),
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                     save_videos_grid(
@@ -309,8 +303,8 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                         )
                     )
 
-            # Detach the validation-only VAE offload hook before returning to training so that
-            # manual_vae_move keeps sole control of the VAE's device placement.
+            # Detach the validation-only VAE offload hook before returning to training so the
+            # training loop keeps sole control of the VAE's device placement.
             for _h in getattr(pipeline, "_cpu_offload_component_hooks", []):
                 _h.remove()
             # Drop pipeline AND the local handles to the freshly-loaded complementary expert (a full
@@ -347,7 +341,6 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
         )
         if not args.enable_text_encoder_in_dataloader and not _te_sharded_exc:
             text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
@@ -547,7 +540,7 @@ def parse_args():
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
-    parser.add_argument("--max_grad_norm", default=0.0, type=float, help="Max gradient norm. Default 0 disables gradient clipping to match official CrossDistill (grad_clip=False; Table 4 runs unclipped). Set >0 to enable.")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
@@ -730,7 +723,7 @@ def parse_args():
     parser.add_argument(
         "--config_path",
         type=str,
-        default=None,
+        default="config/wan2.2/wan_civitai_t2v.yaml",
         help=(
             "The config of the model in training."
         ),
@@ -750,10 +743,60 @@ def parse_args():
               "with --sparse_student the critic stays dense (initialized from the teacher)."),
     )
     parser.add_argument(
+        "--sparse_student",
+        action="store_true",
+        help="Distill a sparse (RoLa/SLA-style) student against the dense teacher: generator and init_rollout use SparkWan2_2Transformer3DModel (sparse + linear self-attention), teacher and critic stay dense.",
+    )
+    parser.add_argument(
+        "--student_topk",
+        type=float,
+        default=0.05,
+        help="Ratio of key blocks kept per query in the sparse student self-attention (sparsity = 1 - topk). Must match the --student_topk used in train_finetune_sparse.py.",
+    )
+    parser.add_argument(
+        "--boundary_type",
+        type=str,
+        default="low",
+        help=(
+            'The training boundary type for the dual-Transformer (MoE) architecture. '
+            'Support `"low"` (train the low-noise expert), `"high"` (train the high-noise '
+            'expert), and `"full"` (single-model training). Selects which noise-model subpath '
+            'is loaded and how the joint rf grid is split at the config boundary.'
+        ),
+    )
+    parser.add_argument(
+        "--joint_backward_timesteps",
+        nargs='+',
+        type=float,
+        default=[0.933781, 0.875, 0.608979],
+        help="Canonical joint few-step rf grid (rCM, descending); its MIDDLE knot is the MoE "
+             "boundary. Value = rf time tan(theta)/(1+tan(theta)) at theta=[1.5, boundary, 1.0]. "
+             "Each expert's denoising grid is auto-split from it at the config boundary "
+             "(high: [1.0] + knots >= boundary, low: knots < boundary), and the rf values are "
+             "used directly as Euler sigmas.",
+    )
+    parser.add_argument(
+        "--init_rollout_timesteps",
+        nargs='+',
+        type=float,
+        default=[],
+        help="rf interior knots of the HIGH segment for the low expert's init rollout path "
+             "[1.0, *init_rollout_timesteps, boundary]. Empty = auto: joint-grid knots above "
+             "the boundary.",
+    )
+    parser.add_argument(
+        "--init_rollout_path",
+        type=str,
+        default="",
+        help="Path to the trained high-noise student checkpoint used to roll the frozen high "
+             "student from pure noise down to the boundary, producing the low-noise expert's "
+             "rollout starting latent online (empty = the low expert cold-starts from pure noise).",
+    )
+    parser.add_argument(
         "--fake_score_transformer_path",
         type=str,
         default=None,
-        help=("Path to a checkpoint loaded into the dense critic (fake_score) only."),
+        help=("If you want to warm start only the fake score from a weight, input its path."),
     )
     parser.add_argument(
         "--vae_path",
@@ -789,22 +832,12 @@ def parse_args():
         "--low_vram", action="store_true", help="Whether enable low_vram mode."
     )
     parser.add_argument(
-        "--boundary_type",
-        type=str,
-        default="low",
-        help=(
-            'The training boundary type for dual-Transformer architecture. '
-            'Support `"low"` (train low-noise model), `"high"` (train high-noise model), '
-            'and `"full"` (single model training like TI2V-5B).'
-        ),
-    )
-    parser.add_argument(
         "--train_mode",
         type=str,
         default="normal",
         help=(
-            'The training mode. Support `"normal"` (T2V, default), '
-            '`"i2v"` (Image-to-Video), and `"ti2v"` (Text-Image-to-Video).'
+            'The format of training data. Support `"normal"`'
+            ' (default), `"i2v"`.'
         ),
     )
     parser.add_argument(
@@ -822,8 +855,8 @@ def parse_args():
     parser.add_argument(
         "--real_guidance_scale",
         type=float,
-        default=5.0,
-        help="The cfg scale for real score (official teacher_guidance default = 5.0).",
+        default=6.0,
+        help="The cfg scale for real score.",
     )
     parser.add_argument(
         '--denoising_step_indices_list', 
@@ -836,134 +869,96 @@ def parse_args():
         action="store_true",
         help="whether to use randomize timesteps indices in training.",
     )
+    parser.add_argument(
+        "--index_jitter_ratio",
+        type=float,
+        default=0.3,
+        help="Symmetric jitter budget (fraction of the neighboring gap) applied to the "
+             "denoising step indices when --randomize_step_indices is enabled.",
+    )
+    parser.add_argument(
+        "--flow_euler_rollout",
+        action="store_true",
+        help="Simulate the normal flow-matching inference rollout in the generator's multi-step "
+             "self-rollout (LightX2V-style): keep the model prediction in flow/velocity space and "
+             "advance to the next noise level with a deterministic Euler ODE step "
+             "(x_next = x_t + (sigma_next - sigma_t) * v), instead of converting the prediction "
+             "to x0 and re-noising with fresh noise. The final step still converts to x0 since "
+             "the DMD objective is defined on x0.",
+    )
 
     parser.add_argument(
-        "--distill_loss",
-        type=str,
-        default="tdm",
-        choices=["tdm", "dmd"],
-        help="Student distribution-matching loss. TDM and DMD are mutually exclusive; exactly one of --loss_scale_tdm / --loss_scale_dmd must be > 0. 'tdm' = Trajectory Distribution Matching, 'dmd' = Distribution Matching Distillation.",
+        "--dfd",
+        action="store_true",
+        help="whether to use DFD post-training on a DMD-pretrained generator.",
     )
     parser.add_argument(
-        "--loss_scale_tdm", type=float, default=1.0, help="Weight of the TDM student loss (0 disables it)."
+        "--dfd_teacher_replace_prob",
+        type=float,
+        default=0.5,
+        help="Probability of replacing the teacher-score input with paired real data.",
     )
     parser.add_argument(
-        "--loss_scale_dmd", type=float, default=1.0, help="Weight of the DMD student loss (0 disables it)."
+        "--dfd_start_step",
+        type=int,
+        default=0,
+        help="Switch on DFD from this global_step onward; earlier steps run plain DMD.",
+    )
+    parser.add_argument(
+        "--decoupled_dmd",
+        action="store_true",
+        help="Use Decoupled DMD (arXiv:2511.22677): decompose the DMD gradient into a CFG Augmentation "
+             "term re-noised at tau_CA cleaner than the generator's current step and a Distribution "
+             "Matching term re-noised over the full noise range (Decoupled-Hybrid schedule).",
     )
     parser.add_argument(
         "--div_mode",
         type=str,
         default="pcm_random",
-        choices=["pcm_random", "pcm_fixed", "ode_match"],
-        help="Diversity supervision algorithm (shared by TDM/DMD, keeps the few-step student from mode collapse). 'ode_match' matches the student rf velocity at s=1 to a teacher K-step rollout; 'pcm_*' does PCM-style boundary alignment on phase 0.",
+        help="CrossDistill diversity mode: pcm_fixed / pcm_random (PCM-style phase-0 boundary "
+             "alignment). Only used when --loss_scale_div > 0.",
     )
     parser.add_argument(
-        "--loss_scale_div", type=float, default=0.0, help="Weight of the diversity loss (0 disables it). Official default is 0; the CrossDistill recipe enables it only for the high-noise expert (see train_distill.sh), keeping the low-noise expert div-free (joint_low_loss_scale_div=0)."
-    )
-    parser.add_argument(
-        "--div_K", type=int, default=8, help="Teacher rollout step count for ode_match diversity."
-    )
-    parser.add_argument(
-        "--div_sigma_max", type=float, default=5000.0, help="sigma_max used to build the ode_match teacher rf grid."
-    )
-    parser.add_argument(
-        "--dcm_total_steps", type=int, default=48, help="Discrete-time CM grid size used by the pcm-div modes."
-    )
-    parser.add_argument(
-        "--dcm_skipping_interval_steps", type=int, default=1, help="Skipping interval on the CM grid used by the pcm-div modes."
-    )
-    parser.add_argument(
-        "--max_simulation_steps_fake", type=int, default=4, help="Max number of student Euler steps during deterministic rf-Euler backward simulation (all times are rf s in [0,1])."
-    )
-    parser.add_argument(
-        "--joint_backward_timesteps",
-        nargs='+',
+        "--loss_scale_div",
         type=float,
-        default=[0.933781, 0.875, 0.608979],
-        help="Canonical joint few-step rf grid (rCM, descending); its MIDDLE knot is the MoE boundary. Value = rf time tan(theta)/(1+tan(theta)) at theta=[1.5, boundary, 1.0]. Each expert's --backward_timesteps / --init_rollout_timesteps are auto-split from it at the config boundary.",
+        default=0.0,
+        help="Weight of the CrossDistill PCM diversity term (per-element-mean space). 0 disables "
+             "diversity and recovers the plain-DMD baseline.",
     )
     parser.add_argument(
-        "--backward_timesteps",
-        nargs='+',
-        type=float,
-        default=[],
-        help="rf mid-knots of this expert's backward-simulation schedule (descending). Empty = auto: joint grid split at the boundary (high: knots >= boundary, low: knots < boundary).",
+        "--dcm_total_steps",
+        type=int,
+        default=48,
+        help="Subdivision of the continuous rf grid used by the PCM diversity term (dw = 1 / N).",
     )
     parser.add_argument(
-        "--backward_simulation_start_t",
-        type=float,
-        default=-1.0,
-        help="rf start time of backward simulation; -1 = auto (1.0 = pure noise). For the low expert set to the MoE boundary (e.g. 0.875).",
-    )
-    parser.add_argument(
-        "--backward_simulation_end_t", type=float, default=0.0, help="rf end time of backward simulation; 0 = x0."
+        "--dcm_skipping_interval_steps",
+        type=int,
+        default=1,
+        help="Number of teacher Euler sub-steps K within phase 0 for the PCM diversity term.",
     )
     parser.add_argument(
         "--teacher_timestep_shift",
         type=float,
         default=12.0,
-        help="Official teacher sampling shift; defines the teacher timestep density (Wan2.2 t2v A14B = 12.0). Real (teacher) guidance is reused from --real_guidance_scale; fake-score guidance from --fake_guidance_scale.",
+        help="rf timestep shift for the PCM diversity grid (Wan2.2 T2V A14B teacher shift = 12.0).",
     )
     parser.add_argument(
-        "--rf_t_min",
+        "--div_rf_boundary",
         type=float,
-        default=-1.0,
-        help="Lower rf-time bound of this expert's region for partition time sampling (D-time and div drawn from p_D then clamped to [rf_t_min, rf_t_max]). -1 = auto from --boundary_type + config boundary (high: boundary, low/full: 0.0).",
+        default=0.933781,
+        help="Phase-0 right boundary rf_b for the PCM diversity term (official backward_timesteps[0]).",
     )
     parser.add_argument(
-        "--rf_t_max",
+        "--div_teacher_guidance",
         type=float,
-        default=-1.0,
-        help="Upper rf-time bound of this expert's region. -1 = auto from --boundary_type + config boundary (low: boundary, high/full: 1.0).",
+        default=5.0,
+        help="CFG scale for the PCM diversity teacher rollout (official teacher_guidance); "
+             "independent of --real_guidance_scale.",
     )
-    parser.add_argument(
-        "--p_D",
-        type=str,
-        default="lognormal",
-        choices=["uniform_shift", "lognormal"],
-        help="Distribution used to draw the critic/teacher comparison time s_D. Default 'lognormal' matches official p_D=LogNormal(p_mean=0.0, p_std=1.6).",
-    )
-    parser.add_argument(
-        "--p_D_shift", type=float, default=12.0, help="shift for uniform_shift p_D (match teacher_timestep_shift)."
-    )
-    parser.add_argument(
-        "--p_D_mean", type=float, default=0.0, help="mean of lognormal p_D (log-sigma space)."
-    )
-    parser.add_argument(
-        "--p_D_std", type=float, default=1.6, help="std of lognormal p_D (log-sigma space)."
-    )
-    parser.add_argument(
-        "--student_update_freq", type=int, default=5, help="Run the student update once every this many iterations (critic in between)."
-    )
-    parser.add_argument(
-        "--critic_warmup", type=int, default=0, help="Number of initial iterations that always run the student (critic frozen)."
-    )
-    parser.add_argument(
-        "--init_rollout_path",
-        type=str,
-        default="",
-        help="Path to the trained high-noise student safetensors/bin used to roll the frozen trained high student and build the low-noise expert's backward-simulation starting latent online (empty = start from pure noise).",
-    )
-    parser.add_argument(
-        "--sparse_student",
-        action="store_true",
-        help="Distill a sparse (RoLa/SLA-style) student against the dense teacher: generator and init_rollout use SparkWan2_2Transformer3DModel (sparse + linear self-attention), teacher and critic stay dense.",
-    )
-    parser.add_argument(
-        "--student_topk",
-        type=float,
-        default=0.03,
-        help="Ratio of key blocks kept per query in the sparse student self-attention (sparsity = 1 - topk). Must match the --student_topk used in train_finetune_sparse.py.",
-    )
-    parser.add_argument(
-        "--init_rollout_timesteps",
-        nargs='+',
-        type=float,
-        default=[],
-        help="rf mid-knots of the HIGH segment for the init rollout path [1.0, *init_rollout_timesteps, backward_simulation_start_t]. Empty = auto: joint-grid knots above the boundary.",
-    )
-
     args = parser.parse_args()
+    if isinstance(args.report_to, str) and args.report_to.lower() == "none":
+        args.report_to = None
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -978,27 +973,35 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # --- SparkDiffusion CrossDistill Argument Validation ---
-    if args.train_mode != "normal":
-        raise ValueError("SparkDiffusion distillation supports --train_mode normal (T2V) only.")
-    if args.distill_loss == "tdm":
-        args.loss_scale_dmd = 0.0
-        if args.loss_scale_tdm <= 0:
-            raise ValueError("--distill_loss tdm requires --loss_scale_tdm > 0.")
-    elif args.distill_loss == "dmd":
-        args.loss_scale_tdm = 0.0
-        if args.loss_scale_dmd <= 0:
-            raise ValueError("--distill_loss dmd requires --loss_scale_dmd > 0.")
-    assert not (args.loss_scale_tdm > 0 and args.loss_scale_dmd > 0), \
-        "loss_scale_tdm and loss_scale_dmd are mutually exclusive; set exactly one > 0."
-    if args.loss_scale_div > 0:
-        assert args.max_simulation_steps_fake >= 2, (
-            "--loss_scale_div > 0 requires --max_simulation_steps_fake >= 2 so that the "
-            "first (rf s=1) segment of backward simulation stays no_grad.")
-    if args.student_update_freq <= 0:
-        raise ValueError("--student_update_freq must be greater than zero.")
-    if args.trainable_modules is None:
-        args.trainable_modules = [""]
+    if args.dfd:
+        if args.train_mode != "normal":
+            raise ValueError("DFD currently supports T2V training with --train_mode normal.")
+        if args.enable_text_encoder_in_dataloader:
+            raise ValueError("DFD does not support --enable_text_encoder_in_dataloader.")
+        if args.seed is None:
+            raise ValueError("DFD requires an explicit --seed for reproducible post-training.")
+        if args.dfd_start_step < 0:
+            raise ValueError("--dfd_start_step must be non-negative.")
+        if not 0 <= args.dfd_teacher_replace_prob <= 1:
+            raise ValueError("--dfd_teacher_replace_prob must be in [0, 1].")
+        if args.gen_update_interval <= 0:
+            raise ValueError("--gen_update_interval must be greater than zero.")
+        if args.trainable_modules is None:
+            args.trainable_modules = [""]
+
+    if args.decoupled_dmd:
+        if args.real_guidance_scale <= 1.0:
+            raise ValueError("--real_guidance_scale must be greater than 1.0 to keep the CA term of Decoupled DMD active.")
+        if args.dfd:
+            raise ValueError("Decoupled DMD does not support --dfd.")
+        if any(int(i) <= 1 for i in args.denoising_step_indices_list):
+            print("WARNING: --denoising_step_indices_list contains a step index below 2, where tau_CA degenerates to tau_CA == t.")
+
+    if args.loss_scale_div > 0 and args.div_mode not in ("pcm_fixed", "pcm_random"):
+        raise NotImplementedError(
+            f"--div_mode '{args.div_mode}' is not implemented for CrossDistill diversity; only "
+            "'pcm_fixed' and 'pcm_random' are supported (set --loss_scale_div 0 to disable it)."
+        )
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -1019,28 +1022,30 @@ def main():
 
     config = OmegaConf.load(args.config_path)
 
-    # --- Auto-derive this expert's rf-time region + rollout start from --boundary_type
-    # and the model's MoE `boundary` (the same value the pipeline routes on: the high
-    # expert handles t >= boundary*1000, i.e. rf s >= boundary). Explicit --rf_t_min /
-    # --rf_t_max / --backward_simulation_start_t (>= 0) still override. ---
+    # --- Derive this expert's discrete rf grid from --boundary_type and the model's MoE `boundary`
+    # (the same value the pipeline routes on: the high expert handles rf s >= boundary). The canonical
+    # joint grid --joint_backward_timesteps (rCM, descending; its MIDDLE knot is the boundary) is split
+    # at the boundary into this expert's segment, and the rf values are used DIRECTLY as Euler sigmas
+    # (the shift=12 scheduler grid does not contain the rCM knots, so the timestep-index map is bypassed). ---
     _boundary = float(config['transformer_additional_kwargs'].get('boundary', 0.875))
-    if args.rf_t_min < 0:
-        args.rf_t_min = _boundary if args.boundary_type == "high" else 0.0
-    if args.rf_t_max < 0:
-        args.rf_t_max = _boundary if args.boundary_type == "low" else 1.0
-    if args.backward_simulation_start_t < 0:
-        args.backward_simulation_start_t = _boundary if args.boundary_type == "low" else 1.0
-    if not args.backward_timesteps:
-        if args.boundary_type == "high":
-            args.backward_timesteps = [k for k in args.joint_backward_timesteps if k >= _boundary]
-        elif args.boundary_type == "low":
-            args.backward_timesteps = [k for k in args.joint_backward_timesteps if k < _boundary]
-        else:  # full
-            args.backward_timesteps = [k for k in args.joint_backward_timesteps if 0.0 < k < 1.0]
+    _joint_rf = [float(k) for k in args.joint_backward_timesteps]
     if not args.init_rollout_timesteps:
-        args.init_rollout_timesteps = [k for k in args.joint_backward_timesteps if k > _boundary]
-    if not (0.0 <= args.rf_t_min < args.rf_t_max <= 1.0):
-        raise ValueError("require 0 <= --rf_t_min < --rf_t_max <= 1.")
+        args.init_rollout_timesteps = [k for k in _joint_rf if k > _boundary]
+    # Frozen-high-student path that rolls pure noise down to rf=boundary, depositing the low expert's start latent.
+    init_rollout_grid = [1.0] + [float(k) for k in args.init_rollout_timesteps] + [_boundary]
+    if args.boundary_type == "high":
+        denoising_rf_grid = [1.0] + [k for k in _joint_rf if k >= _boundary]
+    elif args.boundary_type == "low":
+        denoising_rf_grid = [_boundary] + [k for k in _joint_rf if k < _boundary]
+    else:  # full: a single model walks the whole joint grid from pure noise
+        denoising_rf_grid = [1.0] + [k for k in _joint_rf if 0.0 < k < 1.0]
+    if len(denoising_rf_grid) < 2:
+        raise ValueError(
+            f"boundary_type='{args.boundary_type}' produced a degenerate rf grid {denoising_rf_grid}; "
+            f"check --joint_backward_timesteps against the config boundary {_boundary}."
+        )
+    print(f"[boundary_type={args.boundary_type}] MoE boundary={_boundary} | denoising rf grid={denoising_rf_grid} | init_rollout grid={init_rollout_grid}")
+
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
     accelerator = Accelerator(
@@ -1174,25 +1179,24 @@ def main():
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        Chosen_AutoencoderKL = {
-            "AutoencoderKLWan": AutoencoderKLWan,
-            "AutoencoderKLWan3_8": AutoencoderKLWan3_8
-        }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
-        vae = Chosen_AutoencoderKL.from_pretrained(
+        vae = AutoencoderKLWan.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['vae_kwargs'].get('vae_subpath', 'vae')),
             additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
         )
         vae.eval()
             
     # Get Transformer
+    # Dual-expert (MoE) Wan2.2: --boundary_type selects which noise model is the student/teacher.
+    # The high expert handles rf s >= boundary, the low expert rf s < boundary (the same routing the
+    # inference pipeline uses). real_score (teacher) and fake_score (critic) stay DENSE Wan2_2 and are
+    # loaded from this expert's own noise-model subpath, so each expert is distilled against its own teacher.
     if args.boundary_type == "low" or args.boundary_type == "full":
         sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
     else:
         sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
 
-    # Get Transformer
     # Sparse student (SparkDiffusion stage-1 output): block-sparse + linear self-attention
-    # (SparkWan2_2Transformer3DModel); the dense teacher and the dense critic are untouched,
+    # (SparkWan2_2Transformer3DModel); the dense teacher and the dense critic stay untouched,
     # matching the reference pipeline where fake_score initializes from the teacher weights.
     def build_student_net(weights_dir):
         if args.sparse_student:
@@ -1222,8 +1226,8 @@ def main():
         low_cpu_mem_usage=True,
     ).to(weight_dtype)
 
-    # Wan2.2 low-noise expert: a FROZEN copy of the trained high-noise student used to roll
-    # the backward-simulation starting latent from rf 1.0 down to --backward_simulation_start_t.
+    # Low-noise expert only: a FROZEN copy of the trained high-noise student, rolled from pure noise
+    # down to the boundary to build the low expert's on-distribution rollout start latent (init_rollout).
     init_rollout_transformer3d = None
     if args.init_rollout_path and args.init_rollout_path.strip():
         high_sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
@@ -1251,6 +1255,7 @@ def main():
     generator_transformer3d.requires_grad_(False)
     real_score_transformer3d.requires_grad_(False)
     fake_score_transformer3d.requires_grad_(False)
+    real_score_transformer3d.eval()
 
     if args.transformer_path is not None:
         print(f"From checkpoint: {args.transformer_path}")
@@ -1262,13 +1267,9 @@ def main():
         state_dict = state_dict["state_dict"] if "state_dict" in state_dict else state_dict
 
         m, u = generator_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"generator missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
-        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"fake_score missing keys: {len(m)}, unexpected keys: {len(u)}")
-        assert len(u) == 0
         m, u = real_score_transformer3d.load_state_dict(state_dict, strict=False)
-        print(f"real_score missing keys: {len(m)}, unexpected keys: {len(u)}")
+        m, u = fake_score_transformer3d.load_state_dict(state_dict, strict=False)
+        print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
     if args.generator_transformer_path is not None:
@@ -1524,7 +1525,6 @@ def main():
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
-    spatial_compression_ratio = vae.config.spatial_compression_ratio
     
     if args.fix_sample_size is not None and args.enable_bucket:
         args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
@@ -1533,16 +1533,23 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    # DFD needs paired videos for the teacher-score input, everything else reuses the DMD data path.
-    need_real_video = args.train_mode != "normal"
+    # DFD needs paired videos for the teacher-score input; everything else reuses the DMD data path.
+    # CrossDistill's PCM diversity term anchors on the paired real-video latent too, so it also needs the
+    # real-video path; otherwise the text-only collate drops pixel_values, the div anchor never fires and
+    # div_loss stays 0 (silently degrading CrossDistill back to plain DMD).
+    need_real_video = args.train_mode != "normal" or args.dfd or \
+        (args.loss_scale_div > 0 and args.div_mode in ("pcm_fixed", "pcm_random"))
     if need_real_video:
         train_dataset = ImageVideoDataset(
             args.train_data_meta, args.train_data_dir,
-            video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
+            video_sample_size=args.video_sample_size, 
+            video_sample_stride=args.video_sample_stride, 
+            video_sample_n_frames=args.video_sample_n_frames, 
             video_repeat=args.video_repeat, 
             image_sample_size=args.image_sample_size,
             text_drop_ratio=0.0,
-            enable_bucket=args.enable_bucket, enable_inpaint=True if args.train_mode != "normal" else False,
+            enable_bucket=args.enable_bucket, 
+            enable_inpaint=True if args.train_mode != "normal" else False,
         )
     else:
         train_dataset = TextDataset(
@@ -1626,7 +1633,7 @@ def main():
                 aspect_ratio_random_crop_sample_size = {key : [x / 512 * args.video_sample_size / random_downsample_ratio for x in ASPECT_RATIO_RANDOM_CROP_512[key]] for key in ASPECT_RATIO_RANDOM_CROP_512.keys()}
 
             if args.fix_sample_size is not None:
-                fix_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
+                fix_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
             elif args.random_ratio_crop:
                 if rng is None:
                     random_sample_size = aspect_ratio_random_crop_sample_size[
@@ -1636,10 +1643,10 @@ def main():
                     random_sample_size = aspect_ratio_random_crop_sample_size[
                         rng.choice(list(aspect_ratio_random_crop_sample_size.keys()), p = ASPECT_RATIO_RANDOM_CROP_PROB)
                     ]
-                random_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in random_sample_size]
+                random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
             else:
                 closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-                closest_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in closest_size]
+                closest_size = [int(x / 16) * 16 for x in closest_size]
 
             min_example_length = min(
                 [example["pixel_values"].shape[0] for example in examples]
@@ -1880,7 +1887,9 @@ def main():
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         # Under --low_vram use FSDP CPUOffload for CPU<->GPU streaming instead of manual
-        # .to(device)/.to('cpu'), which fights the FSDP flat_param.
+        # .to(device)/.to('cpu'), which fights the FSDP flat_param. The frozen init_rollout
+        # (the low expert's high-noise teacher) is sharded here too; it never enters
+        # accelerator.prepare, so it stays out of the optimizer group.
         shard_fn = partial(
             shard_model,
             device_id=accelerator.device,
@@ -1892,12 +1901,10 @@ def main():
             init_rollout_transformer3d = shard_fn(init_rollout_transformer3d)
         text_encoder = shard_fn(text_encoder)
 
-    # Move text_encode and vae to gpu and cast to weight_dtype.
+    # Move text_encoder and vae to gpu and cast to weight_dtype.
     # vae is never sharded and needs explicit placement; sharded modules are owned by FSDP,
     # so skip .to() on them to keep the flat_param attached.
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
-    manual_te_move = args.low_vram and fsdp_stage == 0 and zero_stage == 0
-    manual_vae_move = args.low_vram
     if fsdp_stage == 0 and zero_stage == 0:
         real_score_transformer3d.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
         if init_rollout_transformer3d is not None:
@@ -1994,520 +2001,980 @@ def main():
         vae_stream_1 = None
         vae_stream_2 = None
 
-    # --- SparkDiffusion CrossDistill Training Core ---
-    # rf-native: time s in [0,1], latent x_s = (1-s)*x0 + s*eps, net fed t = s*T_SCALE predicts v = eps - x0.
-    T_SCALE = 1000.0   # rectified_flow_t_scaling_factor
+    idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
+    if args.dfd:
+        # The student timesteps are the denoising-step sigmas of the shift schedule (normalized RF times).
+        dfd_student_timesteps = noise_scheduler.timesteps[args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)].to(accelerator.device) / 1000
 
-    def shift_rf_time(u, shift):
-        return shift * u / (1.0 + (shift - 1.0) * u)
+    def randomize_denoising_step_indices(
+        denoising_step_indices_list,
+        train_sampling_steps,
+        torch_rng,
+        accelerator,
+        jitter_ratio=0.3,
+        tail_margin=1,
+    ):
+        indices = list(denoising_step_indices_list)
+        n = len(indices)
+        tail_margin = max(int(tail_margin), 1)
 
-    def inv_shift_rf_time(rf, shift):
-        return rf / (shift - (shift - 1.0) * rf) if shift > 0 else rf
+        # The head stays fixed at the pure-noise start; the remaining steps jitter
+        # symmetrically around their base values so the expected schedule is unchanged.
+        result = [indices[0]]
+        for i in range(1, n):
+            gap_upper = indices[i - 1] - indices[i]
+            if i + 1 < n:
+                gap_lower = indices[i] - indices[i + 1]
+                max_jitter = int(min(gap_upper, gap_lower) * jitter_ratio)
+            else:
+                # Tail step: no lower neighbor (the base value sits at the clean end),
+                # so the jitter budget comes from the upward gap and the downward side
+                # is clamped by tail_margin. Keeping the tail off the schedule's cleanest
+                # position guarantees Decoupled DMD's tau_CA always has a cleaner slot.
+                max_jitter = int(gap_upper * jitter_ratio)
 
-    def draw_rf_time(shape, lower_bound=None, strict_lower=False):
-        """Sample the comparison/critic rf time s_D ~ p_D, clamped to this expert's region."""
-        dev, dtp = accelerator.device, torch.float64
-        lo, hi = float(args.rf_t_min), float(args.rf_t_max)
-        n = int(torch.Size(shape).numel()) if not isinstance(shape, int) else int(shape)
-        if args.p_D == "uniform_shift":
-            shift = args.p_D_shift
-            u_lo, u_hi = inv_shift_rf_time(lo, shift), inv_shift_rf_time(hi, shift)
-            u = torch.rand(n, device=dev, dtype=dtp) * (u_hi - u_lo) + u_lo
-            rf = shift_rf_time(u, shift)
-        else:  # lognormal in log-sigma space, mapped to rf via sigma/(1+sigma)
-            import torch.distributions as D
-            normal = D.Normal(args.p_D_mean, args.p_D_std)
-            eps_val = torch.finfo(torch.float64).eps
-            lg_lo = torch.tensor(lo / (1.0 - lo + eps_val)).log() if lo > 0 else torch.tensor(-40.0, dtype=dtp)
-            lg_hi = torch.tensor(hi / (1.0 - hi + eps_val)).log() if hi < 1 else torch.tensor(40.0, dtype=dtp)
-            cdf_lo, cdf_hi = normal.cdf(lg_lo.double()), normal.cdf(lg_hi.double())
-            q = torch.rand(n, device=dev, dtype=dtp)
-            q = (cdf_lo + q * (cdf_hi - cdf_lo)).clamp(min=eps_val, max=1.0 - eps_val)
-            rf = normal.icdf(q).exp()
-            rf = rf / (rf + 1.0)
-        if not isinstance(shape, int):
-            rf = rf.view(shape)
-        if lower_bound is not None:
-            lb = torch.as_tensor(lower_bound, device=dev, dtype=dtp)
-            while lb.ndim < rf.ndim:
-                lb = lb.unsqueeze(-1)
-            rf = torch.maximum(rf, lb + (1e-4 if strict_lower else 0.0))
-        return rf.clamp(min=lo, max=1.0).to(torch.float32)
+            if max_jitter > 0:
+                # NB: torch_rng may live on CUDA while randint's default output is CPU;
+                # use the global CPU RNG here, the result is broadcast from rank 0 anyway.
+                jitter = torch.randint(
+                    -max_jitter, max_jitter + 1, (1,)
+                ).item()
+            else:
+                jitter = 0
 
-    # Broadcast a sampled time/noise from rank 0 so all ranks train on identical randomness.
-    def sync_broadcast(t):
+            value = indices[i] + jitter
+            # Strict monotonicity by construction (no post-hoc clamp repair).
+            value = min(value, result[i - 1] - 1)
+            if i == n - 1:
+                value = max(value, tail_margin)
+            result.append(value)
+
+        result = [max(1, min(train_sampling_steps, x)) for x in result]
+        result = torch.tensor(result)
+
         if dist.is_initialized():
-            t = t.clone()
-            dist.broadcast(t, src=0)
-        return t
-
-    # --- Network Forwards (net takes t in [0,1000], returns rf velocity v = eps - x0) ---
-    def net_velocity(net, x_5d, s_B_1, embeds, seq_len):
-        t = (s_B_1.reshape(-1) * T_SCALE).to(torch.float32)
-        v = net(
-            x=x_5d,
-            context=embeds,
-            t=t,
-            seq_len=seq_len,
-            y=None
-        )
-        return v.float()
-
-    # Invert the rf interpolation x_s = (1-s)*x0 + s*eps  =>  x0 = x_s - s*v.
-    def net_x0(net, x_5d, s_B_1, embeds, seq_len):
-        v = net_velocity(net, x_5d, s_B_1, embeds, seq_len)
-        s5 = s_B_1.reshape(-1, 1, 1, 1, 1).to(torch.float64)
-        return x_5d.double() - s5 * v.double(), v
-
-    # One rf-Euler step: x_{s_next} = x_{s_cur} + (s_next - s_cur)*v.
-    def _euler(net, x, s_cur_B_1, s_next_B_1, embeds, seq_len):
-        v = net_velocity(net, x, s_cur_B_1, embeds, seq_len)
-        sc = s_cur_B_1.reshape(-1, 1, 1, 1, 1).to(x.dtype)
-        sn = s_next_B_1.reshape(-1, 1, 1, 1, 1).to(x.dtype)
-        return x + (sn - sc) * v.to(x.dtype)
-
-    def backward_simulation(prompt_embeds, size, n_steps, seq_len, with_grad=False, tdm=False):
-        """Roll the student down an rf-Euler schedule; only the last segment carries grad."""
-        start_t = args.backward_simulation_start_t
-        if start_t is None or start_t < 0:
-            start_t = 1.0
-        end_t = args.backward_simulation_end_t
-        bt = list(args.backward_timesteps)
-        traj = [start_t]
-        if tdm:
-            for i in range(n_steps):
-                traj.append(bt[i] if i < len(bt) else end_t)
-        else:
-            for i in range(n_steps - 1):
-                traj.append(bt[i] if i < len(bt) else end_t)
-            traj.append(end_t)
-
-        # Init latent = pure noise; the low-noise expert first rolls the frozen high student to start_t.
-        x = torch.randn(size, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
-        if init_rollout_transformer3d is not None and start_t < 1.0:
-            s_traj = [1.0, *list(args.init_rollout_timesteps), start_t]
-            with torch.no_grad():
-                for s_cur, s_next in zip(s_traj[:-1], s_traj[1:]):
-                    sc = torch.full((size[0], 1), s_cur, device=accelerator.device, dtype=torch.float32)
-                    sn = torch.full((size[0], 1), s_next, device=accelerator.device, dtype=torch.float32)
-                    x = _euler(init_rollout_transformer3d, x, sc, sn, prompt_embeds, seq_len)
-            x = x.detach()
-
-        B = size[0]
-        t_ts = [torch.full((B, 1), float(v), device=accelerator.device, dtype=torch.float32) for v in traj]
-        n_seg = len(traj) - 1
-        for step in range(n_seg):
-            ctx_fn = torch.enable_grad() if (with_grad and step == n_seg - 1) else torch.no_grad()
-            with ctx_fn:
-                x = _euler(generator_transformer3d, x, t_ts[step], t_ts[step + 1], prompt_embeds, seq_len)
-        return x, t_ts, traj
-
-    # Teacher rf-time grid for ode_match div: K+1 descending sigmas from sigma_max down toward 0.
-    def _build_div_teacher_schedule(K, sigma_max, shift):
-        N_INF = 30
-        assert K + 1 <= N_INF, f"div_K + 1 = {K+1} must be <= {N_INF}"
-        sigma_max_rf = sigma_max / (sigma_max + 1.0)
-        unshifted = inv_shift_rf_time(sigma_max_rf, shift)
-        raw = torch.linspace(unshifted, 0.0, N_INF + 1, device=accelerator.device, dtype=torch.float32)[:-1]
-        sig = shift_rf_time(raw, shift)
-        return sig[:K + 1]
-
-    def is_student_phase(it):
-        if args.loss_scale_tdm <= 0 and args.loss_scale_dmd <= 0:
-            return True
-        if it < args.critic_warmup:
-            return True
-        return (it - args.critic_warmup) % args.student_update_freq == 0
-
-    def num_sim_steps(eff):
-        if args.loss_scale_div > 0:
-            return eff % (args.max_simulation_steps_fake - 1) + 2
-        return eff % args.max_simulation_steps_fake + 1
-
-    # Patch-size for the student, used to compute seq_len once per batch.
-    _patch = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
-    neg_txt_default = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+            result = result.to(accelerator.device)
+            dist.broadcast(result, src=0)
+            result = result.cpu()
+        return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
-        train_student = 0.0
-        train_div = 0.0
-        train_critic = 0.0
-        train_gen_cnt = 0
-        batch_sampler.sampler.generator = torch.Generator().manual_seed((args.seed if args.seed is not None else 0) + epoch)
+        train_dmd_loss = 0.0
+        train_div_loss = 0.0
+        train_denoising_loss = 0.0
+        train_dfd_real_replace = 0.0
+        dfd_real_replace_now = 0.0
+        train_ca_scale = 0.0
+        train_dm_scale = 0.0
+        train_latent_std = 0.0
+        # Number of generator backward contributions since the last log flush; the
+        # generator only backprops every gen_update_interval batches, so its metrics
+        # must be averaged by contribution count, not by gradient_accumulation_steps.
+        train_gen_log_count = 0
+        batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
-            iteration = global_step
-            student_phase = is_student_phase(iteration)
+            generator_update = step % args.gen_update_interval == 0
+            dfd_active = args.dfd and global_step >= args.dfd_start_step
+
+            # Data batch sanity check
+            if args.train_mode != "normal" and epoch == first_epoch and step == 0:
+                pixel_values, texts = batch['pixel_values'].cpu(), batch['text']
+                pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                os.makedirs(os.path.join(args.output_dir, "sanity_check"), exist_ok=True)
+                for idx, (pixel_value, text) in enumerate(zip(pixel_values, texts)):
+                    pixel_value = pixel_value[None, ...]
+                    gif_name = '-'.join(text.replace('/', '').split()[:10]) if not text == '' else f'{global_step}-{idx}'
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}.mp4", rescale=True)
+
+                clip_pixel_values, mask_pixel_values, texts = batch['clip_pixel_values'].cpu(), batch['mask_pixel_values'].cpu(), batch['text']
+                mask_pixel_values = rearrange(mask_pixel_values, "b f c h w -> b c f h w")
+                for idx, (clip_pixel_value, pixel_value, text) in enumerate(zip(clip_pixel_values, mask_pixel_values, texts)):
+                    pixel_value = pixel_value[None, ...]
+                    Image.fromarray(np.uint8(clip_pixel_value)).save(f"{args.output_dir}/sanity_check/clip_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.png")
+                    save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                # --- Build the Target Latent Shape (T2V bucketing, same as the SFT path) ---
-                text = batch['text']
-                if args.fix_sample_size is not None:
-                    local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in args.fix_sample_size]
-                    num_frames = args.video_sample_n_frames
-                else:
-                    if args.random_hw_adapt and args.training_with_video_token_length:
-                        target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
-                        length_to_frame_num = get_length_to_frame_num(target_token_length)
-                        local_length = np.random.choice(list(length_to_frame_num.keys())) if rng is None else rng.choice(list(length_to_frame_num.keys()))
-                        num_frames = length_to_frame_num[local_length]
-                        aspect_ratio_sample_size = {key: [x / 512 * local_length for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                        aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys())) if rng is None else rng.choice(list(aspect_ratio_sample_size.keys()))
-                        local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
-                    else:
-                        num_frames = args.video_sample_n_frames
-                        aspect_ratio_sample_size = {key: [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
-                        aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys())) if rng is None else rng.choice(list(aspect_ratio_sample_size.keys()))
-                        local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
-                    local_sample_size = [int(x / spatial_compression_ratio / 2) * spatial_compression_ratio * 2 for x in local_sample_size]
-                target_shape = (
-                    len(text),
-                    vae.latent_channels,
-                    int((num_frames - 1) // vae.temporal_compression_ratio + 1),
-                    int(local_sample_size[0] // vae.spatial_compression_ratio),
-                    int(local_sample_size[1] // vae.spatial_compression_ratio),
-                )
-                bsz, channel, nfr, height, width = target_shape
-                seq_len = math.ceil((width * height) / (_patch[0] * _patch[1]) * nfr)
+                real_latents = None
+                if args.train_mode != "normal":
+                    # Convert images to latent space
+                    pixel_values = batch["pixel_values"].to(weight_dtype)
 
-                # --- Optional Real-Latent Anchor (only needed by the pcm diversity modes) ---
-                anchor_x0 = None
-                if args.loss_scale_div > 0 and args.div_mode in ("pcm_fixed", "pcm_random") \
-                        and 'pixel_values' in batch and batch.get('pixel_values', None) is not None:
-                    if manual_vae_move:
-                        vae.to(accelerator.device)
-                    pixel_values = rearrange(batch["pixel_values"].to(accelerator.device, dtype=weight_dtype, non_blocking=True), "b f c h w -> b c f h w")
-                    with torch.no_grad():
-                        bs = args.vae_mini_batch
-                        enc = []
-                        for i in range(0, pixel_values.shape[0], bs):
-                            enc.append(vae.encode(pixel_values[i:i + bs])[0].sample())
-                        anchor_x0 = torch.cat(enc, dim=0)
-                    target_shape = anchor_x0.size()
-                    bsz, channel, nfr, height, width = target_shape
-                    seq_len = math.ceil((width * height) / (_patch[0] * _patch[1]) * nfr)
-                    if manual_vae_move:
-                        vae.to('cpu')
+                    # Increase the batch size when the length of the latent sequence of the current sample is small
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
+                        if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
+                            if args.enable_text_encoder_in_dataloader:
+                                batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (4, 1, 1))
+                                batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (4, 1))
+                                batch['neg_encoder_hidden_states'] = torch.tile(batch['neg_encoder_hidden_states'], (4, 1, 1))
+                                batch['neg_encoder_attention_mask'] = torch.tile(batch['neg_encoder_attention_mask'], (4, 1))
+                            else:
+                                batch['text'] = batch['text'] * 4
+                        elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            pixel_values = torch.tile(pixel_values, (2, 1, 1, 1, 1))
+                            if args.enable_text_encoder_in_dataloader:
+                                batch['encoder_hidden_states'] = torch.tile(batch['encoder_hidden_states'], (2, 1, 1))
+                                batch['encoder_attention_mask'] = torch.tile(batch['encoder_attention_mask'], (2, 1))
+                                batch['neg_encoder_hidden_states'] = torch.tile(batch['neg_encoder_hidden_states'], (2, 1, 1))
+                                batch['neg_encoder_attention_mask'] = torch.tile(batch['neg_encoder_attention_mask'], (2, 1))
+                            else:
+                                batch['text'] = batch['text'] * 2
+                
+                    clip_pixel_values = batch["clip_pixel_values"].to(weight_dtype)
+                    mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
+                    mask = batch["mask"].to(weight_dtype)
+                    # Increase the batch size when the length of the latent sequence of the current sample is small
+                    if args.auto_tile_batch_size and args.training_with_video_token_length and zero_stage != 3:
+                        if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (4, 1, 1, 1))
+                            mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
+                            mask = torch.tile(mask, (4, 1, 1, 1, 1))
+                        elif args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 4 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
+                            clip_pixel_values = torch.tile(clip_pixel_values, (2, 1, 1, 1))
+                            mask_pixel_values = torch.tile(mask_pixel_values, (2, 1, 1, 1, 1))
+                            mask = torch.tile(mask, (2, 1, 1, 1, 1))
+
+                    if args.random_frame_crop:
+                        def _create_special_list(length):
+                            if length == 1:
+                                return [1.0]
+                            if length >= 2:
+                                last_element = 0.90
+                                remaining_sum = 1.0 - last_element
+                                other_elements_value = remaining_sum / (length - 1)
+                                special_list = [other_elements_value] * (length - 1) + [last_element]
+                                return special_list
+                        select_frames = [_tmp for _tmp in list(range(sample_n_frames_bucket_interval + 1, args.video_sample_n_frames + sample_n_frames_bucket_interval, sample_n_frames_bucket_interval))]
+                        select_frames_prob = np.array(_create_special_list(len(select_frames)))
+                        
+                        if len(select_frames) != 0:
+                            if rng is None:
+                                temp_n_frames = np.random.choice(select_frames, p = select_frames_prob)
+                            else:
+                                temp_n_frames = rng.choice(select_frames, p = select_frames_prob)
+                        else:
+                            temp_n_frames = 1
+
+                        # Magvae needs the number of frames to be 4n + 1.
+                        temp_n_frames = (temp_n_frames - 1) // sample_n_frames_bucket_interval + 1
+
+                        pixel_values = pixel_values[:, :temp_n_frames, :, :]
+                        mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
+                        mask = mask[:, :temp_n_frames, :, :]
+                        
+                    # Keep all node same token length to accelerate the traning when resolution grows.
+                    if args.keep_all_node_same_token_length:
+                        if args.token_sample_size > 256:
+                            numbers_list = list(range(256, args.token_sample_size + 1, 128))
+
+                            if numbers_list[-1] != args.token_sample_size:
+                                numbers_list.append(args.token_sample_size)
+                        else:
+                            numbers_list = [256]
+                        numbers_list = [_number * _number * args.video_sample_n_frames for _number in  numbers_list]
+                
+                        actual_token_length = index_rng.choice(numbers_list)
+                        actual_video_length = (min(
+                                actual_token_length / pixel_values.size()[-1] / pixel_values.size()[-2], args.video_sample_n_frames
+                        ) - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
+                        actual_video_length = int(max(actual_video_length, 1))
+
+                        # Magvae needs the number of frames to be 4n + 1.
+                        actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
+
+                        pixel_values = pixel_values[:, :actual_video_length, :, :]
+                        mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
+                        mask = mask[:, :actual_video_length, :, :]
+
+                    if args.low_vram:
                         torch.cuda.empty_cache()
+                        vae.to(accelerator.device)
+                        real_score_transformer3d = real_score_transformer3d.to("cpu")
+                        if not args.enable_text_encoder_in_dataloader:
+                            text_encoder.to("cpu")
 
-                # --- Text Embeddings (cond + uncond) ---
+                    with torch.no_grad():
+                        # This way is quicker when batch grows up
+                        def _batch_encode_vae(pixel_values):
+                            pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
+                            bs = args.vae_mini_batch
+                            new_pixel_values = []
+                            for i in range(0, pixel_values.shape[0], bs):
+                                pixel_values_bs = pixel_values[i : i + bs]
+                                pixel_values_bs = vae.encode(pixel_values_bs)[0]
+                                pixel_values_bs = pixel_values_bs.sample()
+                                new_pixel_values.append(pixel_values_bs)
+                            return torch.cat(new_pixel_values, dim = 0)
+
+                        # Encode inpaint latents.
+                        mask_latents = _batch_encode_vae(mask_pixel_values)
+                        if vae_stream_2 is not None:
+                            torch.cuda.current_stream().wait_stream(vae_stream_2) 
+
+                        mask = rearrange(mask, "b f c h w -> b c f h w")
+                        mask = torch.concat(
+                            [
+                                torch.repeat_interleave(mask[:, :, 0:1], repeats=4, dim=2), 
+                                mask[:, :, 1:]
+                            ], dim=2
+                        )
+                        mask = mask.view(mask.shape[0], mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4])
+                        mask = mask.transpose(1, 2)
+                        mask = resize_mask(1 - mask, mask_latents)
+
+                        inpaint_latents = torch.concat([mask, mask_latents], dim=1)
+
+                    target_shape = mask_latents.size()
+                else:
+                    text = batch['text']
+                    if args.fix_sample_size is not None:
+                        local_sample_size = [int(x / 16) * 16 for x in args.fix_sample_size]
+                        num_frames = args.video_sample_n_frames
+                    else:
+                        if args.random_hw_adapt and args.training_with_video_token_length:
+                            # Get token length
+                            target_token_length = args.video_sample_n_frames * args.token_sample_size * args.token_sample_size
+                            length_to_frame_num = get_length_to_frame_num(target_token_length)
+
+                            if rng is None:
+                                local_length = np.random.choice(list(length_to_frame_num.keys()))
+                            else:
+                                local_length = rng.choice(list(length_to_frame_num.keys()))
+                            num_frames = length_to_frame_num[local_length]
+
+                            aspect_ratio_sample_size = {key : [x / 512 * local_length for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+                            if rng is None:
+                                aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys()))
+                            else:
+                                aspect_ratio_key = rng.choice(list(aspect_ratio_sample_size.keys()))
+                            local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
+                        else:
+                            num_frames = args.video_sample_n_frames
+
+                            aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
+                            if rng is None:
+                                aspect_ratio_key = np.random.choice(list(aspect_ratio_sample_size.keys()))
+                            else:
+                                aspect_ratio_key = rng.choice(list(aspect_ratio_sample_size.keys()))
+                            local_sample_size = aspect_ratio_sample_size[aspect_ratio_key]
+                        local_sample_size = [int(x / 16) * 16 for x in local_sample_size]
+
+                    target_shape = (
+                        len(text),
+                        vae.latent_channels, 
+                        int((num_frames - 1) // vae.temporal_compression_ratio + 1), 
+                        int(local_sample_size[0] // vae.spatial_compression_ratio),
+                        int(local_sample_size[1] // vae.spatial_compression_ratio), 
+                    )
+
+                    # DFD encodes the paired real video as the student anchor.
+                    if dfd_active:
+                        pixel_values = rearrange(batch["pixel_values"].to(accelerator.device, dtype=weight_dtype, non_blocking=True), "b f c h w -> b c f h w")
+                        if args.low_vram:
+                            vae.to(accelerator.device)
+                        with torch.no_grad():
+                            real_latents = vae.encode(pixel_values)[0].sample()
+                        if dfd_active:
+                            target_shape = real_latents.size()
+
+                    # CrossDistill PCM diversity: encode the paired real video as the phase-0 anchor x0
+                    # (the official _compute_pcm_div_loss anchors on the real data latent, not G.detach()).
+                    if real_latents is None and args.loss_scale_div > 0 and args.div_mode in ("pcm_fixed", "pcm_random") \
+                            and 'pixel_values' in batch and batch.get('pixel_values', None) is not None:
+                        pixel_values = rearrange(batch["pixel_values"].to(accelerator.device, dtype=weight_dtype, non_blocking=True), "b f c h w -> b c f h w")
+                        if args.low_vram:
+                            vae.to(accelerator.device)
+                        with torch.no_grad():
+                            real_latents = vae.encode(pixel_values)[0].sample()
+                        target_shape = real_latents.size()
+
+                if args.low_vram:
+                    vae.to('cpu')
+                    real_score_transformer3d = real_score_transformer3d.to("cpu")
+                    torch.cuda.empty_cache()
+                    if not args.enable_text_encoder_in_dataloader:
+                        text_encoder.to(accelerator.device)
+
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['encoder_hidden_states'].to(device=accelerator.device)
                     neg_prompt_embeds = batch['neg_encoder_hidden_states'].to(device=accelerator.device)
                 else:
-                    if manual_te_move:
-                        text_encoder.to(accelerator.device)
                     with torch.no_grad():
                         prompt_ids = tokenizer(
-                            text,
-                            padding="max_length",
-                            max_length=args.tokenizer_max_length,
-                            truncation=True,
-                            add_special_tokens=True,
+                            batch['text'], 
+                            padding="max_length", 
+                            max_length=args.tokenizer_max_length, 
+                            truncation=True, 
+                            add_special_tokens=True, 
                             return_tensors="pt"
                         )
-                        seq_lens = prompt_ids.attention_mask.gt(0).sum(dim=1).long()
-                        prompt_embeds = text_encoder(prompt_ids.input_ids.to(accelerator.device), attention_mask=prompt_ids.attention_mask.to(accelerator.device))[0]
+                        text_input_ids = prompt_ids.input_ids
+                        prompt_attention_mask = prompt_ids.attention_mask
+
+                        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                        prompt_embeds = text_encoder(text_input_ids.to(accelerator.device), attention_mask=prompt_attention_mask.to(accelerator.device))[0]
                         prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
 
-                        neg_ids = tokenizer(
-                            [neg_txt_default for _ in text],
-                            padding="max_length",
-                            max_length=args.tokenizer_max_length,
-                            truncation=True,
-                            add_special_tokens=True,
+                        neg_txt = [
+                            "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走" for text in batch['text']
+                        ]
+                        neg_prompt_ids = tokenizer(
+                            neg_txt, 
+                            padding="max_length", 
+                            max_length=args.tokenizer_max_length, 
+                            truncation=True, 
+                            add_special_tokens=True, 
                             return_tensors="pt"
                         )
-                        neg_seq_lens = neg_ids.attention_mask.gt(0).sum(dim=1).long()
-                        neg_prompt_embeds = text_encoder(neg_ids.input_ids.to(accelerator.device), attention_mask=neg_ids.attention_mask.to(accelerator.device))[0]
+                        neg_text_input_ids = neg_prompt_ids.input_ids
+                        neg_prompt_attention_mask = neg_prompt_ids.attention_mask
+
+                        neg_seq_lens = neg_prompt_attention_mask.gt(0).sum(dim=1).long()
+                        neg_prompt_embeds = text_encoder(neg_text_input_ids.to(accelerator.device), attention_mask=neg_prompt_attention_mask.to(accelerator.device))[0]
                         neg_prompt_embeds = [u[:v] for u, v in zip(neg_prompt_embeds, neg_seq_lens)]
-                    if manual_te_move:
+
+                if args.low_vram:
+                    generator_transformer3d = generator_transformer3d.to(accelerator.device)
+                    real_score_transformer3d = real_score_transformer3d.to(accelerator.device)
+                    fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                    if not args.enable_text_encoder_in_dataloader:
                         text_encoder.to('cpu')
                         torch.cuda.empty_cache()
 
-            if student_phase:
-                with accelerator.accumulate(generator_transformer3d), \
-                        torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    eff_it = iteration if iteration < args.critic_warmup else args.critic_warmup + (iteration - args.critic_warmup) // args.student_update_freq
-                    n_steps = num_sim_steps(eff_it)
-                    use_tdm = (args.distill_loss == "tdm")
+            # Enter the generator's accumulation context only on batches that actually
+            # backprop through the generator. Entering it on every batch would advance
+            # the accumulation counter gen_update_interval times faster than real
+            # generator gradients are produced; whenever gcd(gradient_accumulation_steps,
+            # gen_update_interval) > 1 the sync flag would then never coincide with a
+            # generator-update batch and optimizer.step() would silently never fire.
+            generator_accumulate_ctx = (
+                accelerator.accumulate(generator_transformer3d) if generator_update else contextlib.nullcontext()
+            )
+            with generator_accumulate_ctx:
+                def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
+                    sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
+                    schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+                    timesteps = timesteps.to(accelerator.device)
 
-                    # --- Student Distribution-Matching Loss (TDM or DMD) + optional diversity term ---
-                    G, t_ts, traj = backward_simulation(
-                        prompt_embeds,
-                        target_shape,
-                        n_steps,
-                        seq_len,
-                        with_grad=True,
-                        tdm=use_tdm
-                    )
-                    s_im1 = t_ts[-1] if use_tdm else torch.zeros_like(t_ts[-1])   # x0 (t_{i-1}=0) for DMD
+                    step_indices = [
+                        torch.argmin(torch.abs(schedule_timesteps - t)).item()
+                        for t in timesteps
+                    ]
+                    step_indices = torch.tensor(step_indices, device=accelerator.device)
+                    sigma = sigmas[step_indices].flatten()
 
-                    # Comparison time s_D ~ p_D, drawn strictly above the last sim step.
-                    D_time = sync_broadcast(draw_rf_time((target_shape[0], 1), lower_bound=s_im1, strict_lower=use_tdm)).to(accelerator.device)
-                    eps = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
-                    sD = D_time.reshape(-1, 1, 1, 1, 1).to(torch.float64)
-                    base = G.float()   # fp32 halves this latent's footprint
+                    while len(sigma.shape) < n_dim:
+                        sigma = sigma.unsqueeze(-1)
+                    return sigma
 
-                    # Re-noise x0=G up to s_D (DMD: rf interp; TDM: bridge conditioned on t_{i-1}).
-                    if use_tdm:
-                        s1 = s_im1.reshape(-1, 1, 1, 1, 1).to(torch.float64)
-                        om = (1.0 - s1).clamp(min=1e-6)
-                        sigma_cond = (((sD - s1) * (sD + s1 - 2.0 * sD * s1)).clamp(min=0.0)).sqrt() / om
-                        D_xt = (((1.0 - sD) / om) * base + sigma_cond * eps.double()).to(weight_dtype)
+                def add_noise(latents, noise, timesteps):
+                    sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
+                    return (1.0 - sigmas) * latents + sigmas * noise
+
+                def generate_and_sync_list(num_denoising_steps, device):
+                    indices = torch.randint(low=0, high=num_denoising_steps, size=(1,), generator=torch_rng, device=device)
+                    if dist.is_initialized():
+                        dist.broadcast(indices, src=0)
+                    return indices.tolist()
+
+                def convert_flow_pred_to_x0(
+                    scheduler,
+                    flow_pred: torch.Tensor,
+                    xt: torch.Tensor,
+                    timestep: torch.Tensor
+                ) -> torch.Tensor:
+                    """
+                    Convert flow matching's prediction to x0 prediction.
+                    Supports both 4D [B, C, H, W] and 5D [B, C, F, H, W] inputs.
+                    """
+                    original_dtype = flow_pred.dtype
+                    device = flow_pred.device
+
+                    flow_pred = flow_pred.double()
+                    xt = xt.double()
+                    timesteps = scheduler.timesteps.to(device).double()
+                    sigmas = scheduler.sigmas.to(device).double()
+                    timestep = timestep.to(device).double()
+
+                    timestep_id = torch.argmin((timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+                    sigma_t = sigmas[timestep_id]
+
+                    ndim = flow_pred.ndim
+                    if ndim == 4:
+                        sigma_t = sigma_t.view(-1, 1, 1, 1)
+                    elif ndim == 5:
+                        sigma_t = sigma_t.view(-1, 1, 1, 1, 1)
                     else:
-                        D_xt = ((1.0 - sD) * base + sD * eps.double()).to(weight_dtype)
+                        raise ValueError(f"Expected 4D or 5D input, got {ndim}D tensor.")
 
-                    # Critic (fake_score) and CFG teacher both denoise D_xt to x0.
+                    x0_pred = xt - sigma_t * flow_pred
+                    return x0_pred.to(original_dtype)
+
+                # --- rf-native grid helpers (dual-expert Wan2.2). The rectified-flow sigma equals the
+                # rf time s, and the rCM grid knots are NOT on the shift=12 scheduler grid, so the rollout
+                # below drives the nets with t = s * T_SCALE and steps/inverts with s directly, bypassing
+                # the scheduler timestep-index map used by get_sigmas / convert_flow_pred_to_x0. ---
+                def rf_flow_to_x0(flow_pred, xt, rf):
+                    # Invert x_s = (1 - s) * x0 + s * eps  =>  x0 = x_s - s * v (v = eps - x0), in double
+                    # to match convert_flow_pred_to_x0, then cast back to the model output dtype.
+                    return (xt.double() - float(rf) * flow_pred.double()).to(flow_pred.dtype)
+
+                def rf_add_noise(latents, noise, rf):
+                    # rf-native forward interpolation x_s = (1 - s) * x0 + s * noise (s == sigma == rf time).
+                    s = float(rf)
+                    return (1.0 - s) * latents + s * noise
+
+                # --- CrossDistill PCM diversity helpers (faithful port of the official
+                # _compute_pcm_div_loss). rf time s == scheduler sigma == timestep / 1000, so the
+                # student/teacher nets are driven with t = s * 1000 exactly as the DMD path does. ---
+                T_SCALE = 1000.0
+
+                def shift_rf_time(u, shift):
+                    return shift * u / (1.0 + (shift - 1.0) * u)
+
+                def inv_shift_rf_time(rf, shift):
+                    return rf / (shift - (shift - 1.0) * rf) if shift > 0 else rf
+
+                def net_velocity(net, x_5d, s_B_1, embeds, slen):
+                    t = (s_B_1.reshape(-1) * T_SCALE).to(torch.float32)
+                    # The div forwards run outside the step-level autocast (the DMD rollout and DFD student
+                    # each open their own), so wrap the net call here; otherwise the fp32 t / fp32 real-latent
+                    # input hits the bf16 FSDP weights and F.linear raises "mat1 and mat2 must have same dtype".
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        return net(
+                            x=x_5d,
+                            context=embeds,
+                            t=t,
+                            seq_len=slen,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        ).float()
+
+                def _euler(net, x, s_cur, s_next, embeds, slen):
+                    v = net_velocity(net, x, s_cur, embeds, slen)
+                    sc = s_cur.reshape(-1, 1, 1, 1, 1).to(x.dtype)
+                    sn = s_next.reshape(-1, 1, 1, 1, 1).to(x.dtype)
+                    return x + (sn - sc) * v.to(x.dtype)
+
+                def compute_pcm_div_loss(x0, embeds, neg_embeds, slen):
+                    # PCM phase-0 boundary alignment on the real-x0 anchor: the student one-step jump
+                    # G(x_t0, t0)->boundary must match the teacher K-step Euler + student target jump
+                    # G(x_tK, tK)->boundary. Self-contained (own eps + own continuous rf grid), so it
+                    # layers onto the discrete DMD rollout without touching it.
+                    B = x0.shape[0]
+                    K = args.dcm_skipping_interval_steps
+                    dw = 1.0 / args.dcm_total_steps
+                    shift = args.teacher_timestep_shift
+                    dev = accelerator.device
+                    eps = torch.randn(x0.size(), device=dev, generator=torch_rng, dtype=weight_dtype)
+                    rf_b = float(args.div_rf_boundary)
+                    s_b = inv_shift_rf_time(rf_b, shift)
+                    valid_width = (1.0 - s_b) - K * dw
+                    if args.div_mode == "pcm_fixed":
+                        w = torch.zeros(B, 1, device=dev)
+                    else:
+                        assert valid_width > 0, f"PCM-div phase-0 width <= 0: {valid_width:.4f}"
+                        w = torch.rand(B, 1, device=dev, generator=torch_rng) * valid_width
+                    t_list = [shift_rf_time(1.0 - (w + k * dw), shift) for k in range(K + 1)]
+                    t0, tK = t_list[0], t_list[-1]
+                    t_bnd = torch.full((B, 1), rf_b, device=dev)
+                    t0_5d = t0.reshape(-1, 1, 1, 1, 1).to(x0.dtype)
+                    xt = (1.0 - t0_5d) * x0 + t0_5d * eps
+                    # no_grad teacher rollout + student target BEFORE the grad student forward (FSDP-safe).
                     with torch.no_grad():
-                        x0_fake = net_x0(
-                            fake_score_transformer3d,
-                            D_xt,
-                            D_time,
-                            prompt_embeds,
-                            seq_len
-                        )[0]
-                        x0_teacher = net_x0(
-                            real_score_transformer3d,
-                            D_xt,
-                            D_time,
-                            prompt_embeds,
-                            seq_len
-                        )[0]
-                        if args.real_guidance_scale and args.real_guidance_scale > 1.0:
-                            x0_uncond = net_x0(
-                                real_score_transformer3d,
-                                D_xt,
-                                D_time,
-                                neg_prompt_embeds,
-                                seq_len
-                            )[0]
-                            x0_teacher = x0_uncond + args.real_guidance_scale * (x0_teacher - x0_uncond)
-                        if use_tdm:
-                            # TDM matches in x_{t_{i-1}} space: reproject each x0 pred to s_im1 via its implied eps.
-                            def to_t_im1(x_t, x0_pred):
-                                x_t = x_t.double()
-                                eps_pred = (x_t - (1.0 - sD) * x0_pred) / sD.clamp(min=1e-6)
-                                return (1.0 - s1) * x0_pred + s1 * eps_pred
-                            tgt_fake = to_t_im1(D_xt, x0_fake)
-                            tgt_tea = to_t_im1(D_xt, x0_teacher)
+                        xk = xt
+                        for k in range(K):
+                            dt = (t_list[k] - t_list[k + 1]).reshape(-1, 1, 1, 1, 1).to(xk.dtype)
+                            vc = net_velocity(real_score_transformer3d, xk, t_list[k], embeds, slen)
+                            if args.div_teacher_guidance > 1.0:
+                                vu = net_velocity(real_score_transformer3d, xk, t_list[k], neg_embeds, slen)
+                                vc = vu + args.div_teacher_guidance * (vc - vu)
+                            xk = xk - dt * vc.to(xk.dtype)
+                        x_tgt = _euler(generator_transformer3d, xk, tK, t_bnd, embeds, slen).detach()
+                    x_pred = _euler(generator_transformer3d, xt, t0, t_bnd, embeds, slen)
+                    loss = (x_pred.double() - x_tgt.double()) ** 2
+                    loss[torch.isnan(loss).flatten(start_dim=1).any(dim=1)] = 0
+                    return loss.mean()
+
+                # --- Main Training Logic ---
+                bsz, channel, num_frames, height, width = target_shape
+                # Precompute seq_len once (same for all steps)
+                patch_h, patch_w = accelerator.unwrap_model(generator_transformer3d).config.patch_size[1:]
+                seq_len = math.ceil((width * height) / (patch_h * patch_w) * num_frames)
+
+                if dfd_active:
+                    # Sample one shared shifted RF timestep for both phases of this step.
+                    score_indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                    dfd_score_timestep = noise_scheduler.timesteps[score_indices].to(device=accelerator.device)
+                    dfd_score_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=real_latents.dtype)
+
+                    # Noise the paired real latent to one of the 4-step student timesteps and denoise it.
+                    student_timestep_indices = torch.randint(0, dfd_student_timesteps.numel(), (bsz,), device=accelerator.device, generator=torch_rng)
+                    student_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=real_latents.dtype)
+                    student_timestep = dfd_student_timesteps[student_timestep_indices] * 1000
+                    # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
+                    generator_step_timestep = student_timestep
+                    student_input = add_noise(real_latents, student_noise, student_timestep)
+                    student_forward_context = contextlib.nullcontext() if generator_update else torch.no_grad()
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), student_forward_context:
+                        dfd_student_flow = generator_transformer3d(
+                            x=student_input,
+                            context=prompt_embeds,
+                            t=student_timestep,
+                            seq_len=seq_len,
+                            y=None,
+                        )
+                        dfd_student_pred = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=dfd_student_flow,
+                            xt=student_input,
+                            timestep=student_timestep,
+                        )
+                else:
+                    # rf-native discrete grid for this expert, derived in main() from --joint_backward_timesteps
+                    # split at the MoE boundary. The rf values are used DIRECTLY as Euler sigmas (the shift=12
+                    # scheduler grid does not contain the rCM knots, so the timestep-index map is bypassed).
+                    denoising_step_list = denoising_rf_grid
+
+                if generator_update:
+                    if dfd_active:
+                        generator_pred = dfd_student_pred
+                        generator_timestep = dfd_score_timestep
+                        dmd_noise = dfd_score_noise
+                    else:
+                        generator_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
+                        # Low-noise expert: first roll the FROZEN high student from pure noise down to the
+                        # boundary (init_rollout), so the low rollout starts on-distribution at rf=boundary
+                        # instead of cold-starting from pure noise (which would break train/inference routing).
+                        if init_rollout_transformer3d is not None:
+                            with torch.no_grad():
+                                for _s_cur, _s_next in zip(init_rollout_grid[:-1], init_rollout_grid[1:]):
+                                    _sc = torch.full((bsz, 1), float(_s_cur), device=accelerator.device, dtype=torch.float32)
+                                    _sn = torch.full((bsz, 1), float(_s_next), device=accelerator.device, dtype=torch.float32)
+                                    generator_noise = _euler(init_rollout_transformer3d, generator_noise, _sc, _sn, prompt_embeds, seq_len)
+                            generator_noise = generator_noise.detach()
+                        num_denoising_steps = len(denoising_step_list)
+                        final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
+
+                        for index, current_rf in enumerate(denoising_step_list):
+                            is_final_step = (index == final_step_index)
+                            rf_cur = float(current_rf)
+                            timestep = torch.full(
+                                generator_noise.shape[:1],
+                                rf_cur * T_SCALE,
+                                device=generator_noise.device,
+                                dtype=torch.float32
+                            )
+                            
+                            with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                                context_manager = torch.no_grad() if not is_final_step else contextlib.nullcontext()
+                                
+                                with context_manager:
+                                    generator_pred = generator_transformer3d(
+                                        x=generator_noise,
+                                        context=prompt_embeds,
+                                        t=timestep,
+                                        seq_len=seq_len,
+                                        y=inpaint_latents if args.train_mode != "normal" else None,
+                                    )
+                                    if not args.flow_euler_rollout or is_final_step:
+                                        generator_pred = rf_flow_to_x0(generator_pred, generator_noise, rf_cur)
+                                
+                                if is_final_step:
+                                    # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
+                                    generator_step_timestep = timestep
+                                    break
+                                
+                                rf_next = float(denoising_step_list[index + 1])
+                                if args.flow_euler_rollout:
+                                    # rf-native Euler ODE step (sigma == rf time s): keep the prediction in
+                                    # flow/velocity space and advance x_next = x_t + (s_next - s_cur) * v (fp32).
+                                    generator_noise = (
+                                        generator_noise.float() + (rf_next - rf_cur) * generator_pred.float()
+                                    ).to(generator_noise.dtype)
+                                else:
+                                    generator_noise = rf_add_noise(
+                                        generator_pred,
+                                        torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
+                                        rf_next
+                                    )
+
+                        indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                        generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                        dmd_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
+                    generator_denoised_input = add_noise(
+                        generator_pred,
+                        dmd_noise,
+                        generator_timestep
+                    ).detach().to(accelerator.device, dtype=weight_dtype)
+
+                    if args.decoupled_dmd:
+                        # Decoupled DMD (arXiv:2511.22677, Sec. 4.3): the CA engine must re-noise at
+                        # tau_CA > t, i.e. noise levels cleaner than the generator's current step, so it
+                        # only enhances not-yet-resolved (higher-frequency) content. Scheduler timesteps
+                        # are ordered from noisy to clean, hence sample indices strictly after t's position.
+                        schedule_timesteps = noise_scheduler.timesteps.to(device=accelerator.device)
+                        num_schedule_steps = schedule_timesteps.numel()
+                        step_positions = torch.argmin(
+                            (schedule_timesteps.unsqueeze(0).float() - generator_step_timestep.reshape(-1, 1).float()).abs(),
+                            dim=1
+                        )
+                        # Uniform over the schedule positions cleaner than t, matching how tau_DM is
+                        # sampled uniformly over the full set of schedule positions.
+                        ca_low = (step_positions + 1).clamp(max=num_schedule_steps - 1)
+                        ca_span = num_schedule_steps - ca_low
+                        ca_offset = (
+                            torch.rand(ca_low.shape, device=accelerator.device, generator=torch_rng) * ca_span
+                        ).long()
+                        ca_positions = (ca_low + ca_offset).clamp(max=num_schedule_steps - 1)
+                        ca_timestep = schedule_timesteps[ca_positions]
+                        ca_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
+                        generator_ca_input = add_noise(
+                            generator_pred,
+                            ca_noise,
+                            ca_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
+
+                    # DFD may feed the frozen teacher the paired real latent instead.
+                    real_score_input = generator_denoised_input
+                    use_dfd_real = dfd_active and real_latents is not None and torch.rand((), device=accelerator.device, generator=torch_rng).item() < args.dfd_teacher_replace_prob
+                    if use_dfd_real:
+                        real_score_input = add_noise(
+                            real_latents.to(generator_pred.dtype),
+                            dmd_noise,
+                            generator_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
+                        train_dfd_real_replace += 1.0
+
+                    # Compute fake score
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device), torch.no_grad():
+                        fake_score_main_cond = fake_score_transformer3d(
+                            x=generator_denoised_input,
+                            context=prompt_embeds,
+                            t=generator_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        )
+                        fake_score_main_cond = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=fake_score_main_cond,
+                            xt=generator_denoised_input,
+                            timestep=generator_timestep
+                        )
+
+                        if args.fake_guidance_scale != 0.0:
+                            fake_score_main_uncond = fake_score_transformer3d(
+                                x=generator_denoised_input,
+                                context=neg_prompt_embeds,
+                                t=generator_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                            )
+                            fake_score_main_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=fake_score_main_uncond,
+                                xt=generator_denoised_input,
+                                timestep=generator_timestep
+                            )
+                            fake_score_main = fake_score_main_uncond + (
+                                fake_score_main_cond - fake_score_main_uncond
+                            ) * args.fake_guidance_scale
                         else:
-                            tgt_fake, tgt_tea = x0_fake, x0_teacher
-                        # Normalized score difference: (fake - teacher) / per-sample |G - teacher|_1.
-                        wf = (base - tgt_tea).abs().mean(dim=[1, 2, 3, 4], keepdim=True).clamp(min=1e-5)
-                        grad = (tgt_fake - tgt_tea) / wf
+                            fake_score_main = fake_score_main_cond
 
-                    # DMD surrogate loss
-                    surrogate = (base - (base - grad).detach()) ** 2
-                    surrogate[torch.isnan(surrogate).flatten(start_dim=1).any(dim=1)] = 0
-                    loss_dm = surrogate.sum(dim=(1, 2, 3, 4))
-                    scale = args.loss_scale_tdm if use_tdm else args.loss_scale_dmd
-                    dm_term = scale * loss_dm
+                        # Compute real score (conditional branch always evaluated on the DM input tau_DM)
+                        real_score_main_cond = real_score_transformer3d(
+                            x=real_score_input,
+                            context=prompt_embeds,
+                            t=generator_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                        )
+                        real_score_main_cond = convert_flow_pred_to_x0(
+                            scheduler=noise_scheduler,
+                            flow_pred=real_score_main_cond,
+                            xt=real_score_input,
+                            timestep=generator_timestep
+                        )
 
-                    # Diversity term (ode_match / pcm); zeros_like (no graph) when div<=0 or n_steps<2.
-                    div_term = torch.zeros_like(dm_term)
-                    if args.loss_scale_div > 0 and n_steps >= 2:
-                        if args.div_mode == "ode_match":
-                            # ODE-match: student 1-step velocity vs teacher ODE rollout (no_grad, CFG).
-                            s_grid = _build_div_teacher_schedule(args.div_K, args.div_sigma_max, args.teacher_timestep_shift)
-                            K = s_grid.shape[0] - 1
-                            eps = sync_broadcast(torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype))
-                            x = eps
-                            with torch.no_grad():
-                                for k in range(K):
-                                    sc = s_grid[k].view(1, 1).expand(target_shape[0], 1).contiguous()
-                                    sn = s_grid[k + 1].view(1, 1).expand(target_shape[0], 1).contiguous()
-                                    v = net_velocity(
-                                        real_score_transformer3d,
-                                        x,
-                                        sc,
-                                        prompt_embeds,
-                                        seq_len
-                                    ).to(weight_dtype)
-                                    if args.real_guidance_scale and args.real_guidance_scale > 1.0:
-                                        vu = net_velocity(
-                                            real_score_transformer3d,
-                                            x,
-                                            sc,
-                                            neg_prompt_embeds,
-                                            seq_len
-                                        ).to(weight_dtype)
-                                        v = vu + args.real_guidance_scale * (v - vu)
-                                    dt = (sn - sc).reshape(-1, 1, 1, 1, 1).to(x.dtype)
-                                    x = x + dt * v
-                            t_tilde = float(s_grid[-1].item())
-                            d = 1.0 - t_tilde
-                            assert d > 1e-6, f"1 - t_tilde too small: {d}"
-                            v_tilde = (eps - x) / d
-                            s1 = torch.ones(target_shape[0], 1, device=accelerator.device, dtype=torch.float32)
-                            v_stu = net_velocity(
-                                generator_transformer3d,
-                                eps,
-                                s1,
-                                prompt_embeds,
-                                seq_len
+                        if args.decoupled_dmd:
+                            # CA term: teacher cond/uncond evaluated at the cleaner re-noise level tau_CA.
+                            real_score_ca_cond = real_score_transformer3d(
+                                x=generator_ca_input,
+                                context=prompt_embeds,
+                                t=ca_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
                             )
-                            diff = v_stu.double() - v_tilde.double()
-                            div_loss = (diff ** 2).sum(dim=(1, 2, 3, 4))
-                            div_loss[torch.isnan(div_loss).flatten(start_dim=1).any(dim=1)] = 0
-                            div_term = args.loss_scale_div * div_loss
-                        elif args.div_mode in ("pcm_fixed", "pcm_random"):
-                            # PCM consistency: grad student step must match the no_grad teacher rollout target.
-                            B = target_shape[0]
-                            K = args.dcm_skipping_interval_steps
-                            dw = 1.0 / args.dcm_total_steps
-                            shift = args.teacher_timestep_shift
-                            eps = sync_broadcast(torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype))
-                            rf_b = float(args.backward_timesteps[0]) if len(args.backward_timesteps) > 0 else float(args.backward_simulation_end_t)
-                            s_b = inv_shift_rf_time(rf_b, shift)
-                            w_right = 1.0 - s_b
-                            # phase-0 offset w in [0, valid_width]; pcm_fixed pins w=0, pcm_random samples it.
-                            valid_width = w_right - K * dw
-                            if args.div_mode == "pcm_fixed":
-                                w = torch.zeros(B, 1, device=accelerator.device, dtype=torch.float32)
-                            else:
-                                assert valid_width > 0, (
-                                    f"pcm-div phase 0 valid width <= 0: w_right={w_right:.4f}, K*dw={K*dw:.4f}.")
-                                w = sync_broadcast(torch.rand(B, 1, device=accelerator.device) * valid_width)
-                            t_list = [shift_rf_time(1.0 - (w + k * dw), shift) for k in range(K + 1)]
-                            t0, tK = t_list[0], t_list[-1]
-                            t_bnd = torch.full((B, 1), rf_b, device=accelerator.device, dtype=torch.float32)
-                            t0c = t0.reshape(-1, 1, 1, 1, 1).double()
-                            anchor = anchor_x0.double() if anchor_x0 is not None else G.detach().double()
-                            xt = ((1.0 - t0c) * anchor + t0c * eps.double()).to(weight_dtype)
-                            # Run the no_grad teacher rollout + target student BEFORE the grad forward (FSDP safety).
-                            with torch.no_grad():
-                                xk = xt
-                                for k in range(K):
-                                    tk, tk1 = t_list[k], t_list[k + 1]
-                                    dt = (tk - tk1).reshape(-1, 1, 1, 1, 1).to(xk.dtype)
-                                    F_tea = net_velocity(
-                                        real_score_transformer3d,
-                                        xk,
-                                        tk,
-                                        prompt_embeds,
-                                        seq_len
-                                    ).to(xk.dtype)
-                                    if args.real_guidance_scale and args.real_guidance_scale > 1.0:
-                                        F_unc = net_velocity(
-                                            real_score_transformer3d,
-                                            xk,
-                                            tk,
-                                            neg_prompt_embeds,
-                                            seq_len
-                                        ).to(xk.dtype)
-                                        F_tea = F_unc + args.real_guidance_scale * (F_tea - F_unc)
-                                    xk = xk - dt * F_tea
-                                x_target = _euler(
-                                    generator_transformer3d,
-                                    xk,
-                                    tK,
-                                    t_bnd,
-                                    prompt_embeds,
-                                    seq_len
-                                ).detach()
-                            x_pred = _euler(
-                                generator_transformer3d,
-                                xt,
-                                t0,
-                                t_bnd,
-                                prompt_embeds,
-                                seq_len
+                            real_score_ca_cond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_ca_cond,
+                                xt=generator_ca_input,
+                                timestep=ca_timestep
                             )
-                            div_loss = (x_pred.double() - x_target.double()) ** 2
-                            div_loss[torch.isnan(div_loss).flatten(start_dim=1).any(dim=1)] = 0
-                            div_term = args.loss_scale_div * div_loss.sum(dim=(1, 2, 3, 4))
 
-                    avg_dm = accelerator.gather(dm_term.detach().mean().repeat(args.train_batch_size)).mean()
-                    avg_div = accelerator.gather(div_term.detach().mean().repeat(args.train_batch_size)).mean()
-                    train_student += avg_dm.item() / args.gradient_accumulation_steps
-                    train_div += avg_div.item() / args.gradient_accumulation_steps
-                    train_gen_cnt += 1
+                            real_score_ca_uncond = real_score_transformer3d(
+                                x=generator_ca_input,
+                                context=neg_prompt_embeds,
+                                t=ca_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                            )
+                            real_score_ca_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_ca_uncond,
+                                xt=generator_ca_input,
+                                timestep=ca_timestep
+                            )
+                        else:
+                            real_score_main_uncond = real_score_transformer3d(
+                                x=real_score_input,
+                                context=neg_prompt_embeds,
+                                t=generator_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                            )
+                            real_score_main_uncond = convert_flow_pred_to_x0(
+                                scheduler=noise_scheduler,
+                                flow_pred=real_score_main_uncond,
+                                xt=real_score_input,
+                                timestep=generator_timestep
+                            )
 
-                    # Single combined backward: a second accelerator.backward() on the same FSDP module
-                    # trips the "flat_param on cpu" assert under CPUOffload, so dm+div sum into one call.
-                    student_loss = dm_term.mean()
-                    if div_term.requires_grad:   # div_term has no graph when div<=0 or n_steps<2
-                        student_loss = student_loss + div_term.mean()
-                    accelerator.backward(student_loss)
-                    del dm_term, div_term, student_loss
-                    if accelerator.sync_gradients and args.max_grad_norm and args.max_grad_norm > 0:
+                            real_score_main = real_score_main_uncond + (
+                                real_score_main_cond - real_score_main_uncond
+                            ) * args.real_guidance_scale
+
+                    # DMD loss
+                    if args.decoupled_dmd:
+                        # Decoupled DMD (arXiv:2511.22677, Eq. 8) splits the teacher target into
+                        #   DM term (shield/regularizer): s_cond(tau_DM) - s_fake(tau_DM), full noise range;
+                        #   CA term (spear/engine): (alpha - 1) * (s_cond(tau_CA) - s_uncond(tau_CA)), tau_CA > t.
+                        # Composing them into one target keeps Eq. 8's (alpha - 1) relative weight under the
+                        # single adaptive normalizer of DMD, and reduces exactly to s_cfg when tau_CA == tau_DM.
+                        ca_delta = (
+                            real_score_ca_cond - real_score_ca_uncond
+                        ) * (args.real_guidance_scale - 1.0)
+                        real_score_target = real_score_main_cond + ca_delta
+                    else:
+                        real_score_target = real_score_main
+                        ca_delta = (
+                            real_score_main_cond - real_score_main_uncond
+                        ) * (args.real_guidance_scale - 1.0)
+
+                    # Magnitudes of the two Eq. 6 terms, recomputed from the frozen score tensors so the
+                    # monitor costs no extra forward pass and never touches the graph.
+                    ca_scale = ca_delta.float().abs().mean()
+                    dm_scale = (real_score_main_cond - fake_score_main).float().abs().mean()
+
+                    fake_to_real_grad = fake_score_main - real_score_target
+                    if dfd_active:
+                        normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
+                        fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
+
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred,
+                            (generator_pred - fake_to_real_grad).detach(),
+                            reduction="mean"
+                        )
+                    else:
+                        generator_to_real_norm = generator_pred - real_score_target
+                        normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
+                        fake_to_real_grad = fake_to_real_grad / normalizer
+                        fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+
+                        dmd_loss = 0.5 * F.mse_loss(
+                            generator_pred.double(),
+                            (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                            reduction="mean"
+                        )
+                    avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
+                    train_dmd_loss += avg_dmd_loss.item()
+                    train_gen_log_count += 1
+
+                    monitor = accelerator.gather(
+                        torch.stack([ca_scale, dm_scale, generator_pred.float().std()])[None]
+                    ).mean(dim=0)
+                    train_ca_scale += monitor[0].item()
+                    train_dm_scale += monitor[1].item()
+                    train_latent_std += monitor[2].item()
+
+                    # --- CrossDistill PCM diversity (self-contained additive term; real-x0 anchor) ---
+                    div_loss = torch.zeros((), device=accelerator.device, dtype=torch.float64)
+                    if args.loss_scale_div > 0 and args.div_mode in ("pcm_fixed", "pcm_random") and real_latents is not None:
+                        div_loss = compute_pcm_div_loss(real_latents, prompt_embeds, neg_prompt_embeds, seq_len)
+                        train_div_loss += accelerator.gather(div_loss.float().repeat(args.train_batch_size)).mean().item()
+
+                    if args.low_vram:
+                        real_score_transformer3d = real_score_transformer3d.to("cpu")
+                        fake_score_transformer3d = fake_score_transformer3d.to("cpu")
+                        torch.cuda.empty_cache()
+
+                    # Single merged backward: FSDP flat_param forbids two accelerator.backward calls
+                    # on the same wrapped generator within one iteration.
+                    generator_loss = dmd_loss + args.loss_scale_div * div_loss
+                    accelerator.backward(generator_loss)
+                    if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                sync_now = accelerator.sync_gradients
-                active_lr = lr_scheduler
-            else:
-                with accelerator_fake_score_transformer3d.accumulate(fake_score_transformer3d), \
-                        torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    eff_it = iteration if iteration < args.critic_warmup else args.critic_warmup + (iteration - args.critic_warmup) // args.student_update_freq
-                    n_steps = num_sim_steps(iteration - eff_it - 1)
 
-                    # --- Critic (fake_score) Denoising Loss on student x0, x0-space weighted ---
-                    with torch.no_grad():
-                        G, _, _ = backward_simulation(
-                            prompt_embeds,
-                            target_shape,
-                            n_steps,
-                            seq_len,
-                            with_grad=False,
-                            tdm=False
-                        )
-                    D_time = sync_broadcast(draw_rf_time((target_shape[0], 1))).to(accelerator.device)
-                    eps = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
-                    sD = D_time.reshape(-1, 1, 1, 1, 1).to(torch.float64)
-                    D_xt = ((1.0 - sD) * G.double() + sD * eps.double()).to(weight_dtype)
-                    x0_fake = net_x0(
-                        fake_score_transformer3d,
-                        D_xt,
-                        D_time,
-                        prompt_embeds,
-                        seq_len
-                    )[0]
+                    if args.low_vram:
+                        fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                        torch.cuda.empty_cache()
 
-                    # x0-space weight (s_D^2+(1-s_D)^2)/s_D^2 keeps the MSE comparable across s_D.
-                    weight = (sD ** 2 + (1.0 - sD) ** 2) / sD.clamp(min=1e-6) ** 2
-                    crit = (((G.double() - x0_fake) ** 2 * weight).sum(dim=(1, 2, 3, 4))).mean()
+            with accelerator_fake_score_transformer3d.accumulate(fake_score_transformer3d):
+                # --- Fake Critic Denoising Loss ---
+                with torch.no_grad():
+                    if dfd_active:
+                        fake_score_denoised_pred = dfd_student_pred.detach()
+                        critic_timestep = dfd_score_timestep
+                        critic_noise = dfd_score_noise
+                    else:
+                        fake_score_critic_noise = torch.randn(target_shape, device=accelerator.device, generator=torch_rng, dtype=weight_dtype)
+                        # Low-noise expert: same init_rollout prefix as the generator phase (frozen high student,
+                        # pure noise -> boundary) so the critic trains on the student's on-distribution start latent.
+                        # The whole critic rollout already runs under torch.no_grad().
+                        if init_rollout_transformer3d is not None:
+                            for _s_cur, _s_next in zip(init_rollout_grid[:-1], init_rollout_grid[1:]):
+                                _sc = torch.full((bsz, 1), float(_s_cur), device=accelerator.device, dtype=torch.float32)
+                                _sn = torch.full((bsz, 1), float(_s_next), device=accelerator.device, dtype=torch.float32)
+                                fake_score_critic_noise = _euler(init_rollout_transformer3d, fake_score_critic_noise, _sc, _sn, prompt_embeds, seq_len)
+                            fake_score_critic_noise = fake_score_critic_noise.detach()
+                        num_denoising_steps = len(denoising_step_list)
+                        final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
 
-                    avg_c = accelerator.gather(crit.detach().repeat(args.train_batch_size)).mean()
-                    train_critic += avg_c.item() / args.gradient_accumulation_steps
-                    accelerator_fake_score_transformer3d.backward(crit)
-                    if accelerator_fake_score_transformer3d.sync_gradients and args.max_grad_norm and args.max_grad_norm > 0:
-                        accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
-                    critic_optimizer.step()
-                    fake_score_lr_scheduler.step()
-                    critic_optimizer.zero_grad()
-                sync_now = accelerator_fake_score_transformer3d.sync_gradients
-                active_lr = fake_score_lr_scheduler
+                        for index, current_rf in enumerate(denoising_step_list):
+                            is_final_step = (index == final_step_index)
+                            rf_cur = float(current_rf)
+                            timestep = torch.full(
+                                fake_score_critic_noise.shape[:1], 
+                                rf_cur * T_SCALE,
+                                device=fake_score_critic_noise.device,
+                                dtype=torch.float32
+                            )
+                            
+                            with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                                fake_score_denoised_pred = generator_transformer3d(
+                                    x=fake_score_critic_noise,
+                                    context=prompt_embeds,
+                                    t=timestep,
+                                    seq_len=seq_len,
+                                    y=inpaint_latents if args.train_mode != "normal" else None,
+                                )
+                                fake_score_denoised_pred = rf_flow_to_x0(fake_score_denoised_pred, fake_score_critic_noise, rf_cur)
+                                
+                                if is_final_step:
+                                    break
+                                
+                                rf_next = float(denoising_step_list[index + 1])
+                                
+                                fake_score_critic_noise = rf_add_noise(
+                                    fake_score_denoised_pred,
+                                    torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng),
+                                    rf_next
+                                )
 
-            if sync_now:
+                        indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                        critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                        critic_noise = torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng)
+
+                fake_score_denoised_input = add_noise(
+                    fake_score_denoised_pred,
+                    critic_noise,
+                    critic_timestep
+                )
+
+                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                    fake_score_denoised_output = fake_score_transformer3d(
+                        x=fake_score_denoised_input,
+                        context=prompt_embeds,
+                        t=critic_timestep,
+                        seq_len=seq_len,
+                        y=inpaint_latents if args.train_mode != "normal" else None,
+                    )
+
+                fake_score_denoised_output_x0 = convert_flow_pred_to_x0(
+                    scheduler=noise_scheduler,
+                    flow_pred=fake_score_denoised_output,
+                    xt=fake_score_denoised_input,
+                    timestep=critic_timestep
+                )
+                denoising_loss = F.mse_loss(
+                    fake_score_denoised_output_x0.float(),
+                    fake_score_denoised_pred.detach().float(),
+                    reduction="mean"
+                )
+                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+                
+                accelerator_fake_score_transformer3d.backward(denoising_loss)
+                if accelerator_fake_score_transformer3d.sync_gradients:
+                    accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
+                critic_optimizer.step()
+                fake_score_lr_scheduler.step()
+                critic_optimizer.zero_grad()
+
+                if args.low_vram:
+                    fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
+                    generator_transformer3d = generator_transformer3d.to(accelerator.device)
+                    
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
+
                 progress_bar.update(1)
                 global_step += 1
-                tracker_logs = {
-                    "train_student_loss": train_student / max(train_gen_cnt, 1),
-                    "train_div_loss": train_div / max(train_gen_cnt, 1),
-                    "train_critic_loss": train_critic,
-                }
+                gen_log_div = max(train_gen_log_count, 1)
+                tracker_logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / gen_log_div}
+                tracker_logs["train_div_loss"] = train_div_loss / gen_log_div
+                tracker_logs["train_ca_scale"] = train_ca_scale / gen_log_div
+                tracker_logs["train_dm_scale"] = train_dm_scale / gen_log_div
+                tracker_logs["train_ca_dm_ratio"] = train_ca_scale / (train_dm_scale + 1e-12)
+                tracker_logs["train_latent_std"] = train_latent_std / gen_log_div
+                if args.dfd:
+                    tracker_logs["train_dfd_real_replace"] = train_dfd_real_replace
+                    dfd_real_replace_now = train_dfd_real_replace
                 accelerator.log(tracker_logs, step=global_step)
-                train_student = 0.0
-                train_div = 0.0
-                train_critic = 0.0
-                train_gen_cnt = 0
+                train_dmd_loss = 0.0
+                train_div_loss = 0.0
+                train_denoising_loss = 0.0
+                train_dfd_real_replace = 0.0
+                train_ca_scale = 0.0
+                train_dm_scale = 0.0
+                train_latent_std = 0.0
+                train_gen_log_count = 0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
                             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
                             checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
                             if len(checkpoints) >= args.checkpoints_total_limit:
                                 num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                for removing_checkpoint in checkpoints[0:num_to_remove]:
-                                    shutil.rmtree(os.path.join(args.output_dir, removing_checkpoint))
+                                removing_checkpoints = checkpoints[0:num_to_remove]
+
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
+
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
                         with progress_bar.paused():
                             fake_score_save_path = os.path.join(save_path, "fake_score")
                             accelerator.save_state(save_path)
@@ -2520,13 +2987,28 @@ def main():
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
                     with progress_bar.paused():
                         log_validation(
-                            vae, text_encoder, tokenizer, generator_transformer3d,
-                            args, config, accelerator, weight_dtype, global_step,
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            generator_transformer3d,
+                            args,
+                            config,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
                         )
 
-            logs = {"train_critic_loss": train_critic, "lr": active_lr.get_last_lr()[0], "phase": "student" if student_phase else "critic"}
-            if student_phase:
-                logs["train_student_loss"] = train_student
+            if args.dfd:
+                logs = {"lr": (lr_scheduler if generator_update else fake_score_lr_scheduler).get_last_lr()[0], "denoising_loss": denoising_loss.detach().item()}
+                if generator_update:
+                    logs["dmd_loss"] = dmd_loss.detach().item()
+                    logs["ca"] = ca_scale.item()
+                    logs["dm"] = dm_scale.item()
+                logs["dfd_real_replace"] = dfd_real_replace_now
+            else:
+                logs = {"denoising_loss": denoising_loss.detach().item(), "dmd_loss": dmd_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                logs["ca"] = ca_scale.item()
+                logs["dm"] = dm_scale.item()
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
@@ -2535,11 +3017,20 @@ def main():
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
             with progress_bar.paused():
                 log_validation(
-                    vae, text_encoder, tokenizer, generator_transformer3d,
-                    args, config, accelerator, weight_dtype, global_step,
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    generator_transformer3d,
+                    args,
+                    config,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
                 )
 
-    # Close the bar before the end-of-run checkpoint.
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
     progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.

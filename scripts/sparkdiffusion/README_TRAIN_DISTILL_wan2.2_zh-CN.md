@@ -140,7 +140,7 @@ export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_finetune_sparse_wan2.2.py \
@@ -164,7 +164,7 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --uniform_sampling \
   --trainable_modules "attn_op" \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --train_mode="normal" \
   --boundary_type="high" \
   --resume_from_checkpoint="latest"
@@ -187,7 +187,7 @@ Stage-1 关键参数：
 | 旗标 | 含义 |
 |------|---------|
 | `--boundary_type` | `high` / `low`——选择要暖启的 MoE 专家（由 config 分界决定）。 |
-| `--student_topk` | 稀疏注意力中每个 query 保留的 key block 比例（稀疏度 = `1 - topk`）。`0.03` ≈ 97% 稀疏。**必须与** Stage 2 一致。 |
+| `--student_topk` | 稀疏注意力中每个 query 保留的 key block 比例（稀疏度 = `1 - topk`）。`0.05` ≈ 95% 稀疏。**必须与** Stage 2 一致。 |
 | `--trainable_modules` | `"attn_op"` = Stage A（只训练稀疏分支）；`"."` = Stage B（稀疏网全量微调，用 `--transformer_path` 载入 Stage A）。 |
 | `--max_train_steps` | 暖启预算；保持简短。 |
 
@@ -195,7 +195,7 @@ Stage-1 关键参数：
 
 ### 3.3 Stage 2 — CrossDistill
 
-Stage 2 对着 dense teacher 把稀疏学生蒸馏成少步、CFG-free 的生成器。`--sparse_student` 把 `generator`（以及 `init_rollout` 模型）变为 `SparkWan2_2Transformer3DModel`，而 teacher 与 critic 保持 dense。`--generator_transformer_path` 载入 Stage-1 暖启 checkpoint。
+Stage 2 对着 dense teacher 把稀疏学生蒸馏成少步、CFG-free 的生成器。`--sparse_student` 把 `generator`（以及 `init_rollout` 模型）变为 `SparkWan2_2Transformer3DModel`，而 teacher 与 critic 保持 dense。`--generator_transformer_path` 载入 Stage-1 暖启 checkpoint。宿主是一个朴素的**离散网格 DMD**：少步网格在脚本内由 `--joint_backward_timesteps` 按 config 的 `boundary`（`0.875`）切分、只保留本专家的段（`--boundary_type`）而派生，随后用 rf-native 的 Euler 步进滚动（`--flow_euler_rollout`），generator 与 critic 通过 `--gen_update_interval` 交替更新。在此宿主之上，**高噪**专家额外叠加一个可选的 CrossDistill PCM 多样性项（`--loss_scale_div > 0`，见 §3.3.1）；**低噪**专家则不含多样性项。
 
 用 [scripts/sparkdiffusion/train_distill_wan2.2_high.sh](./train_distill_wan2.2_high.sh) 运行高噪专家：
 
@@ -207,9 +207,10 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.j
 export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_POST" \
+    --fsdp_offload_params true \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -232,14 +233,20 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -260,11 +267,20 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 |------------|-------------|------------|
 | `--boundary_type` | `high` | `low` |
 | 多样性项 | `--div_mode="pcm_random" --loss_scale_div=10.0` | 无多样性项（不加 div 旗标） |
-| `--init_rollout_path` | 不使用 | 用训练好的**高噪**学生暖启 backward-simulation 起点 latent（`INIT_ROLLOUT_CKPT`） |
+| `--init_rollout_path` | 不使用 | 用训练好的**高噪**学生暖启 rollout 的分界起点 latent（`INIT_ROLLOUT_CKPT`） |
 
 > ⚠️ 少步轨迹的低噪段起点在 MoE 分界处、而非纯噪声。请把 `INIT_ROLLOUT_CKPT` 指向最新的高噪蒸馏 checkpoint（`output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors`），让冻结的高噪学生去滚动高噪段；若留空，则由未训练的低噪学生自己滚动该段，样本会退化。
 
 > ⚠️ **蒸馏阶段没有步数上限。** 它们会一直运行直到你手动停止（kill 掉 `train_distill_wan2.2.py` 进程）；checkpoint 每 `--checkpointing_steps=200` 步写一次。
+
+#### 3.3.1 CrossDistill 多样性项（PCM，仅高噪专家）
+
+在**高噪**专家上，设置 `--loss_scale_div > 0` 会在离散网格 DMD 宿主之上叠加官方 SparkDiffusion 的 **CrossDistill** PCM 多样性项，用以抵消纯分布匹配可能带来的多样性损失。它是一个自包含的加性损失，不改动 DMD rollout（**低噪**专家保持 `--loss_scale_div 0`，不含多样性项）：
+
+- **它做什么**——一个 phase-0 分界对齐 MSE：学生从带噪锚点一步跳到 phase-0 分界（`--div_rf_boundary`，即高噪段的首个节点 `0.933781`），必须与 teacher 的 K 步 Euler rollout（`--dcm_skipping_interval_steps` 个子步）再接学生自己的目标跳变相匹配。它运行在**自己独立的连续 rf 网格**上（`--dcm_total_steps` 等分、并按 `--teacher_timestep_shift 12.0`——Wan2.2 调度器的 shift——偏移），与离散的 DMD 网格解耦。
+- **锚点**——配对的**真实视频 latent**（忠于官方 `_compute_pcm_div_loss`，其在真实 `x0` 上蒸馏），仅在开启多样性项时按需编码。
+- **合并**——`generator_loss = dmd_loss + loss_scale_div * div_loss`，在**单次** `accelerator.backward` 中完成（FSDP 每个被包裹的模块每轮迭代只允许一次 backward）；teacher rollout 与学生目标在带梯度的学生前向之前于 `no_grad` 下运行。
+- **尺度与调参**——`--loss_scale_div` 处于**逐元素均值**空间（与均值归约的 `dmd_loss` 对齐）；启动脚本在高噪专家上从 `10.0` 起步。首次运行时观察 `train_div_loss` 与 `train_dmd_loss`，调整到多样性不会压过 DMD；`--div_teacher_guidance` 是多样性 teacher 的 CFG 尺度，独立于 `--real_guidance_scale`。设 `--loss_scale_div 0` 即可恢复到完全一致的朴素 DMD 基线。
 
 ### 3.4 通用训练参数
 
@@ -275,36 +291,44 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 | `--train_data_dir` / `--train_data_meta` | 数据集根目录 / metadata JSON | 见 §2 |
 | `--boundary_type` | `high` / `low` MoE 专家选择器 | `high` |
 | `--train_mode` | SparkDiffusion 仅支持 `normal`（T2V） | `normal` |
-| `--student_topk` | 稀疏注意力保留比例（稀疏度 = 1 − topk）；Stage 1 与 Stage 2 必须一致 | `0.03` |
+| `--student_topk` | 稀疏注意力保留比例（稀疏度 = 1 − topk）；Stage 1 与 Stage 2 必须一致 | `0.05` |
 | `--sparse_student` | （Stage 2）把 generator + init_rollout 建成稀疏学生 | - |
 | `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
-| `--distill_loss` | 学生分布匹配损失（`dmd` / `tdm`，互斥） | `dmd` |
-| `--max_simulation_steps_fake` | backward simulation 中学生的 Euler 步数；按专家拆分时等于该专家的轨迹段数 | `2` |
-| `--div_mode` / `--loss_scale_div` | PCM 式多样性项（仅高噪专家） | `pcm_random` / `10.0` |
+| `--uniform_sampling` | 在训练调度上均匀采样 DMD 的噪声水平 | - |
+| `--flow_euler_rollout` | 在 flow/velocity 空间用确定性的 rf-native Euler 步进滚动 generator（不做 x0 再加噪） | - |
+| `--gen_update_interval` | 每 N 步更新一次 generator（critic 每步都更新） | `5` |
+| `--joint_backward_timesteps` | 联合少步 rf 网格（降序），按 config 的 `boundary` 由 `--boundary_type` 切分成各专家的段；自动取默认值，validation 复用它 | `0.933781 0.875 0.608979` |
+| `--div_mode` | CrossDistill 多样性模式：`pcm_random`（随机 phase-0 偏移）或 `pcm_fixed`（仅高噪专家） | `pcm_random` |
+| `--loss_scale_div` | CrossDistill PCM 多样性项的权重（逐元素均值空间）；`0` 表示关闭 | `10.0`（高噪）/ `0`（低噪） |
+| `--dcm_total_steps` | 多样性项连续 rf 网格的等分数（`dw = 1 / N`） | `48` |
+| `--dcm_skipping_interval_steps` | phase 0 内 teacher 的 Euler 子步数 `K` | `1` |
+| `--teacher_timestep_shift` | 多样性网格的 rf 时间步 shift（与 Wan2.2 调度器的 shift 一致） | `12.0` |
+| `--div_rf_boundary` | phase-0 右边界 `rf_b`（高噪段的首个节点） | `0.933781` |
+| `--div_teacher_guidance` | 多样性 teacher rollout 的 CFG 尺度（独立于 `--real_guidance_scale`） | `5.0` |
 | `--real_guidance_scale` | 冻结 dense teacher 的 CFG 尺度 | `5.0` |
-| `--init_rollout_path` | （低噪专家）用于滚动 backward-simulation 起点 latent 的高噪学生 | 高噪蒸馏 ckpt |
+| `--init_rollout_path` | （低噪专家）用于滚动 rollout 分界起点 latent 的、已训练好的高噪学生 | 高噪蒸馏 ckpt |
 | `--learning_rate` / `--learning_rate_critic` | 生成器 / critic 学习率 | `2e-06` / `4e-07` |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | `200`（蒸馏）/ `100`（暖启） |
 | `--max_grad_norm` | 梯度裁剪阈值 | `0.05` |
 | `--resume_from_checkpoint` | 续训路径或 `"latest"` | `latest` |
 
-> 💡 rf 时间网格参数（`--rf_t_min`、`--rf_t_max`、`--backward_timesteps`、`--joint_backward_timesteps`、`--init_rollout_timesteps`）会由 `--boundary_type` 与 config 分界**自动推导**；请保持它们的 `-1` / 空默认值。
+> 💡 各专家的少步网格是**自动推导**的：`--joint_backward_timesteps`（联合 rf 网格）按 config 的 `boundary` 由 `--boundary_type` 切分，`--init_rollout_timesteps`（低噪专家冻结的高噪段中继）由分界以上的节点填充。两者都保持默认值即可；validation 复用同一网格，故 `num_inference_steps` = `len(--joint_backward_timesteps) + 1`（此处为 `4`）。
 
 ### 3.5 FSDP Backend 与显存说明
 
-Stage 2 需让**三个** 14B 网络同驻（稀疏 generator + dense teacher + dense critic），且都以优化器态为主，因此必须使用分片后端——此处为 FSDP `FULL_SHARD`。蒸馏启动脚本组合了下列显存杠杆：
+Stage 2 需让**三个** 14B 网络同驻（稀疏 generator + dense teacher + dense critic；低噪专家还会停放一个冻结的 `init_rollout` 高噪中继，已分片且 `no_grad`），且都以优化器态为主，因此必须使用分片后端——此处为 FSDP `FULL_SHARD`。蒸馏启动脚本组合了下列显存杠杆：
 
 - `--fsdp_sharding_strategy "FULL_SHARD"`——在多卡间分片 param/grad/optimizer。
 - `--fsdp_backward_prefetch "BACKWARD_POST"`——降低 backward 期间的中位驻留。
 - `--gradient_checkpointing`——在 backward 中重算激活。
-- **OOM 的杠杆是分辨率、而非帧数。** backward 会重算两段带梯度的 14B 前向，因此显存随 `seq_len` 增长；启动脚本使用 `--fix_sample_size 480 832` 配 `--video_sample_n_frames=81`。若 OOM，请降低 `--fix_sample_size`（例如降到 `320 512`），而不是减少帧数。
+- **OOM 的杠杆是分辨率、而非帧数。** 每一步都会滚动少步网格并对一段带梯度的 14B 前向做反传，因此显存随 `seq_len` 增长；启动脚本使用 `--fix_sample_size 480 832` 配 `--video_sample_n_frames=81`。若 OOM，请降低 `--fix_sample_size`（例如降到 `320 512`），而不是减少帧数。
 - 帧数须满足 `(N − 1) % 4 == 0`。
 
-> 💡 若降低分辨率仍不够，可在 `accelerate launch` 行加上 `--fsdp_offload_params true`，把 param/grad/optimizer offload 到 CPU（更慢）。`--low_vram` 只把冻结侧停到 CPU；它是对分片的补充，而非替代。
+> 💡 蒸馏启动脚本已经传入 `--fsdp_offload_params true`（14B 下为必需：它把 param/grad/optimizer offload 到 CPU，会牺牲一些速度）；仅在显存充裕时才可去掉。`--low_vram` 还会额外把冻结侧（`real_score` / `init_rollout` / 文本编码器）停到 CPU；它是对分片的补充，而非替代。
 
 ### 3.6 其他后端
 
-Stage-2 启动脚本默认使用 FSDP `FULL_SHARD`。同一个 [`train_distill_wan2.2.py`](./train_distill_wan2.2.py) 也可在 DeepSpeed Zero-2 下运行，或不使用任何分片后端。下面所有示例都以**高噪**专家为例；低噪专家请参照 §3.3 把 `--boundary_type` 改为 `"low"`、去掉 `--div_mode` / `--loss_scale_div` 旗标、加上 `--init_rollout_path`，并修改 `--output_dir` / `SPARSE_STUDENT_CKPT`。
+Stage-2 启动脚本默认使用 FSDP `FULL_SHARD`。同一个 [`train_distill_wan2.2.py`](./train_distill_wan2.2.py) 也可在 DeepSpeed Zero-2 下运行，或不使用任何分片后端。下面所有示例都以**高噪**专家为例；低噪专家请参照 §3.3 把 `--boundary_type` 改为 `"low"`、去掉多样性旗标（`--div_mode` …… `--div_teacher_guidance`）、加上 `--init_rollout_path`，并修改 `--output_dir` / `SPARSE_STUDENT_CKPT`。
 
 #### 3.6.1 使用 DeepSpeed-Zero-2 进行训练
 
@@ -321,7 +345,7 @@ export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rol
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.2.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -343,14 +367,20 @@ accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file 
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -370,7 +400,7 @@ export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rol
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_wan2.2.py \
+accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -392,14 +422,20 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" scripts/sparkdi
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -425,7 +461,7 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" scripts/sparkdi
 |-----------|-------------|---------------|
 | `GPU_memory_mode` | 显存模式 | `model_cpu_offload` |
 | `model_name` | Wan2.2-T2V-A14B 基座（VAE / UMT5 / 调度器） | `models/Diffusion_Transformer/Wan2.2-T2V-A14B` |
-| `student_topk` | **必须等于**训练时的 `--student_topk` | `0.03` |
+| `student_topk` | **必须等于**训练时的 `--student_topk` | `0.05` |
 | `transformer_path` | **低噪**稀疏学生 checkpoint | `output_dir_sparkdiffusion_wan2.2_14b_low_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors` |
 | `transformer_high_path` | **高噪**稀疏学生 checkpoint | `output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors` |
 | `sampler_name` | `Flow` 与少步 CFG-free 学生匹配 | `Flow` |

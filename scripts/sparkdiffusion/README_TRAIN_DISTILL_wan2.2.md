@@ -140,7 +140,7 @@ export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_finetune_sparse_wan2.2.py \
@@ -164,7 +164,7 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --uniform_sampling \
   --trainable_modules "attn_op" \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --train_mode="normal" \
   --boundary_type="high" \
   --resume_from_checkpoint="latest"
@@ -187,7 +187,7 @@ Stage-1 keys:
 | Flag | Meaning |
 |------|---------|
 | `--boundary_type` | `high` / `low` — selects the MoE expert to warm up (from the config boundary). |
-| `--student_topk` | Ratio of key blocks kept per query in the sparse attention (sparsity = `1 - topk`). `0.03` ≈ 97% sparse. **Must match** the value used in Stage 2. |
+| `--student_topk` | Ratio of key blocks kept per query in the sparse attention (sparsity = `1 - topk`). `0.05` ≈ 95% sparse. **Must match** the value used in Stage 2. |
 | `--trainable_modules` | `"attn_op"` = Stage A (train only the sparse branch); `"."` = Stage B (full sparse finetune, load Stage A via `--transformer_path`). |
 | `--max_train_steps` | Warm-up budget; keep it short. |
 
@@ -195,7 +195,7 @@ On completion the warm-up product is `output_dir_sparkdiffusion_wan2.2_14b_{high
 
 ### 3.3 Stage 2 — CrossDistill
 
-Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` (and the `init_rollout` model) into `SparkWan2_2Transformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint.
+Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` (and the `init_rollout` model) into `SparkWan2_2Transformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint. The host is a plain **discrete-grid DMD**: the few-step grid is derived in-script by splitting `--joint_backward_timesteps` at the config `boundary` (`0.875`) and keeping only this expert's segment (`--boundary_type`), then rolled out with rf-native Euler steps (`--flow_euler_rollout`), the generator and critic alternating via `--gen_update_interval`. On top of this host the **high** expert adds an optional CrossDistill PCM diversity term (`--loss_scale_div > 0`, see §3.3.1); the **low** expert is div-free.
 
 Run the high-noise expert with [scripts/sparkdiffusion/train_distill_wan2.2_high.sh](./train_distill_wan2.2_high.sh):
 
@@ -207,9 +207,10 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.j
 export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_POST" \
+    --fsdp_offload_params true \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -232,14 +233,20 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -260,11 +267,20 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 |------------|-------------|------------|
 | `--boundary_type` | `high` | `low` |
 | Diversity term | `--div_mode="pcm_random" --loss_scale_div=10.0` | div-free (no div flags) |
-| `--init_rollout_path` | not used | warm-starts the backward-simulation latent from the trained **high** student (`INIT_ROLLOUT_CKPT`) |
+| `--init_rollout_path` | not used | warm-starts the rollout's boundary latent from the trained **high** student (`INIT_ROLLOUT_CKPT`) |
 
 > ⚠️ The low-noise segment of the few-step trajectory starts at the MoE boundary, not at pure noise. Point `INIT_ROLLOUT_CKPT` at the latest high-distill checkpoint (`output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors`) so the frozen high student rolls the high-noise segment; leaving it empty makes the untrained low student roll that segment itself and the samples degrade.
 
 > ⚠️ **The distillation phases have no step cap.** They run until you stop them manually (kill the `train_distill_wan2.2.py` processes); checkpoints are written every `--checkpointing_steps=200`.
+
+#### 3.3.1 CrossDistill Diversity (PCM, high expert only)
+
+On the **high**-noise expert, setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill** PCM diversity term on top of the discrete-grid DMD host, to counter the diversity loss that pure distribution matching can cause. It is a self-contained additive loss that leaves the DMD rollout untouched (the **low** expert keeps `--loss_scale_div 0` and is div-free):
+
+- **What it does** — a phase-0 boundary-alignment MSE: the student's one-step jump from a noisy anchor to the phase-0 boundary (`--div_rf_boundary`, the high segment's first node `0.933781`) must match a teacher K-step Euler rollout (`--dcm_skipping_interval_steps` sub-steps) followed by the student's own target jump. It runs on its **own continuous rf grid** (`--dcm_total_steps` subdivisions shifted by `--teacher_timestep_shift 12.0`, the Wan2.2 scheduler shift), decoupled from the discrete DMD grid.
+- **Anchor** — the paired **real video latent** (faithful to the official `_compute_pcm_div_loss`, which distills on real `x0`), encoded on demand only when diversity is on.
+- **Merge** — `generator_loss = dmd_loss + loss_scale_div * div_loss` in a **single** `accelerator.backward` (FSDP allows one backward per wrapped module per iteration); the teacher rollout and the student target run under `no_grad` before the graded student forward.
+- **Scale & tuning** — `--loss_scale_div` is in **per-element-mean** space (aligned with the mean-reduced `dmd_loss`); the launchers start at `10.0` on the high expert. On the first run watch `train_div_loss` vs `train_dmd_loss` and adjust so diversity does not overwhelm DMD; `--div_teacher_guidance` is the diversity teacher's CFG scale, independent of `--real_guidance_scale`. Set `--loss_scale_div 0` to recover the exact plain-DMD baseline.
 
 ### 3.4 Common Training Parameters
 
@@ -275,36 +291,44 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 | `--train_data_dir` / `--train_data_meta` | Dataset root / metadata JSON | see §2 |
 | `--boundary_type` | `high` / `low` MoE expert selector | `high` |
 | `--train_mode` | SparkDiffusion supports `normal` (T2V) only | `normal` |
-| `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.03` |
+| `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.05` |
 | `--sparse_student` | (Stage 2) build generator + init_rollout as the sparse student | - |
 | `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
-| `--distill_loss` | Student distribution-matching loss (`dmd` / `tdm`, mutually exclusive) | `dmd` |
-| `--max_simulation_steps_fake` | Student Euler steps in the backward simulation; per-expert this equals the expert's trajectory-segment count | `2` |
-| `--div_mode` / `--loss_scale_div` | PCM-style diversity term (high expert only) | `pcm_random` / `10.0` |
+| `--uniform_sampling` | Sample the DMD noise level uniformly over the training schedule | - |
+| `--flow_euler_rollout` | Roll the generator in flow/velocity space with deterministic rf-native Euler steps (no x0 re-noising) | - |
+| `--gen_update_interval` | Update the generator once every N steps (the critic updates every step) | `5` |
+| `--joint_backward_timesteps` | Joint few-step rf grid (descending), split at the config `boundary` into per-expert segments by `--boundary_type`; auto-defaulted, and validation reuses it | `0.933781 0.875 0.608979` |
+| `--div_mode` | CrossDistill diversity mode: `pcm_random` (random phase-0 offset) or `pcm_fixed` (high expert only) | `pcm_random` |
+| `--loss_scale_div` | Weight of the CrossDistill PCM diversity term (per-element-mean space); `0` disables it | `10.0` (high) / `0` (low) |
+| `--dcm_total_steps` | Subdivision of the diversity term's continuous rf grid (`dw = 1 / N`) | `48` |
+| `--dcm_skipping_interval_steps` | Teacher Euler sub-steps `K` within phase 0 | `1` |
+| `--teacher_timestep_shift` | rf timestep shift for the diversity grid (matches the Wan2.2 scheduler shift) | `12.0` |
+| `--div_rf_boundary` | Phase-0 right boundary `rf_b` (the high segment's first node) | `0.933781` |
+| `--div_teacher_guidance` | CFG scale of the diversity teacher rollout (independent of `--real_guidance_scale`) | `5.0` |
 | `--real_guidance_scale` | CFG scale of the frozen dense teacher | `5.0` |
-| `--init_rollout_path` | (low expert) trained high student used to roll the backward-simulation start latent | high-distill ckpt |
+| `--init_rollout_path` | (low expert) trained high student used to roll the rollout's boundary start latent | high-distill ckpt |
 | `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `4e-07` |
 | `--checkpointing_steps` | Save checkpoint every N steps | `200` (distill) / `100` (warm-up) |
 | `--max_grad_norm` | Gradient clipping threshold | `0.05` |
 | `--resume_from_checkpoint` | Resume path or `"latest"` | `latest` |
 
-> 💡 The rf time-grid parameters (`--rf_t_min`, `--rf_t_max`, `--backward_timesteps`, `--joint_backward_timesteps`, `--init_rollout_timesteps`) are **auto-derived** from `--boundary_type` and the config boundary; leave them at their `-1` / empty defaults.
+> 💡 The per-expert few-step grid is **auto-derived**: `--joint_backward_timesteps` (the joint rf grid) is split at the config `boundary` by `--boundary_type`, and `--init_rollout_timesteps` (the low expert's frozen high-segment relay) is filled from the knots above the boundary. Leave both at their defaults; validation reuses the same grid, so `num_inference_steps` = `len(--joint_backward_timesteps) + 1` (`4` here).
 
 ### 3.5 FSDP Backend and Memory Notes
 
-Stage 2 keeps **three** 14B transformers co-resident (sparse generator + dense teacher + dense critic), all optimizer-state dominated, so a sharding backend is mandatory — FSDP `FULL_SHARD` here. The distill launchers combine these memory levers:
+Stage 2 keeps **three** 14B transformers co-resident (sparse generator + dense teacher + dense critic; the low expert also parks a frozen `init_rollout` high-noise relay, sharded and `no_grad`), all optimizer-state dominated, so a sharding backend is mandatory — FSDP `FULL_SHARD` here. The distill launchers combine these memory levers:
 
 - `--fsdp_sharding_strategy "FULL_SHARD"` — shard params/grads/optimizer across GPUs.
 - `--fsdp_backward_prefetch "BACKWARD_POST"` — lower median residency during backward.
 - `--gradient_checkpointing` — recompute activations in backward.
-- **Resolution, not frame count, is the OOM lever.** The backward recomputes two grad-carrying 14B forwards, so memory scales with `seq_len`; the launchers use `--fix_sample_size 480 832` with `--video_sample_n_frames=81`. If it OOMs, lower `--fix_sample_size` (e.g. to `320 512`) rather than dropping frames.
+- **Resolution, not frame count, is the OOM lever.** Each step rolls the few-step grid and backprops a grad-carrying 14B forward, so memory scales with `seq_len`; the launchers use `--fix_sample_size 480 832` with `--video_sample_n_frames=81`. If it OOMs, lower `--fix_sample_size` (e.g. to `320 512`) rather than dropping frames.
 - Frame count must satisfy `(N − 1) % 4 == 0`.
 
-> 💡 If lowering the resolution is not enough, add `--fsdp_offload_params true` to the `accelerate launch` line to offload params/grads/optimizer to CPU (slower). `--low_vram` only parks the frozen side on CPU; it complements, but does not replace, sharding.
+> 💡 The distill launchers already pass `--fsdp_offload_params true` (mandatory at 14B: it offloads params/grads/optimizer to CPU, at some speed cost); drop it only if you have ample VRAM. `--low_vram` additionally parks the frozen side (`real_score` / `init_rollout` / text encoder) on CPU; it complements, but does not replace, sharding.
 
 ### 3.6 Other Backends
 
-The Stage-2 launchers default to FSDP `FULL_SHARD`. The same [`train_distill_wan2.2.py`](./train_distill_wan2.2.py) also runs under DeepSpeed Zero-2 or without a sharding backend. All examples below use the **high**-noise expert; for the low expert flip `--boundary_type="low"`, drop the `--div_mode` / `--loss_scale_div` flags, add `--init_rollout_path`, and change `--output_dir` / `SPARSE_STUDENT_CKPT` as in §3.3.
+The Stage-2 launchers default to FSDP `FULL_SHARD`. The same [`train_distill_wan2.2.py`](./train_distill_wan2.2.py) also runs under DeepSpeed Zero-2 or without a sharding backend. All examples below use the **high**-noise expert; for the low expert flip `--boundary_type="low"`, drop the diversity flags (`--div_mode` … `--div_teacher_guidance`), add `--init_rollout_path`, and change `--output_dir` / `SPARSE_STUDENT_CKPT` as in §3.3.
 
 #### 3.6.1 Training with DeepSpeed Zero-2
 
@@ -321,7 +345,7 @@ export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rol
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.2.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -343,14 +367,20 @@ accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file 
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -370,7 +400,7 @@ export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rol
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_wan2.2.py \
+accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_wan2.2.py \
   --config_path="config/wan2.2/wan_civitai_t2v.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -392,14 +422,20 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" scripts/sparkdi
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
+  --uniform_sampling \
+  --flow_euler_rollout \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 10.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 12.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --boundary_type="high" \
   --real_guidance_scale=5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -425,7 +461,7 @@ Acceptance is a standalone run of [examples/sparkdiffusion/predict_t2v.py](../..
 |-----------|-------------|---------------|
 | `GPU_memory_mode` | Memory mode | `model_cpu_offload` |
 | `model_name` | Wan2.2-T2V-A14B base (VAE / UMT5 / schedulers) | `models/Diffusion_Transformer/Wan2.2-T2V-A14B` |
-| `student_topk` | **Must equal** the training `--student_topk` | `0.03` |
+| `student_topk` | **Must equal** the training `--student_topk` | `0.05` |
 | `transformer_path` | **Low**-noise sparse student checkpoint | `output_dir_sparkdiffusion_wan2.2_14b_low_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors` |
 | `transformer_high_path` | **High**-noise sparse student checkpoint | `output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors` |
 | `sampler_name` | `Flow` matches the few-step CFG-free student | `Flow` |

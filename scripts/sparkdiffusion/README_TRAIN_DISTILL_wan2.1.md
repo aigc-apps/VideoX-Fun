@@ -1,13 +1,13 @@
 # SparkDiffusion Sparse Distillation Training Guide (Wan2.1-T2V-1.3B)
 
-This document provides the complete workflow for **SparkDiffusion** on Wan2.1-T2V-1.3B: a two-stage pipeline that first warms up a **sparse (RoLa) student** and then **distills** it into a few-step, CFG-free generator. It covers environment setup, data preparation, the two launchers (Stage-1 warm-up + Stage-2 CrossDistill), and sparse few-step inference. Wan2.1-T2V-1.3B is a **single full-range expert**, so this is the leaner counterpart of the Wan2.2 MoE guide ([README_TRAIN_DISTILL_wan2.2.md](./README_TRAIN_DISTILL_wan2.2.md)): no MoE boundary, no high/low expert split, and no init-rollout relay.
+This document provides the complete workflow for **SparkDiffusion** on Wan2.1-T2V-1.3B: a two-stage pipeline that first warms up a **sparse (RoLa) student** and then **distills** it into a few-step, CFG-free generator. It covers environment setup, data preparation, the two launchers (Stage-1 warm-up + Stage-2 DMD distill), and sparse few-step inference. Wan2.1-T2V-1.3B is a **single full-range expert**, so this is the leaner counterpart of the Wan2.2 MoE guide ([README_TRAIN_DISTILL_wan2.2.md](./README_TRAIN_DISTILL_wan2.2.md)): no MoE boundary, no high/low expert split, and no init-rollout relay.
 
 > **What is SparkDiffusion?**
 >
-> SparkDiffusion (arXiv:2609.23153, *Mitigating the High-Sparsity Trap*) combines a **compensating sparse attention** (RoLa) with a **CrossDistill** few-step recipe. Wan2.1-T2V-1.3B is a single-expert diffusion transformer that spans the whole noise range, so the student is warmed up and distilled **once over the full rf-time range `[0, 1]`** — there is no MoE boundary to split on.
+> SparkDiffusion (arXiv:2609.23153, *Mitigating the High-Sparsity Trap*) combines a **compensating sparse attention** (RoLa) with a **DMD** few-step distillation recipe. Wan2.1-T2V-1.3B is a single-expert diffusion transformer that spans the whole noise range, so the student is warmed up and distilled **once over the full rf-time range `[0, 1]`** — there is no MoE boundary to split on.
 >
 > - **Stage 1 — sparse warm-up** ([`train_finetune_sparse_wan2.1.py`](./train_finetune_sparse_wan2.1.py)): insert the RoLa sparse self-attention into the dense backbone and briefly fine-tune it with the plain step-local flow-matching objective, so distillation starts from a usable coarse prior instead of a zero-initialized sparse branch. This stage is intentionally **short**.
-> - **Stage 2 — CrossDistill** ([`train_distill_wan2.1.py`](./train_distill_wan2.1.py)): distill the sparse student into a few-step generator against the **dense** teacher. It is Distribution Matching Distillation (DMD) with three co-resident transformers — a trainable sparse `generator`, a frozen dense `real_score` teacher, and a trainable dense `fake_score` critic — plus a PCM-style diversity term.
+> - **Stage 2 — DMD distill** ([`train_distill_wan2.1.py`](./train_distill_wan2.1.py)): distill the sparse student into a few-step generator against the **dense** teacher. It is plain Distribution Matching Distillation (DMD) with three co-resident transformers — a trainable sparse `generator`, a frozen dense `real_score` teacher, and a trainable dense `fake_score` critic — rolled out over a discrete few-step grid. An optional **CrossDistill** PCM diversity term (`--loss_scale_div > 0`, see §3.3.1) can be layered on top to preserve sample diversity.
 >
 > | Stage | Launcher | Output |
 > |-------|----------|--------|
@@ -24,7 +24,7 @@ This document provides the complete workflow for **SparkDiffusion** on Wan2.1-T2
 - [3. Training](#3-training)
   - [3.1 Download Pretrained Models](#31-download-pretrained-models)
   - [3.2 Stage 1 — Sparse Warm-up](#32-stage-1--sparse-warm-up)
-  - [3.3 Stage 2 — CrossDistill](#33-stage-2--crossdistill)
+  - [3.3 Stage 2 — DMD Distill](#33-stage-2--dmd-distill)
   - [3.4 Common Training Parameters](#34-common-training-parameters)
   - [3.5 FSDP Backend and Memory Notes](#35-fsdp-backend-and-memory-notes)
   - [3.6 Other Backends](#36-other-backends)
@@ -114,7 +114,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 
 ## 3. Training
 
-The full order is **Stage-1 warm-up → Stage-2 CrossDistill**. Run the two launchers by hand, in that order.
+The full order is **Stage-1 warm-up → Stage-2 DMD distill**. Run the two launchers by hand, in that order.
 
 ### 3.1 Download Pretrained Models
 
@@ -126,7 +126,7 @@ mkdir -p models/Diffusion_Transformer
 modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-1.3B
 ```
 
-The base checkpoint seeds all three Stage-2 transformers (the sparse `generator` is additionally initialized from the Stage-1 warm-up product). Its layout is the civitai single-file form read by `config/wan2.1/wan_civitai.yaml`: the transformer sits at the model root (`transformer_subpath: ./`), alongside `Wan2.1_VAE.pth`, the UMT5 encoder `models_t5_umt5-xxl-enc-bf16.pth` and the `google/umt5-xxl` tokenizer. The scheduler `shift` is `5.0`, which the distill launcher mirrors via `--teacher_timestep_shift=5.0`.
+The base checkpoint seeds all three Stage-2 transformers (the sparse `generator` is additionally initialized from the Stage-1 warm-up product). Its layout is the civitai single-file form read by `config/wan2.1/wan_civitai.yaml`: the transformer sits at the model root (`transformer_subpath: ./`), alongside `Wan2.1_VAE.pth`, the UMT5 encoder `models_t5_umt5-xxl-enc-bf16.pth` and the `google/umt5-xxl` tokenizer. The scheduler `shift` is `5.0`, supplied by the config `scheduler_kwargs`; the distill launcher does not override it.
 
 ### 3.2 Stage 1 — Sparse Warm-up
 
@@ -140,7 +140,7 @@ export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_finetune_sparse_wan2.1.py \
@@ -169,7 +169,7 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --uniform_sampling \
   --trainable_modules "attn_op" \
-  --student_topk=0.03 \
+  --student_topk=0.10 \
   --train_mode="normal" \
   --resume_from_checkpoint="latest"
 ```
@@ -184,15 +184,15 @@ Stage-1 keys:
 
 | Flag | Meaning |
 |------|---------|
-| `--student_topk` | Ratio of key blocks kept per query in the sparse attention (sparsity = `1 - topk`). `0.03` ≈ 97% sparse. **Must match** the value used in Stage 2. |
+| `--student_topk` | Ratio of key blocks kept per query in the sparse attention (sparsity = `1 - topk`). `0.10` ≈ 90% sparse. **Must match** the value used in Stage 2. |
 | `--trainable_modules` | `"attn_op"` = Stage A (train only the sparse branch); `"."` = Stage B (full sparse finetune, load Stage A via `--transformer_path`). |
 | `--max_train_steps` | Warm-up budget; keep it short. |
 
 On completion the warm-up product is `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors`.
 
-### 3.3 Stage 2 — CrossDistill
+### 3.3 Stage 2 — DMD Distill
 
-Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` into `SparkWanTransformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint. Being a single full-range expert, the student distills over the whole rf-time range `[0, 1]` — there is no boundary segment and no init-rollout relay — while the CrossDistill diversity term (`--div_mode="pcm_random" --loss_scale_div=10.0`) is kept.
+Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` into `SparkWanTransformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint. Being a single full-range expert, the student distills over the whole rf-time range `[0, 1]` — there is no boundary segment and no init-rollout relay. This is the plain-DMD baseline: the generator rolls out a discrete few-step grid (`--denoising_step_indices_list 1000 750 500 250` with `--flow_euler_rollout`), and the generator/critic alternate via `--gen_update_interval`. On top of this discrete DMD host, an optional CrossDistill PCM diversity term (`--loss_scale_div > 0`, see §3.3.1 below) adds a phase-0 boundary-alignment loss to preserve sample diversity.
 
 Run [scripts/sparkdiffusion/train_distill_wan2.1.sh](./train_distill_wan2.1.sh):
 
@@ -204,7 +204,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.j
 export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_POST" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_distill_wan2.1.py \
@@ -222,7 +222,7 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -233,14 +233,20 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
-  --teacher_timestep_shift=5.0 \
-  --real_guidance_scale=5.0 \
+  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --flow_euler_rollout \
+  --randomize_step_indices \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 5.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 5.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.10 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -253,6 +259,15 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 
 > ⚠️ **The distillation phase has no step cap.** It runs until you stop it manually (kill the `train_distill_wan2.1.py` processes); checkpoints are written every `--checkpointing_steps=200`.
 
+#### 3.3.1 CrossDistill Diversity (PCM)
+
+Setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill** PCM diversity term on top of the discrete DMD host, to counter the diversity loss that pure distribution matching can cause. It is a self-contained additive loss that leaves the DMD rollout untouched:
+
+- **What it does** — a phase-0 boundary-alignment MSE: the student's one-step jump from a noisy anchor to the phase-0 boundary (`--div_rf_boundary`, the official `backward_timesteps[0]`) must match a teacher K-step Euler rollout (`--dcm_skipping_interval_steps` sub-steps) followed by the student's own target jump. It runs on its **own continuous rf grid** (`--dcm_total_steps` subdivisions shifted by `--teacher_timestep_shift`), decoupled from the discrete DMD grid.
+- **Anchor** — the paired **real video latent** (faithful to the official `_compute_pcm_div_loss`, which distills on real `x0`), encoded on demand only when diversity is on.
+- **Merge** — `generator_loss = dmd_loss + loss_scale_div * div_loss` in a **single** `accelerator.backward` (FSDP allows one backward per wrapped module per iteration); the teacher rollout and the student target run under `no_grad` before the graded student forward.
+- **Scale & tuning** — `--loss_scale_div` is in **per-element-mean** space (aligned with the mean-reduced `dmd_loss`); the official uses `10.0` in sum space, so `5.0` is the recommended start. On the first run watch `train_div_loss` vs `train_dmd_loss` in the logs and adjust so diversity does not overwhelm DMD; `--div_teacher_guidance` is the diversity teacher's CFG scale, independent of `--real_guidance_scale`. Set `--loss_scale_div 0` to recover the exact plain-DMD baseline.
+
 ### 3.4 Common Training Parameters
 
 | Parameter | Description | Example Value |
@@ -261,20 +276,28 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 | `--pretrained_model_name_or_path` | Wan2.1-T2V-1.3B base (transformer + VAE + UMT5) | `models/Diffusion_Transformer/Wan2.1-T2V-1.3B` |
 | `--train_data_dir` / `--train_data_meta` | Dataset root / metadata JSON | see §2 |
 | `--train_mode` | SparkDiffusion supports `normal` (T2V) only | `normal` |
-| `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.03` |
+| `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.10` |
 | `--sparse_student` | (Stage 2) build the generator as the sparse student | - |
 | `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
-| `--distill_loss` | Student distribution-matching loss (`dmd` / `tdm`, mutually exclusive) | `dmd` |
-| `--max_simulation_steps_fake` | Student Euler steps in the backward simulation; `>= 2` keeps the first segment `no_grad` | `2` |
-| `--div_mode` / `--loss_scale_div` | PCM-style diversity term | `pcm_random` / `10.0` |
-| `--teacher_timestep_shift` | Frozen dense teacher timestep shift; matches the Wan2.1 scheduler `shift` | `5.0` |
-| `--real_guidance_scale` | CFG scale of the frozen dense teacher | `5.0` |
-| `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `4e-07` |
+| `--denoising_step_indices_list` | Discrete few-step grid the generator rolls out; validation reuses it (`num_inference_steps` = its length) | `1000 750 500 250` |
+| `--flow_euler_rollout` | Roll the generator in flow/velocity space with deterministic Euler steps (LightX2V-style), no x0 re-noising | - |
+| `--uniform_sampling` | Sample the DMD noise level uniformly over the training schedule | - |
+| `--randomize_step_indices` | Jitter the grid indices each step for robustness | - |
+| `--gen_update_interval` | Update the generator once every N steps (the critic updates every step) | `5` |
+| `--real_guidance_scale` | CFG scale of the frozen dense teacher (not overridden; uses the script default) | `6.0` |
+| `--div_mode` | CrossDistill diversity mode: `pcm_random` (random phase-0 offset) or `pcm_fixed` | `pcm_random` |
+| `--loss_scale_div` | Weight of the CrossDistill PCM diversity term (per-element-mean space); `0` disables it and recovers plain DMD | `5.0` |
+| `--dcm_total_steps` | Subdivision of the diversity term's continuous rf grid (`dw = 1 / N`) | `48` |
+| `--dcm_skipping_interval_steps` | Teacher Euler sub-steps `K` within phase 0 | `1` |
+| `--teacher_timestep_shift` | rf timestep shift for the diversity grid (matches the Wan2.1 scheduler shift) | `5.0` |
+| `--div_rf_boundary` | Phase-0 right boundary `rf_b` (official `backward_timesteps[0]`) | `0.933781` |
+| `--div_teacher_guidance` | CFG scale of the diversity teacher rollout (independent of `--real_guidance_scale`) | `5.0` |
+| `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `2e-06` |
 | `--checkpointing_steps` | Save checkpoint every N steps | `200` (distill) / `100` (warm-up) |
 | `--max_grad_norm` | Gradient clipping threshold | `0.05` |
 | `--resume_from_checkpoint` | Resume path or `"latest"` | `latest` |
 
-> 💡 The rf time-grid parameters (`--rf_t_min`, `--rf_t_max`, `--backward_timesteps`) span the full range `[0, 1]` by default for a single-expert model; leave them at their `-1` / empty defaults.
+> 💡 The few-step grid is set by `--denoising_step_indices_list` (indices into the `--train_sampling_steps=1000` schedule); validation reuses the same grid, so `num_inference_steps` equals its length (`4` here).
 
 ### 3.5 FSDP Backend and Memory Notes
 
@@ -303,7 +326,7 @@ export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.j
 export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
-accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.1.py \
+accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.1.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
@@ -318,7 +341,7 @@ accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file 
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -329,14 +352,20 @@ accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file 
   --enable_bucket \
   --trainable_modules "." \
   --train_mode="normal" \
-  --distill_loss="dmd" \
-  --max_simulation_steps_fake=2 \
-  --div_mode="pcm_random" \
-  --loss_scale_div=10.0 \
-  --teacher_timestep_shift=5.0 \
-  --real_guidance_scale=5.0 \
+  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --flow_euler_rollout \
+  --randomize_step_indices \
+  --gen_update_interval 5 \
+  --div_mode pcm_random \
+  --loss_scale_div 5.0 \
+  --dcm_total_steps 48 \
+  --dcm_skipping_interval_steps 1 \
+  --teacher_timestep_shift 5.0 \
+  --div_rf_boundary 0.933781 \
+  --div_teacher_guidance 5.0 \
   --sparse_student \
-  --student_topk=0.03 \
+  --student_topk=0.10 \
   --generator_transformer_path=$SPARSE_STUDENT_CKPT \
   --resume_from_checkpoint="latest"
 ```
@@ -346,7 +375,7 @@ accelerate launch --main_process_port=0 --use_deepspeed --deepspeed_config_file 
 Drop the sharding backend entirely — three co-resident 1.3B transformers fit on a single high-memory GPU, though FSDP is still recommended for multi-GPU. Replace the `accelerate launch` header with the plain form and keep the same script arguments as §3.6.1:
 
 ```bash
-accelerate launch --main_process_port=0 --mixed_precision="bf16" \
+accelerate launch --mixed_precision="bf16" \
   scripts/sparkdiffusion/train_distill_wan2.1.py \
   <the same --flag block as §3.6.1>
 ```
@@ -386,7 +415,7 @@ The Wan2.1 T2V entry [examples/wan2.1/predict_t2v.py](../../examples/wan2.1/pred
 | `GPU_memory_mode` | Memory mode | `model_full_load` |
 | `config_path` | Wan2.1 config | `config/wan2.1/wan_civitai.yaml` |
 | `model_name` | Wan2.1-T2V-1.3B base (transformer / VAE / UMT5) | `models/Diffusion_Transformer/Wan2.1-T2V-1.3B` |
-| `student_topk` | **Must equal** the training `--student_topk` | `0.03` |
+| `student_topk` | **Must equal** the training `--student_topk` | `0.10` |
 | `transformer_path` | Sparse student checkpoint (single expert) | `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola_distill/checkpoint-<step>/diffusion_pytorch_model.safetensors` |
 | `sampler_name` | `Flow` matches the few-step CFG-free student | `Flow` |
 | `num_inference_steps` | The student's few-step count | `4` |

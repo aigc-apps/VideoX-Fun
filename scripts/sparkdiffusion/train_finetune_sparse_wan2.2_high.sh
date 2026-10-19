@@ -12,10 +12,10 @@ NCCL_DEBUG=INFO
 # distillation starts from a usable coarse prior instead of a zero-initialized sparse branch.
 # --boundary_type="high" picks the high-noise expert from the config boundary (config/wan2.2/wan_civitai_t2v.yaml,
 # boundary:0.875); the low expert is warmed up separately by train_finetune_sparse_wan2.2_low.sh (Sec 4.3: each MoE
-# expert group is warmed up and distilled on its own noise range). --student_topk=0.03 (~97% sparsity) must
+# expert group is warmed up and distilled on its own noise range). --student_topk=0.05 (~95% sparsity) must
 # match the value used later in train_distill_wan2.2_high.sh. Stage A trains only "attn_op"; for Stage B (full sparse
 # finetune) set --trainable_modules "." plus --transformer_path=<stage-A ckpt> and a new --output_dir.
-accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_transformer_layer_cls_to_wrap=WanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" \
     --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" \
     --fsdp_cpu_ram_efficient_loading False scripts/sparkdiffusion/train_finetune_sparse_wan2.2.py \
@@ -33,25 +33,25 @@ accelerate launch --main_process_port=0 --mixed_precision="bf16" --use_fsdp --fs
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --adam_weight_decay=1e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=1.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
   --uniform_sampling \
   --trainable_modules "attn_op" \
-  --student_topk=0.03 \
+  --student_topk=0.05 \
   --train_mode="normal" \
   --boundary_type="high" \
   --resume_from_checkpoint="latest"
