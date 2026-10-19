@@ -130,7 +130,7 @@ The base checkpoint seeds all three Stage-2 transformers (the sparse `generator`
 
 ### 3.2 Stage 1 — Sparse Warm-up
 
-Stage 1 inserts the RoLa sparse self-attention and briefly warms it up with the step-local flow-matching objective. It is a **short** stage — a brief warm-up is enough to establish a usable prior for distillation, so the launcher caps it at `--max_train_steps=400`. Do **not** judge this stage by its own sample quality; the sharpness is established in Stage 2.
+Stage 1 inserts the RoLa sparse self-attention and briefly warms it up with the step-local flow-matching objective. It is a **short** stage — a brief warm-up is enough to establish a usable prior for distillation, so the launcher caps it at `--max_train_steps=2000`. Do **not** judge this stage by its own sample quality; the sharpness is established in Stage 2.
 
 Run [scripts/sparkdiffusion/train_finetune_sparse_wan2.1.sh](./train_finetune_sparse_wan2.1.sh):
 
@@ -156,9 +156,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -188,7 +188,7 @@ Stage-1 keys:
 | `--trainable_modules` | `"attn_op"` = Stage A (train only the sparse branch); `"."` = Stage B (full sparse finetune, load Stage A via `--transformer_path`). |
 | `--max_train_steps` | Warm-up budget; keep it short. |
 
-On completion the warm-up product is `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors`.
+On completion the warm-up product is `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors`.
 
 ### 3.3 Stage 2 — DMD Distill
 
@@ -201,7 +201,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 warm-up product. Env-overridable; --student_topk below MUST match Stage 1.
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -278,7 +278,7 @@ Setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill
 | `--train_mode` | SparkDiffusion supports `normal` (T2V) only | `normal` |
 | `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.10` |
 | `--sparse_student` | (Stage 2) build the generator as the sparse student | - |
-| `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
+| `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--denoising_step_indices_list` | Discrete few-step grid the generator rolls out; validation reuses it (`num_inference_steps` = its length) | `1000 750 500 250` |
 | `--flow_euler_rollout` | Roll the generator in flow/velocity space with deterministic Euler steps (LightX2V-style), no x0 re-noising | - |
 | `--uniform_sampling` | Sample the DMD noise level uniformly over the training schedule | - |
@@ -293,7 +293,7 @@ Setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill
 | `--div_rf_boundary` | Phase-0 right boundary `rf_b` (official `backward_timesteps[0]`) | `0.933781` |
 | `--div_teacher_guidance` | CFG scale of the diversity teacher rollout (independent of `--real_guidance_scale`) | `5.0` |
 | `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `2e-06` |
-| `--checkpointing_steps` | Save checkpoint every N steps | `200` (distill) / `100` (warm-up) |
+| `--checkpointing_steps` | Save checkpoint every N steps | `200` |
 | `--max_grad_norm` | Gradient clipping threshold | `0.05` |
 | `--resume_from_checkpoint` | Resume path or `"latest"` | `latest` |
 
@@ -323,7 +323,7 @@ DeepSpeed Zero-2 shards optimizer states and gradients but **not** parameters. F
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.1.py \

@@ -65,6 +65,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --boundary_type="low" \
   --real_guidance_scale=5.0 \
   --init_rollout_path=$INIT_ROLLOUT_CKPT \

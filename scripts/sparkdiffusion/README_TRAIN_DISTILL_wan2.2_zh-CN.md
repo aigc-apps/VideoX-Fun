@@ -130,7 +130,7 @@ modelscope download --model Wan-AI/Wan2.2-T2V-A14B --local_dir models/Diffusion_
 
 ### 3.2 Stage 1 — 稀疏暖启
 
-Stage 1 插入 RoLa 稀疏自注意力，并用 step-local flow-matching 目标短暂暖启。这是一个**短**阶段——短暂暖启即足以为蒸馏建立可用先验，因此启动脚本把它限制在 `--max_train_steps=400`（8 卡 × batch 1 时约 2,000 个视频）。**不要**用该阶段自身的采样质量来评判它；清晰度是在 Stage 2 建立的。
+Stage 1 插入 RoLa 稀疏自注意力，并用 step-local flow-matching 目标短暂暖启。这是一个**短**阶段——短暂暖启即足以为蒸馏建立可用先验，因此启动脚本把它限制在 `--max_train_steps=2000`。**不要**用该阶段自身的采样质量来评判它；清晰度是在 Stage 2 建立的。
 
 用 [scripts/sparkdiffusion/train_finetune_sparse_wan2.2_high.sh](./train_finetune_sparse_wan2.2_high.sh) 运行高噪专家：
 
@@ -152,9 +152,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -191,7 +191,7 @@ Stage-1 关键参数：
 | `--trainable_modules` | `"attn_op"` = Stage A（只训练稀疏分支）；`"."` = Stage B（稀疏网全量微调，用 `--transformer_path` 载入 Stage A）。 |
 | `--max_train_steps` | 暖启预算；保持简短。 |
 
-完成后暖启产物为 `output_dir_sparkdiffusion_wan2.2_14b_{high,low}_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors`。
+完成后暖启产物为 `output_dir_sparkdiffusion_wan2.2_14b_{high,low}_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors`。
 
 ### 3.3 Stage 2 — CrossDistill
 
@@ -204,7 +204,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 暖启产物。
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -223,7 +223,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -236,6 +236,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \
@@ -293,11 +294,11 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 | `--train_mode` | SparkDiffusion 仅支持 `normal`（T2V） | `normal` |
 | `--student_topk` | 稀疏注意力保留比例（稀疏度 = 1 − topk）；Stage 1 与 Stage 2 必须一致 | `0.05` |
 | `--sparse_student` | （Stage 2）把 generator + init_rollout 建成稀疏学生 | - |
-| `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
+| `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--uniform_sampling` | 在训练调度上均匀采样 DMD 的噪声水平 | - |
 | `--flow_euler_rollout` | 在 flow/velocity 空间用确定性的 rf-native Euler 步进滚动 generator（不做 x0 再加噪） | - |
 | `--gen_update_interval` | 每 N 步更新一次 generator（critic 每步都更新） | `5` |
-| `--joint_backward_timesteps` | 联合少步 rf 网格（降序），按 config 的 `boundary` 由 `--boundary_type` 切分成各专家的段；自动取默认值，validation 复用它 | `0.933781 0.875 0.608979` |
+| `--joint_backward_timesteps` | 联合少步 rf 网格（降序），按 config 的 `boundary` 由 `--boundary_type` 切分成各专家的段；在启动脚本中显式传入（与内置默认值一致），validation 复用它 | `0.933781 0.875 0.608979` |
 | `--div_mode` | CrossDistill 多样性模式：`pcm_random`（随机 phase-0 偏移）或 `pcm_fixed`（仅高噪专家） | `pcm_random` |
 | `--loss_scale_div` | CrossDistill PCM 多样性项的权重（逐元素均值空间）；`0` 表示关闭 | `10.0`（高噪）/ `0`（低噪） |
 | `--dcm_total_steps` | 多样性项连续 rf 网格的等分数（`dw = 1 / N`） | `48` |
@@ -307,12 +308,12 @@ bash scripts/sparkdiffusion/train_distill_wan2.2_low.sh
 | `--div_teacher_guidance` | 多样性 teacher rollout 的 CFG 尺度（独立于 `--real_guidance_scale`） | `5.0` |
 | `--real_guidance_scale` | 冻结 dense teacher 的 CFG 尺度 | `5.0` |
 | `--init_rollout_path` | （低噪专家）用于滚动 rollout 分界起点 latent 的、已训练好的高噪学生 | 高噪蒸馏 ckpt |
-| `--learning_rate` / `--learning_rate_critic` | 生成器 / critic 学习率 | `2e-06` / `4e-07` |
-| `--checkpointing_steps` | 每 N 步保存 checkpoint | `200`（蒸馏）/ `100`（暖启） |
+| `--learning_rate` / `--learning_rate_critic` | 生成器 / critic 学习率 | `2e-06` / `2e-06` |
+| `--checkpointing_steps` | 每 N 步保存 checkpoint | `200` |
 | `--max_grad_norm` | 梯度裁剪阈值 | `0.05` |
 | `--resume_from_checkpoint` | 续训路径或 `"latest"` | `latest` |
 
-> 💡 各专家的少步网格是**自动推导**的：`--joint_backward_timesteps`（联合 rf 网格）按 config 的 `boundary` 由 `--boundary_type` 切分，`--init_rollout_timesteps`（低噪专家冻结的高噪段中继）由分界以上的节点填充。两者都保持默认值即可；validation 复用同一网格，故 `num_inference_steps` = `len(--joint_backward_timesteps) + 1`（此处为 `4`）。
+> 💡 各专家的少步网格是**自动推导**的：`--joint_backward_timesteps`（联合 rf 网格，在启动脚本中显式传入）按 config 的 `boundary` 由 `--boundary_type` 切分，`--init_rollout_timesteps`（低噪专家冻结的高噪段中继）由分界以上的节点填充。`--init_rollout_timesteps` 保持默认值即可；validation 复用同一网格，故 `num_inference_steps` = `len(--joint_backward_timesteps) + 1`（此处为 `4`）。
 
 ### 3.5 FSDP Backend 与显存说明
 
@@ -339,7 +340,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 暖启产物。
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -357,7 +358,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -370,6 +371,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \
@@ -394,7 +396,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 暖启产物。
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -412,7 +414,7 @@ accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -425,6 +427,7 @@ accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \

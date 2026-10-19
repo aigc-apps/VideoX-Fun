@@ -62,6 +62,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \

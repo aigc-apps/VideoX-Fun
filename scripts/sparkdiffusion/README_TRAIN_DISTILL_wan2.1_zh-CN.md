@@ -130,7 +130,7 @@ modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_
 
 ### 3.2 Stage 1 — 稀疏暖启
 
-Stage 1 插入 RoLa 稀疏自注意力，并用 step-local flow-matching 目标短暂暖启。这是一个**短**阶段——短暂暖启即足以为蒸馏建立可用先验，因此启动脚本把它限制在 `--max_train_steps=400`。**不要**用该阶段自身的采样质量来评判它；清晰度是在 Stage 2 建立的。
+Stage 1 插入 RoLa 稀疏自注意力，并用 step-local flow-matching 目标短暂暖启。这是一个**短**阶段——短暂暖启即足以为蒸馏建立可用先验，因此启动脚本把它限制在 `--max_train_steps=2000`。**不要**用该阶段自身的采样质量来评判它；清晰度是在 Stage 2 建立的。
 
 用 [scripts/sparkdiffusion/train_finetune_sparse_wan2.1.sh](./train_finetune_sparse_wan2.1.sh) 运行：
 
@@ -156,9 +156,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -188,7 +188,7 @@ Stage-1 关键参数：
 | `--trainable_modules` | `"attn_op"` = Stage A（只训练稀疏分支）；`"."` = Stage B（稀疏网全量微调，用 `--transformer_path` 载入 Stage A）。 |
 | `--max_train_steps` | 暖启预算；保持简短。 |
 
-完成后暖启产物为 `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors`。
+完成后暖启产物为 `output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors`。
 
 ### 3.3 Stage 2 — DMD 蒸馏
 
@@ -201,7 +201,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 暖启产物。可用环境变量覆盖；下方 --student_topk 必须与 Stage 1 一致。
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -278,7 +278,7 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 | `--train_mode` | SparkDiffusion 仅支持 `normal`（T2V） | `normal` |
 | `--student_topk` | 稀疏注意力保留比例（稀疏度 = 1 − topk）；Stage 1 与 Stage 2 必须一致 | `0.10` |
 | `--sparse_student` | （Stage 2）把 generator 建成稀疏学生 | - |
-| `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
+| `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--denoising_step_indices_list` | generator rollout 的离散少步网格；validation 复用同一网格（`num_inference_steps` = 其长度） | `1000 750 500 250` |
 | `--flow_euler_rollout` | 让 generator 在 flow/速度空间用确定性 Euler 步 rollout（LightX2V 式），不做 x0 重新加噪 | - |
 | `--uniform_sampling` | 在训练调度上均匀采样 DMD 噪声档位 | - |
@@ -293,7 +293,7 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 | `--div_rf_boundary` | phase-0 右边界 `rf_b`（官方 `backward_timesteps[0]`） | `0.933781` |
 | `--div_teacher_guidance` | 多样性 teacher rollout 的 CFG 尺度（独立于 `--real_guidance_scale`） | `5.0` |
 | `--learning_rate` / `--learning_rate_critic` | 生成器 / critic 学习率 | `2e-06` / `2e-06` |
-| `--checkpointing_steps` | 每 N 步保存 checkpoint | `200`（蒸馏）/ `100`（暖启） |
+| `--checkpointing_steps` | 每 N 步保存 checkpoint | `200` |
 | `--max_grad_norm` | 梯度裁剪阈值 | `0.05` |
 | `--resume_from_checkpoint` | 续训路径或 `"latest"` | `latest` |
 
@@ -323,7 +323,7 @@ DeepSpeed Zero-2 只分片优化器态与梯度、**不**分片参数。对三�
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.1_1.3b_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/sparkdiffusion/train_distill_wan2.1.py \

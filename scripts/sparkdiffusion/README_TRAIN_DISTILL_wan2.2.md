@@ -130,7 +130,7 @@ The base checkpoint seeds all three Stage-2 transformers (the sparse `generator`
 
 ### 3.2 Stage 1 — Sparse Warm-up
 
-Stage 1 inserts the RoLa sparse self-attention and briefly warms it up with the step-local flow-matching objective. It is a **short** stage — a brief warm-up is enough to establish a usable prior for distillation, so the launchers cap it at `--max_train_steps=400` (≈2,000 videos at 8 GPUs × batch 1). Do **not** judge this stage by its own sample quality; the sharpness is established in Stage 2.
+Stage 1 inserts the RoLa sparse self-attention and briefly warms it up with the step-local flow-matching objective. It is a **short** stage — a brief warm-up is enough to establish a usable prior for distillation, so the launchers cap it at `--max_train_steps=2000`. Do **not** judge this stage by its own sample quality; the sharpness is established in Stage 2.
 
 Run the high-noise expert with [scripts/sparkdiffusion/train_finetune_sparse_wan2.2_high.sh](./train_finetune_sparse_wan2.2_high.sh):
 
@@ -152,9 +152,9 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --num_train_epochs=100 \
-  --max_train_steps=400 \
-  --checkpointing_steps=100 \
-  --learning_rate=2e-05 \
+  --max_train_steps=2000 \
+  --checkpointing_steps=200 \
+  --learning_rate=1e-4 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -191,7 +191,7 @@ Stage-1 keys:
 | `--trainable_modules` | `"attn_op"` = Stage A (train only the sparse branch); `"."` = Stage B (full sparse finetune, load Stage A via `--transformer_path`). |
 | `--max_train_steps` | Warm-up budget; keep it short. |
 
-On completion the warm-up product is `output_dir_sparkdiffusion_wan2.2_14b_{high,low}_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors`.
+On completion the warm-up product is `output_dir_sparkdiffusion_wan2.2_14b_{high,low}_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors`.
 
 ### 3.3 Stage 2 — CrossDistill
 
@@ -204,7 +204,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 warm-up product.
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
@@ -223,7 +223,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -236,6 +236,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \
@@ -293,11 +294,11 @@ On the **high**-noise expert, setting `--loss_scale_div > 0` layers the official
 | `--train_mode` | SparkDiffusion supports `normal` (T2V) only | `normal` |
 | `--student_topk` | Sparse attention keep-ratio (sparsity = 1 − topk); Stage 1 and Stage 2 must match | `0.05` |
 | `--sparse_student` | (Stage 2) build generator + init_rollout as the sparse student | - |
-| `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-400/diffusion_pytorch_model.safetensors` |
+| `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--uniform_sampling` | Sample the DMD noise level uniformly over the training schedule | - |
 | `--flow_euler_rollout` | Roll the generator in flow/velocity space with deterministic rf-native Euler steps (no x0 re-noising) | - |
 | `--gen_update_interval` | Update the generator once every N steps (the critic updates every step) | `5` |
-| `--joint_backward_timesteps` | Joint few-step rf grid (descending), split at the config `boundary` into per-expert segments by `--boundary_type`; auto-defaulted, and validation reuses it | `0.933781 0.875 0.608979` |
+| `--joint_backward_timesteps` | Joint few-step rf grid (descending), split at the config `boundary` into per-expert segments by `--boundary_type`; passed explicitly in the launchers (equals the built-in default), and validation reuses it | `0.933781 0.875 0.608979` |
 | `--div_mode` | CrossDistill diversity mode: `pcm_random` (random phase-0 offset) or `pcm_fixed` (high expert only) | `pcm_random` |
 | `--loss_scale_div` | Weight of the CrossDistill PCM diversity term (per-element-mean space); `0` disables it | `10.0` (high) / `0` (low) |
 | `--dcm_total_steps` | Subdivision of the diversity term's continuous rf grid (`dw = 1 / N`) | `48` |
@@ -307,12 +308,12 @@ On the **high**-noise expert, setting `--loss_scale_div > 0` layers the official
 | `--div_teacher_guidance` | CFG scale of the diversity teacher rollout (independent of `--real_guidance_scale`) | `5.0` |
 | `--real_guidance_scale` | CFG scale of the frozen dense teacher | `5.0` |
 | `--init_rollout_path` | (low expert) trained high student used to roll the rollout's boundary start latent | high-distill ckpt |
-| `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `4e-07` |
-| `--checkpointing_steps` | Save checkpoint every N steps | `200` (distill) / `100` (warm-up) |
+| `--learning_rate` / `--learning_rate_critic` | Generator / critic learning rate | `2e-06` / `2e-06` |
+| `--checkpointing_steps` | Save checkpoint every N steps | `200` |
 | `--max_grad_norm` | Gradient clipping threshold | `0.05` |
 | `--resume_from_checkpoint` | Resume path or `"latest"` | `latest` |
 
-> 💡 The per-expert few-step grid is **auto-derived**: `--joint_backward_timesteps` (the joint rf grid) is split at the config `boundary` by `--boundary_type`, and `--init_rollout_timesteps` (the low expert's frozen high-segment relay) is filled from the knots above the boundary. Leave both at their defaults; validation reuses the same grid, so `num_inference_steps` = `len(--joint_backward_timesteps) + 1` (`4` here).
+> 💡 The per-expert few-step grid is **auto-derived**: `--joint_backward_timesteps` (the joint rf grid, passed explicitly in the launchers) is split at the config `boundary` by `--boundary_type`, and `--init_rollout_timesteps` (the low expert's frozen high-segment relay) is filled from the knots above the boundary. Leave `--init_rollout_timesteps` at its default; validation reuses the same grid, so `num_inference_steps` = `len(--joint_backward_timesteps) + 1` (`4` here).
 
 ### 3.5 FSDP Backend and Memory Notes
 
@@ -339,7 +340,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 warm-up product.
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -357,7 +358,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -370,6 +371,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \
@@ -394,7 +396,7 @@ export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-T2V-A14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Stage-1 warm-up product.
-export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-400/diffusion_pytorch_model.safetensors"
+export SPARSE_STUDENT_CKPT="output_dir_sparkdiffusion_wan2.2_14b_high_sparse_rola/checkpoint-2000/diffusion_pytorch_model.safetensors"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA.
 # export NCCL_IB_DISABLE=1
 # export NCCL_P2P_DISABLE=1
@@ -412,7 +414,7 @@ accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=4e-07 \
+  --learning_rate_critic=2e-06 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -425,6 +427,7 @@ accelerate launch --mixed_precision="bf16" scripts/sparkdiffusion/train_distill_
   --uniform_sampling \
   --flow_euler_rollout \
   --gen_update_interval 5 \
+  --joint_backward_timesteps 0.933781 0.875 0.608979 \
   --div_mode pcm_random \
   --loss_scale_div 10.0 \
   --dcm_total_steps 48 \
