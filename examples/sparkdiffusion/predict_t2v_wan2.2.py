@@ -403,7 +403,6 @@ def save_results():
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)
-        print(f"Saved video to: {video_path}")
 
 if ulysses_degree * ring_degree > 1:
     import torch.distributed as dist
