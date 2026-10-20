@@ -192,7 +192,7 @@ On completion the warm-up product is `output_dir_sparkdiffusion_wan2.1_1.3b_spar
 
 ### 3.3 Stage 2 — DMD Distill
 
-Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` into `SparkWanTransformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint. Being a single full-range expert, the student distills over the whole rf-time range `[0, 1]` — there is no boundary segment and no init-rollout relay. This is the plain-DMD baseline: the generator rolls out a discrete few-step grid (`--denoising_step_indices_list 1000 750 500 250` with `--flow_euler_rollout`), and the generator/critic alternate via `--gen_update_interval`. On top of this discrete DMD host, an optional CrossDistill PCM diversity term (`--loss_scale_div > 0`, see §3.3.1 below) adds a phase-0 boundary-alignment loss to preserve sample diversity.
+Stage 2 distills the sparse student into a few-step, CFG-free generator against the dense teacher. `--sparse_student` turns the `generator` into `SparkWanTransformer3DModel` while the teacher and critic stay dense. `--generator_transformer_path` loads the Stage-1 warm-up checkpoint. Being a single full-range expert, the student distills over the whole rf-time range `[0, 1]` — there is no boundary segment and no init-rollout relay. This is the plain-DMD baseline: the generator rolls out a discrete few-step grid (`--denoising_step_indices_list 1000 750 500 250` with `--flow_euler_rollout`), and the generator/critic alternate via `--gen_update_interval`. On top of this discrete DMD host, an optional CrossDistill PCM diversity term (`--loss_scale_div > 0`, see §3.3.1 below) adds a phase-0 boundary-alignment loss to preserve sample diversity. Two further opt-in switches (§3.3.2) replace parts of this baseline — `--tdm` (the official SparkDiffusion TDM student loss) and `--joint_backward_timesteps` (define the few-step grid directly with rf knots) — but neither is enabled in the launcher, so the default run stays plain DMD.
 
 Run [scripts/sparkdiffusion/train_distill_wan2.1.sh](./train_distill_wan2.1.sh):
 
@@ -268,6 +268,13 @@ Setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill
 - **Merge** — `generator_loss = dmd_loss + loss_scale_div * div_loss` in a **single** `accelerator.backward` (FSDP allows one backward per wrapped module per iteration); the teacher rollout and the student target run under `no_grad` before the graded student forward.
 - **Scale & tuning** — `--loss_scale_div` is in **per-element-mean** space (aligned with the mean-reduced `dmd_loss`); the official uses `10.0` in sum space, so `5.0` is the recommended start. On the first run watch `train_div_loss` vs `train_dmd_loss` in the logs and adjust so diversity does not overwhelm DMD; `--div_teacher_guidance` is the diversity teacher's CFG scale, independent of `--real_guidance_scale`. Set `--loss_scale_div 0` to recover the exact plain-DMD baseline.
 
+#### 3.3.2 TDM Loss & Direct rf Grid (opt-in)
+
+Two opt-in switches replace parts of the plain-DMD baseline above; **neither is enabled in `train_distill_wan2.1.sh`**, so the default run stays plain DMD.
+
+- **`--tdm`** — replaces the plain-DMD student loss with **TDM** (Trajectory Distribution Matching, the official SparkDiffusion student loss). Three deltas from DMD: (1) the last rollout segment does not collapse to `x0` but takes one more rf-Euler step to `s_{i-1}` (the next grid knot, `0.0` when exhausted), so the anchor is `G_x_{t_{i-1}}`; (2) `D_time` is clamped strictly above `s_{i-1}`; (3) the fake/teacher `x0` preds are mapped back to `s_{i-1}` via the rf PF-ODE analytic step and the surrogate is compared in the `x_{t_{i-1}}` domain. When `s_{i-1}==0` (grid exhausted) it reduces **exactly** to DMD. Requires `--flow_euler_rollout`; mutually exclusive with `--dfd` / `--decoupled_dmd`; compatible with the diversity term.
+- **`--joint_backward_timesteps`** — descending rf knots (in `[0,1]`) that define the few-step grid **directly**, replacing `--denoising_step_indices_list`. Wan2.1 is a single expert (no MoE boundary split), so the whole list is used: the grid becomes `[1.0] + [k for k in knots if 0<k<1]` and the rf values serve directly as Euler sigmas (`sigma == rf == timestep/1000`). Official Wan2.1 rCM knots: `0.933781 0.852895 0.608979`. When omitted, the grid falls back to `--denoising_step_indices_list`.
+
 ### 3.4 Common Training Parameters
 
 | Parameter | Description | Example Value |
@@ -281,6 +288,8 @@ Setting `--loss_scale_div > 0` layers the official SparkDiffusion **CrossDistill
 | `--generator_transformer_path` | (Stage 2) Stage-1 warm-up checkpoint loaded into the generator | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--denoising_step_indices_list` | Discrete few-step grid the generator rolls out; validation reuses it (`num_inference_steps` = its length) | `1000 750 500 250` |
 | `--flow_euler_rollout` | Roll the generator in flow/velocity space with deterministic Euler steps (LightX2V-style), no x0 re-noising | - |
+| `--tdm` | (opt-in) Use TDM — the official SparkDiffusion student loss — instead of plain DMD; reduces exactly to DMD when `s_{i-1}==0`. Requires `--flow_euler_rollout`, mutually exclusive with `--dfd` / `--decoupled_dmd` | - |
+| `--joint_backward_timesteps` | (opt-in) Descending rf knots that define the few-step grid directly, replacing `--denoising_step_indices_list` (single expert: the whole list, no MoE split) | `0.933781 0.852895 0.608979` |
 | `--uniform_sampling` | Sample the DMD noise level uniformly over the training schedule | - |
 | `--randomize_step_indices` | Jitter the grid indices each step for robustness | - |
 | `--gen_update_interval` | Update the generator once every N steps (the critic updates every step) | `5` |

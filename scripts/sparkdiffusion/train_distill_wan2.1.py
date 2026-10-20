@@ -218,7 +218,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
 
                         video        = input_video,
                         mask_video   = input_video_mask,
-                        num_inference_steps = len(args.denoising_step_indices_list),
+                        num_inference_steps = args.student_num_steps,
                         guidance_scale      = 1.0,
                     ).videos
 
@@ -244,7 +244,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                         height      = val_height,
                         width       = val_width,
                         generator   = generator,
-                        num_inference_steps = len(args.denoising_step_indices_list),
+                        num_inference_steps = args.student_num_steps,
                         guidance_scale      = 1.0,
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -779,6 +779,28 @@ def parse_args():
              "to x0 and re-noising with fresh noise. The final step still converts to x0 since "
              "the DMD objective is defined on x0.",
     )
+    parser.add_argument(
+        "--joint_backward_timesteps",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional rf knots (descending, in [0,1]) that define the few-step denoising grid DIRECTLY, "
+             "replacing --denoising_step_indices_list. Wan2.1 is a single expert (no MoE boundary split), so "
+             "the whole list is used: the grid becomes [1.0] + [k for k in knots if 0<k<1] and the rf values "
+             "serve directly as Euler sigmas (sigma == rf == timestep/1000). Official Wan2.1 rCM knots: "
+             "0.933781 0.852895 0.608979.",
+    )
+    parser.add_argument(
+        "--tdm",
+        action="store_true",
+        help="Use TDM (Trajectory Distribution Matching, the official SparkDiffusion student loss) instead of "
+             "plain DMD. Three deltas from DMD: (1) the last rollout segment does NOT collapse to x0 but takes "
+             "one more rf-Euler step to s_{i-1} (the next grid knot, 0.0 when exhausted), so the anchor is "
+             "G_x_{t_{i-1}}; (2) D_time is clamped strictly above s_{i-1}; (3) the fake/teacher x0 preds are "
+             "mapped back to s_{i-1} via the rf PF-ODE analytic step and the surrogate is compared in the "
+             "x_{t_{i-1}} domain. When s_{i-1}==0 it reduces exactly to DMD. Requires --flow_euler_rollout; "
+             "mutually exclusive with --dfd / --decoupled_dmd.",
+    )
 
     parser.add_argument(
         "--dfd",
@@ -889,6 +911,14 @@ def main():
             raise ValueError("Decoupled DMD does not support --dfd.")
         if any(int(i) <= 1 for i in args.denoising_step_indices_list):
             print("WARNING: --denoising_step_indices_list contains a step index below 2, where tau_CA degenerates to tau_CA == t.")
+
+    if args.tdm:
+        if not args.flow_euler_rollout:
+            raise ValueError("--tdm requires --flow_euler_rollout (the trajectory must be a deterministic rf-Euler rollout).")
+        if args.dfd:
+            raise ValueError("--tdm does not support --dfd.")
+        if args.decoupled_dmd:
+            raise ValueError("--tdm does not support --decoupled_dmd.")
 
     if args.loss_scale_div > 0 and args.div_mode not in ("pcm_fixed", "pcm_random"):
         raise NotImplementedError(
@@ -1008,6 +1038,24 @@ def main():
         args.mixed_precision = accelerator.mixed_precision
 
     args.denoising_step_indices_list = [int(i) for i in args.denoising_step_indices_list]
+
+    # --- Few-step rf grid. Wan2.1 is a SINGLE expert (no MoE boundary), so --joint_backward_timesteps is used
+    # whole: grid = [1.0] + [k for k in knots if 0<k<1], the rf values serving directly as Euler sigmas. When it
+    # is not given the grid falls back to --denoising_step_indices_list (mapped to rf inside the train loop). ---
+    if args.joint_backward_timesteps:
+        denoising_rf_grid = [1.0] + [float(k) for k in args.joint_backward_timesteps if 0.0 < float(k) < 1.0]
+        if len(denoising_rf_grid) < 2:
+            raise ValueError(
+                f"--joint_backward_timesteps produced a degenerate rf grid {denoising_rf_grid}; "
+                f"provide at least one knot strictly inside (0,1)."
+            )
+        args.student_num_steps = len(denoising_rf_grid)
+    else:
+        denoising_rf_grid = None
+        args.student_num_steps = len(args.denoising_step_indices_list)
+    print(f"[wan2.1] denoising rf grid={denoising_rf_grid if denoising_rf_grid is not None else 'from --denoising_step_indices_list'} "
+          f"| student_num_steps={args.student_num_steps} | tdm={args.tdm}")
+
     # Load scheduler, tokenizer and models.
     noise_scheduler = FlowMatchEulerDiscreteScheduler(
         **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
@@ -2255,6 +2303,20 @@ def main():
                     x0_pred = xt - sigma_t * flow_pred
                     return x0_pred.to(original_dtype)
 
+                # --- rf-native grid helpers. The rectified-flow sigma equals the rf time s (== timestep / 1000
+                # on this scheduler), and --joint_backward_timesteps knots are used DIRECTLY as sigmas, so the
+                # rollout drives the nets with t = s * T_SCALE and steps/inverts with s directly, bypassing the
+                # scheduler timestep-index map (get_sigmas / convert_flow_pred_to_x0) that would quantize knots. ---
+                def rf_flow_to_x0(flow_pred, xt, rf):
+                    # Invert x_s = (1 - s) * x0 + s * eps  =>  x0 = x_s - s * v (v = eps - x0), in double
+                    # to match convert_flow_pred_to_x0, then cast back to the model output dtype.
+                    return (xt.double() - float(rf) * flow_pred.double()).to(flow_pred.dtype)
+
+                def rf_add_noise(latents, noise, rf):
+                    # rf-native forward interpolation x_s = (1 - s) * x0 + s * noise (s == sigma == rf time).
+                    s = float(rf)
+                    return (1.0 - s) * latents + s * noise
+
                 # --- CrossDistill PCM diversity helpers (faithful port of the official
                 # _compute_pcm_div_loss). rf time s == scheduler sigma == timestep / 1000, so the
                 # student/teacher nets are driven with t = s * 1000 exactly as the DMD path does. ---
@@ -2361,9 +2423,13 @@ def main():
                             xt=student_input,
                             timestep=student_timestep,
                         )
+                elif denoising_rf_grid is not None:
+                    # rf-native grid from --joint_backward_timesteps (single expert: the whole list, no MoE
+                    # boundary split). Used DIRECTLY as Euler sigmas (sigma == rf == timestep / 1000 here).
+                    denoising_step_list = denoising_rf_grid
                 else:
-                    # Create discrete denoising steps (per-step, with optional randomization)
-                    # Preserve the original DMD multistep self-rollout unchanged.
+                    # Create discrete denoising steps (per-step, with optional randomization), mapped to rf
+                    # values (sigma == timestep / 1000) so the rollout below is uniformly rf-native.
                     if getattr(args, 'randomize_step_indices', False):
                         random_indices = randomize_denoising_step_indices(
                             args.denoising_step_indices_list,
@@ -2375,7 +2441,9 @@ def main():
                     else:
                         random_indices = torch.tensor(args.denoising_step_indices_list)
 
-                    denoising_step_list = noise_scheduler.timesteps[args.train_sampling_steps - random_indices]
+                    denoising_step_list = (
+                        noise_scheduler.timesteps[args.train_sampling_steps - random_indices] / T_SCALE
+                    ).tolist()
 
                 if generator_update:
                     if dfd_active:
@@ -2387,13 +2455,14 @@ def main():
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=generator_noise.device)[0]
 
-                        for index, current_timestep in enumerate(denoising_step_list):
+                        for index, current_rf in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
+                            rf_cur = float(current_rf)
                             timestep = torch.full(
                                 generator_noise.shape[:1],
-                                current_timestep,
+                                rf_cur * T_SCALE,
                                 device=generator_noise.device,
-                                dtype=torch.int64
+                                dtype=torch.float32
                             )
                             
                             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
@@ -2408,48 +2477,66 @@ def main():
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                         clip_fea=clip_context if args.train_mode != "normal" else None,
                                     )
+                                    if is_final_step and args.tdm:
+                                        # TDM: the last segment does NOT collapse to x0; take one more rf-Euler
+                                        # step to s_{i-1} (the next knot, 0.0 when the grid is exhausted, which
+                                        # degenerates to DMD), so the anchor is G_x_{t_{i-1}} instead of G_x0.
+                                        s_im1 = float(denoising_step_list[index + 1]) if index + 1 < num_denoising_steps else 0.0
+                                        G_x_t_im1 = (
+                                            generator_noise.float() + (s_im1 - rf_cur) * generator_pred.float()
+                                        ).to(generator_noise.dtype)
+                                        t_im1 = s_im1
+                                        generator_step_timestep = timestep
+                                        break
                                     if not args.flow_euler_rollout or is_final_step:
-                                        generator_pred = convert_flow_pred_to_x0(
-                                            scheduler=noise_scheduler,
-                                            flow_pred=generator_pred,
-                                            xt=generator_noise,
-                                            timestep=timestep
-                                        )
+                                        generator_pred = rf_flow_to_x0(generator_pred, generator_noise, rf_cur)
                                 
                                 if is_final_step:
                                     # Generator's current-step noise level t, used to bound tau_CA in Decoupled DMD.
                                     generator_step_timestep = timestep
                                     break
                                 
-                                next_timestep = denoising_step_list[index + 1] * torch.ones(
-                                    generator_noise.shape[:1], dtype=torch.long, device=generator_noise.device
-                                )
+                                rf_next = float(denoising_step_list[index + 1])
                                 if args.flow_euler_rollout:
-                                    # Mimic the normal flow-matching inference rollout (LightX2V-style): keep
-                                    # the prediction in flow/velocity space and advance to the next noise level
-                                    # with a deterministic Euler ODE step, no x0 conversion / fresh re-noising.
-                                    # x_next = x_t - sigma_t * v + sigma_n * v = x_t + (sigma_n - sigma_t) * v,
-                                    # matching LightX2V WanStepDistillScheduler.step_post (computed in fp32).
-                                    sigma_t = get_sigmas(timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
-                                    sigma_next = get_sigmas(next_timestep, n_dim=generator_noise.ndim, dtype=torch.float32)
+                                    # rf-native Euler ODE step (sigma == rf time s): keep the prediction in
+                                    # flow/velocity space and advance x_next = x_t + (s_next - s_cur) * v (fp32).
                                     generator_noise = (
-                                        generator_noise.float() + (sigma_next - sigma_t) * generator_pred.float()
+                                        generator_noise.float() + (rf_next - rf_cur) * generator_pred.float()
                                     ).to(generator_noise.dtype)
                                 else:
-                                    generator_noise = add_noise(
+                                    generator_noise = rf_add_noise(
                                         generator_pred,
                                         torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
-                                        next_timestep
+                                        rf_next
                                     )
 
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                        if args.tdm:
+                            # TDM: D_time clamped STRICTLY above s_{i-1} (=t_im1). Resample uniformly over the
+                            # shift-grid timesteps > t_im1 (kept on-grid so convert_flow_pred_to_x0 stays exact);
+                            # when t_im1 == 0 (grid exhausted) this is the full range and TDM degenerates to DMD.
+                            _grid_ts = noise_scheduler.timesteps.to(device=accelerator.device)
+                            _k = int((_grid_ts > float(t_im1) * T_SCALE).sum().item())
+                            indices = torch.randint(0, max(_k, 1), (bsz,), generator=torch_rng, device=accelerator.device)
+                            generator_timestep = _grid_ts[indices].to(device=accelerator.device)
                         dmd_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
-                    generator_denoised_input = add_noise(
-                        generator_pred,
-                        dmd_noise,
-                        generator_timestep
-                    ).detach().to(accelerator.device, dtype=weight_dtype)
+                    if args.tdm:
+                        # rf forward transition q(x_{s_D} | x_{s_{i-1}}) with G = G_x_{t_{i-1}} (NOT x0):
+                        #   D_xt = ((1-s_D)/(1-s1))*G + sqrt((s_D-s1)(s_D+s1-2 s_D s1))/(1-s1) * eps
+                        _sD = (generator_timestep / T_SCALE).to(torch.float32).reshape(-1, 1, 1, 1, 1)
+                        _s1 = torch.full_like(_sD, float(t_im1))
+                        _oms1 = (1.0 - _s1).clamp(min=1e-6)
+                        _sig = torch.sqrt(((_sD - _s1) * (_sD + _s1 - 2.0 * _sD * _s1)).clamp(min=0.0)) / _oms1
+                        generator_denoised_input = (
+                            ((1.0 - _sD) / _oms1) * G_x_t_im1.to(torch.float32) + _sig * dmd_noise.to(torch.float32)
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
+                    else:
+                        generator_denoised_input = add_noise(
+                            generator_pred,
+                            dmd_noise,
+                            generator_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
 
                     if args.decoupled_dmd:
                         # Decoupled DMD (arXiv:2511.22677, Sec. 4.3): the CA engine must re-noise at
@@ -2616,27 +2703,46 @@ def main():
                     ca_scale = ca_delta.float().abs().mean()
                     dm_scale = (real_score_main_cond - fake_score_main).float().abs().mean()
 
-                    fake_to_real_grad = fake_score_main - real_score_target
-                    if dfd_active:
-                        normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
-                        fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
+                    if args.tdm:
+                        # TDM: compare in the x_{t_{i-1}} domain. Map the fake/teacher x0 preds back to s_{i-1}
+                        # via the rf PF-ODE analytic step, then reuse the DMD-style score-distillation surrogate
+                        # with the adaptive weight_factor = mean|G - x_{t_{i-1}}^teacher| (clip 1e-5).
+                        _sD = (generator_timestep / T_SCALE).to(torch.float32).reshape(-1, 1, 1, 1, 1)
+                        _s1 = torch.full_like(_sD, float(t_im1))
 
-                        dmd_loss = 0.5 * F.mse_loss(
-                            generator_pred,
-                            (generator_pred - fake_to_real_grad).detach(),
-                            reduction="mean"
-                        )
+                        def _to_t_im1(x_t, x0_pred):
+                            eps_pred = (x_t - (1.0 - _sD) * x0_pred) / _sD.clamp(min=1e-6)
+                            return (1.0 - _s1) * x0_pred + _s1 * eps_pred
+
+                        x_t_im1_fake = _to_t_im1(generator_denoised_input.float(), fake_score_main.float())
+                        x_t_im1_teacher = _to_t_im1(generator_denoised_input.float(), real_score_target.float())
+                        Gd = G_x_t_im1.double()
+                        weight_factor = (Gd - x_t_im1_teacher.double()).abs().mean(dim=[1, 2, 3, 4], keepdim=True).clip(min=1e-5)
+                        tdm_grad = (x_t_im1_fake.double() - x_t_im1_teacher.double()) / weight_factor
+                        dmd_loss = 0.5 * F.mse_loss(Gd, (Gd - tdm_grad).detach(), reduction="mean")
+                        generator_pred = G_x_t_im1  # the monitor .std() below tracks the TDM anchor
                     else:
-                        generator_to_real_norm = generator_pred - real_score_target
-                        normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
-                        fake_to_real_grad = fake_to_real_grad / normalizer
-                        fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+                        fake_to_real_grad = fake_score_main - real_score_target
+                        if dfd_active:
+                            normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
+                            fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
 
-                        dmd_loss = 0.5 * F.mse_loss(
-                            generator_pred.double(),
-                            (generator_pred.double() - fake_to_real_grad.double()).detach(),
-                            reduction="mean"
-                        )
+                            dmd_loss = 0.5 * F.mse_loss(
+                                generator_pred,
+                                (generator_pred - fake_to_real_grad).detach(),
+                                reduction="mean"
+                            )
+                        else:
+                            generator_to_real_norm = generator_pred - real_score_target
+                            normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
+                            fake_to_real_grad = fake_to_real_grad / normalizer
+                            fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+
+                            dmd_loss = 0.5 * F.mse_loss(
+                                generator_pred.double(),
+                                (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                                reduction="mean"
+                            )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
                     train_dmd_loss += avg_dmd_loss.item()
                     train_gen_log_count += 1
@@ -2685,13 +2791,14 @@ def main():
                         num_denoising_steps = len(denoising_step_list)
                         final_step_index = generate_and_sync_list(num_denoising_steps, device=fake_score_critic_noise.device)[0]
 
-                        for index, current_timestep in enumerate(denoising_step_list):
+                        for index, current_rf in enumerate(denoising_step_list):
                             is_final_step = (index == final_step_index)
+                            rf_cur = float(current_rf)
                             timestep = torch.full(
                                 fake_score_critic_noise.shape[:1], 
-                                current_timestep,
+                                rf_cur * T_SCALE,
                                 device=fake_score_critic_noise.device,
-                                dtype=torch.int64
+                                dtype=torch.float32
                             )
                             
                             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
@@ -2703,26 +2810,19 @@ def main():
                                     y=inpaint_latents if args.train_mode != "normal" else None,
                                     clip_fea=clip_context if args.train_mode != "normal" else None,
                                 )
-                                fake_score_denoised_pred = convert_flow_pred_to_x0(
-                                    scheduler=noise_scheduler,
-                                    flow_pred=fake_score_denoised_pred,
-                                    xt=fake_score_critic_noise,
-                                    timestep=timestep
+                                fake_score_denoised_pred = rf_flow_to_x0(
+                                    fake_score_denoised_pred, fake_score_critic_noise, rf_cur
                                 )
                                 
                                 if is_final_step:
                                     break
                                 
-                                next_timestep = denoising_step_list[index + 1] * torch.ones(
-                                    fake_score_critic_noise.shape[:1], 
-                                    dtype=torch.long,
-                                    device=fake_score_critic_noise.device
-                                )
+                                rf_next = float(denoising_step_list[index + 1])
                                 
-                                fake_score_critic_noise = add_noise(
+                                fake_score_critic_noise = rf_add_noise(
                                     fake_score_denoised_pred,
                                     torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng),
-                                    next_timestep
+                                    rf_next
                                 )
 
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()

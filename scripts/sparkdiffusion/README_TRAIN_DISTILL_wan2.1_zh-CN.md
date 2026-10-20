@@ -192,7 +192,7 @@ Stage-1 关键参数：
 
 ### 3.3 Stage 2 — DMD 蒸馏
 
-Stage 2 对着 dense teacher 把稀疏学生蒸馏成少步、CFG-free 的生成器。`--sparse_student` 把 `generator` 变为 `SparkWanTransformer3DModel`，而 teacher 与 critic 保持 dense。`--generator_transformer_path` 载入 Stage-1 暖启 checkpoint。作为单一全区间专家，学生在整个 rf-time 区间 `[0, 1]` 上完成蒸馏——没有分界段、也没有 init-rollout 接力。这是最普通的 DMD 基线：generator 在离散的少步网格上 rollout（`--denoising_step_indices_list 1000 750 500 250` 配 `--flow_euler_rollout`），并通过 `--gen_update_interval` 让 generator/critic 交替更新。在这个离散 DMD 宿主之上，可选的 CrossDistill PCM 多样性项（`--loss_scale_div > 0`，见下方 §3.3.1）额外引入一个 phase-0 边界对齐损失以保持样本多样性。
+Stage 2 对着 dense teacher 把稀疏学生蒸馏成少步、CFG-free 的生成器。`--sparse_student` 把 `generator` 变为 `SparkWanTransformer3DModel`，而 teacher 与 critic 保持 dense。`--generator_transformer_path` 载入 Stage-1 暖启 checkpoint。作为单一全区间专家，学生在整个 rf-time 区间 `[0, 1]` 上完成蒸馏——没有分界段、也没有 init-rollout 接力。这是最普通的 DMD 基线：generator 在离散的少步网格上 rollout（`--denoising_step_indices_list 1000 750 500 250` 配 `--flow_euler_rollout`），并通过 `--gen_update_interval` 让 generator/critic 交替更新。在这个离散 DMD 宿主之上，可选的 CrossDistill PCM 多样性项（`--loss_scale_div > 0`，见下方 §3.3.1）额外引入一个 phase-0 边界对齐损失以保持样本多样性。另有两个可选开关（见 §3.3.2）会替换该基线的一部分：`--tdm`（官方 SparkDiffusion TDM 学生损失）与 `--joint_backward_timesteps`（用 rf 节点直接定义少步网格）；但启动脚本中两者都未启用，故默认运行仍是 plain DMD。
 
 用 [scripts/sparkdiffusion/train_distill_wan2.1.sh](./train_distill_wan2.1.sh) 运行：
 
@@ -268,6 +268,13 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 - **合并**——`generator_loss = dmd_loss + loss_scale_div * div_loss`，用**单次** `accelerator.backward`（FSDP 每个 wrapped module 每轮只允许一次 backward）；teacher rollout 与学生 target 在带梯度的学生前向之前于 `no_grad` 下运行。
 - **scale 与调参**——`--loss_scale_div` 处于**逐元素均值**空间（与 mean 归约的 `dmd_loss` 对齐）；官方在 sum 空间用 `10.0`，故推荐起点为 `5.0`。首轮请观察日志中的 `train_div_loss` 与 `train_dmd_loss` 并调整，使多样性项不压过 DMD；`--div_teacher_guidance` 是多样性 teacher 的 CFG 尺度，独立于 `--real_guidance_scale`。设 `--loss_scale_div 0` 可退回完全一致的 plain-DMD 基线。
 
+#### 3.3.2 TDM 损失与直接 rf 网格（可选）
+
+两个可选开关会替换上方 plain-DMD 基线的一部分；**`train_distill_wan2.1.sh` 中两者都未启用**，故默认运行仍是 plain DMD。
+
+- **`--tdm`**——把 plain-DMD 学生损失替换为 **TDM**（Trajectory Distribution Matching，官方 SparkDiffusion 学生损失）。相对 DMD 有三处差异：(1) rollout 末段不塌缩到 `x0`，而是再走一步 rf-Euler 到 `s_{i-1}`（下一个网格节点，耗尽时为 `0.0`），故锚点为 `G_x_{t_{i-1}}`；(2) `D_time` 被严格 clamp 在 `s_{i-1}` 之上；(3) fake/teacher 的 `x0` 预测经 rf PF-ODE 解析步映回 `s_{i-1}`，surrogate 在 `x_{t_{i-1}}` 域比较。当 `s_{i-1}==0`（网格耗尽）时**精确**退化为 DMD。需 `--flow_euler_rollout`；与 `--dfd` / `--decoupled_dmd` 互斥；与多样性项兼容。
+- **`--joint_backward_timesteps`**——降序 rf 节点（位于 `[0,1]`），**直接**定义少步网格，替代 `--denoising_step_indices_list`。Wan2.1 是单专家（不做 MoE 分界切分），故整份列表都用上：网格变为 `[1.0] + [k for k in knots if 0<k<1]`，rf 值直接充当 Euler sigma（`sigma == rf == timestep/1000`）。官方 Wan2.1 rCM 节点：`0.933781 0.852895 0.608979`。省略时，网格退回 `--denoising_step_indices_list`。
+
 ### 3.4 通用训练参数
 
 | 参数 | 说明 | 示例值 |
@@ -281,6 +288,8 @@ bash scripts/sparkdiffusion/train_distill_wan2.1.sh
 | `--generator_transformer_path` | （Stage 2）载入 generator 的 Stage-1 暖启 checkpoint | `.../checkpoint-2000/diffusion_pytorch_model.safetensors` |
 | `--denoising_step_indices_list` | generator rollout 的离散少步网格；validation 复用同一网格（`num_inference_steps` = 其长度） | `1000 750 500 250` |
 | `--flow_euler_rollout` | 让 generator 在 flow/速度空间用确定性 Euler 步 rollout（LightX2V 式），不做 x0 重新加噪 | - |
+| `--tdm` | （可选）用 TDM（官方 SparkDiffusion 学生损失）替代 plain DMD；当 `s_{i-1}==0` 时精确退化为 DMD。需 `--flow_euler_rollout`，与 `--dfd` / `--decoupled_dmd` 互斥 | - |
+| `--joint_backward_timesteps` | （可选）降序 rf 节点，直接定义少步网格，替代 `--denoising_step_indices_list`（单专家：整份列表，不做 MoE 切分） | `0.933781 0.852895 0.608979` |
 | `--uniform_sampling` | 在训练调度上均匀采样 DMD 噪声档位 | - |
 | `--randomize_step_indices` | 每步抖动网格索引以增强鲁棒性 | - |
 | `--gen_update_interval` | 每 N 步更新一次 generator（critic 每步都更新） | `5` |
