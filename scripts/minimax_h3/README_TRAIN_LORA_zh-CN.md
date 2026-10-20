@@ -181,7 +181,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 mkdir -p models/Diffusion_Transformer
 
 # 下载 MiniMax-H3 官方权重
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 ```
 
 > 💡 加载器既支持上述转换后的 diffusers 布局，也支持*原始的* MiniMax-H3 分片布局（如 `MiniMax-H3/FL2VA`）；原始分片会在加载时在线转换，不会在磁盘上产生中间副本。
@@ -233,7 +233,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.3 LoRA 训练参数
@@ -280,8 +280,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--enable_bucket` | 开启 bucket 训练：按分辨率分组训练完整视频，不做中心裁剪 | - |
 | `--uniform_sampling` | 均匀时间步采样 | - |
 | `--low_vram` | VAE 与条件器常驻 CPU，仅在编码时移上 GPU | - |
-| `--train_mode` | `t2v`（纯文本）或 `fl2v`（首帧 keyframe 条件，keyframe 取自训练样本自身） | `fl2v` |
-| `--t2v_ratio` | 在 `--train_mode=fl2v` 下，按该比例的步数丢弃 keyframe 改训 t2v，使一次训练同时保留两种条件。取值须在 [0, 1] 内且仅适用于 fl2v；0 表示纯 fl2v | 0.25 |
+| `--train_mode` | `t2v`（纯文本）或 `fl2va`（首帧 keyframe 条件，keyframe 取自训练样本自身） | `fl2va` |
+| `--t2v_ratio` | 在 `--train_mode=fl2va` 下，按该比例的步数丢弃 keyframe 改训 t2v，使一次训练同时保留两种条件。取值须在 [0, 1] 内且仅适用于 fl2va；0 表示纯 fl2va | 0.25 |
 | `--resume_from_checkpoint` | 从 checkpoint 路径恢复训练，使用 `"latest"` 自动选择最新 | 无 |
 | `--validation_steps` | 每 N 步执行一次验证 | 2000 |
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 5 |
@@ -357,7 +357,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.6 不使用 DeepSpeed 或 FSDP 训练
@@ -405,7 +405,7 @@ accelerate launch --mixed_precision="bf16" scripts/minimax_h3/train_lora.py \
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.7 多机分布式训练
@@ -463,7 +463,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 **机器 1（Worker）**：

@@ -48,7 +48,6 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 import datasets
@@ -73,6 +72,7 @@ from videox_fun.utils.discrete_sampler import DiscreteSampling
 from videox_fun.utils.lora_utils import (convert_peft_lora_to_kohya_lora,
                                          create_network, merge_lora,
                                          unmerge_lora)
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
                                     save_videos_grid,
@@ -1608,35 +1608,34 @@ def main():
             
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                # Gemma expects left padding for chat-style prompts
-                tokenizer.padding_side = "left"
+                # UMT5 tokenizer (T5-style). Kept consistent with the in-loop
+                # encoding path and MOVAPipeline._get_t5_prompt_embeds so that
+                # precomputed embeddings match the single-layer last_hidden_state
+                # that the transformer consumes via `context`.
+                tokenizer.padding_side = "right"
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
-                    
+
+                cleaned_texts = [whitespace_clean(basic_clean(text)) for text in new_examples['text']]
                 prompt_ids = tokenizer(
-                    new_examples['text'], 
+                    cleaned_texts, 
                     max_length=args.tokenizer_max_length, 
                     padding="max_length", 
                     add_special_tokens=True, 
                     truncation=True, 
                     return_tensors="pt"
                 )
-                text_encoder_outputs = text_encoder(
-                    input_ids=prompt_ids.input_ids,
-                    attention_mask=prompt_ids.attention_mask,
-                    output_hidden_states=True
-                )
-                text_encoder_hidden_states = text_encoder_outputs.hidden_states
-                text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-                
-                # Pack text embeddings (normalized and flattened)
-                sequence_lengths = prompt_ids.attention_mask.sum(dim=-1)
-                prompt_embeds = _pack_text_embeds(
-                    text_encoder_hidden_states,
-                    sequence_lengths,
-                    device=text_encoder_hidden_states.device,
-                    padding_side=tokenizer.padding_side,
-                    scale_factor=8,
+                prompt_attention_mask = prompt_ids.attention_mask
+                seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
+                with torch.no_grad():
+                    prompt_embeds = text_encoder(
+                        input_ids=prompt_ids.input_ids,
+                        attention_mask=prompt_attention_mask,
+                    ).last_hidden_state
+                prompt_embeds = [embed[:seq_len] for embed, seq_len in zip(prompt_embeds, seq_lens)]
+                prompt_embeds = torch.stack(
+                    [torch.cat([embed, embed.new_zeros(args.tokenizer_max_length - embed.size(0), embed.size(1))]) 
+                     for embed in prompt_embeds], dim=0
                 )
                 new_examples['encoder_attention_mask'] = prompt_ids.attention_mask
                 new_examples['encoder_hidden_states'] = prompt_embeds
@@ -1846,7 +1845,7 @@ def main():
             return ckpt_file
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -2281,44 +2280,54 @@ def main():
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            if args.use_peft_lora:
-                                # Save peft adapter weights for each component separately
-                                for component_name in components_to_train:
-                                    if component_name in peft_adapters:
-                                        module = peft_adapters[component_name]
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            if not args.save_state:
+                                if args.use_peft_lora:
+                                    # Save peft adapter weights for each component separately
+                                    for component_name in components_to_train:
+                                        if component_name in peft_adapters:
+                                            module = peft_adapters[component_name]
+                                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-{component_name}.safetensors")
+                                            network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(module))
+                                            save_model(safetensor_save_path, network_state_dict)
+                                            logger.info(f"Saved {component_name} safetensor to {safetensor_save_path}")
+                                else:
+                                    # Save each component's LoRA weights separately
+                                    for component_name, network in networks.items():
                                         safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-{component_name}.safetensors")
-                                        network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(module))
-                                        save_model(safetensor_save_path, network_state_dict)
+                                        save_model(safetensor_save_path, accelerator.unwrap_model(network))
                                         logger.info(f"Saved {component_name} safetensor to {safetensor_save_path}")
                             else:
-                                # Save each component's LoRA weights separately
-                                for component_name, network in networks.items():
-                                    safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-{component_name}.safetensors")
-                                    save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                                    logger.info(f"Saved {component_name} safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                                accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                                accelerator.save_state(accelerator_save_path)
+                                logger.info(f"Saved state to {accelerator_save_path}")
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    log_validation(
-                        vae,
-                        audio_vae,
-                        text_encoder,
-                        tokenizer,
-                        transformer,
-                        transformer_2,
-                        transformer_audio,
-                        dual_tower_bridge,
-                        mova_model,
-                        networks if not args.use_peft_lora else None,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                    )
+                    with progress_bar.paused():
+                        log_validation(
+                            vae,
+                            audio_vae,
+                            text_encoder,
+                            tokenizer,
+                            transformer,
+                            transformer_2,
+                            transformer_audio,
+                            dual_tower_bridge,
+                            mova_model,
+                            networks if not args.use_peft_lora else None,
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            global_step,
+                        )
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2327,22 +2336,28 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            log_validation(
-                vae,
-                audio_vae,
-                text_encoder,
-                tokenizer,
-                transformer,
-                transformer_2,
-                transformer_audio,
-                dual_tower_bridge,
-                mova_model,
-                networks if not args.use_peft_lora else None,
-                args,
-                accelerator,
-                weight_dtype,
-                global_step,
-            )
+            with progress_bar.paused():
+                log_validation(
+                    vae,
+                    audio_vae,
+                    text_encoder,
+                    tokenizer,
+                    transformer,
+                    transformer_2,
+                    transformer_audio,
+                    dual_tower_bridge,
+                    mova_model,
+                    networks if not args.use_peft_lora else None,
+                    args,
+                    accelerator,
+                    weight_dtype,
+                    global_step,
+                )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

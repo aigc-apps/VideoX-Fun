@@ -213,6 +213,7 @@ class MiniMaxH3ControlTransformer3DModel(MiniMaxH3Transformer3DModel):
         control_blocks_places=(0, 10, 20, 30, 40),
         control_in_dim=None,
         control_apply_audio: bool = True,
+        inpaint_masked_pixel_mode: str = "pre_norm",
     ) -> None:
         super().__init__(
             num_attention_heads=num_attention_heads,
@@ -254,6 +255,12 @@ class MiniMaxH3ControlTransformer3DModel(MiniMaxH3Transformer3DModel):
         # checkpoint's config.json carry it between training and inference; old checkpoints lack the key and fall
         # back to the default, keeping the skips applied to every row as before.
         self.control_apply_audio = control_apply_audio
+        # Same carry-over path: where the inpaint recipe zeroes the masked pixels. `pre_norm` is the original
+        # recipe — pixels zeroed in `[0, 1]` before the ImageNet normalization, so the holes land near -2 in the
+        # VAE's input space as an extreme dark signal; `post_norm` follows Wan 2.1 and zeroes them after the
+        # normalization, so the holes sit at 0 (mid-gray in pixel terms). Training and the inference pipeline both
+        # read this key, so a checkpoint keeps its recipe wherever it runs.
+        self.inpaint_masked_pixel_mode = inpaint_masked_pixel_mode
 
         # Rebuild the main block stack with the hint-injecting blocks; the state-dict layout is unchanged, so the
         # released checkpoint loads as-is.

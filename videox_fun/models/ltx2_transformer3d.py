@@ -16,10 +16,11 @@
 
 import inspect
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
@@ -889,7 +890,7 @@ class LTX2AudioVideoRotaryPosEmbed(nn.Module):
         self.patch_size_t = patch_size_t
 
         if rope_type not in ["interleaved", "split"]:
-            raise ValueError(f"{rope_type=} not supported. Choose between 'interleaved' and 'split'.")
+            raise ValueError(f"{rope_type} not supported. Choose between 'interleaved' and 'split'.")
         self.rope_type = rope_type
 
         self.base_num_frames = base_num_frames

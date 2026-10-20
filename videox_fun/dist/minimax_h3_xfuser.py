@@ -44,7 +44,7 @@ class MiniMaxH3MultiGPUsAttnProcessor:
             raise ValueError("MiniMaxH3MultiGPUsAttnProcessor does not support a masked (padded) packed sequence.")
         if self.hybrid_seq_parallel_attn is None:
             raise RuntimeError(
-                "Multi-GPU inference needs the sequence-parallel attention of xfuser / paifuser, which could not be "
+                "Multi-GPU inference needs the sequence-parallel attention of xfuser, which could not be "
                 "instantiated."
             )
 

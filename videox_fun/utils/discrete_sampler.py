@@ -2,6 +2,7 @@
 """
 import torch
 
+
 class DiscreteSampling:
     def __init__(self, num_idx, uniform_sampling=False, start_num_idx=0, sp_size=1):
         self.num_idx = num_idx

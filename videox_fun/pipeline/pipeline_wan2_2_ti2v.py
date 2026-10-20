@@ -373,6 +373,21 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
 
         return mask, masked_image_latents
 
+    @staticmethod
+    def _is_first_frame_condition(view_mask: torch.Tensor, video_length: int) -> bool:
+        """Whether the condition covers the first pixel frame only.
+
+        Condition pixels are the ones with mask < 0.5 (`masked_video` keeps exactly
+        them, the rest is black), so the minimum over frames 1.. tells us whether any
+        later frame also carries condition pixels. The TI2V convention
+        (`get_image_to_video_latent` -> mask = [0, 255, ..., 255]) is first frame only,
+        which allows encoding that single frame. The check runs before any resize and
+        uses the same 0.5 threshold as `VaeImageProcessor.binarize`, so it is
+        conservative: any doubt returns False and the whole video gets encoded.
+        """
+        # Single frame: `[:, :, 1:]` is empty and `amin` would raise.
+        return video_length == 1 or bool(view_mask[:, :, 1:].amin() >= 0.5)
+
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         frames = self.vae.decode(latents.to(self.vae.dtype)).sample
         frames = (frames / 2 + 0.5).clamp(0, 1)
@@ -576,14 +591,10 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
             from comfy.utils import ProgressBar
             pbar = ProgressBar(num_inference_steps + 2)
 
-        # 5. Prepare latents.
-        if video is not None:
-            video_length = video.shape[2]
-            init_video = self.image_processor.preprocess(rearrange(video, "b c f h w -> (b f) c h w"), height=height, width=width) 
-            init_video = init_video.to(dtype=torch.float32)
-            init_video = rearrange(init_video, "(b f) c h w -> b c f h w", f=video_length)
-        else:
-            init_video = None
+        # 5. Prepare latents. The conditioning pixels are preprocessed inside the mask
+        # block below, so only the frames that are actually needed get materialized.
+        video_length = video.shape[2] if video is not None else None
+        init_video = None
 
         latent_channels = self.vae.config.latent_channels
         latents = self.prepare_latents(
@@ -601,11 +612,30 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
             pbar.update(1)
 
         # Prepare mask latent variables
-        if init_video is not None and not (mask_video == 255).all():
+        if video_length is not None and not (mask_video == 255).all():
+            # Only latent frame 0 of the condition is ever read back (`(1 - mask)` pins
+            # exactly that) and the VAE is causal (pixels split as 1 + 4 + 4 + ...), so
+            # for a first-frame-only condition preprocessing/encoding that single frame
+            # is identical to processing the whole video, minus F/4 VAE passes and a
+            # full-resolution pixel buffer. The shortcut additionally needs the 4-frame
+            # mask fold to line up with the latent length, otherwise the legacy path
+            # temporally resamples the mask; fall back to the full encode in that case.
+            first_frame_only = (
+                self._is_first_frame_condition(mask_video, video_length)
+                and (video_length + 3) // self.vae.temporal_compression_ratio == latents.size()[2]
+            )
+            cond_length = 1 if first_frame_only else video_length
+
+            # Resized to the requested output size, as before. `init_video` also doubles
+            # as the "TI2V condition active" flag for the denoise loop below.
+            init_video = self.image_processor.preprocess(rearrange(video[:, :, :cond_length], "b c f h w -> (b f) c h w"), height=height, width=width) 
+            init_video = init_video.to(dtype=torch.float32)
+            init_video = rearrange(init_video, "(b f) c h w -> b c f h w", f=cond_length)
+
             bs, _, video_length, height, width = video.size()
-            mask_condition = self.mask_processor.preprocess(rearrange(mask_video, "b c f h w -> (b f) c h w"), height=height, width=width) 
+            mask_condition = self.mask_processor.preprocess(rearrange(mask_video[:, :, :cond_length], "b c f h w -> (b f) c h w"), height=height, width=width) 
             mask_condition = mask_condition.to(dtype=torch.float32)
-            mask_condition = rearrange(mask_condition, "(b f) c h w -> b c f h w", f=video_length)
+            mask_condition = rearrange(mask_condition, "(b f) c h w -> b c f h w", f=cond_length)
 
             masked_video = init_video * (torch.tile(mask_condition, [1, 3, 1, 1, 1]) < 0.5)
             _, masked_video_latents = self.prepare_mask_latents(
@@ -621,17 +651,38 @@ class Wan2_2TI2VPipeline(DiffusionPipeline):
                 noise_aug_strength=None,
             )
             
-            mask_condition = torch.concat(
-                [
-                    torch.repeat_interleave(mask_condition[:, :, 0:1], repeats=4, dim=2), 
-                    mask_condition[:, :, 1:]
-                ], dim=2
-            )
-            mask_condition = mask_condition.view(bs, mask_condition.shape[2] // 4, 4, height, width)
-            mask_condition = mask_condition.transpose(1, 2)
+            if first_frame_only:
+                # Latent-space mask: frame 0 is the condition, frames 1.. generate. The
+                # single condition latent frame broadcasts over the temporal dim, which
+                # is correct because every frame but 0 is scaled by (1 - mask) == 0.
+                mask = F.interpolate(mask_condition[:, :1], size=(1, latents.size()[-2], latents.size()[-1]), mode='trilinear', align_corners=True).to(device, weight_dtype)
+                if latents.size()[2] > 1:
+                    mask = torch.concat(
+                        [
+                            mask,
+                            torch.ones(
+                                bs, 1, latents.size()[2] - 1, latents.size()[-2], latents.size()[-1],
+                                device=device, dtype=weight_dtype
+                            ),
+                        ], dim=2
+                    )
+            else:
+                mask_condition = torch.concat(
+                    [
+                        torch.repeat_interleave(mask_condition[:, :, 0:1], repeats=4, dim=2), 
+                        mask_condition[:, :, 1:]
+                    ], dim=2
+                )
+                mask_condition = mask_condition.view(bs, mask_condition.shape[2] // 4, 4, height, width)
+                mask_condition = mask_condition.transpose(1, 2)
 
-            mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
+                mask = F.interpolate(mask_condition[:, :1], size=latents.size()[-3:], mode='trilinear', align_corners=True).to(device, weight_dtype)
+
             latents = (1 - mask) * masked_video_latents + mask * latents
+
+            # Pixel inputs are consumed; drop the local references (the `video` name is
+            # re-bound to the decoded output at the end of the pipeline).
+            del masked_video, mask_condition, video, mask_video
         else:
             init_video = None
 

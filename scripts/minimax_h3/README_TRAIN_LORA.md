@@ -181,7 +181,7 @@ export DATASET_META_NAME="/mnt/data/metadata_add_width_height.json"
 mkdir -p models/Diffusion_Transformer
 
 # Download MiniMax-H3 official weights
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 ```
 
 > 💡 The loader accepts either the converted diffusers layout above or an *original* MiniMax-H3 partition (e.g. `MiniMax-H3/FL2VA`); the original shards are converted on the fly while loading, with no intermediate copy on disk.
@@ -233,7 +233,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.3 LoRA Training Parameters
@@ -280,8 +280,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--enable_bucket` | Enable bucket training: trains entire videos grouped by resolution without center cropping | - |
 | `--uniform_sampling` | Uniform timestep sampling | - |
 | `--low_vram` | Keep VAE and conditioner on CPU, move to GPU only while encoding | - |
-| `--train_mode` | `t2v` (text only) or `fl2v` (first-frame keyframe conditioning, the keyframe taken from the training sample itself) | `fl2v` |
-| `--t2v_ratio` | Under `--train_mode=fl2v`, the fraction of steps that drop the keyframe and train t2v instead, so one run keeps both conditionings. Must be in [0, 1] and only applies to fl2v; 0 trains fl2v only | 0.25 |
+| `--train_mode` | `t2v` (text only) or `fl2va` (first-frame keyframe conditioning, the keyframe taken from the training sample itself) | `fl2va` |
+| `--t2v_ratio` | Under `--train_mode=fl2va`, the fraction of steps that drop the keyframe and train t2v instead, so one run keeps both conditionings. Must be in [0, 1] and only applies to fl2va; 0 trains fl2va only | 0.25 |
 | `--resume_from_checkpoint` | Resume training from checkpoint path, use `"latest"` to auto-select latest | None |
 | `--validation_steps` | Execute validation every N steps | 2000 |
 | `--validation_epochs` | Execute validation every N epochs | 5 |
@@ -357,7 +357,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.6 Training Without DeepSpeed or FSDP
@@ -405,7 +405,7 @@ accelerate launch --mixed_precision="bf16" scripts/minimax_h3/train_lora.py \
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 ### 3.7 Multi-Machine Distributed Training
@@ -463,7 +463,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"
 ```
 
 **Machine 1 (Worker)**:

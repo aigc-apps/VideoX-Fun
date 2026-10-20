@@ -58,7 +58,6 @@ from omegaconf import OmegaConf
 from packaging import version
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from tqdm.auto import tqdm
 from transformers.utils import ContextManagers
 
 current_file_path = os.path.abspath(__file__)
@@ -89,6 +88,8 @@ from videox_fun.pipeline.pipeline_minimax_h3 import (
     video_latent_num_frames)
 from videox_fun.pipeline import MiniMaxH3ControlPipeline
 from videox_fun.utils import MiniMaxH3Scheduler
+from videox_fun.utils.fsdp_ema import FSDPEMA
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (get_video_to_video_latent,
                                     save_videos_grid,
                                     save_videos_with_audio_grid)
@@ -830,6 +831,14 @@ def main():
         **transformer_load_kwargs,
     )
 
+    # The inpaint recipe flag rides on the model config (yaml `transformer_additional_kwargs` → `register_to_config`
+    # → the checkpoint's config.json), so the training loop zeroes the masked pixels exactly the way the inference
+    # pipeline of this checkpoint will; configs predating the key fall back to the legacy recipe. The student and the
+    # teacher are the same control model, so reading it off `transformer.config` covers both.
+    inpaint_masked_pixel_mode = getattr(transformer.config, "inpaint_masked_pixel_mode", "pre_norm")
+    if args.enable_inpaint:
+        logger.info(f"Inpaint masked pixels zeroed `{inpaint_masked_pixel_mode}`.")
+
     def deepspeed_zero_init_disabled_context_manager():
         """
         returns either a context list that includes one that will disable zero.Init or an empty context list
@@ -929,13 +938,19 @@ def main():
     # Create EMA for the transformer.
     if args.use_ema:
         if zero_stage == 3:
-            raise NotImplementedError("FSDP does not support EMA.")
+            raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
-        ema_transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="transformer", **transformer_load_kwargs
-        ).to(weight_dtype)
-
-        ema_transformer = EMAModel(ema_transformer.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=ema_transformer.config)
+        ema_module = MiniMaxH3ControlTransformer3DModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="transformer", **transformer_load_kwargs,
+            low_cpu_mem_usage=True,
+        )
+        if args.use_fsdp:
+            # The EMA copy gets the same FSDP wrap as the live model so that
+            # every local shard of the copy pairs 1:1 with the live shard.
+            ema_transformer = FSDPEMA(ema_module, source=transformer, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
+        else:
+            ema_module = ema_module.to(weight_dtype)
+            ema_transformer = EMAModel(ema_module.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=ema_module.config)
 
     # ------------------------------------------------------------------ save / load hooks
     # `accelerate` 0.16.0+ supports custom saving hooks; the full transformer is serialized in the diffusers
@@ -977,8 +992,13 @@ def main():
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
+                if args.use_ema:
+                    # Every rank joins the FULL_STATE_DICT all-gather inside.
+                    ema_transformer.save_pretrained(os.path.join(output_dir, "transformer_ema"))
 
             def load_model_hook(models, input_dir):
+                if args.use_ema:
+                    ema_transformer.load_pretrained(os.path.join(input_dir, "transformer_ema"))
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
                     with open(pkl_path, 'rb') as file:
@@ -1006,6 +1026,7 @@ def main():
                     _, ema_kwargs = MiniMaxH3ControlTransformer3DModel.load_config(ema_path, return_unused_kwargs=True)
                     load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
                         input_dir, subfolder="transformer_ema",
+                        low_cpu_mem_usage=True,
                     )
                     load_model = EMAModel(load_model.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=load_model.config)
                     load_model.load_state_dict(ema_kwargs)
@@ -1020,7 +1041,8 @@ def main():
 
                     # load diffusers style into model
                     load_model = MiniMaxH3ControlTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer"
+                        input_dir, subfolder="transformer",
+                        low_cpu_mem_usage=True,
                     )
                     model.register_to_config(**load_model.config)
 
@@ -1591,7 +1613,7 @@ def main():
     else:
         initial_global_step = 0
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1628,7 +1650,15 @@ def main():
                         rescale=False,
                     )
                     if args.enable_inpaint:
-                        mask_pixel_value = batch["mask_pixel_values"][idx].cpu()[None].permute(0, 2, 1, 3, 4)
+                        if inpaint_masked_pixel_mode == "post_norm":
+                            # The model sees mid-gray holes (zero in normalized space), not black ones; mirror
+                            # that in the dump instead of the collated pre-normalization zeroing.
+                            mask_pixel_value = (
+                                batch["pixel_values"][idx] * (1 - batch["mask"][idx])
+                                + 0.5 * batch["mask"][idx]
+                            ).cpu()[None].permute(0, 2, 1, 3, 4)
+                        else:
+                            mask_pixel_value = batch["mask_pixel_values"][idx].cpu()[None].permute(0, 2, 1, 3, 4)
                         mask_value = batch["mask"][idx].cpu()[None].permute(0, 2, 1, 3, 4).repeat(1, 3, 1, 1, 1)
                         save_videos_grid(mask_pixel_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask_pixel.mp4", rescale=False)
                         save_videos_grid(mask_value, f"{args.output_dir}/sanity_check/{gif_name[:10]}-mask.mp4", rescale=False)
@@ -1672,8 +1702,17 @@ def main():
                 control_pixels = control_pixel_values.to(device).permute(1, 0, 2, 3)[None]
                 control_pixels = (control_pixels - pixel_mean) / pixel_std
                 if args.enable_inpaint:
-                    mask_pixels = mask_pixel_values.to(device).permute(1, 0, 2, 3)[None]
-                    mask_pixels = (mask_pixels - pixel_mean) / pixel_std
+                    if inpaint_masked_pixel_mode == "post_norm":
+                        # Wan 2.1's recipe: zero the masked pixels *after* the normalization, so the holes sit at
+                        # 0 in the VAE's input space (mid-gray in pixel terms) instead of the legacy
+                        # pre-normalization zero that lands near -2 as an extreme dark signal and contaminates
+                        # the kept regions through the VAE's receptive field. The normalized target video already
+                        # carries the full frames, so mask it in place; the collated `mask_pixel_values` then only
+                        # feed the sanity-check dump.
+                        mask_pixels = pixels * (1 - mask.to(device).permute(1, 0, 2, 3)[None])
+                    else:
+                        mask_pixels = mask_pixel_values.to(device).permute(1, 0, 2, 3)[None]
+                        mask_pixels = (mask_pixels - pixel_mean) / pixel_std
 
                 # Under `low_vram`, load both VAEs at once and keep them on GPU for the video, control and audio
                 # encodes in one session.
@@ -2076,22 +2115,32 @@ def main():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        with restore_frozen_requires_grad(transformer, trainable_module_names, args.use_fsdp):
-                            accelerator.save_state(save_path)
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            with restore_frozen_requires_grad(transformer, trainable_module_names, args.use_fsdp):
+                                accelerator.save_state(save_path)
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                    if args.use_ema:
-                        # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
-                        ema_transformer.store(transformer.parameters())
-                        ema_transformer.copy_to(transformer.parameters())
-                    log_validation(
-                        vae, audio_vae, text_encoder, tokenizer, processor, transformer,
-                        scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
-                    )
-                    if args.use_ema:
-                        # Switch back to the original transformer parameters.
-                        ema_transformer.restore(transformer.parameters())
+                    with progress_bar.paused():
+                        if args.use_ema:
+                            # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
+                            ema_transformer.store(transformer.parameters())
+                            ema_transformer.copy_to(transformer.parameters())
+                        log_validation(
+                            vae, audio_vae, text_encoder, tokenizer, processor, transformer,
+                            scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
+                        )
+                        if args.use_ema:
+                            # Switch back to the original transformer parameters.
+                            ema_transformer.restore(transformer.parameters())
 
             logs = {"avg_cfg_loss": avg_cfg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -2100,26 +2149,37 @@ def main():
                 break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-            if args.use_ema:
-                # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
-                ema_transformer.store(transformer.parameters())
-                ema_transformer.copy_to(transformer.parameters())
-            log_validation(
-                vae, audio_vae, text_encoder, tokenizer, processor, transformer,
-                scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
-            )
-            if args.use_ema:
-                # Switch back to the original transformer parameters.
-                ema_transformer.restore(transformer.parameters())
+            with progress_bar.paused():
+                if args.use_ema:
+                    # Store the transformer parameters temporarily and load the EMA parameters to perform inference.
+                    ema_transformer.store(transformer.parameters())
+                    ema_transformer.copy_to(transformer.parameters())
+                log_validation(
+                    vae, audio_vae, text_encoder, tokenizer, processor, transformer,
+                    scheduler, audio_scheduler, args, accelerator, weight_dtype, global_step,
+                )
+                if args.use_ema:
+                    # Switch back to the original transformer parameters.
+                    ema_transformer.restore(transformer.parameters())
 
         if global_step >= args.max_train_steps:
             break
 
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
+
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
+    if args.use_ema and args.use_fsdp:
+        # Under FSDP every rank must write its own shards, and the shards only
+        # exist while the model is still wrapped, so this runs before the
+        # `unwrap_model` below.
+        ema_transformer.copy_to(transformer.parameters())
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
-        if args.use_ema:
+        if args.use_ema and not args.use_fsdp:
             ema_transformer.copy_to(transformer.parameters())
 
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:

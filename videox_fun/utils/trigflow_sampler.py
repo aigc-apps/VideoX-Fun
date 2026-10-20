@@ -1,5 +1,6 @@
 import torch
 
+
 # Copied from https://github.com/NVlabs/rcm/blob/main/rcm/utils/denoiser_scaling.py
 class RectifiedFlow_TrigFlowWrapper:
     def __init__(self, sigma_data: float = 1.0, t_scaling_factor: float = 1.0):

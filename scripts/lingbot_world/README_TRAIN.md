@@ -188,7 +188,7 @@ Fine-tune from a released LingBot-World checkpoint (recommended, matches inferen
 mkdir -p models/Diffusion_Transformer
 
 # Camera-pose LingBot-World base weights (same layout as Wan2.2-I2V-A14B).
-modelscope download --model your-org/lingbot-world-base-cam --local_dir models/Diffusion_Transformer/lingbot-world-base-cam
+modelscope download --model Robbyant/lingbot-world-base-cam --local_dir models/Diffusion_Transformer/lingbot-world-base-cam
 ```
 
 You can also start from a plain Wan2.2-I2V-A14B checkpoint. In that case the LingBot-specific layers (`cam_injector_*`, `cam_scale_layer`, `cam_shift_layer`, `patch_embedding_wancamctrl`, `c2ws_hidden_states_layer{1,2}`) are randomly initialized and **must** be included in `--trainable_modules` (see [3.4](#34-trainable-modules)).

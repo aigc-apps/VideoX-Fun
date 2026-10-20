@@ -189,7 +189,7 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 mkdir -p models/Diffusion_Transformer
 
 # Download MiniMax-H3 official weights
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 
 # Download the pretrained control branch (Controlnet-Union) weights
 modelscope download --model PAI/MiniMax-H3-Fun-Controlnet-Union --local_dir models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union

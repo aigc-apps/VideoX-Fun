@@ -43,4 +43,4 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --low_vram \
   --target_name="to_q,to_k,to_v,ff.0,ff.2,proj_in,audio_proj_in,context_embedder" \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"

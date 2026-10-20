@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import random
@@ -7,6 +8,8 @@ import torch
 import torchvision.transforms as transforms
 from PIL import Image
 from torch.utils.data.dataset import Dataset
+
+from .utils import get_random_mask
 
 
 class CC15M(Dataset):

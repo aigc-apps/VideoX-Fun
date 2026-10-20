@@ -4,7 +4,6 @@ import sys
 import time
 
 import gradio as gr
-import ray
 import torch
 
 current_file_path = os.path.abspath(__file__)
@@ -13,9 +12,10 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.api.api_multi_nodes import (MultiNodesEngine,
-                                           multi_nodes_infer_forward_api)
+                                            multi_nodes_infer_forward_api)
 from videox_fun.ui.controller import flow_scheduler_dict
 from videox_fun.ui.wan2_2_ui import Wan2_2_Controller
+
 
 def main():
     parser = argparse.ArgumentParser(description='xDiT HTTP Service')

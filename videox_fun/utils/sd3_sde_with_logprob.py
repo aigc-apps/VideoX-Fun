@@ -21,6 +21,8 @@ def sde_step_with_logprob(
     sde_type: Optional[str] = 'sde',
     return_sqrt_dt: Optional[bool] = False,
     use_ref_std_dev: Optional[bool] = False,
+    diffusion_clip: Optional[bool] = False,
+    diffusion_clip_value: Optional[float] = 0.45,
 ):
     """
     Predict the sample from the previous timestep by reversing the SDE. This function propagates the flow
@@ -57,6 +59,16 @@ def sde_step_with_logprob(
             std_dev_t = sigma_min + (sigma_max - sigma_min) * sigma
         else:
             std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1, sigma_max, sigma)))*noise_level
+
+        if diffusion_clip:
+            # Truncated noise schedule (GenRL / flow_grpo, arXiv:2510.22200). Cap the
+            # per-step transition noise std (std_dev_t * sqrt(-dt)) at diffusion_clip_value
+            # by lowering std_dev_t. Applied before std_dev_t feeds both prev_sample_mean
+            # and the log_prob denominator, so the drift and the Gaussian std stay
+            # consistent. sqrt_dt (returned) is left unchanged; the effective transition
+            # std is std_dev_t * sqrt_dt <= diffusion_clip_value.
+            max_std_dev_t = diffusion_clip_value / torch.sqrt(-1 * dt)
+            std_dev_t = torch.minimum(std_dev_t, max_std_dev_t)
 
         # our sde
         prev_sample_mean = sample*(1+std_dev_t**2/(2*sigma)*dt)+model_output*(1+std_dev_t**2*(1-sigma)/(2*sigma))*dt

@@ -65,6 +65,7 @@ from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                Wan2_2Transformer3DModel, WanT5EncoderModel)
 from videox_fun.pipeline import WanFunInpaintPipeline, WanFunPipeline
 from videox_fun.utils.lora_utils import create_network, merge_lora
+from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -103,6 +104,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, config,
         transformer3d_val = Wan2_2Transformer3DModel.from_pretrained(
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+            low_cpu_mem_usage=True,
         ).to(weight_dtype)
         transformer3d_val.load_state_dict(accelerator.unwrap_model(transformer3d).state_dict())
         scheduler = FlowMatchEulerDiscreteScheduler(
@@ -1039,6 +1041,10 @@ def main():
     else:
         transformer3d.requires_grad_(False)
 
+    # Determine if the model is 5B by checking the transformer config's dim field.
+    # dim == 3072 → 5B model; dim == 5120 → 14B model.
+    is_5b = transformer3d.config.dim == 3072
+
     # Lora will work with this...
     network = create_network(
         1.0,
@@ -1352,7 +1358,7 @@ def main():
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
 
-    progress_bar = tqdm(
+    progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
@@ -1444,7 +1450,7 @@ def main():
                     torch.zeros_like(latents)[:, :1].to(accelerator.device, weight_dtype), [1, 4, 1, 1, 1]
                 )
                 masked_video_latents = torch.zeros_like(latents).to(accelerator.device, weight_dtype)
-                if vae.config.spatial_compression_ratio >= 16:
+                if is_5b:
                     mask = torch.ones_like(latents).to(accelerator.device, weight_dtype)[:, :1].to(accelerator.device, weight_dtype)
 
                 generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
@@ -1517,7 +1523,7 @@ def main():
                         y = torch.cat([mask_input, masked_video_latents_input], dim=1).to(accelerator.device, weight_dtype) 
 
                     # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                    if vae.config.spatial_compression_ratio >= 16 and init_video is not None:
+                    if is_5b and init_video is not None:
                         temp_ts = ((mask[0][0][:, ::2, ::2]) * t).flatten()
                         temp_ts = torch.cat([
                             temp_ts,
@@ -1577,7 +1583,7 @@ def main():
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = noise_scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
-                    if vae.config.spatial_compression_ratio >= 16 and not mask[:, :, 0, :, :].any():
+                    if is_5b and not mask[:, :, 0, :, :].any():
                         latents = (1 - mask) * masked_video_latents + mask * latents
 
                 # decode latents (tensor)
@@ -1660,29 +1666,39 @@ def main():
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                        if not args.save_state:
-                            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                            save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                            logger.info(f"Saved safetensor to {safetensor_save_path}")
-                        else:
-                            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(accelerator_save_path)
-                            logger.info(f"Saved state to {accelerator_save_path}")
+                        # Keep the checkpoint out of the progress bar rate: a minute-long save would
+                        # otherwise land in the next step's interval and be shown as a slow step. The
+                        # save also stages the whole state in host RAM (safetensors materializes every
+                        # tensor as bytes) and leaves the freed blocks in the allocator caches, so the
+                        # cache flushes run inside the same window.
+                        with progress_bar.paused():
+                            if not args.save_state:
+                                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+                                save_model(safetensor_save_path, accelerator.unwrap_model(network))
+                                logger.info(f"Saved safetensor to {safetensor_save_path}")
+                            else:
+                                accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                                accelerator.save_state(accelerator_save_path)
+                                logger.info(f"Saved state to {accelerator_save_path}")
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
 
                 if accelerator.is_main_process:
                     if args.validation_prompts is not None and global_step % args.validation_steps == 0:
-                        log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            transformer3d,
-                            network,
-                            config,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
+                        with progress_bar.paused():
+                            log_validation(
+                                vae,
+                                text_encoder,
+                                tokenizer,
+                                transformer3d,
+                                network,
+                                config,
+                                args,
+                                accelerator,
+                                weight_dtype,
+                                global_step,
+                            )
 
             logs = {"step_loss": loss.detach().item(), "step_reward": reward.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1692,18 +1708,24 @@ def main():
 
         if accelerator.is_main_process:
             if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    transformer3d,
-                    network,
-                    config,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    global_step,
-                )
+                with progress_bar.paused():
+                    log_validation(
+                        vae,
+                        text_encoder,
+                        tokenizer,
+                        transformer3d,
+                        network,
+                        config,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                    )
+
+    # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
+    # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
+    # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
+    progress_bar.close()
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

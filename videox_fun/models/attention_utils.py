@@ -283,6 +283,8 @@ def attention(
     attn_mask=None,
 ):
     attention_type = os.environ.get("VIDEOX_ATTENTION_TYPE", "FLASH_ATTENTION") if attention_type is None else attention_type
+    if fa_version is None and os.environ.get("VIDEOX_FA_VERSION") is not None:
+        fa_version = int(os.environ["VIDEOX_FA_VERSION"])
     if torch.is_grad_enabled() and attention_type == "SAGE_ATTENTION":
         attention_type = "FLASH_ATTENTION"
 

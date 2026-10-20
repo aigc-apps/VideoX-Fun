@@ -39,4 +39,4 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --low_vram \
   --trainable_modules "." \
   --t2v_ratio=0.25 \
-  --train_mode="fl2v"
+  --train_mode="fl2va"

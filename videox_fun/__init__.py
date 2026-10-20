@@ -1,7 +1,9 @@
 import importlib.util
 import os
 
-if importlib.util.find_spec("paifuser") is not None:
+if importlib.util.find_spec("turbox") is not None:
+    import turbox
+elif importlib.util.find_spec("paifuser") is not None:
     import paifuser
 
 # Imported conditionally rather than unconditionally-then-bailing the way `videox_fun.pipeline` does it, because

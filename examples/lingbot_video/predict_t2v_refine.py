@@ -15,17 +15,12 @@ from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLQwenImage,
                                LingBotVideoTransformer3DModel,
                                Qwen3VLForConditionalGeneration)
-from videox_fun.pipeline import LingBotVideoPipeline
-from videox_fun.pipeline.pipeline_lingbot_video import (DEFAULT_NEGATIVE_PROMPT,
-                                                       prepare_refiner_latent)
-from videox_fun.utils import (register_auto_device_hook,
-                              safe_enable_group_offload)
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper)
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from videox_fun.utils.utils import save_videos_grid
-
 from videox_fun.models.lingbot_video_rewriter import ensure_json_caption
+from videox_fun.pipeline import LingBotVideoPipeline
+from videox_fun.pipeline.pipeline_lingbot_video import (
+    DEFAULT_NEGATIVE_PROMPT, prepare_refiner_latent)
+from videox_fun.utils import (FlowUniPCMultistepScheduler,
+                              apply_gpu_memory_mode, save_videos_grid)
 
 # Two-stage LingBot-Video t2v: the base DiT samples at a low resolution, then the
 # "refiner" DiT re-noises the upsampled latent to sigma = refiner_t_thresh and
@@ -89,7 +84,7 @@ video_length        = 81
 fps                 = 24
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 # prompts
 # Write a plain natural-language prompt: it is ALWAYS rewritten into the
@@ -144,7 +139,7 @@ def load_transformer(root, subpath, checkpoint_path):
     if checkpoint_path is not None:
         print(f"From checkpoint: {checkpoint_path}")
         if checkpoint_path.endswith("safetensors"):
-            from safetensors.torch import load_file, safe_open
+            from safetensors.torch import load_file
             state_dict = load_file(checkpoint_path)
         else:
             state_dict = torch.load(checkpoint_path, map_location="cpu")
@@ -177,7 +172,7 @@ vae = AutoencoderKLQwenImage.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -192,7 +187,7 @@ processor = AutoProcessor.from_pretrained(
 )
 
 # Get Scheduler
-Chosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = {
     "Flow_Unipc": FlowUniPCMultistepScheduler,
 }[sampler_name]
 scheduler = Chosen_Scheduler.from_pretrained(
@@ -231,21 +226,10 @@ pipeline = LingBotVideoPipeline(
     processor=processor,
     scheduler=scheduler,
 )
-if GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(transformer, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"], device=device)
-    convert_weight_dtype_wrapper(transformer, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype, exclude_module_name=['time_embedder', 'time_modulation', 'text_embedder', 'norm', 'router', 'scale_shift_table', 'proj_out'])
 
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
@@ -297,24 +281,12 @@ refiner_pipeline = LingBotVideoPipeline(
     processor=processor,
     scheduler=scheduler,
 )
-if GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(refiner_pipeline.transformer)
-    safe_enable_group_offload(refiner_pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_model_weight_to_float8(refiner, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"], device=device)
-    convert_weight_dtype_wrapper(refiner, weight_dtype)
-    refiner_pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    refiner_pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_model_weight_to_float8(refiner, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"], device=device)
-    convert_weight_dtype_wrapper(refiner, weight_dtype)
-    refiner_pipeline.to(device=device)
-else:
-    refiner_pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+apply_gpu_memory_mode(refiner_pipeline, GPU_memory_mode, device, weight_dtype, exclude_module_name=["time_embedder", "time_modulation", "text_embedder", "norm", "router", "scale_shift_table", "proj_out"])
 
 if ulysses_degree > 1 or ring_degree > 1:
-    from functools import partial
     refiner.enable_multi_gpus_inference()
     if fsdp_dit:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype)

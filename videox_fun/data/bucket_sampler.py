@@ -246,7 +246,7 @@ class AspectRatioBatchSampler(BatchSampler):
         for idx in self.sampler:
             try:
                 video_dict = self.dataset[idx]
-                width, more = video_dict.get("width", None), video_dict.get("height", None)
+                width, height = video_dict.get("width", None), video_dict.get("height", None)
 
                 if width is None or height is None:
                     if self.train_data_format == "normal":

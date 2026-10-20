@@ -189,7 +189,7 @@ export DATASET_META_NAME="/mnt/data/metadata.json"
 mkdir -p models/Diffusion_Transformer
 
 # 下载 MiniMax-H3 官方权重
-hf download MiniMax-AI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
+hf download MiniMaxAI/MiniMax-H3 --local-dir models/Diffusion_Transformer/MiniMax-H3
 
 # 下载预训练控制分支（Controlnet-Union）权重
 modelscope download --model PAI/MiniMax-H3-Fun-Controlnet-Union --local_dir models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union

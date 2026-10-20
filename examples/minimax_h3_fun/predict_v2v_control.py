@@ -1,9 +1,7 @@
 import os
 import sys
 
-import numpy as np
 import torch
-from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -18,14 +16,10 @@ from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                Qwen3VLForConditionalGeneration,
                                Qwen3VLProcessor)
 from videox_fun.pipeline import MiniMaxH3ControlPipeline
-from videox_fun.utils import (MiniMaxH3Scheduler, register_auto_device_hook,
-                              safe_enable_group_offload)
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (get_video_to_video_latent,
-                                    save_videos_with_audio_grid)
-
+from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
+                              convert_model_weight_to_float8,
+                              get_video_to_video_latent, merge_lora,
+                              save_videos_with_audio_grid, unmerge_lora)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -69,12 +63,12 @@ model_name          = "models/Diffusion_Transformer/MiniMax-H3"
 # layers the control blocks attach to and `control_in_dim` the channels the control rows carry (49 for an
 # `--enable_inpaint` checkpoint, whose `control_proj_in` is widened with the mask channels). Leaving it None
 # builds the default 24-channel branch, which cannot load an inpaint checkpoint.
-config_path         = "config/minimax_h3/minimax_h3_control.yaml"
+config_path         = "config/minimax_h3/minimax_h3_control_inpaint_post_norm.yaml"
 
 # Load pretrained model if need. The control branch is not part of the released MiniMax-H3 weights, so a base
 # `model_name` starts the side branch as an identity (`after_proj` is zero) and the c ontrol video has no effect;
 # point `transformer_path` at a control checkpoint trained by `scripts/minimax_h3_fun/train_control.py`.
-transformer_path    = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union/MiniMax-H3-Fun-Controlnet-Union.safetensors"
+transformer_path    = "models/Diffusion_Transformer/MiniMax-H3-Fun-Controlnet-Union-2.0/MiniMax-H3-Fun-Controlnet-Union-2.0.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -92,7 +86,7 @@ fps                 = 24
 control_context_scale = 1.00
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 control_video       = "asset/pose.mp4"
 # Inpaint inputs, only read by checkpoints trained with `--enable_inpaint` (control_in_dim widened, e.g. 49):
@@ -101,7 +95,7 @@ control_video       = "asset/pose.mp4"
 # the mask channels and the run degrades to pure generation; a mask-less checkpoint rejects them outright.
 inpaint_video       = None
 inpaint_video_mask  = None
-prompt              = "视频中，一位年轻女性站在阳光洒满的沙滩上，背景是无垠碧蓝的大海与澄澈如洗的天空，构成一幅充满夏日度假氛围的画面。她身穿一件深海军蓝吊带泳衣，线条简约贴身，凸显健康匀称的身材曲线；外搭一条纯白色背带短裙，裙摆轻盈飘逸，随风微微扬起，增添了几分俏皮与少女感。她的长发柔顺披肩，发梢微卷，在阳光下泛着自然光泽，耳畔垂挂着一对小巧精致的珍珠吊坠耳环，为整体造型注入一丝温柔优雅的气息。她面带甜美笑容，嘴角上扬，露出整齐洁白的牙齿，眼神清澈明亮，直视镜头时流露出真诚与自信，仿佛在与观众分享此刻的快乐。起初，她双臂向两侧张开，手掌舒展，像是在拥抱整个大海与天空；随后手臂缓缓收回并向前挥动，动作节奏轻快而富有韵律，如同在跳舞或做简单的热身操，展现出轻松自在、无忧无虑的状态。她的腿部微微分开站立，姿态稳健又不失灵动，裙摆随着动作轻轻摇曳，与海风形成自然互动。远处海浪轻拍沙滩，发出柔和的“哗哗”声，虽无声但可想象其韵律，与她的动作相得益彰，营造出宁静而愉悦的听觉联想。"
+prompt              = "视频中，一位年轻女性站在阳光洒满的沙滩上，背景是无垠碧蓝的大海与澄澈如洗的天空，构成一幅充满夏日度假氛围的画面。她身穿一件深海军蓝吊带泳衣，线条简约贴身，凸显健康匀称的身材曲线；外搭一条纯白色背带短裙，裙摆轻盈飘逸，随风微微扬起，增添了几分俏皮与少女感。她的长发柔顺披肩，发梢微卷，在阳光下泛着自然光泽，耳畔垂挂着一对小巧精致的珍珠吊坠耳环，为整体造型注入一丝温柔优雅的气息。她面带甜美笑容，嘴角上扬，露出整齐洁白的牙齿，眼神清澈明亮，直视镜头时流露出真诚与自信，仿佛在与观众分享此刻的快乐。"
 negative_prompt     = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 seed                = 43
 # Number of denoising steps, i.e. of model evaluations: num_inference_steps = 40 runs 40 of them.
@@ -146,7 +140,7 @@ transformer = MiniMaxH3ControlTransformer3DModel.from_pretrained(
 if transformer_path is not None:
     print(f"From checkpoint: {transformer_path}")
     if transformer_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(transformer_path)
     else:
         state_dict = torch.load(transformer_path, map_location="cpu")
@@ -167,7 +161,7 @@ vae = AutoencoderKLMiniMaxH3.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -243,21 +237,14 @@ if compile_dit:
         pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
     print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+# The FP8 conversion above has already run (before the FSDP sharding, on purpose); only the dequant
+# wrapper and the memory placement are left, which is what the preconverted tag installs.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype,
+                      quant_tag="qfloat8_preconverted" if GPU_memory_mode.endswith("_and_qfloat8") else None,
+                      exclude_module_name=[])
 
 generator = torch.Generator(device=device).manual_seed(seed)
 

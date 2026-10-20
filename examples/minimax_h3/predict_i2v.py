@@ -1,7 +1,6 @@
 import os
 import sys
 
-import numpy as np
 import torch
 from PIL import Image
 
@@ -17,12 +16,9 @@ from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                Qwen3VLForConditionalGeneration,
                                Qwen3VLProcessor)
 from videox_fun.pipeline import MiniMaxH3Pipeline
-from videox_fun.utils import (MiniMaxH3Scheduler, register_auto_device_hook,
-                              safe_enable_group_offload)
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import save_videos_with_audio_grid
+from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
+                              convert_model_weight_to_float8, merge_lora,
+                              save_videos_with_audio_grid, unmerge_lora)
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -84,7 +80,7 @@ validation_image_start  = "asset/1.png"
 validation_image_end    = None
 
 # Use torch.float16 if GPU does not support torch.bfloat16
-# ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
+# Some graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
 prompt              = "一只棕色的狗摇着头，坐在舒适房间里的浅色沙发上。在狗的后面，架子上有一幅镶框的画，周围是粉红色的花朵。房间里柔和温暖的灯光营造出舒适的氛围。"
 seed                = 43
@@ -123,7 +119,7 @@ if transformer_path is not None:
         )
     else:
         if transformer_path.endswith("safetensors"):
-            from safetensors.torch import load_file, safe_open
+            from safetensors.torch import load_file
             state_dict = load_file(transformer_path)
         else:
             state_dict = torch.load(transformer_path, map_location="cpu")
@@ -159,7 +155,7 @@ vae = AutoencoderKLMiniMaxH3.from_pretrained(
 if vae_path is not None:
     print(f"From checkpoint: {vae_path}")
     if vae_path.endswith("safetensors"):
-        from safetensors.torch import load_file, safe_open
+        from safetensors.torch import load_file
         state_dict = load_file(vae_path)
     else:
         state_dict = torch.load(vae_path, map_location="cpu")
@@ -233,21 +229,14 @@ if compile_dit:
         pipeline.transformer.transformer_blocks[i] = torch.compile(pipeline.transformer.transformer_blocks[i])
     print("Add Compile")
 
-if GPU_memory_mode == "sequential_cpu_offload":
-    pipeline.enable_sequential_cpu_offload(device=device)
-elif GPU_memory_mode == "model_group_offload":
-    register_auto_device_hook(pipeline.transformer)
-    safe_enable_group_offload(pipeline, onload_device=device, offload_device="cpu", offload_type="leaf_level", use_stream=True)
-elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_cpu_offload":
-    pipeline.enable_model_cpu_offload(device=device)
-elif GPU_memory_mode == "model_full_load_and_qfloat8":
-    convert_weight_dtype_wrapper(pipeline.transformer, weight_dtype)
-    pipeline.to(device=device)
-else:
-    pipeline.to(device=device)
+# Quantize (when the mode carries an "_and_<quant>" suffix) and then place the pipeline.
+# The order lives inside the helper: quantization has to happen before the offload hooks
+# are installed.
+# The FP8 conversion above has already run (before the FSDP sharding, on purpose); only the dequant
+# wrapper and the memory placement are left, which is what the preconverted tag installs.
+apply_gpu_memory_mode(pipeline, GPU_memory_mode, device, weight_dtype,
+                      quant_tag="qfloat8_preconverted" if GPU_memory_mode.endswith("_and_qfloat8") else None,
+                      exclude_module_name=[])
 
 generator = torch.Generator(device=device).manual_seed(seed)
 

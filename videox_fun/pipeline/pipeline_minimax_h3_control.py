@@ -192,8 +192,11 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
         Mirrors the training recipe of `scripts/minimax_h3_fun/train_control.py`: the visibility map `1 - mask` is
         trilinearly resized straight onto the latent grid (no first-frame split — MiniMax-H3's chunked VAE encodes
         its first 5 frames into 2 latents, so the Wan causal-VAE packing has no counterpart here), the masked video
-        `inpaint_video * (1 - mask)` is VAE-encoded at its posterior mode, and the two are patchified and
-        concatenated along the channel columns, visibility map first.
+        is VAE-encoded at its posterior mode, and the two are patchified and concatenated along the channel
+        columns, visibility map first. Where the masked pixels are zeroed follows the checkpoint's
+        `inpaint_masked_pixel_mode`: `pre_norm` zeroes them in `[0, 1]` before the normalization (the holes land
+        near -2), `post_norm` zeroes them after it (the holes sit at 0, mid-gray in pixel terms, the Wan 2.1
+        recipe); the key rides the transformer config, so the condition matches whatever the checkpoint trained on.
 
         Args:
             mask (`torch.Tensor` of shape `(1, 1, num_frames, height, width)`):
@@ -212,6 +215,8 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
             inpaint rows, in the training order (visibility map, then masked-video latents).
         """
         device = device or self._execution_device
+        # Old checkpoints predate the key and keep the legacy recipe through the registered default.
+        masked_pixel_mode = getattr(self.transformer.config, "inpaint_masked_pixel_mode", "pre_norm")
         if mask.ndim != 5 or mask.shape[0] != 1 or mask.shape[1] != 1:
             raise ValueError(
                 "`mask` must be a `(1, 1, num_frames, height, width)` tensor in the [0, 1] range, got "
@@ -227,6 +232,9 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
         # `_fit_video_to_canvas` resizes bilinearly when the mask misses the canvas; re-harden the smeared edges.
         mask = (mask > 0.5).to(torch.float32)
 
+        pixel_mean = torch.tensor(MINIMAX_H3_PIXEL_MEAN, device=device).view(1, -1, 1, 1, 1)
+        pixel_std = torch.tensor(MINIMAX_H3_PIXEL_STD, device=device).view(1, -1, 1, 1, 1)
+
         if inpaint_video is not None:
             if inpaint_video.ndim != 5 or inpaint_video.shape[0] != 1 or inpaint_video.shape[1] != 3:
                 raise ValueError(
@@ -237,14 +245,18 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
                 inpaint_video.to(device=device, dtype=torch.float32),
                 height, width, num_frames, "inpaint video", warn_frames=False,
             )
-            masked_pixels = masked_pixels * (1 - mask)
+            if masked_pixel_mode == "post_norm":
+                masked_pixels = (masked_pixels - pixel_mean) / pixel_std
+                masked_pixels = masked_pixels * (1 - mask)
+            else:
+                masked_pixels = masked_pixels * (1 - mask)
+                masked_pixels = (masked_pixels - pixel_mean) / pixel_std
         else:
             logger.warning("No `inpaint_video` given: the visible regions behind the mask carry no content.")
+            # Content-less holes: zeros in whichever space the recipe zeroes in.
             masked_pixels = torch.zeros_like(mask.expand(-1, 3, -1, -1, -1))
-
-        pixel_mean = torch.tensor(MINIMAX_H3_PIXEL_MEAN, device=device).view(1, -1, 1, 1, 1)
-        pixel_std = torch.tensor(MINIMAX_H3_PIXEL_STD, device=device).view(1, -1, 1, 1, 1)
-        masked_pixels = (masked_pixels - pixel_mean) / pixel_std
+            if masked_pixel_mode != "post_norm":
+                masked_pixels = (masked_pixels - pixel_mean) / pixel_std
 
         latents_mean = torch.tensor(self.vae.config.latents_mean, device=device).view(1, -1, 1, 1, 1)
         latents_std = torch.tensor(self.vae.config.latents_std, device=device).view(1, -1, 1, 1, 1)
@@ -440,6 +452,11 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
                 control_rows = torch.cat([control_rows, inpaint_rows], dim=-1)
             control_rows = self.align_control_rows_width(control_rows)
             control_rows = control_rows[None].to(device)
+
+        # The conditioning has been reduced to `control_rows`; drop the pixel-space copies (a full-canvas float32
+        # video is ~1.3 GB apiece) so they do not ride along through the whole denoising loop. This releases the
+        # pipeline's reference alone — the caller must not hold on to them either for the memory to actually go.
+        del control_video, mask_video, inpaint_video
 
         # 5. Draw the noise of the generated rows.
         latents, audio_latents = self.prepare_latents(
