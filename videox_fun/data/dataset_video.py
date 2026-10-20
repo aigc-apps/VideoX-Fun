@@ -173,6 +173,7 @@ class VideoDataset(Dataset):
         video_length_drop_start=0.0,
         video_length_drop_end=1.0,
         text_drop_ratio=0.1,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -189,6 +190,7 @@ class VideoDataset(Dataset):
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
         self.text_drop_ratio = text_drop_ratio
+        self.random_start = random_start
         
         sample_size = tuple(sample_size) if not isinstance(sample_size, int) else (sample_size, sample_size)
         self.pixel_transforms = transforms.Compose(
@@ -212,17 +214,22 @@ class VideoDataset(Dataset):
 
         with VideoReader_contextmanager(video_dir, num_threads=2) as video_reader:
             # Calculate frame sampling range with length dropout
+            sample_stride = (random.choice(self.sample_stride)
+                             if isinstance(self.sample_stride, (tuple, list)) else self.sample_stride)
             min_sample_n_frames = min(
                 self.sample_n_frames, 
-                int(len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) // self.sample_stride)
+                int((len(video_reader) * (self.video_length_drop_end - self.video_length_drop_start) - 1)
+                    // sample_stride) + 1
             )
             if min_sample_n_frames == 0:
                 raise ValueError(f"No Frames in video.")
 
             # Select contiguous clip with random start position
             video_length = int(self.video_length_drop_end * len(video_reader))
-            clip_length = min(video_length, (min_sample_n_frames - 1) * self.sample_stride + 1)
-            start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+            clip_length = min(video_length, (min_sample_n_frames - 1) * sample_stride + 1)
+            start_idx = int(self.video_length_drop_start * video_length)
+            if self.random_start and video_length != clip_length:
+                start_idx = random.randint(start_idx, video_length - clip_length)
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
             try:
