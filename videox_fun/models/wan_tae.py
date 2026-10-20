@@ -449,6 +449,10 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (decoded,)
         return DecoderOutput(sample=decoded)
 
+    def forward(self, z: torch.Tensor, return_dict: bool = True):
+        # Use forward so decoder training runs through DDP hooks.
+        return self.decode(z, return_dict=return_dict)
+
     @classmethod
     def from_pretrained(cls, pretrained_model_path, additional_kwargs={}, **kwargs):
         def filter_kwargs(cls, kwargs):
