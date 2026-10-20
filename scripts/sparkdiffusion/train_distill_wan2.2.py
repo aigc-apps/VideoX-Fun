@@ -166,7 +166,7 @@ check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step):
+def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, accelerator, weight_dtype, global_step, init_rollout_transformer3d=None):
     try:
         is_deepspeed = type(transformer3d).__name__ == 'DeepSpeedEngine'
         if is_deepspeed:
@@ -195,14 +195,20 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
             else:
                 if args.boundary_type == "low":
                     transformer3d_1 = accelerator.unwrap_model(transformer3d) if type(transformer3d).__name__ == 'DistributedDataParallel' else transformer3d
-                    sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
-                    transformer3d_2 = (SparkWan2_2Transformer3DModel if args.sparse_student else Wan2_2Transformer3DModel).from_pretrained(
-                        os.path.join(args.pretrained_model_name_or_path, sub_path),
-                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                        low_cpu_mem_usage=True,
-                    ).to(weight_dtype)
-                    if args.sparse_student:
-                        transformer3d_2.set_student_topk(args.student_topk)
+                    # Reuse the FROZEN distilled high-noise student that produced the low expert's
+                    # training rollout start latent, so the high-noise segment (rf >= boundary) of the
+                    # validation trajectory matches training/deployment instead of the base many-step expert.
+                    if init_rollout_transformer3d is not None:
+                        transformer3d_2 = init_rollout_transformer3d
+                    else:
+                        sub_path = config['transformer_additional_kwargs'].get('transformer_high_noise_model_subpath', 'transformer')
+                        transformer3d_2 = (SparkWan2_2Transformer3DModel if args.sparse_student else Wan2_2Transformer3DModel).from_pretrained(
+                            os.path.join(args.pretrained_model_name_or_path, sub_path),
+                            transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                            low_cpu_mem_usage=True,
+                        ).to(weight_dtype)
+                        if args.sparse_student:
+                            transformer3d_2.set_student_topk(args.student_topk)
                 else:
                     sub_path = config['transformer_additional_kwargs'].get('transformer_low_noise_model_subpath', 'transformer')
                     transformer3d_1 = (SparkWan2_2Transformer3DModel if args.sparse_student else Wan2_2Transformer3DModel).from_pretrained(
@@ -283,12 +289,18 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, args, config, ac
                         )
                     )
                 else:
+                    # Match the fixed training geometry when --fix_sample_size is set; otherwise the
+                    # square video_sample_size default diverges from the trained aspect ratio.
+                    if args.fix_sample_size is not None:
+                        val_height, val_width = args.fix_sample_size
+                    else:
+                        val_height = val_width = args.video_sample_size
                     sample = pipeline(
                         args.validation_prompts[i],
                         num_frames = args.video_sample_n_frames,
                         negative_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
-                        height      = args.video_sample_size,
-                        width       = args.video_sample_size,
+                        height      = val_height,
+                        width       = val_width,
                         generator   = generator,
                         num_inference_steps = val_inference_steps,
                         guidance_scale      = 1.0,
@@ -912,6 +924,17 @@ def parse_args():
              "Matching term re-noised over the full noise range (Decoupled-Hybrid schedule).",
     )
     parser.add_argument(
+        "--tdm",
+        action="store_true",
+        help="Use TDM (Trajectory Distribution Matching, the official SparkDiffusion student loss) instead "
+             "of plain DMD. Three deltas from DMD: (1) the last rollout segment does NOT collapse to x0 but "
+             "takes one more rf-Euler step to s_{i-1} (the next grid knot), so the anchor is G_x_{t_{i-1}}; "
+             "(2) D_time is clamped strictly above s_{i-1}; (3) the fake/teacher x0 preds are mapped back to "
+             "s_{i-1} via the rf PF-ODE analytic step and the surrogate is compared in the x_{t_{i-1}} domain. "
+             "When s_{i-1}==0 (grid exhausted) it reduces exactly to DMD. Requires --flow_euler_rollout; "
+             "mutually exclusive with --dfd / --decoupled_dmd.",
+    )
+    parser.add_argument(
         "--div_mode",
         type=str,
         default="pcm_random",
@@ -996,6 +1019,14 @@ def main():
             raise ValueError("Decoupled DMD does not support --dfd.")
         if any(int(i) <= 1 for i in args.denoising_step_indices_list):
             print("WARNING: --denoising_step_indices_list contains a step index below 2, where tau_CA degenerates to tau_CA == t.")
+
+    if args.tdm:
+        if not args.flow_euler_rollout:
+            raise ValueError("--tdm requires --flow_euler_rollout (the trajectory must be a deterministic rf-Euler rollout).")
+        if args.dfd:
+            raise ValueError("--tdm does not support --dfd.")
+        if args.decoupled_dmd:
+            raise ValueError("--tdm does not support --decoupled_dmd.")
 
     if args.loss_scale_div > 0 and args.div_mode not in ("pcm_fixed", "pcm_random"):
         raise NotImplementedError(
@@ -2576,6 +2607,17 @@ def main():
                                         seq_len=seq_len,
                                         y=inpaint_latents if args.train_mode != "normal" else None,
                                     )
+                                    if is_final_step and args.tdm:
+                                        # TDM: the last segment does NOT collapse to x0; take one more rf-Euler
+                                        # step to s_{i-1} (the next knot, 0.0 when the grid is exhausted, which
+                                        # degenerates to DMD), so the anchor is G_x_{t_{i-1}} instead of G_x0.
+                                        s_im1 = float(denoising_step_list[index + 1]) if index + 1 < num_denoising_steps else 0.0
+                                        G_x_t_im1 = (
+                                            generator_noise.float() + (s_im1 - rf_cur) * generator_pred.float()
+                                        ).to(generator_noise.dtype)
+                                        t_im1 = s_im1
+                                        generator_step_timestep = timestep
+                                        break
                                     if not args.flow_euler_rollout or is_final_step:
                                         generator_pred = rf_flow_to_x0(generator_pred, generator_noise, rf_cur)
                                 
@@ -2600,12 +2642,31 @@ def main():
 
                         indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                         generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                        if args.tdm:
+                            # TDM: D_time clamped STRICTLY above s_{i-1} (=t_im1). Resample uniformly over the
+                            # shift-grid timesteps > t_im1 (kept on-grid so convert_flow_pred_to_x0 stays exact);
+                            # when t_im1 == 0 (grid exhausted) this is the full range and TDM degenerates to DMD.
+                            _grid_ts = noise_scheduler.timesteps.to(device=accelerator.device)
+                            _k = int((_grid_ts > float(t_im1) * T_SCALE).sum().item())
+                            indices = torch.randint(0, max(_k, 1), (bsz,), generator=torch_rng, device=accelerator.device)
+                            generator_timestep = _grid_ts[indices].to(device=accelerator.device)
                         dmd_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
-                    generator_denoised_input = add_noise(
-                        generator_pred,
-                        dmd_noise,
-                        generator_timestep
-                    ).detach().to(accelerator.device, dtype=weight_dtype)
+                    if args.tdm:
+                        # rf forward transition q(x_{s_D} | x_{s_{i-1}}) with G = G_x_{t_{i-1}} (NOT x0):
+                        #   D_xt = ((1-s_D)/(1-s1))*G + sqrt((s_D-s1)(s_D+s1-2 s_D s1))/(1-s1) * eps
+                        _sD = (generator_timestep / T_SCALE).to(torch.float32).reshape(-1, 1, 1, 1, 1)
+                        _s1 = torch.full_like(_sD, float(t_im1))
+                        _oms1 = (1.0 - _s1).clamp(min=1e-6)
+                        _sig = torch.sqrt(((_sD - _s1) * (_sD + _s1 - 2.0 * _sD * _s1)).clamp(min=0.0)) / _oms1
+                        generator_denoised_input = (
+                            ((1.0 - _sD) / _oms1) * G_x_t_im1.to(torch.float32) + _sig * dmd_noise.to(torch.float32)
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
+                    else:
+                        generator_denoised_input = add_noise(
+                            generator_pred,
+                            dmd_noise,
+                            generator_timestep
+                        ).detach().to(accelerator.device, dtype=weight_dtype)
 
                     if args.decoupled_dmd:
                         # Decoupled DMD (arXiv:2511.22677, Sec. 4.3): the CA engine must re-noise at
@@ -2766,27 +2827,46 @@ def main():
                     ca_scale = ca_delta.float().abs().mean()
                     dm_scale = (real_score_main_cond - fake_score_main).float().abs().mean()
 
-                    fake_to_real_grad = fake_score_main - real_score_target
-                    if dfd_active:
-                        normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
-                        fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
+                    if args.tdm:
+                        # TDM: compare in the x_{t_{i-1}} domain. Map the fake/teacher x0 preds back to s_{i-1}
+                        # via the rf PF-ODE analytic step, then reuse the DMD-style score-distillation surrogate
+                        # with the adaptive weight_factor = mean|G - x_{t_{i-1}}^teacher| (clip 1e-5).
+                        _sD = (generator_timestep / T_SCALE).to(torch.float32).reshape(-1, 1, 1, 1, 1)
+                        _s1 = torch.full_like(_sD, float(t_im1))
 
-                        dmd_loss = 0.5 * F.mse_loss(
-                            generator_pred,
-                            (generator_pred - fake_to_real_grad).detach(),
-                            reduction="mean"
-                        )
+                        def _to_t_im1(x_t, x0_pred):
+                            eps_pred = (x_t - (1.0 - _sD) * x0_pred) / _sD.clamp(min=1e-6)
+                            return (1.0 - _s1) * x0_pred + _s1 * eps_pred
+
+                        x_t_im1_fake = _to_t_im1(generator_denoised_input.float(), fake_score_main.float())
+                        x_t_im1_teacher = _to_t_im1(generator_denoised_input.float(), real_score_target.float())
+                        Gd = G_x_t_im1.double()
+                        weight_factor = (Gd - x_t_im1_teacher.double()).abs().mean(dim=[1, 2, 3, 4], keepdim=True).clip(min=1e-5)
+                        tdm_grad = (x_t_im1_fake.double() - x_t_im1_teacher.double()) / weight_factor
+                        dmd_loss = 0.5 * F.mse_loss(Gd, (Gd - tdm_grad).detach(), reduction="mean")
+                        generator_pred = G_x_t_im1  # the monitor .std() below tracks the TDM anchor
                     else:
-                        generator_to_real_norm = generator_pred - real_score_target
-                        normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
-                        fake_to_real_grad = fake_to_real_grad / normalizer
-                        fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+                        fake_to_real_grad = fake_score_main - real_score_target
+                        if dfd_active:
+                            normalizer = 1.0 / ((generator_pred.float() - real_score_target.float()).abs().mean(dim=[1, 2, 3, 4], keepdim=True) + 1e-6)
+                            fake_to_real_grad = fake_to_real_grad * normalizer.to(fake_to_real_grad.dtype)
 
-                        dmd_loss = 0.5 * F.mse_loss(
-                            generator_pred.double(),
-                            (generator_pred.double() - fake_to_real_grad.double()).detach(),
-                            reduction="mean"
-                        )
+                            dmd_loss = 0.5 * F.mse_loss(
+                                generator_pred,
+                                (generator_pred - fake_to_real_grad).detach(),
+                                reduction="mean"
+                            )
+                        else:
+                            generator_to_real_norm = generator_pred - real_score_target
+                            normalizer = torch.abs(generator_to_real_norm).mean(dim=[1, 2, 3, 4], keepdim=True)
+                            fake_to_real_grad = fake_to_real_grad / normalizer
+                            fake_to_real_grad = torch.nan_to_num(fake_to_real_grad)
+
+                            dmd_loss = 0.5 * F.mse_loss(
+                                generator_pred.double(),
+                                (generator_pred.double() - fake_to_real_grad.double()).detach(),
+                                reduction="mean"
+                            )
                     avg_dmd_loss = accelerator.gather(dmd_loss.repeat(args.train_batch_size)).mean()
                     train_dmd_loss += avg_dmd_loss.item()
                     train_gen_log_count += 1
@@ -2996,6 +3076,7 @@ def main():
                             accelerator,
                             weight_dtype,
                             global_step,
+                            init_rollout_transformer3d,
                         )
 
             if args.dfd:
@@ -3026,6 +3107,7 @@ def main():
                     accelerator,
                     weight_dtype,
                     global_step,
+                    init_rollout_transformer3d,
                 )
 
     # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
