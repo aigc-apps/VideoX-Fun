@@ -3150,41 +3150,24 @@ def main():
                     critic_timestep
                 )
 
-                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    if use_gan:
-                        # Generated and real latents share critic_noise / critic_timestep. The critic forward is
-                        # split into three passes so the peak activation stays at 2x batch instead of 4x:
-                        # A) fake + real for the denoising and GAN loss, B) real + R1 perturbation, C) fake + R2.
-                        real_latents = clean_latents[:, :, :fake_score_denoised_pred.size(2)].to(fake_score_denoised_pred.dtype)
-                        real_noisy = add_noise(real_latents, critic_noise, critic_timestep)
-                        if args.r1_weight > 0:
-                            r1_perturbation = args.r1_sigma * torch.randn(
-                                real_noisy.shape, dtype=real_noisy.dtype, device=real_noisy.device, generator=torch_rng
-                            )
-                        if args.r2_weight > 0:
-                            r2_perturbation = args.r2_sigma * torch.randn(
-                                fake_score_denoised_input.shape, dtype=fake_score_denoised_input.dtype,
-                                device=fake_score_denoised_input.device, generator=torch_rng
-                            )
-                        fake_score_denoised_output, gan_logits = fake_score_transformer3d(
-                            x=torch.cat([fake_score_denoised_input, real_noisy]),
-                            context=repeat_batch(prompt_embeds, 2),
-                            t=critic_timestep.repeat(2),
-                            seq_len=seq_len,
-                            y=repeat_batch(inpaint_latents, 2) if args.train_mode != "normal" else None,
-                            clip_fea=repeat_batch(clip_context, 2) if args.train_mode != "normal" else None,
-                            gan_classify=True,
+                # Generated and real latents share critic_noise / critic_timestep. Prepare the
+                # real input and the R1/R2 perturbations once; they are consumed by the critic
+                # forward below and by the R1/R2 penalties after the main backward(s).
+                real_noisy = None
+                r1_perturbation = None
+                r2_perturbation = None
+                if use_gan:
+                    real_latents = clean_latents[:, :, :fake_score_denoised_pred.size(2)].to(fake_score_denoised_pred.dtype)
+                    real_noisy = add_noise(real_latents, critic_noise, critic_timestep)
+                    del real_latents
+                    if args.r1_weight > 0:
+                        r1_perturbation = args.r1_sigma * torch.randn(
+                            real_noisy.shape, dtype=real_noisy.dtype, device=real_noisy.device, generator=torch_rng
                         )
-                        fake_score_denoised_output = fake_score_denoised_output.chunk(2)[0]
-                        gan_logits = gan_logits.float().chunk(2)
-                    else:
-                        fake_score_denoised_output = fake_score_transformer3d(
-                            x=fake_score_denoised_input,
-                            context=prompt_embeds,
-                            t=critic_timestep,
-                            seq_len=seq_len,
-                            y=inpaint_latents if args.train_mode != "normal" else None,
-                            clip_fea=clip_context if args.train_mode != "normal" else None,
+                    if args.r2_weight > 0:
+                        r2_perturbation = args.r2_sigma * torch.randn(
+                            fake_score_denoised_input.shape, dtype=fake_score_denoised_input.dtype,
+                            device=fake_score_denoised_input.device, generator=torch_rng
                         )
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -3199,23 +3182,99 @@ def main():
                     final_loss = masked_loss.mean()
                     return final_loss
 
-                denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
-                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
-                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+                if use_gan and not args.relativistic_discriminator:
+                    # Memory-optimized critic: the non-relativistic gan_d_loss =
+                    # softplus(-real) + softplus(fake) is separable, so run fake and real as two
+                    # sequential 1x-batch forwards and backward the fake pass first. Backwarding
+                    # fake frees its gradient-checkpointing block inputs before the real forward,
+                    # dropping the peak activation from 2x batch to 1x batch. Both backward(s)
+                    # accumulate into fake_score.grad, giving the identical update as the combined
+                    # 2x-batch pass. R1/R2 below stay as their own 2x-batch re-forwards.
+                    # -- Fake pass (1x batch): denoising output + fake discriminator logit --
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        fake_score_denoised_output, fake_gan_logits = fake_score_transformer3d(
+                            x=fake_score_denoised_input,
+                            context=prompt_embeds,
+                            t=critic_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                            clip_fea=clip_context if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                    denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                    avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                    train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
 
-                critic_loss = denoising_loss
-                if use_gan:
-                    fake_logit, real_logit = gan_logits[0], gan_logits[1]
-                    if args.relativistic_discriminator:
-                        gan_d_loss = F.softplus(-(real_logit - fake_logit)).mean()
-                    else:
-                        gan_d_loss = F.softplus(-real_logit).mean() + F.softplus(fake_logit).mean()
-                    gan_d_loss = gan_d_loss * args.gan_d_weight
-                    train_gan_d_loss += accelerator.gather(gan_d_loss.detach().repeat(args.train_batch_size)).mean().item()
-                    critic_loss = critic_loss + gan_d_loss
+                    fake_logit = fake_gan_logits.float()
+                    fake_d_loss = F.softplus(fake_logit).mean() * args.gan_d_weight
+                    critic_loss = denoising_loss + fake_d_loss
+                    accelerator_fake_score_transformer3d.backward(critic_loss)
+                    # Fake graph freed: the transformer blocks' stored inputs are released here.
+                    fake_d_detached = fake_d_loss.detach()
+                    del critic_loss, fake_gan_logits, fake_logit, fake_d_loss, fake_score_denoised_output
 
-                accelerator_fake_score_transformer3d.backward(critic_loss)
-                del critic_loss
+                    # -- Real pass (1x batch): discriminator logit only --
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        _, real_gan_logits = fake_score_transformer3d(
+                            x=real_noisy,
+                            context=prompt_embeds,
+                            t=critic_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                            clip_fea=clip_context if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                    real_logit = real_gan_logits.float()
+                    real_d_loss = F.softplus(-real_logit).mean() * args.gan_d_weight
+                    accelerator_fake_score_transformer3d.backward(real_d_loss)
+                    # Real graph freed. Combine the two detached halves for logging; gan_d_loss is
+                    # kept alive because the progress-bar logging below reads it.
+                    gan_d_loss = fake_d_detached + real_d_loss.detach()
+                    train_gan_d_loss += accelerator.gather(gan_d_loss.repeat(args.train_batch_size)).mean().item()
+                    del fake_d_detached, real_gan_logits, real_logit, real_d_loss
+                else:
+                    # Combined path: 2x-batch forward for relativistic GAN (both logits coupled by
+                    # softplus(-(real - fake))), or 1x-batch forward when GAN is disabled.
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        if use_gan:
+                            fake_score_denoised_output, gan_logits = fake_score_transformer3d(
+                                x=torch.cat([fake_score_denoised_input, real_noisy]),
+                                context=repeat_batch(prompt_embeds, 2),
+                                t=critic_timestep.repeat(2),
+                                seq_len=seq_len,
+                                y=repeat_batch(inpaint_latents, 2) if args.train_mode != "normal" else None,
+                                clip_fea=repeat_batch(clip_context, 2) if args.train_mode != "normal" else None,
+                                gan_classify=True,
+                            )
+                            fake_score_denoised_output = fake_score_denoised_output.chunk(2)[0]
+                            gan_logits = gan_logits.float().chunk(2)
+                        else:
+                            fake_score_denoised_output = fake_score_transformer3d(
+                                x=fake_score_denoised_input,
+                                context=prompt_embeds,
+                                t=critic_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                                clip_fea=clip_context if args.train_mode != "normal" else None,
+                            )
+
+                    denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                    avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                    train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+
+                    critic_loss = denoising_loss
+                    if use_gan:
+                        fake_logit, real_logit = gan_logits[0], gan_logits[1]
+                        if args.relativistic_discriminator:
+                            gan_d_loss = F.softplus(-(real_logit - fake_logit)).mean()
+                        else:
+                            gan_d_loss = F.softplus(-real_logit).mean() + F.softplus(fake_logit).mean()
+                        gan_d_loss = gan_d_loss * args.gan_d_weight
+                        train_gan_d_loss += accelerator.gather(gan_d_loss.detach().repeat(args.train_batch_size)).mean().item()
+                        critic_loss = critic_loss + gan_d_loss
+
+                    accelerator_fake_score_transformer3d.backward(critic_loss)
+                    del critic_loss
 
                 if use_gan and args.r1_weight > 0:
                     with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):

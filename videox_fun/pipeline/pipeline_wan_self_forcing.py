@@ -868,13 +868,14 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             end_idx = start_idx + current_num_frames
             noisy_input = noise[:, :, start_idx:end_idx]
 
-            # Denoising loop for current block
-            # Reset scheduler state for each block (required for causal generation)
-            # For Euler scheduler, resetting _step_index is sufficient.
-            # For multi-step schedulers (UniPC, DPM++), also clear accumulated model outputs.
-            self.scheduler._step_index = None
-            if hasattr(self.scheduler, 'model_outputs'):
-                self.scheduler.model_outputs = []
+            if not stochastic_sampling and isinstance(self.scheduler, FlowUniPCMultistepScheduler):
+                self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
+                timesteps = self.scheduler.timesteps
+            elif not stochastic_sampling and isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
+                self.scheduler.set_timesteps(device=device, sigmas=sampling_sigmas)
+                timesteps = self.scheduler.timesteps
+            else:
+                self.scheduler._step_index = None
             
             denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
             with self.progress_bar(total=len(denoise_timesteps)) as progress_bar:
