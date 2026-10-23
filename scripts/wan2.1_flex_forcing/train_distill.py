@@ -77,16 +77,12 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel,
                                WanTransformer3DModel_FlexForcing,
                                WanTransformer3DModel_SelfForcing)
-from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
-                                 WanFlexForcingPipeline,
-                                 WanSelfForcingPipeline)
+from videox_fun.pipeline import (WanFlexForcingPipeline, WanI2VPipeline,
+                                 WanPipeline, WanSelfForcingPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.flex_chunking import (broadcast_chunk_sizes,
-                                            build_full_then_blocks_partitions,
-                                            build_pyramid_partitions,
+from videox_fun.utils.flex_chunking import (build_pyramid_partitions,
                                             chunk_boundaries,
-                                            sample_flexible_chunks,
-                                            uniform_chunks,
+                                            sample_flex_level0,
                                             validate_nested_partitions)
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
@@ -299,6 +295,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                     # the layout inference builds - otherwise the samples say
                     # nothing about the model being trained.
                     flex_kwargs = {}
+                    val_stochastic_sampling = not args.flow_euler_rollout
                     if args.flex_forcing:
                         if args.flex_pyramid_levels > 1:
                             # 3.2: exactly what predict_t2v.py passes. `chunk_spec=None`
@@ -311,14 +308,6 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                                 min_num_frame_per_block=args.flex_min_num_frame_per_block,
                             )
                         else:
-                            # No ladder in training, and with no pyramid the
-                            # whole-clip band is empty - `[21]` is never drawn at
-                            # `flex_chunk_max` below the frame count, so "bidir"
-                            # would validate out of distribution too. The uniform
-                            # block layout is the one band that is both fixed
-                            # across checkpoints and actually trained:
-                            # FLEX_ARM_PROB of iterations use it, against
-                            # ~1.3% for the most common random partition.
                             flex_kwargs = dict(
                                 chunk_spec=args.num_frame_per_block,
                                 denoise_mode="fixed",
@@ -336,6 +325,7 @@ def log_validation(vae, text_encoder, tokenizer, clip_image_encoder, transformer
                         num_frame_per_block = args.num_frame_per_block,
                         independent_first_frame = args.independent_first_frame,
                         context_noise = args.context_noise,
+                        stochastic_sampling = val_stochastic_sampling,
                         **flex_kwargs,
                     ).videos
                     os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
@@ -379,21 +369,20 @@ def generate_timestep_with_lognorm(low, high, shape, device="cpu", generator=Non
     return torch.clip(t.to(torch.int32), low, high - 1)
 
 
-# Each training iteration draws its level-0 layout from four equally likely arms
-# (FLEX_ARM_PROB = 25% of iterations each): the whole-clip planning chunk (3.2's
-# coarse step, `[[F], ...]` at inference), the launcher's own uniform
-# `num_frame_per_block`, the fixed "first step full, then block-major" ladder
-# (`denoise_mode="full_then_blocks"`), and a random 3.1 partition. Equal shares
-# keep the coarse, causal and every in-between layout covered while giving the
-# full_then_blocks ladder enough iterations to train the block-major-at-high-noise
-# trajectory the binary pyramid never reaches. Deliberately not a CLI flag - it is
-# a property of the schedule mixture, not a knob the launcher keeps in sync.
-FLEX_ARM_PROB = 0.25
+# The level-0 four-arm mixture (30% of iterations each for the whole-clip
+# planning chunk, the launcher's own uniform `num_frame_per_block` and the fixed
+# "first step full, then block-major" ladder, plus 10% for a random §3.3/§5
+# partition - see `FLEX_RANDOM_PROB`) now lives in
+# `videox_fun.utils.flex_chunking.sample_flex_level0`, because `train_ode.py`
+# draws from the SAME law: its checkpoint is this stage's `--ode_transformer_path`
+# initialisation, so a layout this stage spends most of its iterations on must
+# not be one stage 1 never regressed. What stays here is only the ladder built on
+# top of the draw.
 
 # How many steps of a launch report the partition they drew. Counted from this
 # process rather than from `global_step`, so a resumed run still gets its own
 # look at the layout. Two lines come out per step (the generator and the critic
-# each draw one), which is enough to watch the three arms show up in their
+# each draw one), which is enough to watch the arms show up in their
 # stated shares; after that they are only noise in a multi-day run.
 FLEX_LAYOUT_LOG_STEPS = 20
 
@@ -402,134 +391,74 @@ def sample_flex_partitions(args, num_frames, num_denoising_steps, torch_rng,
                            device, verbose=False):
     """Draw the Flex-Forcing partition ladder for one training iteration.
 
-    arXiv 2607.03509 3.1 asks for a *random* partition per rollout (chunk sizes
-    2..10) so a single model covers the whole causal-to-bidirectional spectrum,
-    and 3.2 then nests that partition into a coarse-to-fine ladder with one level
-    per denoising step. Returns ``None`` when Flex-Forcing is off, which leaves
-    the inherited uniform ``num_frame_per_block`` masks untouched.
+    arXiv 2607.03509 §3.3 asks for a *random* partition per rollout so a single
+    model covers the whole causal-to-bidirectional spectrum, §5 fixes that draw's
+    chunk sizes at 2..10, and §3.2 then nests the partition into a coarse-to-fine
+    ladder with one level per denoising step. Returns ``None`` when Flex-Forcing
+    is off, which leaves the inherited uniform ``num_frame_per_block`` masks
+    untouched.
 
-    The level-0 layout is a four-way mixture decided by a single uniform draw,
-    each arm taking ``FLEX_ARM_PROB`` (25%) of iterations: one chunk over the
-    whole clip (inference's coarse planning step), a single-level uniform block
-    grid, the fixed "first step full, then block-major" ladder
-    (`denoise_mode="full_then_blocks"`), and a random 2..10 partition. The coarse
-    and random arms are refined into the same binary pyramid, so a single set of
-    weights covers `denoise_mode="pyramid"` whether or not the caller pins
-    `chunk_spec`. The uniform and full_then_blocks arms bypass that refinement:
-    uniform emits a pure-Self-Forcing ladder in one of three layouts drawn from
+    The level-0 layout is a four-way mixture decided by a single uniform draw:
+    one chunk over the whole clip (inference's coarse planning step), a
+    single-level uniform block grid, the fixed "first step full, then
+    block-major" ladder (`denoise_mode="full_then_blocks"`), and a random 2..10
+    partition. The random arm takes ``FLEX_RANDOM_PROB`` (10%) and the other
+    three split what is left equally, i.e. 30% each. The coarse and random arms
+    are refined into the same binary pyramid, so a single set of weights covers
+    `denoise_mode="pyramid"` whether or not the caller pins `chunk_spec`. The
+    uniform and full_then_blocks arms bypass that refinement: uniform emits a
+    pure-Self-Forcing ladder in one of three layouts drawn from
     `num_frame_per_block` (`[3x7]`) and fully causal (`[1x21]`) -- `[3x7]` alone,
     `[1x21]` alone, or `[3x7]` planning followed by `[1x21]` for every remaining
-    step; full_then_blocks emits its two-level ladder whole, drawing the same
-    block width. With no pyramid the coarse arm is empty (a `[F]` level 0 would be
-    a degenerate single-chunk rollout), so the split is 25% uniform / 25%
-    full_then_blocks / 50% random.
+    step, 10% of iterations each; full_then_blocks emits its two-level ladder
+    whole, drawing the same block width. With no pyramid the coarse arm is empty
+    (a `[F]` level 0 would be a degenerate single-chunk rollout), so the two
+    survivors widen and the split becomes 45% uniform / 45% full_then_blocks /
+    10% random.
+
+    The draw itself is :func:`videox_fun.utils.flex_chunking.sample_flex_level0`,
+    shared with ``train_ode.py`` so that stage 1 - whose checkpoint this stage
+    loads via ``--ode_transformer_path`` - regresses the same level-0 law it is
+    then distilled on. What this function adds is only the *ladder*: how the drawn
+    layout nests into one level per denoising step.
     """
     if not args.flex_forcing:
         return None
-    # The arm selector must be IDENTICAL on every rank, not just its broadcast
-    # count. Only the coarse/random arms funnel through the shared refine tail
-    # below; the uniform and full_then_blocks arms each set the ladder directly
-    # from a different tensor, so a per-rank `u` would leave ranks in different
-    # arms building different ladders
-    # -> different walk forward counts -> FSDP all-gather desync (NCCL hang).
-    # Broadcast rank 0's draw so all ranks take the same arm; the arm's existing
-    # single broadcast then reconciles its within-arm randomness (the random base,
-    # the block width) to rank 0, making every ladder byte-identical.
-    u = torch.rand((), generator=torch_rng, device=device)
-    if dist.is_available() and dist.is_initialized():
-        dist.broadcast(u.reshape(1), src=0)
-    u = u.item()
     pyramid = args.flex_pyramid_levels > 1
-    # Four equally likely arms; the coarse (whole-clip planning) one only when a
-    # pyramid is on, else its 25% folds into the random arm.
-    coarse_hi = FLEX_ARM_PROB if pyramid else 0.0
-    uniform_hi = coarse_hi + FLEX_ARM_PROB
-    ftb_hi = uniform_hi + FLEX_ARM_PROB
-    ladder = None
-    if u < coarse_hi:
-        # Coarse end of 3.1: reuse the ladder builder's own level-0 rule so the
-        # `independent_first_frame` handling cannot drift from inference's.
-        base = build_pyramid_partitions(
-            num_frames, num_levels=1, base_chunks=None,
-            independent_first_frame=args.independent_first_frame)[0]
-        arm = "whole clip, the 3.2 coarse planning layout"
-    elif u < uniform_hi:
-        # Pure Self-Forcing (no binary-pyramid refinement), three layouts drawn
-        # from `num_frame_per_block` (-> [3x7]) and fully causal (1 frame/block,
-        # -> [1x21]): [3x7] alone, [1x21] alone, and [3x7] planning followed by
-        # [1x21] for every remaining step (the coarse-block -> per-frame descent
-        # the pyramid never samples because it halves through [2,1x14] first).
-        # The three change the ladder DEPTH (hence the walk's forward count), so
-        # the choice must be rank-consistent; it is free here because `u` was
-        # already broadcast to rank 0, so slicing its position within the uniform
-        # band gives every rank the same sub-arm with no extra collective. Like
-        # every arm this issues EXACTLY ONE broadcast (the level-0 layout; the
-        # trailing [1x21] levels are deterministic from `num_frames`). Setting
-        # `ladder` here skips the refine tail. `uniform_chunks`, not
-        # `normalize_chunk_spec`: the latter encodes `independent_first_frame` as
-        # a leading 1 and would silently disagree with the bands around it.
-        band = (u - coarse_hi) / FLEX_ARM_PROB          # [0, 1) in the uniform arm
-        sub = min(int(band * 3), 2)                     # 0 / 1 / 2, equiprobable
-        nfpb = max(1, int(args.num_frame_per_block))
-        iff = args.independent_first_frame
-        causal = uniform_chunks(num_frames, 1, independent_first_frame=iff)
-        if sub == 0:
-            base = broadcast_chunk_sizes(causal, device=device)
-            ladder = [base]
-            arm = "uniform 1-frame blocks, single level (fully causal)"
-        elif sub == 1:
-            base = broadcast_chunk_sizes(
-                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
-                device=device)
-            ladder = [base]
-            arm = f"uniform {nfpb}-frame blocks, single level"
-        else:
-            base = broadcast_chunk_sizes(
-                uniform_chunks(num_frames, nfpb, independent_first_frame=iff),
-                device=device)
-            ladder = ([base] + [list(causal)
-                                for _ in range(max(0, num_denoising_steps - 1))])
-            arm = (f"uniform {nfpb}-frame plan -> fully causal [1x" f"{num_frames}] "
-                   "for the remaining steps")
-    elif u < ftb_hi:
-        # "First step full, every later step block-major": a fixed two-level
-        # ladder that does NOT go through the binary pyramid refinement, so the
-        # block-major level is reached at high noise (the 2nd step) instead of as
-        # a deep refinement - the one trajectory the pyramid arms never sample.
-        # The block-major width is drawn between fully causal (1 frame / block)
-        # and the launcher's `num_frame_per_block`, so both the tight-AR and the
-        # coarse-block refinement of the whole-clip plan get trained. The block
-        # width is a per-rank draw, so it has to be reconciled with EXACTLY ONE
-        # broadcast - the same collective count every other arm issues (they each
-        # broadcast their single base) - or the ranks desync and NCCL deadlocks.
-        # Level 0 is just [F], identical on every rank and needing no sync, so we
-        # broadcast only the block-major level; rank 0's draw wins and every rank
-        # rebuilds the same two-level ladder locally.
-        block_choices = sorted({1, max(1, int(args.num_frame_per_block))})
-        pick = int(torch.rand((), generator=torch_rng, device=device).item()
-                   * len(block_choices))
-        block = block_choices[min(pick, len(block_choices) - 1)]
-        block = min(block, int(num_frames))
-        ftb = build_full_then_blocks_partitions(
-            num_frames, block,
-            independent_first_frame=args.independent_first_frame)
-        ftb[1] = broadcast_chunk_sizes(ftb[1], device=device)
-        ladder = ftb[:num_denoising_steps]
-        arm = (f"full clip -> uniform {max(ftb[1])}-frame blocks, "
-               "the full_then_blocks ladder")
+    draw = sample_flex_level0(
+        num_frames,
+        num_frame_per_block=args.num_frame_per_block,
+        chunk_min=args.flex_chunk_min,
+        chunk_max=args.flex_chunk_max,
+        pyramid=pyramid,
+        generator=torch_rng,
+        device=device,
+        independent_first_frame=args.independent_first_frame)
+    base = draw["sizes"]
+    arm = draw["arm_text"]
+    if draw["arm"] in ("uniform_causal", "uniform_blocks"):
+        # Pure Self-Forcing grids: a single level, and they deliberately bypass
+        # the binary refinement below - refining `[3x7]` would halve it through
+        # `[2, 1x14]`, which is the pyramid's own trajectory, not this arm's.
+        ladder = [base]
+    elif draw["arm"] == "uniform_plan_then_causal":
+        # `[3x7]` planning, then fully causal for every remaining step: the
+        # coarse-block -> per-frame descent the pyramid never samples. The
+        # trailing `[1x21]` levels are deterministic from `num_frames`, so the
+        # arm's single broadcast (already issued) covered everything random.
+        ladder = ([base] + [list(draw["causal"])
+                            for _ in range(max(0, num_denoising_steps - 1))])
+    elif draw["arm"] == "full_then_blocks":
+        # Two levels, taken whole. The walk clamps to the finest level for every
+        # later step, so a ladder shorter than the denoising schedule is the
+        # intended shape here, not wasted steps.
+        ladder = [list(base), list(draw["block_level"])][:num_denoising_steps]
     else:
-        base = sample_flexible_chunks(
-            num_frames, min_chunk=args.flex_chunk_min, max_chunk=args.flex_chunk_max,
-            generator=torch_rng, device=device,
-            independent_first_frame=args.independent_first_frame)
-        arm = f"random {args.flex_chunk_min}..{args.flex_chunk_max}-frame blocks, the 3.1 spectrum"
-    if ladder is None:
-        # Every rank has to train the same layout: the FlexAttention mask, and the
+        # `coarse` / `random`: the two arms the binary pyramid refines. Every rank
+        # has to train the same layout - the FlexAttention mask, and the
         # `num_frame_per_block` derived from it, must agree across the SP/FSDP
-        # group. Only the coarse and random arms reach here; the uniform and
-        # full_then_blocks arms above already set `ladder` (each with its single
-        # broadcast), so they skip this refine path.
-        base = broadcast_chunk_sizes(base, device=device)
+        # group - which `sample_flex_level0` already guaranteed by broadcasting
+        # rank 0's draw.
         ladder = [base]
         if pyramid:
             ladder = build_pyramid_partitions(
@@ -601,16 +530,24 @@ def flex_self_context_enabled(args, clean_x, final_step_index):
     """Whether 3.3's K-Projection gets a self-generated clean context this round.
 
     This is a block-mask-path concern only, and this flag is inert under
-    ``--use_kv_cache_training``. The KV-cache rollout passes no ``flex_state``,
-    so ``_flex_project`` short-circuits and :math:`\\Pi` stays at its identity
-    initialisation there - which matches KV inference, which never supplies a
-    timestep either, so the two sides agree rather than one of them drifting.
-    The block-mask path is the one that exercises :math:`\\Pi`, and it builds no
-    KV cache, so with prompt-only data - ``clean_latents is None``, which the
-    prompt-only branch sets unconditionally - no clean context exists anywhere
-    in the sequence, :math:`\\Pi_{t\\leftarrow 0}` has nothing to project and
-    never enters the autograd graph: its parameters sit in an optimizer group
-    and still stay at the identity initialisation for the entire run.
+    ``--use_kv_cache_training`` - but *not* because :math:`\\Pi` is idle there.
+    :class:`WanTransformer3DModel_FlexForcing` arms :math:`\\Pi` by itself
+    whenever a projection was built and the forward has a clean context to read
+    (``kv_cache is not None or clean_x is not None``), taking the noise level
+    from ``t``; a caller that passes no ``flex_state`` still projects. So
+    :math:`\\Pi` **is** invoked on the KV-cache path, in training and in
+    inference alike, and the exit step that carries gradient gives it real
+    gradient. All this flag does *not* do there is supply a ``clean_x`` half:
+    the KV rollout already commits its own clean context into the cache ("feed
+    denoised_pred directly"), so it has no use for one and the switch has no
+    lever to pull.
+    On the block-mask path the switch is what decides whether :math:`\\Pi` has
+    anything to project at all: that path builds no KV cache, so with
+    prompt-only data - ``clean_latents is None``, which the prompt-only branch
+    sets unconditionally - no clean context exists anywhere in the sequence,
+    :math:`\\Pi_{t\\leftarrow 0}` has nothing to project and never enters the
+    autograd graph: its parameters sit in an optimizer group and still stay at
+    the identity initialisation for the entire run.
 
     The denoising loop already re-rolls the model under ``no_grad`` and converts
     every non-final step to an x0 prediction, so the previous step's prediction
@@ -1137,21 +1074,23 @@ def parse_args():
         "--flex_chunk_min",
         type=int,
         default=2,
-        help="Smallest chunk drawn when sampling a partition (paper 3.1 uses 2). "
-             "1 is allowed but adds no coverage: refining a 2-frame chunk already "
-             "yields 1-frame leaves."
+        help="Smallest chunk drawn by the level-0 mixture's *random* arm (paper "
+             "§5 uses 2). 1 is allowed but adds no coverage: refining a 2-frame "
+             "chunk already yields 1-frame leaves."
     )
     parser.add_argument(
         "--flex_chunk_max",
         type=int,
         default=10,
-        help="Largest chunk drawn when sampling a partition (paper 3.1 uses 10; "
-             "setting it equal to --flex_chunk_min pins one fixed layout). Keep it "
+        help="Largest chunk drawn by the level-0 mixture's *random* arm (paper §5 "
+             "uses 10; setting it equal to --flex_chunk_min pins that arm to one "
+             "fixed layout). Keep it "
              "below the latent frame count: the whole-clip layout is already "
-             "covered by the pyramid mixture, so raising max to the frame count "
-             "only spends draws on a layout you already have and thins out 3.1 - "
-             "at 21 latent frames max=21 leaves 3649 distinct partitions versus "
-             "4882 at max=10."
+             "covered by the coarse arm, so raising max to the frame count spends "
+             "draws on a layout you already have and thins every other one - at 21 "
+             "latent frames exhaustive enumeration gives 6441 distinct partitions "
+             "at max=10 and 6765 at max=21, but max=21 makes [21] alone 1/19 of "
+             "draws and cuts P([3]*7) from 1/183708 to 1/1106560."
     )
     parser.add_argument(
         "--flex_pyramid_levels",
@@ -1178,10 +1117,14 @@ def parse_args():
              "block-mask path trains on prompts alone: it builds no KV cache, so "
              "without this there is no clean context at all and the K-Projection "
              "never enters the autograd graph. Doubles the attention sequence. "
-             "Inert under --use_kv_cache_training: that path passes no flex_state, "
-             "so the K-Projection is never invoked on either side and stays at its "
-             "identity init. Also ignored when real --use_teacher_forcing data is "
-             "present, and with --flex_forcing off."
+             "Inert under --use_kv_cache_training for a different reason than it "
+             "looks like: that path already commits its own clean context into the "
+             "KV cache, so it needs no clean_x half. The K-Projection itself IS "
+             "active there - the Flex backbone arms it automatically whenever a "
+             "projection was built and kv_cache or clean_x is present - so this "
+             "flag is not evidence that the projection sits untrained under "
+             "--use_kv_cache_training. Also ignored when real --use_teacher_forcing "
+             "data is present, and with --flex_forcing off."
     )
     parser.add_argument(
         "--independent_first_frame",

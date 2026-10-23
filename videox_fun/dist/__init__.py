@@ -25,5 +25,6 @@ from .minimax_h3_xfuser import MiniMaxH3MultiGPUsAttnProcessor
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
 from .qwenimage21_xfuser import QwenImage21MultiGPUsAttnProcessor
 from .wan_xfuser import (usp_attn_forward, usp_attn_s2v_forward,
-                         usp_attn_self_forcing_forward)
+                         usp_attn_self_forcing_forward,
+                         usp_attn_sparkwan_forward)
 from .z_image_xfuser import ZMultiGPUsSingleStreamAttnProcessor

@@ -56,18 +56,13 @@ class FSDPEMA:
         with torch.no_grad():
             module.load_state_dict(source.state_dict(), strict=True)
 
-        # Wrap with the same kwargs as the live model goes through in
-        # `accelerator.prepare_model`, minus the mixed-precision policy: the
-        # EMA never runs forward/backward, and a `param_dtype` cast would
-        # quantize the shadow copy away from fp32 (see the note in the class
-        # docstring), so no casting is wanted here.
         fsdp_plugin.set_auto_wrap_policy(module)
         self.module = FSDP(
             module,
             sharding_strategy=fsdp_plugin.sharding_strategy or fsdp_plugin.reshard_after_forward,
             cpu_offload=fsdp_plugin.cpu_offload,
             auto_wrap_policy=fsdp_plugin.auto_wrap_policy,
-            mixed_precision=None,
+            mixed_precision=fsdp_plugin.mixed_precision_policy,
             sync_module_states=fsdp_plugin.sync_module_states,
             backward_prefetch=fsdp_plugin.backward_prefetch,
             forward_prefetch=fsdp_plugin.forward_prefetch,

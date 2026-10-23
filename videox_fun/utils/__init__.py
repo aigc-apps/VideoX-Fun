@@ -17,6 +17,7 @@ from .fp8_optimization import (autocast_model_forward,
                                convert_weight_dtype_wrapper,
                                replace_parameters_by_name)
 from .fsdp_ema import FSDPEMA, LORAFSDPEMA
+from .fsdp_utils import checkpoint_fsdp_forward
 from .gpu_memory_mode import (GPU_MEMORY_MODES, QUANT_MODES,
                               apply_gpu_memory_mode, register_quant_mode,
                               split_gpu_memory_mode)

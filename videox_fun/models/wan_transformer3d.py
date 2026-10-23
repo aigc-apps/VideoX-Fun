@@ -1325,10 +1325,14 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                             elif (
                                 ('audio_injector' in key and '.o.' in key)
                                 or ('injector_adain_layers' in key and '.linear.' in key)
-                                or any(name in key for name in ('trainable_cond_mask', 'cond_encoder', 'zip_motion_out.1', 'proj_l'))
+                                or any(name in key for name in ('trainable_cond_mask', 'cond_encoder', 'zip_motion_out.1', 'proj_l', 'to_gate_compress'))
                             ):
-                                # S2V zero_init_weights() / turbowan SparseLinearAttention.init_weights_()
-                                # zero these modules in __init__, which is lost under init_empty_weights.
+                                # S2V zero_init_weights() / turbowan SparseLinearAttention.init_weights_() /
+                                # VSASparseAttention.init_weights_() zero these modules in __init__, which is
+                                # lost under init_empty_weights. A VSA student cold-started from a dense base
+                                # has no attn_op.to_gate_compress keys in the checkpoint, so without this
+                                # branch the gate falls through to xavier_uniform_ below and the compressed
+                                # global branch starts at full random magnitude instead of as a no-op.
                                 initialized_dict[key] = torch.zeros(param_shape, dtype=param_dtype)
                                 print(f"Initializing missing parameter '{key}' with zero.")
                             elif 'weight' in key:

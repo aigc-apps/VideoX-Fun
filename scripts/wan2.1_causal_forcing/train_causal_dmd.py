@@ -17,6 +17,7 @@
 
 import argparse
 import contextlib
+import dataclasses
 import gc
 import json
 import logging
@@ -74,10 +75,12 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel,
-                               WanTransformer3DModel_SelfForcing)
+                               WanTransformer3DModel_SelfForcing,
+                               add_wan_gan_discriminator)
 from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
                                  WanSelfForcingPipeline)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
+from videox_fun.utils.fsdp_ema import FSDPEMA
 from videox_fun.utils.tqdm_bar import PauseAwareTqdm
 from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
                                     get_image_to_video_latent,
@@ -156,6 +159,15 @@ def slice_for_score(pred, vae, weight_dtype, score_num_frames=21, independent_fi
         pred_for_score = pred[:, :, -score_num_frames:]
 
     return pred_for_score, score_num_frames, True
+
+
+def repeat_batch(value, repeats):
+    """Repeat a batched tensor or per-sample list along the batch dimension."""
+    if value is None or repeats == 1:
+        return value
+    if torch.is_tensor(value):
+        return torch.cat([value] * repeats)
+    return list(value) * repeats
 
 
 def filter_kwargs(cls, kwargs):
@@ -494,6 +506,14 @@ def parse_args():
         ),
     )
     parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model for the generator.")
+    parser.add_argument(
+        "--fsdp_reduce_fp32", action="store_true",
+        help="Reduce gradients in fp32 under FSDP mixed precision; parameter gathering stays in low precision.",
+    )
+    parser.add_argument(
+        "--score_timestep_clamp", action="store_true",
+        help="Clamp DMD, GAN and critic timesteps to [0.02, 0.98] * num_train_timesteps.",
+    )
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
@@ -838,6 +858,47 @@ def parse_args():
         help="Probability of applying teacher forcing per step (1.0 = always)"
     )
 
+    parser.add_argument(
+        "--gan_g_weight", type=float, default=0.0,
+        help="One-Forcing: non-saturating generator GAN loss weight (0 disables). Positive GAN/R1/R2 weights require real videos.",
+    )
+    parser.add_argument(
+        "--gan_d_weight", type=float, default=0.0,
+        help="One-Forcing: discriminator GAN loss weight added to critic denoising loss (0 disables).",
+    )
+    parser.add_argument(
+        "--gan_feature_layers", nargs="+", type=int, default=[21, 29],
+        help="fake_score block indices feeding the discriminator head, one register token per layer.",
+    )
+    parser.add_argument(
+        "--gan_block_ffn_dim", type=int, default=2048,
+        help="FFN dimension of the discriminator cross-attention blocks.",
+    )
+    parser.add_argument(
+        "--gan_block_num_heads", type=int, default=12,
+        help="Number of heads of the discriminator cross-attention blocks.",
+    )
+    parser.add_argument(
+        "--relativistic_discriminator", action="store_true",
+        help="Use relativistic GAN losses based on real/fake logit differences.",
+    )
+    parser.add_argument(
+        "--r1_weight", type=float, default=0.0,
+        help="Finite-difference R1 penalty weight on noisy real latents (APT form, not divided by sigma).",
+    )
+    parser.add_argument(
+        "--r1_sigma", type=float, default=0.01,
+        help="Perturbation standard deviation for the R1 penalty.",
+    )
+    parser.add_argument(
+        "--r2_weight", type=float, default=0.0,
+        help="Finite-difference R2 penalty weight on noisy generated latents (0.5 * squared logit difference / sigma squared)."
+    )
+    parser.add_argument(
+        "--r2_sigma", type=float, default=0.01,
+        help="Perturbation standard deviation for the R2 penalty.",
+    )
+
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -848,6 +909,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    use_gan = any(w > 0 for w in (args.gan_g_weight, args.gan_d_weight, args.r1_weight, args.r2_weight))
+    if any(not math.isfinite(w) or w < 0 for w in (args.gan_g_weight, args.gan_d_weight, args.r1_weight, args.r2_weight)):
+        raise ValueError("GAN and regularization weights must be finite and non-negative.")
+    if use_gan and (args.use_deepspeed or args.gradient_accumulation_steps != 1):
+        raise ValueError("The GAN branch does not support DeepSpeed and requires --gradient_accumulation_steps=1.")
+    if use_gan and (args.r1_weight > 0 and (not math.isfinite(args.r1_sigma) or args.r1_sigma <= 0)
+                    or args.r2_weight > 0 and (not math.isfinite(args.r2_sigma) or args.r2_sigma <= 0)):
+        raise ValueError("Enabled R1/R2 penalties require finite, positive perturbation standard deviations.")
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -875,6 +944,8 @@ def main():
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
+    if use_gan and deepspeed_plugin is not None:
+        raise ValueError("The GAN branch does not support DeepSpeed.")
     if deepspeed_plugin is not None:
         zero_stage = int(deepspeed_plugin.zero_stage)
         fsdp_stage = 0
@@ -896,6 +967,9 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
+        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
+            fsdp_plugin.mixed_precision_policy = dataclasses.replace(fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32)
+            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:
@@ -1111,28 +1185,55 @@ def main():
                 param.requires_grad = True
                 break
 
+    if use_gan:
+        if (not args.gan_feature_layers or any(i < 0 or i >= len(fake_score_transformer3d.blocks) for i in args.gan_feature_layers)
+                or args.gan_block_ffn_dim <= 0 or args.gan_block_num_heads <= 0
+                or fake_score_transformer3d.dim % args.gan_block_num_heads != 0):
+            raise ValueError("GAN feature layers must exist and the positive head count must divide the fake_score hidden dimension.")
+        # Keep trainable discriminator master weights in fp32; forward uses autocast.
+        add_wan_gan_discriminator(
+            fake_score_transformer3d,
+            args.gan_feature_layers,
+            args.gan_block_ffn_dim,
+            args.gan_block_num_heads,
+            torch.float32,
+            seed=args.seed or 0,
+        )
+
     # Create EMA for the generator_transformer3d.
     if args.use_ema:
         if zero_stage == 3:
             raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
 
-        ema_generator_transformer3d = EMAModel(
-            generator_transformer3d.parameters(),
-            model_cls=WanTransformer3DModel_SelfForcing,
-            model_config=generator_transformer3d.config,
-        )
+        if fsdp_plugin is not None:
+            if getattr(fsdp_plugin, "fsdp_version", 1) != 1:
+                raise NotImplementedError("FSDPEMA 仅支持 FSDP1。")
+            ema_module = WanTransformer3DModel_SelfForcing.from_config(generator_transformer3d.config)
+            ema_generator_transformer3d = FSDPEMA(
+                ema_module, source=generator_transformer3d,
+                accelerator=accelerator, fsdp_plugin=fsdp_plugin,
+            )
+        else:
+            ema_generator_transformer3d = EMAModel(
+                generator_transformer3d.parameters(),
+                model_cls=WanTransformer3DModel_SelfForcing,
+                model_config=generator_transformer3d.config,
+            )
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-        if fsdp_stage != 0 or zero_stage == 3:
+        if fsdp_plugin is not None or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
 
                     safetensor_save_path = os.path.join(output_dir, f"diffusion_pytorch_model.safetensors")
-                    accelerate_state_dict = {k: v.to(dtype=weight_dtype) for k, v in accelerate_state_dict.items()}
+                    accelerate_state_dict = {
+                        k: v.to(dtype=torch.float32 if k.startswith("gan_head.") else weight_dtype)
+                        for k, v in accelerate_state_dict.items()
+                    }
                     save_file(accelerate_state_dict, safetensor_save_path, metadata={"format": "pt"})
 
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
@@ -1149,10 +1250,14 @@ def main():
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
                 if accelerator.is_main_process:
-                    if args.use_ema and models[0] is generator_transformer3d:
-                        ema_generator_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
-
-                    models[0].save_pretrained(os.path.join(output_dir, "transformer"))
+                    model = accelerator.unwrap_model(models[0])
+                    save_dir = os.path.join(output_dir, "transformer")
+                    if hasattr(model, "gan_head"):
+                        from safetensors.torch import save_file
+                        model.save_config(save_dir)
+                        save_file(model.state_dict(), os.path.join(save_dir, "diffusion_pytorch_model.safetensors"), metadata={"format": "pt"})
+                    else:
+                        model.save_pretrained(save_dir)
                     if not args.use_deepspeed:
                         weights.pop()
 
@@ -1160,34 +1265,23 @@ def main():
                         pickle.dump([batch_sampler.sampler._pos_start, first_epoch], file)
 
             def load_model_hook(models, input_dir):
-                if args.use_ema and models[0] is generator_transformer3d:
-                    ema_path = os.path.join(input_dir, "transformer_ema")
-                    _, ema_kwargs = WanTransformer3DModel_SelfForcing.load_config(ema_path, return_unused_kwargs=True)
-                    load_model = WanTransformer3DModel_SelfForcing.from_pretrained(
-                        input_dir, subfolder="transformer_ema",
-                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-                        low_cpu_mem_usage=True,
-                    )
-                    load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel_SelfForcing, model_config=load_model.config)
-                    load_model.load_state_dict(ema_kwargs)
-
-                    ema_generator_transformer3d.load_state_dict(load_model.state_dict())
-                    ema_generator_transformer3d.to(accelerator.device)
-                    del load_model
-
                 for i in range(len(models)):
                     # pop models so that they are not loaded again
                     model = models.pop()
 
-                    # load diffusers style into model
-                    load_model = WanTransformer3DModel.from_pretrained(
-                        input_dir, subfolder="transformer",
-                        low_cpu_mem_usage=True,
-                    )
-                    model.register_to_config(**load_model.config)
-
-                    model.load_state_dict(load_model.state_dict())
-                    del load_model
+                    # GAN heads are recreated from the same CLI configuration before resume.
+                    if hasattr(model, "gan_head"):
+                        from safetensors.torch import load_file
+                        model.load_state_dict(load_file(os.path.join(input_dir, "transformer", "diffusion_pytorch_model.safetensors")), strict=True)
+                    else:
+                        load_model = WanTransformer3DModel.from_pretrained(
+                            input_dir,
+                            subfolder="transformer",
+                            low_cpu_mem_usage=True,
+                        )
+                        model.register_to_config(**load_model.config)
+                        model.load_state_dict(load_model.state_dict())
+                        del load_model
 
                 pkl_path = os.path.join(input_dir, "sampler_pos_start.pkl")
                 if os.path.exists(pkl_path):
@@ -1200,6 +1294,32 @@ def main():
         accelerator.register_load_state_pre_hook(load_model_hook)
         accelerator_fake_score_transformer3d.register_save_state_pre_hook(save_model_hook)
         accelerator_fake_score_transformer3d.register_load_state_pre_hook(load_model_hook)
+
+        if args.use_ema:
+            def save_ema_hook(models, weights, output_dir):
+                if isinstance(ema_generator_transformer3d, FSDPEMA) or accelerator.is_main_process:
+                    ema_generator_transformer3d.save_pretrained(os.path.join(output_dir, "transformer_ema"))
+
+            def load_ema_hook(models, input_dir):
+                ema_path = os.path.join(input_dir, "transformer_ema")
+                if isinstance(ema_generator_transformer3d, FSDPEMA):
+                    ema_generator_transformer3d.load_pretrained(ema_path)
+                else:
+                    _, ema_kwargs = WanTransformer3DModel_SelfForcing.load_config(ema_path, return_unused_kwargs=True)
+                    load_model = WanTransformer3DModel_SelfForcing.from_pretrained(
+                        input_dir, subfolder="transformer_ema",
+                        transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
+                        low_cpu_mem_usage=True,
+                        torch_dtype=torch.float32,
+                    )
+                    load_model = EMAModel(load_model.parameters(), model_cls=WanTransformer3DModel_SelfForcing, model_config=load_model.config)
+                    load_model.load_state_dict(ema_kwargs)
+                    ema_generator_transformer3d.load_state_dict(load_model.state_dict())
+                    ema_generator_transformer3d.to(accelerator.device)
+                    del load_model
+
+            accelerator.register_save_state_pre_hook(save_ema_hook)
+            accelerator.register_load_state_pre_hook(load_ema_hook)
 
     if args.gradient_checkpointing:
         generator_transformer3d.enable_gradient_checkpointing()
@@ -1267,8 +1387,8 @@ def main():
 
     fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
     fake_trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
+        {'params': [], 'lr': args.learning_rate_critic},
+        {'params': [], 'lr': args.learning_rate_critic / 2},
     ]
     in_already = []
     for name, param in fake_score_transformer3d.named_parameters():
@@ -1281,7 +1401,7 @@ def main():
                 high_lr_flag = True
                 fake_trainable_params_optim[0]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic}")
                 break
         if high_lr_flag:
             continue
@@ -1290,8 +1410,14 @@ def main():
                 in_already.append(name)
                 fake_trainable_params_optim[1]['params'].append(param)
                 if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
+                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
                 break
+
+    if use_gan:
+        fake_trainable_params_optim[0]['params'].extend(
+            param for name, param in fake_score_transformer3d.named_parameters()
+            if name.startswith("gan_head.") and name not in in_already
+        )
 
     if args.use_came:
         optimizer = optimizer_cls(
@@ -1334,7 +1460,7 @@ def main():
         args.random_hw_adapt = False
 
     # Get the dataset
-    if args.train_mode != "normal" or args.use_teacher_forcing:
+    if args.train_mode != "normal" or args.use_teacher_forcing or use_gan:
         train_dataset = ImageVideoDataset(
             args.train_data_meta, args.train_data_dir,
             video_sample_size=args.video_sample_size, video_sample_stride=args.video_sample_stride, video_sample_n_frames=args.video_sample_n_frames, 
@@ -1362,7 +1488,7 @@ def main():
 
         return length_to_frame_num
 
-    if (args.enable_bucket and args.train_mode != "normal") or args.use_teacher_forcing:
+    if (args.enable_bucket and args.train_mode != "normal") or args.use_teacher_forcing or use_gan:
         aspect_ratio_sample_size = {key : [x / 512 * args.video_sample_size for x in ASPECT_RATIO_512[key]] for key in ASPECT_RATIO_512.keys()}
         batch_sampler_generator = torch.Generator().manual_seed(args.seed)
         batch_sampler = AspectRatioBatchImageVideoSampler(
@@ -1672,7 +1798,7 @@ def main():
     )
     fake_score_lr_scheduler = get_scheduler(
         args.lr_scheduler,
-        optimizer=optimizer,
+        optimizer=critic_optimizer,
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
@@ -1798,6 +1924,8 @@ def main():
         vae_stream_2 = None
 
     idx_sampling = DiscreteSampling(args.train_sampling_steps, uniform_sampling=args.uniform_sampling)
+    min_score_timestep = int(0.02 * noise_scheduler.config.num_train_timesteps)
+    max_score_timestep = int(0.98 * noise_scheduler.config.num_train_timesteps)
 
     def randomize_denoising_step_indices(
         denoising_step_indices_list,
@@ -1852,12 +1980,16 @@ def main():
         return result
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        if global_step >= args.max_train_steps:
+            break
         train_dmd_loss = 0.0
         # Number of generator backward contributions since the last log flush; the
         # generator only backprops every gen_update_interval batches, so its metrics
         # must be averaged by contribution count, not by gradient_accumulation_steps.
         train_gen_log_count = 0
         train_denoising_loss = 0.0
+        train_gan_g_loss = 0.0
+        train_gan_d_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
             # Data batch sanity check
@@ -1878,7 +2010,7 @@ def main():
                     save_videos_grid(pixel_value, f"{args.output_dir}/sanity_check/mask_{gif_name[:10] if not text == '' else f'{global_step}-{idx}'}.mp4", rescale=True)
 
             with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                if args.train_mode != "normal" or args.use_teacher_forcing:
+                if args.train_mode != "normal" or args.use_teacher_forcing or use_gan:
                     # Convert images to latent space
                     pixel_values = batch["pixel_values"].to(weight_dtype)
 
@@ -1942,8 +2074,9 @@ def main():
                         temp_n_frames = (temp_n_frames - 1) // sample_n_frames_bucket_interval + 1
 
                         pixel_values = pixel_values[:, :temp_n_frames, :, :]
-                        mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
-                        mask = mask[:, :temp_n_frames, :, :]
+                        if args.train_mode != "normal":
+                            mask_pixel_values = mask_pixel_values[:, :temp_n_frames, :, :]
+                            mask = mask[:, :temp_n_frames, :, :]
                         
                     # Keep all node same token length to accelerate the traning when resolution grows.
                     if args.keep_all_node_same_token_length:
@@ -1966,8 +2099,9 @@ def main():
                         actual_video_length = (actual_video_length - 1) // sample_n_frames_bucket_interval + 1
 
                         pixel_values = pixel_values[:, :actual_video_length, :, :]
-                        mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
-                        mask = mask[:, :actual_video_length, :, :]
+                        if args.train_mode != "normal":
+                            mask_pixel_values = mask_pixel_values[:, :actual_video_length, :, :]
+                            mask = mask[:, :actual_video_length, :, :]
 
                     if args.low_vram:
                         torch.cuda.empty_cache()
@@ -1990,7 +2124,7 @@ def main():
                                 pixel_values_bs = pixel_values_bs.sample()
                                 new_pixel_values.append(pixel_values_bs)
                             return torch.cat(new_pixel_values, dim = 0)
-                        if args.use_teacher_forcing:
+                        if args.use_teacher_forcing or use_gan:
                             clean_latents = _batch_encode_vae(pixel_values)
                         else:
                             clean_latents = None
@@ -2022,7 +2156,7 @@ def main():
                                 clip_context.append(_clip_context)
                             clip_context = torch.cat(clip_context)
 
-                    if args.use_teacher_forcing:
+                    if args.use_teacher_forcing or use_gan:
                         target_shape = clean_latents.size()
                     else:
                         target_shape = mask_latents.size()
@@ -2426,17 +2560,7 @@ def main():
                         # Final output — slice generated frames (may be < num_frames for variable-length)
                         generator_pred_full = output_pred[:, :, :num_generated_frames]
 
-                        # Gradient mask: first block gets no gradient when generating > min frames
-                        # (matches Self-Forcing reference: model/base.py L182-L190)
-                        min_num_frames_score = args.score_num_frames
-                        need_gradient_mask = (num_generated_frames != min_num_frames_score)
-                        gradient_mask = None
-                        if need_gradient_mask:
-                            gradient_mask = torch.ones_like(generator_pred_full, dtype=torch.bool)
-                            if args.independent_first_frame:
-                                gradient_mask[:, :, :1] = False
-                            else:
-                                gradient_mask[:, :, :args.num_frame_per_block] = False
+                        need_gradient_mask = (num_generated_frames != args.score_num_frames)
 
                         # Slice for score computation: last score_num_frames frames
                         if num_generated_frames > args.score_num_frames:
@@ -2450,11 +2574,13 @@ def main():
                             generator_pred_for_score = generator_pred_full
                             score_num_frames = num_generated_frames
 
-                        # Compute score_mask for DMD loss (matches Self-Forcing: dmd.py L199-204)
                         score_mask = None
-                        if gradient_mask is not None:
-                            mask_offset = num_generated_frames - score_num_frames
-                            score_mask = gradient_mask[:, :, mask_offset:mask_offset + score_num_frames]
+                        if need_gradient_mask:
+                            score_mask = torch.ones_like(generator_pred_for_score, dtype=torch.bool)
+                            if args.independent_first_frame:
+                                score_mask[:, :, :1] = False
+                            else:
+                                score_mask[:, :, :args.num_frame_per_block] = False
 
                         # generator_pred = the sliced version for DMD loss
                         generator_pred = generator_pred_for_score
@@ -2530,7 +2656,7 @@ def main():
                                     generator_noise_list = [generator_noise[i] for i in range(bsz)]
                                     clean_x_list = [clean_latents[i] for i in range(bsz)] if clean_x is not None else None
                                     
-                                    # Use block_mask for causal training (一次性处理整个视频)
+                                    # Use block_mask for causal training
                                     generator_pred = generator_transformer3d(
                                         x=generator_noise_list,
                                         context=prompt_embeds,
@@ -2563,6 +2689,8 @@ def main():
                     # Common code for both KV cache and block mask training
                     indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                     generator_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                    if args.score_timestep_clamp:
+                        generator_timestep = generator_timestep.clamp(min_score_timestep, max_score_timestep)
                     generator_denoised_input = add_noise(
                         generator_pred,
                         torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng),
@@ -2668,17 +2796,53 @@ def main():
                     train_dmd_loss += avg_dmd_loss.item()
                     train_gen_log_count += 1
 
+                    # --- One-Forcing Generator GAN Loss ---
+                    generator_loss = dmd_loss
+                    if args.gan_g_weight > 0:
+                        indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
+                        gan_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                        if args.score_timestep_clamp:
+                            gan_timestep = gan_timestep.clamp(min_score_timestep, max_score_timestep)
+                        gan_noise = torch.randn(generator_pred.shape, dtype=generator_pred.dtype, device=generator_pred.device, generator=torch_rng)
+                        gan_inputs = [add_noise(generator_pred, gan_noise, gan_timestep)]
+                        if args.relativistic_discriminator:
+                            real_latents = clean_latents[:, :, :generator_pred.size(2)].to(generator_pred.dtype)
+                            gan_inputs.append(add_noise(real_latents, gan_noise, gan_timestep))
+                        num_gan_inputs = len(gan_inputs)
+                        with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                            _, gan_logits = fake_score_transformer3d(
+                                x=torch.cat(gan_inputs).to(dtype=weight_dtype),
+                                context=repeat_batch(prompt_embeds, num_gan_inputs),
+                                t=gan_timestep.repeat(num_gan_inputs),
+                                seq_len=seq_len,
+                                y=repeat_batch(inpaint_latents, num_gan_inputs) if args.train_mode != "normal" else None,
+                                clip_fea=repeat_batch(clip_context, num_gan_inputs) if args.train_mode != "normal" else None,
+                                gan_classify=True,
+                            )
+                        gan_logits = gan_logits.float().chunk(num_gan_inputs)
+                        if args.relativistic_discriminator:
+                            gan_g_loss = F.softplus(-(gan_logits[0] - gan_logits[1])).mean()
+                        else:
+                            gan_g_loss = F.softplus(-gan_logits[0]).mean()
+                        gan_g_loss = gan_g_loss * args.gan_g_weight
+                        train_gan_g_loss += accelerator.gather(gan_g_loss.detach().repeat(args.train_batch_size)).mean().item()
+                        generator_loss = generator_loss + gan_g_loss
+
                     if args.low_vram:
                         real_score_transformer3d = real_score_transformer3d.to("cpu")
-                        fake_score_transformer3d = fake_score_transformer3d.to("cpu")
+                        if args.gan_g_weight == 0:
+                            fake_score_transformer3d = fake_score_transformer3d.to("cpu")
                         torch.cuda.empty_cache()
 
-                    accelerator.backward(dmd_loss)
+                    accelerator.backward(generator_loss)
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
+                    if args.gan_g_weight > 0:
+                        # Discard discriminator gradients from the generator GAN backward.
+                        critic_optimizer.zero_grad()
                     
                     if args.low_vram:
                         fake_score_transformer3d = fake_score_transformer3d.to(accelerator.device)
@@ -2967,6 +3131,8 @@ def main():
 
                 indices = idx_sampling(bsz, generator=torch_rng, device=accelerator.device).long().cpu()
                 critic_timestep = noise_scheduler.timesteps[indices].to(device=accelerator.device)
+                if args.score_timestep_clamp:
+                    critic_timestep = critic_timestep.clamp(min_score_timestep, max_score_timestep)
                 critic_noise = torch.randn(fake_score_denoised_pred.shape, dtype=fake_score_denoised_pred.dtype, device=fake_score_denoised_pred.device, generator=torch_rng)
 
                 fake_score_denoised_input = add_noise(
@@ -2975,15 +3141,25 @@ def main():
                     critic_timestep
                 )
 
-                with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
-                    fake_score_denoised_output = fake_score_transformer3d(
-                        x=fake_score_denoised_input,
-                        context=prompt_embeds,
-                        t=critic_timestep,
-                        seq_len=seq_len,
-                        y=inpaint_latents if args.train_mode != "normal" else None,
-                        clip_fea=clip_context if args.train_mode != "normal" else None,
-                    )
+                # Generated and real latents share critic_noise / critic_timestep. Prepare the
+                # real input and the R1/R2 perturbations once; they are consumed by the critic
+                # forward below and by the R1/R2 penalties after the main backward(s).
+                real_noisy = None
+                r1_perturbation = None
+                r2_perturbation = None
+                if use_gan:
+                    real_latents = clean_latents[:, :, :fake_score_denoised_pred.size(2)].to(fake_score_denoised_pred.dtype)
+                    real_noisy = add_noise(real_latents, critic_noise, critic_timestep)
+                    del real_latents
+                    if args.r1_weight > 0:
+                        r1_perturbation = args.r1_sigma * torch.randn(
+                            real_noisy.shape, dtype=real_noisy.dtype, device=real_noisy.device, generator=torch_rng
+                        )
+                    if args.r2_weight > 0:
+                        r2_perturbation = args.r2_sigma * torch.randn(
+                            fake_score_denoised_input.shape, dtype=fake_score_denoised_input.dtype,
+                            device=fake_score_denoised_input.device, generator=torch_rng
+                        )
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
                     noise_pred = noise_pred.float()
@@ -2997,11 +3173,136 @@ def main():
                     final_loss = masked_loss.mean()
                     return final_loss
 
-                denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
-                avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
-                train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
-                
-                accelerator_fake_score_transformer3d.backward(denoising_loss)
+                # --- One-Forcing Discriminator GAN Loss ---
+                if use_gan and not args.relativistic_discriminator:
+                    # Memory-optimized critic: the non-relativistic gan_d_loss =
+                    # softplus(-real) + softplus(fake) is separable, so run fake and real as two
+                    # sequential 1x-batch forwards and backward the fake pass first. Backwarding
+                    # fake frees its gradient-checkpointing block inputs before the real forward,
+                    # dropping the packed fake+real+R1+R2 forward peak (up to 4x batch) down to
+                    # 1x batch here; R1/R2 re-forward their own 2x batch below. Both backward(s)
+                    # accumulate into fake_score.grad, giving the identical update as the packed
+                    # single-forward critic.
+                    # -- Fake pass (1x batch): denoising output + fake discriminator logit --
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        fake_score_denoised_output, fake_gan_logits = fake_score_transformer3d(
+                            x=fake_score_denoised_input,
+                            context=prompt_embeds,
+                            t=critic_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                            clip_fea=clip_context if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                    denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                    avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                    train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+
+                    fake_logit = fake_gan_logits.float()
+                    fake_d_loss = F.softplus(fake_logit).mean() * args.gan_d_weight
+                    critic_loss = denoising_loss + fake_d_loss
+                    accelerator_fake_score_transformer3d.backward(critic_loss)
+                    # Fake graph freed: the transformer blocks' stored inputs are released here.
+                    fake_d_detached = fake_d_loss.detach()
+                    del critic_loss, fake_gan_logits, fake_logit, fake_d_loss, fake_score_denoised_output
+
+                    # -- Real pass (1x batch): discriminator logit only --
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        _, real_gan_logits = fake_score_transformer3d(
+                            x=real_noisy,
+                            context=prompt_embeds,
+                            t=critic_timestep,
+                            seq_len=seq_len,
+                            y=inpaint_latents if args.train_mode != "normal" else None,
+                            clip_fea=clip_context if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                    real_logit = real_gan_logits.float()
+                    real_d_loss = F.softplus(-real_logit).mean() * args.gan_d_weight
+                    accelerator_fake_score_transformer3d.backward(real_d_loss)
+                    # Real graph freed. Combine the two detached halves for logging.
+                    gan_d_loss = fake_d_detached + real_d_loss.detach()
+                    train_gan_d_loss += accelerator.gather(gan_d_loss.repeat(args.train_batch_size)).mean().item()
+                    del fake_d_detached, real_gan_logits, real_logit, real_d_loss
+                else:
+                    # Combined path: 2x-batch forward for relativistic GAN (both logits coupled by
+                    # softplus(-(real - fake))), or 1x-batch forward when GAN is disabled.
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        if use_gan:
+                            fake_score_denoised_output, gan_logits = fake_score_transformer3d(
+                                x=torch.cat([fake_score_denoised_input, real_noisy]),
+                                context=repeat_batch(prompt_embeds, 2),
+                                t=critic_timestep.repeat(2),
+                                seq_len=seq_len,
+                                y=repeat_batch(inpaint_latents, 2) if args.train_mode != "normal" else None,
+                                clip_fea=repeat_batch(clip_context, 2) if args.train_mode != "normal" else None,
+                                gan_classify=True,
+                            )
+                            fake_score_denoised_output = fake_score_denoised_output.chunk(2)[0]
+                            gan_logits = gan_logits.float().chunk(2)
+                        else:
+                            fake_score_denoised_output = fake_score_transformer3d(
+                                x=fake_score_denoised_input,
+                                context=prompt_embeds,
+                                t=critic_timestep,
+                                seq_len=seq_len,
+                                y=inpaint_latents if args.train_mode != "normal" else None,
+                                clip_fea=clip_context if args.train_mode != "normal" else None,
+                            )
+
+                    denoising_loss = custom_mse_loss(fake_score_denoised_output, critic_noise - fake_score_denoised_pred)
+                    avg_denoising_loss = accelerator.gather(denoising_loss.repeat(args.train_batch_size)).mean()
+                    train_denoising_loss += avg_denoising_loss.item() / args.gradient_accumulation_steps
+
+                    critic_loss = denoising_loss
+                    if use_gan:
+                        fake_logit, real_logit = gan_logits[0], gan_logits[1]
+                        if args.relativistic_discriminator:
+                            gan_d_loss = F.softplus(-(real_logit - fake_logit)).mean()
+                        else:
+                            gan_d_loss = F.softplus(-real_logit).mean() + F.softplus(fake_logit).mean()
+                        gan_d_loss = gan_d_loss * args.gan_d_weight
+                        train_gan_d_loss += accelerator.gather(gan_d_loss.detach().repeat(args.train_batch_size)).mean().item()
+                        critic_loss = critic_loss + gan_d_loss
+
+                    accelerator_fake_score_transformer3d.backward(critic_loss)
+                    del critic_loss
+
+                # R1/R2 gradient penalties: each re-forwards its own 2x batch after the main
+                # backward(s) and finite-differences the perturbed logit against the clean one,
+                # matching the packed-formula value while keeping the peak at 2x batch.
+                if use_gan and args.r1_weight > 0:
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        _, r1_logits = fake_score_transformer3d(
+                            x=torch.cat([real_noisy + r1_perturbation, real_noisy]),
+                            context=repeat_batch(prompt_embeds, 2),
+                            t=critic_timestep.repeat(2),
+                            seq_len=seq_len,
+                            y=repeat_batch(inpaint_latents, 2) if args.train_mode != "normal" else None,
+                            clip_fea=repeat_batch(clip_context, 2) if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                        r1_logits = r1_logits.float().chunk(2)
+                        r1_loss = args.r1_weight * (r1_logits[0] - r1_logits[1]).pow(2).mean()
+                    accelerator_fake_score_transformer3d.backward(r1_loss)
+                    del r1_loss
+
+                if use_gan and args.r2_weight > 0:
+                    with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
+                        _, r2_logits = fake_score_transformer3d(
+                            x=torch.cat([fake_score_denoised_input + r2_perturbation, fake_score_denoised_input]),
+                            context=repeat_batch(prompt_embeds, 2),
+                            t=critic_timestep.repeat(2),
+                            seq_len=seq_len,
+                            y=repeat_batch(inpaint_latents, 2) if args.train_mode != "normal" else None,
+                            clip_fea=repeat_batch(clip_context, 2) if args.train_mode != "normal" else None,
+                            gan_classify=True,
+                        )
+                        r2_logits = r2_logits.float().chunk(2)
+                        r2_loss = 0.5 * args.r2_weight * ((r2_logits[0] - r2_logits[1]) / args.r2_sigma).pow(2).mean()
+                    accelerator_fake_score_transformer3d.backward(r2_loss)
+                    del r2_loss
+
                 if accelerator_fake_score_transformer3d.sync_gradients:
                     accelerator_fake_score_transformer3d.clip_grad_norm_(fake_trainable_params, args.max_grad_norm)
                 critic_optimizer.step()
@@ -3019,10 +3320,15 @@ def main():
                     ema_generator_transformer3d.step(generator_transformer3d.parameters())
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}, step=global_step)
+                logs = {"train_denoising_loss": train_denoising_loss, "train_dmd_loss": train_dmd_loss / max(train_gen_log_count, 1)}
+                if use_gan:
+                    logs.update({"train_gan_g_loss": train_gan_g_loss / max(train_gen_log_count, 1), "train_gan_d_loss": train_gan_d_loss})
+                accelerator.log(logs, step=global_step)
                 train_dmd_loss = 0.0
                 train_gen_log_count = 0
                 train_denoising_loss = 0.0
+                train_gan_g_loss = 0.0
+                train_gan_d_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
                     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
@@ -3092,6 +3398,9 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
+        if global_step >= args.max_train_steps:
+            break
+
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
             with progress_bar.paused():
                 if args.use_ema:
@@ -3121,12 +3430,6 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if args.use_ema:
-        # Copy EMA weights to generator on ALL processes before save_state (collective op).
-        ema_generator_transformer3d.copy_to(generator_transformer3d.parameters())
-    if accelerator.is_main_process:
-        generator_transformer3d = unwrap_model(generator_transformer3d)
-
     if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
         gc.collect()
         torch.cuda.empty_cache()
@@ -3135,8 +3438,6 @@ def main():
         fake_score_save_path = os.path.join(save_path, "fake_score")
         accelerator.save_state(save_path)
         accelerator_fake_score_transformer3d.save_state(fake_score_save_path)
-        if args.use_ema and accelerator.is_main_process:
-            ema_generator_transformer3d.save_pretrained(os.path.join(save_path, "transformer_ema"))
         logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()

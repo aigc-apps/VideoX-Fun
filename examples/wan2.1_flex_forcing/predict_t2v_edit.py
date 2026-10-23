@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from itertools import filterfalse
 
 import numpy as np
 import torch
@@ -67,12 +68,13 @@ sampler_name        = "Flow"
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics.
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 shift               = 5
+stochastic_sampling = False
 
 # Load pretrained model if need
 # Any Wan2.1 / CausVid / Self-Forcing checkpoint loads as-is: the Flex-Forcing
 # backbone inherits every parameter name and only the new `flex_kproj.*` tensors
 # are reported missing (they are identity-initialised, so step 0 is unchanged).
-transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-1000/diffusion_pytorch_model.safetensors"
+transformer_path    = "output_dir_wan2.1_flex_forcing_distill/checkpoint-3000/diffusion_pytorch_model.safetensors"
 vae_path            = None
 lora_path           = None
 
@@ -292,15 +294,13 @@ with torch.no_grad():
         edit_steps      = edit_steps,
         shift           = shift,
         context_noise   = context_noise,
+        stochastic_sampling = stochastic_sampling,
         num_frame_per_block = num_frame_per_block,
         generator       = generator,
     ).videos
     torch.cuda.synchronize()
     elapsed = time.time() - start_time
     print(f"[Timing] edited span {edit_span} in {elapsed:.2f}s")
-    # Same diagnostic as predict_t2v.py, read after the edit: the cache now holds
-    # the whole clip committed as clean context, so `kv_tokens` is the full-clip
-    # width the edited span was able to attend over.
     if getattr(pipeline, "kv_cache_pos", None) is not None:
         kv_tokens = pipeline.kv_cache_pos[0]["k"].shape[1]
         kv_mib = sum(c["k"].numel() + c["v"].numel()
@@ -325,7 +325,6 @@ def save_results():
         image = (image * 255).numpy().astype(np.uint8)
         image = Image.fromarray(image)
         image.save(image_path)
-        print(f"Saved image to: {image_path}")
     else:
         video_path = os.path.join(save_path, prefix + "-edited.mp4")
         save_videos_grid(sample, video_path, fps=fps)
