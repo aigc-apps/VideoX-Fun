@@ -26,6 +26,7 @@
   - [5.1 快速开始](#51-快速开始)
   - [5.2 关键参数](#52-关键参数)
   - [5.3 DMD 特有参数](#53-dmd-特有参数)
+  - [5.4 可选 One-Forcing GAN 与精度控制](#54-可选-one-forcing-gan-与精度控制)
 - [六、使用训练好的 Checkpoint](#六使用训练好的-checkpoint)
 - [七、更多资源](#七更多资源)
 
@@ -39,7 +40,7 @@ Stage 3 需要：
 2. **Wan2.1-T2V-14B** 模型：作为 DMD real-score teacher。
 
 ```bash
-# 示例：Stage 2 CCD 训练的 checkpoint
+# Example: Stage 2 CCD checkpoint
 export STAGE2_CKPT="output_dir_wan2.1_causal_forcing_ccd/checkpoint-5000/transformer/diffusion_pytorch_model.safetensors"
 ```
 
@@ -70,10 +71,10 @@ pip install deepspeed==0.17.0 numpy==1.26.4
 **方式 3：使用 Docker**
 
 ```bash
-# 拉取镜像
+# Pull the image
 docker pull mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
 
-# 进入容器
+# Enter the container
 docker run -it -p 7860:7860 --network host --gpus all --security-opt seccomp:unconfined --shm-size 200g mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easycv/torch_cuda:cogvideox_fun
 ```
 
@@ -87,13 +88,13 @@ DMD 需要**两个**预训练模型：
 - **Wan2.1-T2V-14B**：非因果的 real-score teacher，用于计算真实分布得分。
 
 ```bash
-# 创建模型目录
+# Create the model directory
 mkdir -p models/Diffusion_Transformer
 
-# 下载 Wan2.1 T2V 1.3B（student 基础模型）
+# Download the Wan2.1 T2V 1.3B student base model
 modelscope download --model Wan-AI/Wan2.1-T2V-1.3B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-1.3B
 
-# 下载 Wan2.1 T2V 14B（DMD real-score teacher）
+# Download the Wan2.1 T2V 14B real-score teacher
 modelscope download --model Wan-AI/Wan2.1-T2V-14B --local_dir models/Diffusion_Transformer/Wan2.1-T2V-14B
 ```
 
@@ -103,12 +104,12 @@ Stage 2 CCD checkpoint（生成器/判别器初始化）通过 `--ode_transforme
 
 ## 四、数据准备
 
-DMD 使用 **TextDataset**（`train_mode="normal"`）— 只需要提示词，不需要视频数据，因为生成器通过自回归 rollout 自行创建训练样本。但仍需提供包含提示词的 `metadata.json`。
+当 `train_mode="normal"`、未启用 teacher forcing 且 GAN/R1/R2 权重均为零时，DMD 使用 **TextDataset**：只需要提示词，生成器通过自回归 rollout 自行创建训练样本。任一 GAN/R1/R2 权重为正时会切换为 **ImageVideoDataset**，需要带描述的真实视频，详见 5.4。
 
 ### 4.1 快速测试数据集
 
 ```bash
-# 下载官方示例数据集
+# Download the official demo dataset
 modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun-Videos-Demo
 ```
 
@@ -118,7 +119,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 
 ### 4.3 metadata.json 格式
 
-DMD 仅使用每条记录的 `"text"` 字段。当 `--train_mode="normal"`（TextDataset 模式）时，`file_path` 和其他字段会被忽略。
+仅提示词的 TextDataset 模式只读取每条记录的 `"text"` 字段。GAN/R1/R2 或 teacher forcing 需要与 Stage 1/2 相同的视频元数据，包括 `file_path`、`type="video"` 和 `text`。
 
 ```json
 [
@@ -131,7 +132,7 @@ DMD 仅使用每条记录的 `"text"` 字段。当 `--train_mode="normal"`（Tex
 ]
 ```
 
-> **说明**：你可以复用任何视频 metadata.json — DMD 只关心 `text` 字段。
+> **说明**：可以复用现有视频元数据。仅提示词模式只读取 `text`，GAN 训练还会读取视频文件。
 
 ---
 
@@ -179,6 +180,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_dmd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -212,7 +214,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--real_score_pretrained_model_name_or_path` | 14B real-score teacher | `models/Diffusion_Transformer/Wan2.1-T2V-14B` |
 | `--config_path` | 模型配置 YAML | `config/wan2.1/wan_civitai.yaml` |
 | `--train_data_dir` | 数据根目录 | `""` |
-| `--train_data_meta` | `metadata.json` 路径（仅含提示词） | `datasets/X-Fun-Videos-Demo/metadata.json` |
+| `--train_data_meta` | 元数据路径：普通 DMD 使用提示词，GAN/R1/R2 使用带描述的视频 | `datasets/X-Fun-Videos-Demo/metadata.json` |
 | `--ode_transformer_path` | Stage 2 CCD checkpoint（生成器/判别器初始化） | `$STAGE2_CKPT` |
 | `--train_batch_size` | 每 GPU batch 大小 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
@@ -264,8 +266,45 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--context_noise` | KV 缓存更新的上下文噪声级别 | 0 |
 | `--use_teacher_forcing` | 启用 teacher forcing（将 clean_x 传给 transformer） | - |
 | `--teacher_forcing_prob` | 每步应用 teacher forcing 的概率（1.0 = 始终） | 1.0 |
-| `--train_mode` | 训练模式：`normal`（TextDataset，仅提示词）或 `i2v` | `normal` |
+| `--train_mode` | `normal`（未启用 teacher forcing 或 GAN/R1/R2 时仅提示词）或 `i2v` | `normal` |
 | `--resume_from_checkpoint` | 恢复训练。使用 `"latest"` 自动选择最新 checkpoint | `"latest"` |
+---
+
+### 5.4 可选 One-Forcing GAN 与精度控制
+
+这些选项复用 `scripts/wan2.1_self_forcing/train_distill.py` 中的 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 机制。GAN/R1/R2 权重默认均为 **0**，两个精度开关在 argparse 中默认均**关闭**。AR diffusion、CCD 和 DMD 的 launcher 均启用 `--fsdp_reduce_fp32`；GAN/R1/R2 和 `--score_timestep_clamp` 仍关闭。AR diffusion 和 CCD 不添加 GAN 损失。
+
+判别器共享 **fake-score backbone**，每个选定特征层对应一个可学习 register token。判别器头由 critic optimizer 更新，不加入 generator optimizer。生成器损失为 `DMD + 加权 GAN`，critic 损失为 `denoising + 加权 GAN + R1 + R2`。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--gan_g_weight` | 非饱和生成器 GAN 损失权重 | `0.0` |
+| `--gan_d_weight` | 判别器 GAN 损失权重 | `0.0` |
+| `--gan_feature_layers` | 判别器头使用的 fake-score block 索引 | `21 29` |
+| `--gan_block_ffn_dim` | 判别器交叉注意力 FFN 维度 | `2048` |
+| `--gan_block_num_heads` | 判别器头数，须整除 fake-score 隐藏维度 | `12` |
+| `--relativistic_discriminator` | 使用配对真实/生成样本 logit 差值 | 关闭 |
+| `--r1_weight` | 噪声真实 latent 上的 APT 形式有限差分正则权重 | `0.0` |
+| `--r1_sigma` | R1 扰动标准差 | `0.01` |
+| `--r2_weight` | 噪声生成 latent 上的归一化有限差分正则权重 | `0.0` |
+| `--r2_sigma` | R2 扰动标准差 | `0.01` |
+| `--fsdp_reduce_fp32` | FSDP 使用 FP32 梯度归约，参数仍以低精度聚合 | 关闭（launcher 已启用） |
+| `--score_timestep_clamp` | 将 DMD、生成器 GAN 和 critic 时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关闭 |
+
+设 logits 为 `D_fake` 和 `D_real`，普通 GAN 的生成器损失为 `softplus(-D_fake)`，判别器损失为 `softplus(-D_real) + softplus(D_fake)`。相对论模式分别使用 `softplus(-(D_fake - D_real))` 和 `softplus(-(D_real - D_fake))`。
+
+R1 保持源实现的 APT 形式：`r1_weight * mean((D_real_perturbed - D_real)^2)`，**不除以 sigma**。R2 为 `0.5 * r2_weight * mean(((D_fake_perturbed - D_fake) / r2_sigma)^2)`。二者都是有限差分正则，不是需要 double backward 的输入梯度惩罚。真实/生成样本共用时间步和噪声，扰动噪声独立抽样。
+
+开启 GAN 时，向 `train_causal_dmd.py` 传入正的生成器/判别器权重，并按需配置 R1/R2。要求：
+- 使用带描述的真实视频，不能只提供提示词 JSON。元数据采用 Stage 1/2 视频格式，帧数须满足 `score_num_frames` 与因果块几何。
+- `--gradient_accumulation_steps=1`；GAN 分支不支持 DeepSpeed。
+- 特征层索引必须存在。默认 `21 29` 与 `12` 个头适用于 Wan2.1-T2V-1.3B，其他 backbone 可能需要调整。
+- 仅开启 `gan_g_weight` 不会提供判别器的分类学习目标。须明确选择判别器权重，非零权重不保证质量提升。
+
+可训练 fake-score 与判别器头的 master weights 保持 **FP32**，前向按配置使用 autocast/FSDP 混合精度。Logits、softplus 损失及有限差分归约使用 FP32。`--fsdp_reduce_fp32` 只改变梯度通信精度，不改变前向 dtype 或模型结构。时间步 clamp 只作用于 score 训练，不改变生成器 rollout 或 validation schedule。
+
+恢复 GAN checkpoint 时应使用相同的 GAN/判别器头配置。判别器头随 fake-score 保存，包括 FP32 判别器头张量，并在加载前重建。导出的 generator 不包含该头，推理无需判别器或新增 GAN 参数。
+
 ---
 
 ## 六、使用训练好的 Checkpoint
@@ -273,14 +312,14 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 Stage 3 DMD checkpoint 是 Causal-Forcing 流水线的**最终模型**，直接用于推理：
 
 ```python
-# 在 examples/wan2.1_causal_forcing/predict_t2v.py 中
+# In examples/wan2.1_causal_forcing/predict_t2v.py
 transformer_path = "output_dir_wan2.1_causal_forcing_dmd/checkpoint-{N}/diffusion_pytorch_model.safetensors"
 
-# DMD Stage 3 推理配置
-guidance_scale      = 1.0    # CFG 已烘焦到蒸馏权重中
-num_inference_steps = 4      # 4 步 DMD
+# DMD Stage 3 inference config
+guidance_scale      = 1.0    # CFG is baked into distilled weights
+num_inference_steps = 4      # 4-step DMD
 stochastic_sampling = True
-num_frame_per_block = 3      # 分块生成
+num_frame_per_block = 3      # Chunk-wise generation
 ```
 
 或运行：
@@ -299,4 +338,5 @@ python examples/wan2.1_causal_forcing/predict_t2v.py
 ## 七、更多资源
 
 - **Causal-Forcing 论文**：https://github.com/thu-ml/Causal-Forcing
+- **One-Forcing（可选 GAN 机制）**：https://github.com/Aurora-edu/One-Forcing
 - **官方 GitHub**：https://github.com/aigc-apps/VideoX-Fun

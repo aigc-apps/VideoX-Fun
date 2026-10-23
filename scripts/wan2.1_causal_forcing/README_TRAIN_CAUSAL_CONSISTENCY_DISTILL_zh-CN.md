@@ -183,6 +183,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ccd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -228,6 +229,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 | `--output_dir` | 输出目录 | `output_dir_wan2.1_causal_forcing_ccd` |
 | `--gradient_checkpointing` | 启用激活重计算 | - |
 | `--mixed_precision` | `fp16` / `bf16` | `bf16` |
+| `--fsdp_reduce_fp32` | FSDP 混合精度下使用 FP32 梯度归约，前向与参数聚合仍保持低精度。CLI 默认关闭，launcher 已启用 | 启用 |
 | `--adam_weight_decay` | AdamW 权重衰减 | 0.0 |
 | `--adam_beta1` | AdamW beta1（CCD 使用 0.0） | 0.0 |
 | `--adam_beta2` | AdamW beta2 | 0.999 |

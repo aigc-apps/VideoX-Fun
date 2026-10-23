@@ -258,6 +258,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--adam_epsilon` | AdamW epsilon | 1e-10 |
 | `--vae_mini_batch` | VAE encoding mini-batch size | 1 |
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |
+| `--fsdp_reduce_fp32` | Optional: reduce gradients in fp32 under FSDP mixed precision (default reduces in bf16) | - |
 | `--enable_bucket` | Enable bucket training, no cropping, group by resolution | - |
 | `--random_hw_adapt` | Auto-scale images/videos to random sizes in `[min_size, max_size]` range | - |
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
@@ -275,12 +276,17 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | Parameter | Description | Example Value |
 |-----|------|-------|
 | `--denoising_step_indices_list` | Denoising step indices list (core distillation parameter) | `1000 750 500 250` |
+| `--randomize_step_indices` | Randomize the denoising timestep indices during training | - |
 | `--real_guidance_scale` | Real guidance scale for scoring | 6.0 |
+| `--score_timestep_clamp` | Optional: clamp DMD/critic timesteps to `[0.02, 0.98] * num_train_timesteps` | - |
 | `--fake_guidance_scale` | Fake guidance scale for scoring | 0.0 |
 | `--gen_update_interval` | Generator update interval | 5 |
 | `--negative_prompt` | Negative prompt for distillation | Chinese negative prompt |
 | `--train_sampling_steps` | Training sampling steps | 1000 |
 | `--ode_transformer_path` | Path to ODE-trained weights to load into generator transformer3d | `models/Diffusion_Transformer/Self-Forcing/checkpoints/ode_init.pt` |
+| `--real_score_model_name_or_path` | Optional: separate model used as real score (defaults to `pretrained_model_name_or_path`) | `models/Diffusion_Transformer/Wan2.1-T2V-14B` |
+| `--score_num_frames` | Latent frames in the score-computation window; `fake_score`/`real_score` always receive this many frames | 21 |
+| `--min_length_prob_bias` | Probability bias toward sampling the minimum length (`score_num_frames`); `0.0` = uniform sampling | 0.0 |
 
 **Self-Forcing-Specific Parameters**:
 
@@ -293,6 +299,23 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--context_noise` | Context noise level for KV cache update | 0 |
 | `--use_teacher_forcing` | Enable teacher forcing training (pass clean_x to transformer) | - |
 | `--teacher_forcing_prob` | Probability of applying teacher forcing per step | 1.0 |
+
+**GAN / Discriminator Parameters (One-Forcing)**:
+
+> All default to `0` / off, so a plain DMD run is unaffected. Setting **any** positive `--gan_g_weight` / `--gan_d_weight` / `--r1_weight` / `--r2_weight` attaches a discriminator head to `fake_score` and **requires real videos** in the training data.
+
+| Parameter | Description | Example Value |
+|-----|------|-------|
+| `--gan_g_weight` | One-Forcing: weight of the non-saturating GAN loss added to the DMD generator loss (`0` disables) | 0.0 |
+| `--gan_d_weight` | One-Forcing: weight of the GAN discriminator loss added to the `fake_score` denoising loss (`0` disables) | 0.0 |
+| `--gan_feature_layers` | `fake_score` block indices whose outputs feed the discriminator head (one register token per layer) | `21 29` |
+| `--gan_block_ffn_dim` | FFN dim of the discriminator cross-attention blocks | 2048 |
+| `--gan_block_num_heads` | Number of heads of the discriminator cross-attention blocks | 12 |
+| `--relativistic_discriminator` | Use the relativistic GAN loss (fake vs. real logit difference) | - |
+| `--r1_weight` | Finite-difference R1 penalty on noisy real latents (APT form, not divided by sigma) | 0.0 |
+| `--r1_sigma` | Perturbation std of the R1 penalty | 0.01 |
+| `--r2_weight` | Finite-difference R2 penalty on noisy generated latents | 0.0 |
+| `--r2_sigma` | Perturbation std of the R2 penalty | 0.01 |
 
 **Sample Size Configuration Guide**:
 - `video_sample_size` represents the resolution size of videos; when `random_hw_adapt` is True, it represents the minimum value between video and image resolutions.

@@ -146,6 +146,13 @@ def shard_model(
                     and p.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)):
                 p.data = p.data.to(param_dtype)
 
+    # `device_id` only moves the managed params/buffers, but `sync_module_states` checks every buffer of the root
+    # module, including those of the ignored modules (e.g. a computed rope `inv_freq`). Place the ignored modules
+    # on the device before wrapping. They are small fp32 heads kept replicated (not sharded), so FSDP's CPUOffload
+    # does not cover them: they stay GPU-resident even in offload mode, which is the intended numerical-precision pin.
+    for m in ignored_modules:
+        m.to(device_id)
+
     # With CPU offload, bound the prefetch depth so at most one extra all-gather is in flight; otherwise FSDP
     # would keep the gathered (unsharded) params of upcoming blocks resident and eat the savings.
     cpu_offload = CPUOffload(offload_params=True) if offload_to_cpu else None
@@ -163,12 +170,6 @@ def shard_model(
         cpu_offload=cpu_offload,
         limit_all_gathers=offload_to_cpu,
         ignored_states=ignored_modules if ignored_modules else None)
-
-    # `device_id`/`sync_module_states` only manage the sharded params; the ignored modules must be placed on
-    # the device explicitly. They are small fp32 heads kept replicated (not sharded), so FSDP's CPUOffload does
-    # not cover them: they stay GPU-resident even in offload mode, which is the intended numerical-precision pin.
-    for m in ignored_modules:
-        m.to(device_id)
 
     return model
 
