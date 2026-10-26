@@ -5,20 +5,21 @@ import torch
 from .attention_utils import (RoLASparseAttention, SparseLinearAttention,
                               attention)
 from .wan_transformer3d import (Wan2_2Transformer3DModel, WanSelfAttention, WanTransformer3DModel,
-                               rope_apply, rope_apply_qk)
+                               rope_apply_qk)
 
 
 @torch.compiler.disable()
 def rope_apply_lowrank(x, grid_sizes, freqs, rank):
-    """Rank-truncated 3D RoPE for the RoLa low-rank bottleneck.
+    """Rank-truncated 3D RoPE for the RoLa low-rank bottleneck (official convention).
 
     Applies rotary positional embedding to a rank-``r`` bottleneck instead of the full
     head_dim, reusing a prefix of the pre-trained rotary schedule (per RoLA, arXiv
     2609.06712) rather than recomputing frequencies. A rank-``r`` feature carries
-    ``r // 2`` complex rotary pairs; those pairs are budgeted across the temporal /
-    height / width axes exactly like ``rope_apply`` (``[c - 2*(c//3), c//3, c//3]``) and
-    each axis takes the FIRST ``n`` columns of its own block in the pre-trained table, so
-    the native t->h->w coordinate ordering and the per-axis band identity are preserved.
+    ``r // 2`` complex rotary pairs; following the upstream SparkDiffusion
+    ``_apply_rope_rank``, the rotated pairs take the CONTIGUOUS prefix of the
+    [t|h|w]-ordered pre-trained table (``freqs[:L, :rope_dim]``): all temporal pairs
+    first, then height pairs, then width pairs, in table order, with interleaved
+    (adjacent-pair) rotary coupling; the remaining dims pass through unchanged.
 
     Args:
         x: [B, H, L, rank] low-rank bottleneck (BHLD), real-valued.
@@ -29,16 +30,33 @@ def rope_apply_lowrank(x, grid_sizes, freqs, rank):
         [B, H, L, rank] with RoPE applied (same layout/dtype as ``x``).
     """
     c = freqs.shape[1]                    # head_dim // 2
-    c_r = rank // 2                       # rotary pairs the bottleneck can carry
-    # Native ordering: split the pre-trained table into its t/h/w blocks, then keep the
-    # first n columns of each block for the rank budget (n mirrors rope_apply's split).
-    t_full, h_full, w_full = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
-    t_n, h_n, w_n = c_r - 2 * (c_r // 3), c_r // 3, c_r // 3
-    freqs_r = torch.cat(
-        [t_full[:, :t_n], h_full[:, :h_n], w_full[:, :w_n]], dim=1)  # [M, c_r]
-    # rope_apply expects [B, L, n_channels, dim]; BHLD -> BSHD and back.
-    out = rope_apply(x.transpose(1, 2), grid_sizes, freqs_r)
-    return out.transpose(1, 2)
+    rope_dim = min(rank // 2, c)          # rotary pairs the bottleneck rotates
+    t_blk, h_blk, w_blk = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+    # Contiguous prefix budget in table order: temporal, then height, then width.
+    n_t = min(rope_dim, t_blk.shape[1])
+    n_h = min(rope_dim - n_t, h_blk.shape[1])
+    n_w = rope_dim - n_t - n_h
+    n_heads = x.size(1)
+    dtype = x.dtype
+    output = []
+    for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+        seq_len = f * h * w
+        # Per-token prefix table [seq_len, rope_dim], t-major then h then w ordering.
+        prefix = torch.cat([
+                t_blk[:f, :n_t].view(f, 1, 1, -1).expand(f, h, w, -1),
+                h_blk[:h, :n_h].view(1, h, 1, -1).expand(f, h, w, -1),
+                w_blk[:w, :n_w].view(1, 1, w, -1).expand(f, h, w, -1)
+            ],
+            dim=-1).reshape(seq_len, rope_dim)
+        # Rotate the first 2*rope_dim dims: x * exp(i*freq), interleaved pairs.
+        x_i = torch.view_as_complex(x[i, :, :seq_len, :2 * rope_dim].to(
+            torch.float32).reshape(n_heads, seq_len, rope_dim, 2))
+        x_i = torch.view_as_real(x_i * prefix.unsqueeze(0)).flatten(-2)
+        # Concatenate padding tokens (if any) and the untouched tail dims.
+        x_i = torch.cat([x_i, x[i, :, seq_len:, :2 * rope_dim]], dim=1)
+        x_i = torch.cat([x_i, x[i, :, :, 2 * rope_dim:]], dim=-1)
+        output.append(x_i)
+    return torch.stack(output).to(dtype)
 
 
 class SparkWanSelfAttention(WanSelfAttention):
