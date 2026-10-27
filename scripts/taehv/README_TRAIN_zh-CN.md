@@ -128,7 +128,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 
 ```bash
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **绝对路径**：
@@ -173,7 +173,7 @@ wget https://github.com/madebyollin/taehv/raw/main/taew2_2.safetensors
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # 可选：用官方发布的 TAE 权重热启动，而不是从头训练。
 export TAE_PATH="models/Diffusion_Transformer/taew2_2.safetensors"
 NCCL_DEBUG=INFO
@@ -203,7 +203,6 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --adam_epsilon=1e-08 \
   --vae_mini_batch=1 \
   --max_grad_norm=1.0 \
-  --random_hw_adapt \
   --enable_bucket \
   --trainable_modules "." \
   --resume_from_checkpoint=latest
@@ -237,10 +236,11 @@ export TAE_PATH="taew2_1.safetensors"
 | `--use_taehv_sequential` | 以 O(1) 显存的串行模式运行 TAE，而不是并行模式 | - |
 | `--latent_loss_weight` | latent MSE（TAE latent 对齐完整 VAE latent）相对 pixel L1 的权重 | 1.0 |
 | `--train_data_dir` | 训练数据目录 | `datasets/X-Fun-Videos-Demo/` |
-| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Demo/metadata.json` |
+| `--train_data_meta` | 训练数据元文件 | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | 每卡批次大小 | 1 |
 | `--video_sample_size` | 训练分辨率 | 512 |
 | `--video_sample_stride` | 视频采样步幅 | 1 |
+| `--video_sample_strides` | 空格分隔的候选步幅，每个片段随机抽取一个（覆盖 `--video_sample_stride`） | `None` |
 | `--video_sample_n_frames` | 采样帧数，**必须为 4k+1**（33、49、81……） | 33 |
 | `--vae_mini_batch` | teacher VAE 编码时的迷你批次大小 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
@@ -253,22 +253,26 @@ export TAE_PATH="taew2_1.safetensors"
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--use_8bit_adam` / `--use_came` | 可选优化器 | - |
 | `--use_ema` | 维护 TAE 的 EMA 副本（用于验证与最终保存） | - |
-| `--seed` | 随机种子 | 42 |
+| `--ema_decay` | EMA 衰减系数，同时关闭 EMA warmup；不传则用 `EMAModel` 默认值（0.9999） | `None` |
+| `--seed` | 随机种子；默认 42，直接跑命令行也可复现 | 42 |
 | `--output_dir` | 输出目录 | `output_dir_taehv_w2.2` |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
 | `--max_grad_norm` | 梯度裁剪阈值 | 1.0 |
 | `--enable_bucket` | 启用分桶训练，不裁剪视频，按分辨率分组训练 | - |
-| `--random_hw_adapt` | 自动缩放视频到一定范围内的随机尺寸 | - |
+| `--fix_sample_size` | 固定画布 `[height, width]`，覆盖方形 `--video_sample_size`（等比缩放后中心裁剪） | `None` |
 | `--low_vram` | 将 teacher VAE 放在 CPU，仅在编码时搬上 GPU | - |
 | `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
 | `--trainable_modules_low_learning_rate` | 以 lr/2 训练的模块 | `[]` |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | `latest` |
 | `--validation_steps` / `--validation_epochs` | 每 N 步 / 每 N 个 epoch 执行一次验证 | 2000 / 5 |
 | `--validation_paths` | 用于重建对比验证的视频路径 | `"asset/1.mp4"` |
+| `--validation_n_frames` | 验证片段帧数（4k+1），不传则复用 `--video_sample_n_frames` | `None` |
 
 **Sample Size 配置指南**：
-- `video_sample_size` 表示训练分辨率；当启用 `random_hw_adapt` 时，表示分辨率的最小值。
+- `video_sample_size` 设置方形训练画布；配合 `--enable_bucket` 可按原始宽高比训练。
+- `--fix_sample_size 720 1280` 固定非方形画布（等比缩放 + 中心裁剪）；配合 `--enable_bucket` 时按批生效，`video_sample_size` 会提升到 `max(fix_sample_size)`。
 - `video_sample_n_frames` 必须满足 `4k+1`（如 33、49、81），因为完整 VAE 与 TAE 都是因果 4 倍时间压缩。
+- `--video_sample_strides 1 2 3` 会为每个片段随机抽取一个时间步幅（多尺度时间增广）；步幅越大请求的帧数越少，因此单个片段覆盖的时间跨度基本不变。
 
 ### 3.4 训练验证
 
@@ -279,15 +283,18 @@ export TAE_PATH="taew2_1.safetensors"
 | `--validation_steps` | 每 N 步执行一次验证 | 2000 |
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 5 |
 | `--validation_paths` | 验证视频路径 | `"asset/1.mp4"` |
+| `--validation_n_frames` | 验证片段帧数，**必须为 4k+1**；不传则复用 `--video_sample_n_frames` | 81 |
 
 ```bash
   --validation_paths "asset/1.mp4" \
   --validation_steps=2000 \
-  --validation_epochs=5
+  --validation_epochs=5 \
+  --validation_n_frames=81
 ```
 
 **注意事项**：
 - 验证会为每个样本在 `output_dir/sample/` 保存三个视频：`*_input.mp4`（缩放后的输入）、`*_taehv.mp4`（TAE 重建）、`*_fullvae.mp4`（完整 VAE 重建，供参考对比）。
+- 验证片段会先截取 `min(视频长度, --validation_n_frames)` 帧、再向下对齐到 `4k+1`，因此把该值设大不会在短视频素材上失败。
 - 启用 `--use_ema` 时，验证使用 EMA 权重。
 
 ### 3.5 训练技巧
@@ -297,7 +304,7 @@ export TAE_PATH="taew2_1.safetensors"
 - **Decoder-only 蒸馏**：加上 `--freeze_tae_encoder` 只提升解码质量。
 - **显存**：teacher 完整 VAE 是主要的显存消耗者。使用 `--low_vram` 可以将其放在 CPU、仅在编码时搬上 GPU；也可以降低 `--video_sample_n_frames` / `--video_sample_size`。
 - **串行 TAE**：`--use_taehv_sequential` 以速度换显存，激活显存与视频长度无关（O(1)）。
-- **EMA**：推荐开启 `--use_ema` 作为最终交付物；最终保存的 `taehv` 目录里是 EMA 权重。
+- **EMA**：推荐开启 `--use_ema` 作为最终交付物；最终保存的 `taehv` 目录里是 EMA 权重。短训练希望均值更快跟上时，可传 `--ema_decay`（如 `train_taehv_super.sh` 用的 `0.999`）替代默认的 0.9999。
 
 ### 3.6 多机分布式训练
 

@@ -30,7 +30,7 @@ except ImportError:
 from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
                     get_random_mask, get_video_reader_batch, padding_image,
                     process_pose_file, process_pose_params, resize_frame,
-                    resize_image_with_target_area)
+                    resize_image_with_target_area, sample_clip_start)
 
 
 class ImageVideoSampler(BatchSampler):
@@ -99,6 +99,7 @@ class ImageVideoDataset(Dataset):
         enable_inpaint=False,
         inpaint_mask_fill_value=0,
         return_file_name=False,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -136,6 +137,8 @@ class ImageVideoDataset(Dataset):
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
+        # Whether the clip start is drawn randomly (training) or pinned (validation/eval); see `sample_clip_start`.
+        self.random_start = random_start
 
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride    = video_sample_stride
@@ -188,10 +191,13 @@ class ImageVideoDataset(Dataset):
                         f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
                     )
 
-                # Select contiguous clip with random start position
+                # Select contiguous clip; the start is random unless this is an eval dataset
                 video_length = int(self.video_length_drop_end * len(video_reader))
                 clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-                start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+                start_idx = sample_clip_start(
+                    video_length, clip_length,
+                    drop_start=self.video_length_drop_start, random_start=self.random_start,
+                )
                 batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
                 try:
@@ -363,7 +369,11 @@ class LingbotImageVideoDataset(ImageVideoDataset):
 
                 video_length = int(self.video_length_drop_end * len(video_reader))
                 clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-                start_idx = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+                # The start is random unless this is an eval dataset
+                start_idx = sample_clip_start(
+                    video_length, clip_length,
+                    drop_start=self.video_length_drop_start, random_start=self.random_start,
+                )
                 batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
                 try:
@@ -503,6 +513,7 @@ class ImageVideoControlDataset(Dataset):
         enable_subject_info=False,
         padding_subject_info=True,
         return_file_name=False,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -543,6 +554,8 @@ class ImageVideoControlDataset(Dataset):
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
+        # Whether the clip start is drawn randomly (training) or pinned (validation/eval); see `sample_clip_start`.
+        self.random_start = random_start
 
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride    = video_sample_stride
@@ -603,10 +616,13 @@ class ImageVideoControlDataset(Dataset):
                         f"Video too short: sampled {min_sample_n_frames} frames < required {min_video_sample_n_frames}."
                     )
 
-                # Select contiguous clip with random start position
+                # Select contiguous clip; the start is random unless this is an eval dataset
                 video_length = int(self.video_length_drop_end * len(video_reader))
                 clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-                start_idx   = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+                start_idx = sample_clip_start(
+                    video_length, clip_length,
+                    drop_start=self.video_length_drop_start, random_start=self.random_start,
+                )
                 batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
                 try:

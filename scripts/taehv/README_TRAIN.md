@@ -128,7 +128,7 @@ modelscope download --dataset PAI/X-Fun-Videos-Demo --local_dir ./datasets/X-Fun
 
 ```bash
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 ```
 
 **Absolute Path**:
@@ -173,7 +173,7 @@ wget https://github.com/madebyollin/taehv/raw/main/taew2_2.safetensors
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
-export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata.json"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # Optional: warm-start from released TAE weights instead of training from scratch.
 export TAE_PATH="models/Diffusion_Transformer/taew2_2.safetensors"
 NCCL_DEBUG=INFO
@@ -203,7 +203,6 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --adam_epsilon=1e-08 \
   --vae_mini_batch=1 \
   --max_grad_norm=1.0 \
-  --random_hw_adapt \
   --enable_bucket \
   --trainable_modules "." \
   --resume_from_checkpoint=latest
@@ -237,10 +236,11 @@ export TAE_PATH="taew2_1.safetensors"
 | `--use_taehv_sequential` | Run the TAE in O(1)-memory sequential mode instead of parallel | - |
 | `--latent_loss_weight` | Weight of the latent MSE (TAE latent vs. full VAE latent) relative to pixel L1 | 1.0 |
 | `--train_data_dir` | Training data directory | `datasets/X-Fun-Videos-Demo/` |
-| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Demo/metadata.json` |
+| `--train_data_meta` | Training data metadata file | `datasets/X-Fun-Videos-Demo/metadata_add_width_height.json` |
 | `--train_batch_size` | Batch size (per device) | 1 |
 | `--video_sample_size` | Training resolution | 512 |
 | `--video_sample_stride` | Video sample stride | 1 |
+| `--video_sample_strides` | Space-separated stride candidates; one is drawn at random per clip (overrides `--video_sample_stride`) | `None` |
 | `--video_sample_n_frames` | Number of frames to sample. **Must be 4k+1** (33, 49, 81, ...) | 33 |
 | `--vae_mini_batch` | Mini batch size for teacher VAE encoding | 1 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
@@ -253,22 +253,26 @@ export TAE_PATH="taew2_1.safetensors"
 | `--lr_warmup_steps` | Learning rate warmup steps | 100 |
 | `--use_8bit_adam` / `--use_came` | Alternative optimizers | - |
 | `--use_ema` | Keep an EMA copy of the TAE (used for validation and final save) | - |
-| `--seed` | Random seed | 42 |
+| `--ema_decay` | EMA decay; also disables the EMA warmup ramp. Defaults to the `EMAModel` default (0.9999) | `None` |
+| `--seed` | Random seed; defaults to 42 so a bare CLI run stays reproducible | 42 |
 | `--output_dir` | Output directory | `output_dir_taehv_w2.2` |
 | `--mixed_precision` | Mixed precision: `fp16/bf16` | `bf16` |
 | `--max_grad_norm` | Maximum gradient norm for clipping | 1.0 |
 | `--enable_bucket` | Enable bucket training without cropping, groups by resolution | - |
-| `--random_hw_adapt` | Randomly scale videos to a range of resolutions | - |
+| `--fix_sample_size` | Fixed `[height, width]` canvas overriding the square `--video_sample_size` (aspect-preserving cover crop) | `None` |
 | `--low_vram` | Keep the teacher VAE on CPU and move it to GPU only when encoding | - |
 | `--trainable_modules` | Trainable modules (`"."` means all modules) | `"."` |
 | `--trainable_modules_low_learning_rate` | Trainable modules with lr/2 | `[]` |
 | `--resume_from_checkpoint` | Resume training from checkpoint, use `"latest"` to auto-select | `latest` |
 | `--validation_steps` / `--validation_epochs` | Run validation every N steps / epochs | 2000 / 5 |
 | `--validation_paths` | Video paths for validation reconstruction comparison | `"asset/1.mp4"` |
+| `--validation_n_frames` | Validation clip length (4k+1); defaults to `--video_sample_n_frames` | `None` |
 
 **Sample Size Configuration Guide**:
-- `video_sample_size` represents the training resolution; when `random_hw_adapt` is enabled, it represents the minimum resolution.
-- `video_sample_n_frames` must satisfy `4k+1` (e.g. 33, 49, 81) because both the full VAE and the TAE are causal 4x temporal compressors.
+- `video_sample_size` sets a square training canvas; pair it with `--enable_bucket` to train on native aspect ratios.
+- `--fix_sample_size 720 1280` pins a fixed non-square canvas (aspect-preserving cover resize + center crop); with `--enable_bucket` it is applied per batch and `video_sample_size` is bumped to `max(fix_sample_size)`.
+- `--video_sample_n_frames` must satisfy `4k+1` (e.g. 33, 49, 81) because both the full VAE and the TAE are causal 4x temporal compressors.
+- `--video_sample_strides 1 2 3` draws a temporal stride at random for every clip (multi-scale temporal augmentation); the frame count requested shrinks as the stride grows, so the time span a clip covers stays roughly the same.
 
 ### 3.4 Training Validation
 
@@ -279,15 +283,18 @@ You can configure validation parameters to periodically reconstruct test videos 
 | `--validation_steps` | Run validation every N steps | 2000 |
 | `--validation_epochs` | Run validation every N epochs | 5 |
 | `--validation_paths` | Validation video paths | `"asset/1.mp4"` |
+| `--validation_n_frames` | Validation clip length, **4k+1**; omit to reuse `--video_sample_n_frames` | 81 |
 
 ```bash
   --validation_paths "asset/1.mp4" \
   --validation_steps=2000 \
-  --validation_epochs=5
+  --validation_epochs=5 \
+  --validation_n_frames=81
 ```
 
 **Notes**:
 - Validation saves three videos per sample into `output_dir/sample/`: `*_input.mp4` (resized input), `*_taehv.mp4` (TAE reconstruction), `*_fullvae.mp4` (full VAE reconstruction for reference).
+- Validation clips are truncated to `min(video length, --validation_n_frames)` and then aligned down to `4k+1`, so a longer setting never fails on short assets.
 - When `--use_ema` is enabled, validation runs with the EMA weights.
 
 ### 3.5 Training Tips
@@ -297,7 +304,7 @@ You can configure validation parameters to periodically reconstruct test videos 
 - **Decoder-only distillation**: Add `--freeze_tae_encoder` to only improve decoding quality.
 - **Memory**: The teacher full VAE is the main memory consumer. Use `--low_vram` to keep it on CPU between encoding steps, or reduce `--video_sample_n_frames` / `--video_sample_size`.
 - **Sequential TAE**: `--use_taehv_sequential` trades speed for O(1) activation memory w.r.t. video length.
-- **EMA**: `--use_ema` is recommended for the final deliverable; the final saved `taehv` directory contains the EMA weights.
+- **EMA**: `--use_ema` is recommended for the final deliverable; the final saved `taehv` directory contains the EMA weights. Pass `--ema_decay` (e.g. `0.999`, as `train_taehv_super.sh` does) when short runs need the average to catch up faster than the 0.9999 default.
 
 ### 3.6 Multi-Node Distributed Training
 
