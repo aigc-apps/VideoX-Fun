@@ -34,7 +34,8 @@ except ImportError:
     from .utils import AVVideoReader as VideoReader
 
 from .utils import (VIDEO_READER_TIMEOUT, VideoReader_contextmanager,
-                    get_random_mask, get_video_reader_batch, resize_frame)
+                    get_random_mask, get_video_reader_batch, resize_frame,
+                    sample_clip_start)
 
 
 def load_audio(path, sr, mono=True, native_sr=False, res_type=None):
@@ -87,6 +88,7 @@ class WebVid10M(Dataset):
         enable_bucket=False, 
         enable_inpaint=False, 
         is_image=False,
+        random_start=True,
     ):
         print(f"loading annotations from {csv_path} ...")
         with open(csv_path, 'r') as csvfile:
@@ -100,6 +102,7 @@ class WebVid10M(Dataset):
         self.enable_bucket   = enable_bucket
         self.enable_inpaint  = enable_inpaint
         self.is_image        = is_image
+        self.random_start    = random_start
         
         sample_size = tuple(sample_size) if not isinstance(sample_size, int) else (sample_size, sample_size)
         self.pixel_transforms = transforms.Compose([
@@ -118,10 +121,10 @@ class WebVid10M(Dataset):
         
         if not self.is_image:
             clip_length = min(video_length, (self.sample_n_frames - 1) * self.sample_stride + 1)
-            start_idx   = random.randint(0, video_length - clip_length)
+            start_idx   = sample_clip_start(video_length, clip_length, random_start=self.random_start)
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, self.sample_n_frames, dtype=int)
         else:
-            batch_index = [random.randint(0, video_length - 1)]
+            batch_index = [sample_clip_start(video_length, 1, random_start=self.random_start)]
 
         if not self.enable_bucket:
             pixel_values = torch.from_numpy(video_reader.get_batch(batch_index).asnumpy()).permute(0, 3, 1, 2).contiguous()
@@ -224,12 +227,13 @@ class VideoDataset(Dataset):
             if min_sample_n_frames == 0:
                 raise ValueError(f"No Frames in video.")
 
-            # Select contiguous clip with random start position
+            # Select contiguous clip; the start is random unless this is an eval dataset
             video_length = int(self.video_length_drop_end * len(video_reader))
             clip_length = min(video_length, (min_sample_n_frames - 1) * sample_stride + 1)
-            start_idx = int(self.video_length_drop_start * video_length)
-            if self.random_start and video_length != clip_length:
-                start_idx = random.randint(start_idx, video_length - clip_length)
+            start_idx = sample_clip_start(
+                video_length, clip_length,
+                drop_start=self.video_length_drop_start, random_start=self.random_start,
+            )
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
             try:
@@ -310,6 +314,7 @@ class VideoSpeechDataset(Dataset):
         audio_stereo=False,
         audio_span_includes_last_frame=False,
         enable_ref2va=False,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -330,6 +335,8 @@ class VideoSpeechDataset(Dataset):
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride = video_sample_stride
         self.video_sample_n_frames = video_sample_n_frames
+        # Whether the clip start is drawn randomly (training) or pinned (validation/eval); see `sample_clip_start`.
+        self.random_start = random_start
         # Fewest sampled frames a clip has to yield to be usable. A model whose VAE only encodes certain frame
         # counts (MiniMax-H3 needs `17n + 5`, so at least 5) raises this so that clips which cannot fill one chunk
         # are skipped by `__getitem__`'s retry instead of reaching the collate as a short batch. The default of 1 is
@@ -444,10 +451,11 @@ class VideoSpeechDataset(Dataset):
                     "run needs; skipping."
                 )
 
-            # Randomly select the starting frame
+            # Select the starting frame; pinned when random_start=False so eval clips are reproducible
             frame_span = (actual_n_frames - 1) * frame_step
-            max_start = total_frames - 1 - int(math.ceil(frame_span))
-            start_frame = random.randint(0, max_start) if max_start > 0 else 0
+            start_frame = sample_clip_start(
+                total_frames, int(math.ceil(frame_span)) + 1, random_start=self.random_start
+            )
             frame_indices = [
                 min(total_frames - 1, int(round(start_frame + index * frame_step)))
                 for index in range(actual_n_frames)
@@ -752,6 +760,7 @@ class VideoSpeechControlDataset(Dataset):
         audio_native_sr_resample=False,
         audio_stereo=False,
         audio_span_includes_last_frame=False,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -772,6 +781,8 @@ class VideoSpeechControlDataset(Dataset):
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride = video_sample_stride
         self.video_sample_n_frames = video_sample_n_frames
+        # Whether the clip start is drawn randomly (training) or pinned (validation/eval); see `sample_clip_start`.
+        self.random_start = random_start
         # Fewest sampled frames a clip has to yield to be usable; see `VideoSpeechDataset` for the rationale.
         self.min_video_sample_n_frames = max(1, int(min_video_sample_n_frames))
         # Frame rate the sampled clip has to land on; see `VideoSpeechDataset` for the rationale.
@@ -878,10 +889,11 @@ class VideoSpeechControlDataset(Dataset):
                     "run needs; skipping."
                 )
 
-            # Randomly select the starting frame
+            # Select the starting frame; pinned when random_start=False so eval clips are reproducible
             frame_span = (actual_n_frames - 1) * frame_step
-            max_start = total_frames - 1 - int(math.ceil(frame_span))
-            start_frame = random.randint(0, max_start) if max_start > 0 else 0
+            start_frame = sample_clip_start(
+                total_frames, int(math.ceil(frame_span)) + 1, random_start=self.random_start
+            )
             frame_indices = [
                 min(total_frames - 1, int(round(start_frame + index * frame_step)))
                 for index in range(actual_n_frames)
@@ -1147,6 +1159,7 @@ class VideoAnimateDataset(Dataset):
         video_length_drop_start=0.1, 
         video_length_drop_end=0.9,
         return_file_name=False,
+        random_start=True,
     ):
         # Loading annotations from files
         print(f"loading annotations from {ann_path} ...")
@@ -1182,6 +1195,8 @@ class VideoAnimateDataset(Dataset):
 
         self.video_length_drop_start = video_length_drop_start
         self.video_length_drop_end = video_length_drop_end
+        # Whether the clip start is drawn randomly (training) or pinned (validation/eval); see `sample_clip_start`.
+        self.random_start = random_start
 
         # Video params: resize, center crop, normalize to [-1, 1]
         self.video_sample_stride = video_sample_stride
@@ -1217,10 +1232,13 @@ class VideoAnimateDataset(Dataset):
             if min_sample_n_frames == 0:
                 raise ValueError(f"No Frames in video.")
 
-            # Select contiguous clip with random start position
+            # Select contiguous clip; the start is random unless this is an eval dataset
             video_length = int(self.video_length_drop_end * len(video_reader))
             clip_length = min(video_length, (min_sample_n_frames - 1) * self.video_sample_stride + 1)
-            start_idx = random.randint(int(self.video_length_drop_start * video_length), video_length - clip_length) if video_length != clip_length else 0
+            start_idx = sample_clip_start(
+                video_length, clip_length,
+                drop_start=self.video_length_drop_start, random_start=self.random_start,
+            )
             batch_index = np.linspace(start_idx, start_idx + clip_length - 1, min_sample_n_frames, dtype=int)
 
             try:

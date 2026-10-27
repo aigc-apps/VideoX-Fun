@@ -82,6 +82,28 @@ class _AVBatchFrames:
     def asnumpy(self):
         return np.stack(self._frames)
 
+
+def sample_clip_start(video_length, clip_length, drop_start=0.0, random_start=True):
+    """Pick the first frame index of a contiguous clip.
+
+    `video_length` is the usable tail boundary (already scaled by `video_length_drop_end`) and
+    `clip_length` the span the clip covers, so `video_length - clip_length` is the last valid start.
+    With `random_start` the start is drawn uniformly over every valid position, which is the temporal
+    augmentation training sets want; with `random_start=False` it is pinned to the
+    `video_length_drop_start` boundary, so validation/eval datasets rebuild the very same clip on
+    every pass and their metrics stay comparable across steps. The head boundary is clamped to the
+    last valid start, hence a clip that already fills the usable range can never run past the video.
+
+    Note this only decides *where* a clip starts; how many frames it yields stays the caller's
+    business, since the dataset classes differ in that formula.
+    """
+    last_valid_start = max(video_length - clip_length, 0)
+    start_idx = min(int(drop_start * video_length), last_valid_start)
+    if random_start and last_valid_start > start_idx:
+        start_idx = random.randint(start_idx, last_valid_start)
+    return start_idx
+
+
 def get_random_mask(shape, image_start_only=False):
     f, c, h, w = shape
     mask = torch.zeros((f, 1, h, w), dtype=torch.uint8)

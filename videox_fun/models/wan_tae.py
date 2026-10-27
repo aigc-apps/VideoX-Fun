@@ -329,6 +329,11 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     - taew2_2*.pth / .safetensors: Wan 2.2 5B (48ch latent, patch_size=2)
     """
 
+    # The TAE has no checkpointed block path, but the flag is declared so that
+    # `enable_gradient_checkpointing()` (a shared training-script call) is a
+    # no-op instead of raising, mirroring AutoencoderKLWan.
+    _supports_gradient_checkpointing = True
+
     # per-channel statistics of the full-size Wan VAE latent spaces
     WAN2_1_MEAN = [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
                    0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921]

@@ -17,6 +17,10 @@ The teacher VAE family is selected by --config_path:
     config/wan2.1/wan_civitai.yaml                -> AutoencoderKLWan    (16ch, taew2_1)
     config/wan2.2/wan_civitai_5b.yaml             -> AutoencoderKLWan3_8 (48ch, taew2_2)
 (any wan2.2 *_2.2vae.yaml also works, they share the same vae_kwargs)
+
+The training loop mirrors scripts/wan2.1_fun/train.py (derived from
+https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py):
+same shared argument surface, dataset/sampler, EMA and checkpoint hooks.
 """
 #!/usr/bin/env python
 # coding=utf-8
@@ -35,7 +39,6 @@ The teacher VAE family is selected by --config_path:
 
 import argparse
 import gc
-import inspect
 import logging
 import math
 import os
@@ -91,13 +94,6 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
 
-def filter_kwargs(cls, kwargs):
-    """Filter kwargs to only include parameters accepted by the class __init__."""
-    sig = inspect.signature(cls.__init__)
-    valid_keys = set(sig.parameters.keys()) - {"self"}
-    return {k: v for k, v in kwargs.items() if k in valid_keys}
-
-
 def linear_decay(initial_value, final_value, total_steps, current_step):
     if current_step >= total_steps:
         return final_value
@@ -109,8 +105,13 @@ def linear_decay(initial_value, final_value, total_steps, current_step):
 
 def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
     """Validation: encode video -> decode with TAE / full VAE, save comparison videos."""
-    try:
-        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype):
+    # The guard sits *inside* the contexts on purpose: `Accelerator.autocast` enters and
+    # exits AMP without a try/finally, so an exception escaping the block strands autocast
+    # enabled and leaves its cast-weight cache holding tensors built under no_grad. The
+    # next training step would then produce a graph-free loss and `accelerator.backward`
+    # would die with "element 0 of tensors does not require grad".
+    with torch.no_grad(), accelerator.autocast():
+        try:
             logger.info("Running validation...")
 
             if args.validation_paths is None or len(args.validation_paths) == 0:
@@ -120,6 +121,10 @@ def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
             from decord import VideoReader
 
             unwrapped_tae = accelerator.unwrap_model(tae)
+            # Under --low_vram the teacher VAE waits on CPU between encoding steps.
+            teacher_on_gpu = bool(args.low_vram)
+            if teacher_on_gpu:
+                vae.to(accelerator.device, dtype=weight_dtype)
 
             for i, video_path in enumerate(args.validation_paths):
                 if not os.path.exists(video_path):
@@ -128,7 +133,7 @@ def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
 
                 # Load video frames
                 vr = VideoReader(video_path)
-                num_frames = min(len(vr), args.video_sample_n_frames)
+                num_frames = min(len(vr), args.validation_n_frames)
                 # Align to temporal compression ratio (4k+1)
                 temporal_ratio = vae.config.temporal_compression_ratio
                 num_frames = (num_frames - 1) // temporal_ratio * temporal_ratio + 1
@@ -144,8 +149,8 @@ def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
 
                 # Resize to target size aligned to the spatial compression ratio
                 spatial_ratio = int(vae.config.spatial_compression_ratio)
-                h_target = int(args.video_sample_size / spatial_ratio) * spatial_ratio
-                w_target = h_target  # square for simplicity in validation
+                h_target = int(args.video_sample_height / spatial_ratio) * spatial_ratio
+                w_target = int(args.video_sample_width / spatial_ratio) * spatial_ratio
                 pixel_values = F.interpolate(
                     pixel_values, size=(h_target, w_target), mode='bilinear', align_corners=False
                 )
@@ -161,29 +166,33 @@ def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
                 z_full = vae.encode(pixel_values).latent_dist.mode()
                 decoded_full = vae.decode(z_full, return_dict=False)[0]
 
-                # Save videos
+                # Save videos; save_videos_grid goes through numpy, which has no bf16.
                 os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
                 save_videos_grid(
-                    pixel_values,
+                    pixel_values.float(),
                     os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_input.mp4"),
                     rescale=True, fps=24
                 )
                 save_videos_grid(
-                    decoded_tae,
+                    decoded_tae.float(),
                     os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_taehv.mp4"),
                     rescale=True, fps=24
                 )
                 save_videos_grid(
-                    decoded_full,
+                    decoded_full.float(),
                     os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_fullvae.mp4"),
                     rescale=True, fps=24
                 )
                 logger.info(f"Saved validation video {i} at step {global_step}")
 
-    except Exception as e:
-        gc.collect()
-        torch.cuda.empty_cache()
-        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+            if teacher_on_gpu:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
+
+        except Exception as e:
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(f"Eval error on rank {accelerator.process_index} with info {e}")
 
 
 def parse_args():
@@ -218,14 +227,14 @@ def parse_args():
     parser.add_argument(
         "--train_data_dir",
         type=str,
-        default=None,
+        default="datasets/X-Fun-Videos-Demo",
         help=("A folder containing the training data."),
     )
     parser.add_argument(
         "--train_data_meta",
         type=str,
-        default=None,
-        help=("A json/csv containing the training data meta."),
+        default="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json",
+        help=("A JSON array containing the training video metadata."),
     )
     parser.add_argument(
         "--max_train_samples",
@@ -255,7 +264,9 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    # The default must be a concrete int: the batch-sampler generators and `worker_init_fn`
+    # below call `manual_seed(args.seed)` / `args.seed + process_index` without a None guard.
+    parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
@@ -318,6 +329,12 @@ def parse_args():
         ),
     )
     parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
+    parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=None,
+        help="EMA decay for the tracked parameters. Defaults to the EMAModel default (0.9999).",
+    )
     parser.add_argument(
         "--non_ema_revision",
         type=str,
@@ -390,6 +407,12 @@ def parse_args():
         help="Run validation every X steps.",
     )
     parser.add_argument(
+        "--validation_n_frames",
+        type=int,
+        default=None,
+        help="Validation clip length, 4k+1. Defaults to `--video_sample_n_frames`.",
+    )
+    parser.add_argument(
         "--tracker_project_name",
         type=str,
         default="taehv-train",
@@ -399,16 +422,19 @@ def parse_args():
         "--enable_bucket", action="store_true", help="Whether enable bucket sample in datasets."
     )
     parser.add_argument(
-        "--random_ratio_crop", action="store_true", help="Whether enable random ratio crop sample in datasets."
-    )
-    parser.add_argument(
-        "--random_hw_adapt", action="store_true", help="Whether enable random adapt height and width in datasets."
-    )
-    parser.add_argument(
         "--video_sample_size",
         type=int,
         default=512,
         help="Training video sample size.",
+    )
+    parser.add_argument(
+        "--fix_sample_size",
+        nargs=2,
+        type=int,
+        default=None,
+        help="Fix Sample size [height, width] to override `--video_sample_size` with a fixed "
+             "non-square shape. Under `--enable_bucket` the scalar `--video_sample_size` is bumped to "
+             "at least max(fix_sample_size), so the bucket ratios still cover the canvas.",
     )
     parser.add_argument(
         "--video_sample_stride",
@@ -417,16 +443,17 @@ def parse_args():
         help="Sample stride of the video.",
     )
     parser.add_argument(
+        "--video_sample_strides",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Optional per-video random sampling strides; one is drawn for every clip.",
+    )
+    parser.add_argument(
         "--video_sample_n_frames",
         type=int,
         default=33,
         help="Num frame of video. Must be 4k+1 to match the causal temporal compression.",
-    )
-    parser.add_argument(
-        "--video_repeat",
-        type=int,
-        default=0,
-        help="Num of repeat video.",
     )
     parser.add_argument(
         "--tae_path",
@@ -512,10 +539,45 @@ def parse_args():
     if args.non_ema_revision is None:
         args.non_ema_revision = args.revision
 
+    # Derive the effective canvas once, so every downstream use agrees.
+    if args.fix_sample_size is not None:
+        args.video_sample_height, args.video_sample_width = args.fix_sample_size
+        # The bucket sampler groups by the scalar sample size; keep it >= the fixed canvas.
+        if args.enable_bucket:
+            args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+    else:
+        args.video_sample_height = args.video_sample_width = args.video_sample_size
+    if any(size < 32 or size % 16 for size in (args.video_sample_height, args.video_sample_width)):
+        parser.error("Video dimensions must be >=32 and divisible by 16")
+
+    if args.validation_n_frames is None:
+        args.validation_n_frames = args.video_sample_n_frames
     # Both the full VAE and the TAE are causal 4x temporal compressors, so the
     # clip length must be 4k+1 for the decode output to match the input.
-    assert (args.video_sample_n_frames - 1) % 4 == 0, \
-        f"video_sample_n_frames must be 4k+1, got {args.video_sample_n_frames}"
+    if any(frames < 1 or (frames - 1) % 4 for frames in (args.video_sample_n_frames, args.validation_n_frames)):
+        parser.error("Video frame counts must be 4k+1")
+    if args.max_train_steps is not None and args.max_train_steps < 1:
+        parser.error("max_train_steps must be positive")
+    if min(args.num_train_epochs, args.train_batch_size, args.vae_mini_batch,
+           args.gradient_accumulation_steps, args.checkpointing_steps, args.video_sample_stride) < 1:
+        parser.error("Epochs, batch sizes, checkpoint interval and stride must be positive")
+    if min(args.dataloader_num_workers, args.validation_steps, args.validation_epochs, args.lr_warmup_steps) < 0:
+        parser.error("Workers, validation intervals and warmup cannot be negative")
+    if args.video_sample_strides is not None and (not args.video_sample_strides or min(args.video_sample_strides) < 1):
+        parser.error("video_sample_strides must be positive")
+    if args.checkpoints_total_limit is not None and args.checkpoints_total_limit < 1:
+        parser.error("checkpoints_total_limit must be positive")
+    if args.ema_decay is not None and not 0 <= args.ema_decay < 1:
+        parser.error("ema_decay must be in [0, 1)")
+    if not 0 <= args.adam_beta1 < 1 or not 0 <= args.adam_beta2 < 1:
+        parser.error("Invalid Adam betas")
+    if args.adam_weight_decay < 0:
+        parser.error("Adam weight decay cannot be negative")
+    if any(not math.isfinite(value) or value <= 0 for value in
+           (args.learning_rate, args.adam_epsilon, args.max_grad_norm)):
+        parser.error("Learning rate, epsilon and gradient norm must be finite and positive")
+    if args.latent_loss_weight < 0:
+        parser.error("latent_loss_weight cannot be negative")
 
     return args
 
@@ -652,9 +714,9 @@ def main():
             arch_variant=args.tae_arch_variant,
         )
     tae.parallel = not args.use_taehv_sequential
-    # The TAE is tiny (~20MB); keep it fully in weight_dtype so forward works
-    # regardless of whether autocast is active.
-    tae.to(weight_dtype)
+    # Trainable parameters (and the Adam moments built below) stay in FP32 like the
+    # other training scripts; mixed precision comes from `accelerator.autocast()`.
+    tae.float()
 
     # Set trainable parameters
     tae.requires_grad_(False)
@@ -687,10 +749,17 @@ def main():
             # every local shard of the copy pairs 1:1 with the live shard.
             ema_tae = FSDPEMA(ema_module, source=tae, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
         else:
-            ema_module = ema_module.to(weight_dtype)
+            ema_module = ema_module.float()
             if args.tae_path is not None:
                 ema_module.load_state_dict(tae.state_dict())
-            ema_tae = EMAModel(ema_module.parameters(), model_cls=AutoencoderTinyWan, model_config=ema_module.config)
+            # An explicit decay also disables the warmup ramp, mirroring train_taehv_super.py.
+            ema_kwargs = {} if args.ema_decay is None else {
+                "decay": args.ema_decay, "min_decay": args.ema_decay, "use_ema_warmup": False,
+            }
+            ema_tae = EMAModel(
+                ema_module.parameters(), model_cls=AutoencoderTinyWan, model_config=ema_module.config,
+                **ema_kwargs,
+            )
 
     # ==================== Save/Load Hooks ====================
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -822,7 +891,8 @@ def main():
 
     train_dataset = VideoDataset(
         args.train_data_meta, args.train_data_dir,
-        sample_size=args.video_sample_size, sample_stride=args.video_sample_stride,
+        sample_size=(args.video_sample_height, args.video_sample_width),
+        sample_stride=args.video_sample_strides or args.video_sample_stride,
         sample_n_frames=args.video_sample_n_frames,
         enable_bucket=args.enable_bucket, enable_inpaint=False,
     )
@@ -844,6 +914,9 @@ def main():
             aspect_ratios=aspect_ratio_sample_size,
         )
 
+        # A fixed canvas overrides the closest bucket size, so every batch is uniform.
+        fix_size = None if args.fix_sample_size is None else [args.video_sample_height, args.video_sample_width]
+
         def collate_fn(examples):
             new_examples = {}
             new_examples["pixel_values"] = []
@@ -851,9 +924,13 @@ def main():
             pixel_value = examples[0]["pixel_values"]
             f, h, w, c = np.shape(pixel_value)
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            spatial_ratio = int(vae.config.spatial_compression_ratio)
-            closest_size = [int(x / spatial_ratio) * spatial_ratio for x in closest_size]
+            if fix_size is None:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                spatial_ratio = int(vae.config.spatial_compression_ratio)
+                closest_size = [int(x / spatial_ratio) * spatial_ratio for x in closest_size]
+                target_size = closest_size
+            else:
+                target_size = fix_size
 
             min_example_length = min([example["pixel_values"].shape[0] for example in examples])
             batch_video_length = int(min(args.video_sample_n_frames + sample_n_frames_bucket_interval, min_example_length))
@@ -865,14 +942,19 @@ def main():
                 pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.0
 
-                if closest_size[0] / h > closest_size[1] / w:
-                    resize_size = closest_size[0], int(w * closest_size[0] / h)
+                if fix_size is None:
+                    if closest_size[0] / h > closest_size[1] / w:
+                        resize_size = closest_size[0], int(w * closest_size[0] / h)
+                    else:
+                        resize_size = int(h * closest_size[1] / w), closest_size[1]
                 else:
-                    resize_size = int(h * closest_size[1] / w), closest_size[1]
+                    # Aspect-preserving cover resize, same as scripts/taehv/train_taehv_super.py.
+                    scale = max(fix_size[0] / h, fix_size[1] / w)
+                    resize_size = math.ceil(h * scale), math.ceil(w * scale)
 
                 transform = transforms.Compose([
                     transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),
-                    transforms.CenterCrop(closest_size),
+                    transforms.CenterCrop(target_size),
                     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                 ])
                 pixel_values = transform(pixel_values)[:batch_video_length]
@@ -1015,10 +1097,11 @@ def main():
                     vae.to('cpu')
                     torch.cuda.empty_cache()
 
-                # 2. Student forward: TAE encode -> decode
+                # 2. Student forward: TAE encode -> decode (FP32 weights, autocast activations)
                 # Use the unwrapped model since encode/decode are not exposed by DDP.
-                z_tae = unwrap_model(tae).encode(pixel_values).latent_dist.mode()
-                decoded = unwrap_model(tae).decode(z_tae).sample
+                with accelerator.autocast():
+                    z_tae = unwrap_model(tae).encode(pixel_values).latent_dist.mode()
+                    decoded = unwrap_model(tae).decode(z_tae).sample
                 # Trim to the input temporal span in case the TAE padded extra frames.
                 decoded = decoded[:, :, :pixel_values.shape[2]]
 

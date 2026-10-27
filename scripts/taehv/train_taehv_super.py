@@ -431,7 +431,7 @@ def parse_args():
     )
     parser.add_argument(
         "--use_taehv_sequential", action="store_true",
-        help="Use the sequential TAE decoder instead of the parallel path.",
+        help="Run the TAE in sequential (O(1)-memory) mode instead of parallel.",
     )
     parser.add_argument(
         "--from_scratch",
@@ -443,14 +443,15 @@ def parse_args():
         nargs=2,
         type=int,
         default=None,
-        help="Fixed [height, width] overriding video_sample_size.",
+        help="Fix Sample size [height, width] to override `--video_sample_size` with a fixed "
+             "non-square shape.",
     )
     parser.add_argument(
         "--video_sample_strides",
         nargs="+",
         type=int,
         default=None,
-        help="Optional per-video random sampling strides.",
+        help="Optional per-video random sampling strides; one is drawn for every clip.",
     )
     parser.add_argument(
         "--validation_data_meta",
