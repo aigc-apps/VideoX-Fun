@@ -38,6 +38,7 @@ same shared argument surface, dataset/sampler, EMA and checkpoint hooks.
 # See the License for the specific language governing permissions and
 
 import argparse
+import copy
 import gc
 import logging
 import math
@@ -64,7 +65,6 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from transformers.utils import ContextManagers
@@ -982,6 +982,11 @@ def main():
             worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
 
+    # Snapshot the sampler's empty bucket layout so every epoch can restore it. The shape is
+    # sampler-specific -- ImageVideoSampler holds flat lists while AspectRatioBatchImageVideoSampler
+    # holds one list per aspect ratio -- so the initial value is copied rather than rebuilt.
+    initial_bucket = copy.deepcopy(batch_sampler.bucket)
+
     # ==================== LR Scheduler ====================
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1071,8 +1076,18 @@ def main():
     )
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        if global_step >= args.max_train_steps:
+            break
         train_loss = 0.0
+        train_dataloader.set_epoch(epoch)
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
+        # Indices that never filled a batch stay behind in `bucket` and would leak into the next
+        # epoch, silently changing the batch composition, so the layout is restored here.
+        # `_pos_start` is deliberately NOT reset: RandomSampler.__iter__ already zeroes it at the
+        # end of a full pass, and this script's resume relies on load_model_hook writing the saved
+        # position back into it. train_taehv_super.py can reset it unconditionally only because it
+        # pairs that with `resume_step` + accelerator.skip_first_batches, which this script lacks.
+        batch_sampler.bucket = copy.deepcopy(initial_bucket)
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(tae):
                 pixel_values = batch["pixel_values"].to(weight_dtype)  # [B, F, C, H, W]
@@ -1212,6 +1227,12 @@ def main():
                 log_validation(vae, tae, args, accelerator, weight_dtype, global_step)
                 if args.use_ema:
                     ema_tae.restore(tae.parameters())
+        # Epoch-level break, mirroring train_taehv_super.py: the `break` inside the step loop only
+        # ends that epoch, so without this the remaining epochs would each run one extra step past
+        # max_train_steps and write a spurious checkpoint. Placed after the epoch validation so the
+        # final epoch still gets validated before exiting.
+        if global_step >= args.max_train_steps:
+            break
 
     # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
     # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
