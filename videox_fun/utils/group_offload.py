@@ -825,12 +825,21 @@ def apply_group_offloading(
 
     stream = None
     if use_stream:
-        if torch.cuda.is_available():
-            stream = torch.cuda.Stream()
-        elif hasattr(torch, "xpu") and torch.xpu.is_available():
-            stream = torch.Stream()
-        else:
-            raise ValueError("Using streams for data transfer requires a CUDA device, or an Intel XPU device.")
+        # Any accelerator whose backend implements streams can be used here (CUDA, XPU, Ascend NPU,
+        # ...), so resolve the stream from the onload device's own namespace instead of probing for
+        # CUDA/XPU specifically and rejecting everything else.
+        backend = getattr(torch, onload_device.type, None)
+        backend_available = (
+            backend is not None
+            and hasattr(backend, "is_available")
+            and backend.is_available()
+        )
+        if onload_device.type == "cpu" or not backend_available or not hasattr(backend, "Stream"):
+            raise ValueError(
+                "Using streams for data transfer requires an onload device whose backend implements "
+                f"streams, got `{onload_device.type}`. Pass `use_stream=False`."
+            )
+        stream = backend.Stream()
 
     if not use_stream and record_stream:
         raise ValueError("`record_stream` cannot be True when `use_stream=False`.")
