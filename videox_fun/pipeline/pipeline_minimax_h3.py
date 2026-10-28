@@ -1722,6 +1722,30 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
         )
 
     @property
+    def _execution_device(self):
+        r"""The device the pipeline executes on.
+
+        diffusers' default resolves this through `self.device`, which returns the `.device` of the first `nn.Module`
+        found while iterating an *unordered* `set` of the component names. That is fragile whenever the components do
+        not all sit on one device: under `--fsdp_offload_params` the student `transformer` keeps its flat param on the
+        CPU at rest and reports `cpu`, while the VAEs and the sharded conditioner are on the GPU, so the resolved device
+        depends on the per-process hash order and can nondeterministically come back `cpu` — which then feeds CPU
+        tensors to GPU-resident FSDP params and raises a device-mismatch on whichever rank drew the short straw. Pin the
+        result to a CUDA component by scanning `self.components` in registration order; a genuinely all-CPU assembly
+        still resolves to the CPU.
+        """
+        device = super()._execution_device
+        if device.type != "cpu":
+            return device
+        for model in self.components.values():
+            if not isinstance(model, torch.nn.Module):
+                continue
+            model_device = getattr(model, "device", None)
+            if model_device is not None and model_device.type != "cpu":
+                return model_device
+        return device
+
+    @property
     def vae_spatial_compression_ratio(self) -> int:
         if getattr(self, "vae", None) is not None:
             return self.vae.spatial_compression_ratio

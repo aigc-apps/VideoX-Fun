@@ -26,6 +26,7 @@ This document provides the complete workflow for **Causal-Forcing Stage 3 — Di
   - [5.1 Quick Start](#51-quick-start)
   - [5.2 Key Parameters](#52-key-parameters)
   - [5.3 DMD-Specific Parameters](#53-dmd-specific-parameters)
+  - [5.4 Optional One-Forcing GAN and Precision Controls](#54-optional-one-forcing-gan-and-precision-controls)
 - [6. Use the Trained Checkpoint](#6-use-the-trained-checkpoint)
 - [7. Additional Resources](#7-additional-resources)
 
@@ -103,7 +104,7 @@ The Stage 2 CCD checkpoint (generator/critic init) is loaded via `--ode_transfor
 
 ## 4. Prepare Training Data
 
-DMD uses a **TextDataset** (`train_mode="normal"`) — it only needs prompts, not video data, because the generator creates its own training samples via autoregressive rollout. However, a `metadata.json` with prompts is still required.
+With `train_mode="normal"`, teacher forcing disabled, and all GAN/R1/R2 weights set to zero, DMD uses a **TextDataset**: only prompts are required because the generator creates training samples via autoregressive rollout. Enabling any GAN/R1/R2 weight switches to **ImageVideoDataset** and requires captioned real videos; see Section 5.4.
 
 ### 4.1 Quick Demo Dataset
 
@@ -118,7 +119,7 @@ Same as Stage 1/2. See [README_TRAIN_CAUSAL_CONSISTENCY_DISTILL.md](./README_TRA
 
 ### 4.3 metadata.json Format
 
-DMD only uses the `"text"` field from each entry. The `file_path` and other fields are ignored when `--train_mode="normal"` (TextDataset mode).
+In prompt-only TextDataset mode, DMD only uses the `"text"` field from each entry. GAN/R1/R2 or teacher forcing requires video metadata with `file_path`, `type="video"`, and `text`, as in Stage 1/2.
 
 ```json
 [
@@ -131,7 +132,7 @@ DMD only uses the `"text"` field from each entry. The `file_path` and other fiel
 ]
 ```
 
-> **Note**: You can reuse any video metadata.json — only the `text` field matters for DMD.
+> **Note**: Existing video metadata can be reused. Only `text` is read in prompt-only mode; GAN training also reads the video files.
 
 ---
 
@@ -179,6 +180,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_dmd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -212,7 +214,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--real_score_pretrained_model_name_or_path` | 14B real-score teacher for DMD | `models/Diffusion_Transformer/Wan2.1-T2V-14B` |
 | `--config_path` | Model config YAML | `config/wan2.1/wan_civitai.yaml` |
 | `--train_data_dir` | Data root directory | `""` |
-| `--train_data_meta` | Path to `metadata.json` (prompts only) | `datasets/X-Fun-Videos-Demo/metadata.json` |
+| `--train_data_meta` | Metadata path: prompts for plain DMD, captioned videos for GAN/R1/R2 | `datasets/X-Fun-Videos-Demo/metadata.json` |
 | `--ode_transformer_path` | Stage 2 CCD checkpoint for generator/critic init | `$STAGE2_CKPT` |
 | `--train_batch_size` | Per-GPU batch size | 1 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
@@ -264,8 +266,45 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--context_noise` | Context noise level for KV cache update | 0 |
 | `--use_teacher_forcing` | Enable teacher forcing (pass clean_x to transformer) | - |
 | `--teacher_forcing_prob` | Probability of applying teacher forcing per step (1.0 = always) | 1.0 |
-| `--train_mode` | Training mode: `normal` (TextDataset, prompt-only) or `i2v` | `normal` |
+| `--train_mode` | `normal` (prompt-only unless teacher forcing or GAN/R1/R2 is enabled) or `i2v` | `normal` |
 | `--resume_from_checkpoint` | Resume from checkpoint. Use `"latest"` to auto-select | `"latest"` |
+
+---
+
+### 5.4 Optional One-Forcing GAN and Precision Controls
+
+These options reuse the [One-Forcing](https://github.com/Aurora-edu/One-Forcing) mechanisms in `scripts/wan2.1_self_forcing/train_distill.py`. All GAN/R1/R2 weights default to **0**, and both precision flags default to **off** in argparse. The AR diffusion, CCD, and DMD launchers enable `--fsdp_reduce_fp32`; GAN/R1/R2 and `--score_timestep_clamp` remain off. AR diffusion and CCD do not gain GAN losses.
+
+The discriminator shares the **fake-score backbone**, with one learnable register token per selected feature layer. Its head is optimized by the critic optimizer, not the generator optimizer. Generator loss is `DMD + weighted GAN`; critic loss is `denoising + weighted GAN + R1 + R2`.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--gan_g_weight` | Non-saturating generator GAN loss weight | `0.0` |
+| `--gan_d_weight` | Discriminator GAN loss weight | `0.0` |
+| `--gan_feature_layers` | Fake-score block indices used by the head | `21 29` |
+| `--gan_block_ffn_dim` | Head cross-attention FFN dimension | `2048` |
+| `--gan_block_num_heads` | Head count; must divide fake-score hidden dimension | `12` |
+| `--relativistic_discriminator` | Use paired real/fake logit differences | off |
+| `--r1_weight` | APT-style finite-difference penalty on noisy real latents | `0.0` |
+| `--r1_sigma` | R1 perturbation standard deviation | `0.01` |
+| `--r2_weight` | Normalized finite-difference penalty on noisy generated latents | `0.0` |
+| `--r2_sigma` | R2 perturbation standard deviation | `0.01` |
+| `--fsdp_reduce_fp32` | FSDP FP32 gradient reduction; parameter gathering stays low precision | off (enabled in the launcher) |
+| `--score_timestep_clamp` | Clamp DMD, generator GAN, and critic timesteps to `[0.02, 0.98] * num_train_timesteps` | off |
+
+For logits `D_fake` and `D_real`, ordinary GAN losses are `softplus(-D_fake)` for the generator and `softplus(-D_real) + softplus(D_fake)` for the discriminator. Relativistic losses instead use `softplus(-(D_fake - D_real))` and `softplus(-(D_real - D_fake))`.
+
+R1 follows the source's APT form: `r1_weight * mean((D_real_perturbed - D_real)^2)`, **without dividing by sigma**. R2 follows `0.5 * r2_weight * mean(((D_fake_perturbed - D_fake) / r2_sigma)^2)`. These are finite-difference penalties, not input-gradient double-backward regularizers. Real/fake samples share timestep and noise; perturbations use independent noise.
+
+To enable GAN, pass positive generator/discriminator weights and, optionally, R1/R2 weights to `train_causal_dmd.py`. Requirements:
+- Captioned real videos, not a prompt-only JSON. Use the Stage 1/2 video metadata schema and enough frames for `score_num_frames` and the selected causal block geometry.
+- `--gradient_accumulation_steps=1`; DeepSpeed is not supported by the GAN branch.
+- Valid feature-layer indices for the selected fake-score model. The default `21 29` layers and `12` heads fit Wan2.1-T2V-1.3B; other backbones may need different settings.
+- Enabling only `gan_g_weight` does not supply a discriminator classification-learning objective. Choose the discriminator weight deliberately; nonzero values are not a guaranteed quality improvement.
+
+Trainable fake-score and head master weights stay **FP32**, while forward uses the configured autocast/FSDP precision. Logits, softplus losses, and finite-difference reductions are evaluated in FP32. `--fsdp_reduce_fp32` changes gradient communication precision, not the forward dtype or model architecture. The clamp changes score-training timesteps, not the generator rollout or validation schedule.
+
+Resume GAN checkpoints with the same GAN/head configuration. The head is saved with fake-score, including FP32 head tensors, and is recreated before loading. It is not part of the exported generator, so inference needs no discriminator or new GAN flags.
 
 ---
 
@@ -300,4 +339,5 @@ python examples/wan2.1_causal_forcing/predict_t2v.py
 ## 7. Additional Resources
 
 - **Causal-Forcing Paper**: https://github.com/thu-ml/Causal-Forcing
+- **One-Forcing (optional GAN mechanism)**: https://github.com/Aurora-edu/One-Forcing
 - **Official GitHub**: https://github.com/aigc-apps/VideoX-Fun

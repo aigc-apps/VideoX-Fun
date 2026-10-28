@@ -277,6 +277,9 @@ bash scripts/wan2.1_self_forcing/train_ode.sh
 | `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
 | `--trainable_modules` | 可训练模块（`"."` 表示全量） | `"."` |
 | `--resume_from_checkpoint` | 恢复训练路径或 `"latest"` | `latest` |
+| `--save_state` | 在 checkpoint 中保存完整的 accelerator 状态（恢复训练所需） | - |
+| `--use_kv_cache_training` | 运行逐块 KV 缓存训练，完全匹配 `pipeline_wan_self_forcing` 推理行为；否则回退到一次性的 causal-mask ODE 回归（baseline） | - |
+| `--prob_full_zero_start` | 每个样本强制所有块的所有帧使用 timestep 索引 `0`（纯噪声起点）的概率，用于弥合训练-推理差距；`0.0` 表示关闭 | 0.0 |
 
 **ODE 特有参数**（除非清楚后果，否则需与第一步保持一致）：
 

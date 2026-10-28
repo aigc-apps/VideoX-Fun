@@ -18,6 +18,7 @@ scripts/wan2.1_self_forcing/train_distill.py and Causal-Forcing
 # See the License for the specific language governing permissions and
 
 import argparse
+import dataclasses
 import gc
 import logging
 import math
@@ -318,6 +319,10 @@ def parse_args():
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument(
+        "--fsdp_reduce_fp32", action="store_true",
+        help="Reduce gradients in fp32 under FSDP mixed precision; parameter gathering stays in low precision.",
+    )
+    parser.add_argument(
         "--logging_dir",
         type=str,
         default="logs",
@@ -610,6 +615,9 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
+        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
+            fsdp_plugin.mixed_precision_policy = dataclasses.replace(fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32)
+            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:
@@ -769,7 +777,7 @@ def main():
             os.path.join(args.pretrained_model_name_or_path, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
             transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
             low_cpu_mem_usage=True,
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float32,
         )
         ema_transformer3d.num_frame_per_block = args.num_frame_per_block
         ema_transformer3d.independent_first_frame = args.independent_first_frame
@@ -1437,6 +1445,8 @@ def main():
             torch.cuda.empty_cache()
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        if global_step >= args.max_train_steps:
+            break
         train_loss = 0.0
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
         for step, batch in enumerate(train_dataloader):
@@ -1736,6 +1746,9 @@ def main():
 
             if global_step >= args.max_train_steps:
                 break
+
+        if global_step >= args.max_train_steps:
+            break
 
         if args.validation_prompts is not None and epoch % args.validation_epochs == 0:
             with progress_bar.paused():

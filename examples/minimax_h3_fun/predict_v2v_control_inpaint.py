@@ -21,6 +21,7 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
                               get_video_to_video_latent, merge_lora,
                               save_videos_with_audio_grid, unmerge_lora)
 
+
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
@@ -51,7 +52,7 @@ ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus. The Qwen3-VL conditioner is ~62 GB, so with fsdp_dit alone every
 # rank still replicates it; fsdp_text_encoder shards it too. Note it must wrap the inner `text_encoder.model`
 # (Qwen3VLModel): encode_prompt calls that submodule directly, so a wrap on the top-level module would never fire.
-fsdp_dit            = False
+fsdp_dit            = True
 fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with sequential_cpu_offload.
@@ -218,6 +219,11 @@ if use_qfloat8:
     # Scale-aware fp8 must run before the FSDP wrapping below so the flat buffers hold the fp8 values.
     convert_model_weight_to_float8(transformer, exclude_module_name=fp8_exclude_module_name, device=device)
 
+# The pure *cpu_offload modes (qfloat8 variants excluded, unsupported under FSDP). Under sequence parallelism the
+# sharded modules offload through FSDP's own CPUOffload, enabled here at wrap time; the pipeline then routes the
+# whole-model offload call to the non-FSDP VAE / audio VAE automatically, so no per-mode branch is needed below.
+wants_offload = GPU_memory_mode in ("model_cpu_offload", "model_group_offload", "sequential_cpu_offload")
+
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
     transformer.enable_multi_gpus_inference()
@@ -239,12 +245,13 @@ if ulysses_degree > 1 or ring_degree > 1:
                         if any(p.dtype == torch.float32 for p in m.parameters(recurse=False))]
         shard_fn = partial(shard_model, device_id=device, param_dtype=None, cast_dtype=False,
                           module_to_wrapper=list(transformer.transformer_blocks) + list(transformer.control_blocks),
-                          ignored_modules=fp32_modules)
+                          ignored_modules=fp32_modules, offload_to_cpu=wants_offload)
         pipeline.transformer = shard_fn(pipeline.transformer)
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype,
-                          module_to_wrapper=list(text_encoder.model.language_model.layers))
+                          module_to_wrapper=list(text_encoder.model.language_model.layers),
+                          offload_to_cpu=wants_offload)
         pipeline.text_encoder.model = shard_fn(pipeline.text_encoder.model)
         print("Add FSDP TEXT ENCODER")
 
