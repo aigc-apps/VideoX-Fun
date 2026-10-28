@@ -37,7 +37,7 @@ class FSDPEMA:
     at the cost of one full fp32 copy in host RAM per rank).
     """
 
-    def __init__(self, module, source, accelerator, fsdp_plugin, decay=0.9999):
+    def __init__(self, module, source, accelerator, fsdp_plugin, decay=0.99):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
         self.accelerator = accelerator
