@@ -179,13 +179,14 @@ LPIPS 与 DINOv2 权重由损失实现单独加载。
 
 **Wan2.2 TI2V-5B / Fun-2.2VAE（taew2_2_super）训练示例**：
 
-启动器采用 720x1280 画布、训练 25 帧、验证 81 帧、10,000 步和 EMA。
+启动器采用 720x1280 画布、训练 25 帧和 EMA，不设置 `--max_train_steps`：
+训练按 `--num_train_epochs`（默认 100）个 epoch 运行，直到手动终止进程。
 使用 `accelerate config` 配置 GPU/进程数；四卡、每卡 batch=1、累积=1 时有效 batch 为 4。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
-export DATASET_NAME="${DATASET_NAME:-datasets/X-Fun-Videos-Demo}"
-export DATASET_META_NAME="${DATASET_META_NAME:-$DATASET_NAME/metadata_add_width_height.json}"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export TAE_PATH="models/Diffusion_Transformer/taew2_2_super.pth"
 NCCL_DEBUG=INFO
 
@@ -198,18 +199,23 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_strides 1 2 3 \
   --video_sample_n_frames=25 \
-  --validation_n_frames=81 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
-  --max_train_steps=10000 \
   --checkpointing_steps=1000 \
-  --validation_steps=1000 \
-  --validation_max_samples=0 \
   --learning_rate=5e-06 \
   --lr_scheduler="cosine" \
   --lr_warmup_steps=200 \
   --lr_min_ratio=0.2 \
+  --seed=42 \
+  --output_dir="output_dir_taehv_w2.2_super" \
+  --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
+  --adam_weight_decay=1e-2 \
+  --adam_epsilon=1e-08 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=1.0 \
   --l1_loss_weight=0.1 \
   --lpips_loss_weight=0.1 \
   --dino_loss_weight=0.02 \
@@ -219,16 +225,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --use_ema \
   --ema_decay=0.999 \
   --selection_lpips_ratio=1.02 \
-  --selection_grid_ratio=1.05 \
-  --seed=42 \
-  --output_dir="output_dir_taehv_w2.2_super" \
-  --mixed_precision="bf16" \
-  --adam_beta1=0.9 \
-  --adam_beta2=0.99 \
-  --adam_weight_decay=1e-2 \
-  --adam_epsilon=1e-08 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=1.0
+  --selection_grid_ratio=1.05
 ```
 
 相同参数已写入 `scripts/taehv/train_taehv_super.sh`，也可修改其中的训练参数后，
@@ -245,10 +242,9 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_n_frames=25 \
   --video_sample_strides 1 2 3 \
-  --max_train_steps=10000 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super_scratch"
 ```
 
@@ -263,16 +259,16 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_dir="$DATASET_NAME" \
   --train_data_meta="$DATASET_META_NAME" \
   --fix_sample_size 720 1280 --video_sample_n_frames=25 \
-  --video_sample_strides 1 2 3 --max_train_steps=10000 \
+  --video_sample_strides 1 2 3 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super" \
   --resume_from_checkpoint=latest
 ```
 
-恢复时保持创建 checkpoint 时的配置，使用过的验证索引也需继续提供。
-`--max_train_steps` 表示总更新预算，应保留原 schedule 预算。Checkpoint 恢复
+恢复时保持创建 checkpoint 时的配置。未设置 `--max_train_steps` 时，schedule
+预算由 `--num_train_epochs` 决定，恢复时应保留原值。Checkpoint 恢复
 optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或采样设置可能改变
 恢复后的样本顺序。新训练应使用新的输出目录。
 
@@ -293,7 +289,7 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 | `--train_batch_size` / `--gradient_accumulation_steps` | 每卡 batch / 梯度累积 | 1 / 1 |
 | `--vae_mini_batch` | 官方 VAE 编码 mini-batch | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
-| `--max_train_steps` | 总优化器更新次数，覆盖 `--num_train_epochs` | 10000 |
+| `--num_train_epochs` | 未设置 `--max_train_steps` 时的 epoch 预算 | 100 |
 | `--checkpointing_steps` / `--checkpoints_total_limit` | 保存间隔 / checkpoint 数量上限 | 1000 / `None` |
 | `--learning_rate` / `--lr_scheduler` | 峰值学习率 / 调度器 | `5e-6` / `cosine` |
 | `--lr_warmup_steps` / `--lr_min_ratio` | 预热步数 / cosine 终点与峰值之比 | 200 / 0.2 |
@@ -308,8 +304,8 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 **Sample Size 配置指南**：
 
 - `--fix_sample_size 720 1280` 等比例缩放覆盖画布后中心裁剪；未指定时，`--video_sample_size` 控制正方形画布。
-- 25 帧、stride=3 至少需要 73 个源视频帧；81 帧验证至少需要 81 帧。短视频会使 batch 按最短视频截为 4k+1 帧，实际长度记录在训练日志的 `frames` 字段。
-- 训练随机选择时间起点，验证固定从第 0 帧开始、stride=1。解码失败时沿用原有随机换视频重试逻辑。
+- 25 帧、stride=3 至少需要 73 个源视频帧。短视频会使 batch 按最短视频截为 4k+1 帧，实际长度记录在训练日志的 `frames` 字段。
+- 训练随机选择时间起点。解码失败时沿用原有随机换视频重试逻辑。
 
 **损失配置指南**：
 
@@ -319,8 +315,9 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 
 ### 3.4 训练验证
 
-在训练命令中通过 `--validation_data_meta` 提供独立 JSON 数组，或将该参数加入启动器。
-相对视频路径基于 `--train_data_dir` 解析；验证数据位于其他根目录时，可使用绝对视频路径。
+验证为可选功能，默认启动器中未开启。需要时在训练命令中通过 `--validation_data_meta`
+（及相关验证参数）启用。相对视频路径基于 `--train_data_dir` 解析；验证数据位于其他
+根目录时，可使用绝对视频路径。
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
@@ -347,7 +344,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --validation_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --fix_sample_size 64 96 --video_sample_n_frames=5 --validation_n_frames=5 \
-  --video_sample_strides 1 --max_train_steps=2 --lr_warmup_steps=0 \
+  --video_sample_strides 1 --num_train_epochs=1 --lr_warmup_steps=0 \
   --checkpointing_steps=1 --validation_steps=1 --validation_max_samples=1 \
   --dataloader_num_workers=0 --use_ema --ema_decay=0.999 \
   --output_dir="output_dir_taehv_w2.2_super_smoke"

@@ -110,6 +110,22 @@ class FSDPEMA:
         self.optimization_step += 1
 
     @torch.no_grad()
+    def reinit_from(self, parameters):
+        r"""Reset the shadow to the current live weights.
+
+        Official One-Forcing builds its EMA at ``ema_start_step`` from the live weights of
+        that step; this reproduces that lazy creation for a shadow instantiated at step 0,
+        dropping whatever warm-start mass it had accumulated before the start step.
+        """
+        source_params, shadow_params = self._paired_params(parameters)
+        for p_shadow, p_source in zip(shadow_params, source_params):
+            if p_shadow.numel() == 0:
+                continue
+            p_shadow.copy_(p_source.detach().to(device=p_shadow.device, dtype=p_shadow.dtype))
+        for b_shadow, b_source in zip(self.module.buffers(), self._source_module.buffers()):
+            b_shadow.copy_(b_source.to(device=b_shadow.device, dtype=b_shadow.dtype))
+
+    @torch.no_grad()
     def store(self, parameters):
         # Snapshots the live local shards so `copy_to` can be undone with
         # `restore` (used to swap the EMA weights in for validation).
