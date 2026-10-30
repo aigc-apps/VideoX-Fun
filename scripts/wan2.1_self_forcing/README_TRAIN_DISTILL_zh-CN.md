@@ -180,6 +180,7 @@ hf download gdhe17/Self-Forcing --local-dir models/Diffusion_Transformer/Self-Fo
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -190,6 +191,7 @@ NCCL_DEBUG=INFO
 accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -205,21 +207,26 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \
@@ -248,17 +255,19 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 50 |
 | `--learning_rate` | 初始学习率（生成器） | 2e-06 |
-| `--learning_rate_critic` | 初始学习率（判别器） | 2e-06 |
+| `--learning_rate_critic` | 初始学习率（判别器） | 4.0e-07 |
 | `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--seed` | 随机种子 | 42 |
 | `--output_dir` | 输出目录 | `output_dir_wan2.1_self_forcing_distill` |
 | `--gradient_checkpointing` | 激活重计算 | - |
 | `--mixed_precision` | 混合精度：`fp16/bf16` | `bf16` |
-| `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
+| `--adam_weight_decay` | AdamW 权重衰减 | 0.0 |
+| `--adam_beta1` | AdamW beta1 | 0.0 |
+| `--adam_beta2` | AdamW beta2 | 0.999 |
 | `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
 | `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
-| `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |
+| `--max_grad_norm` | 梯度裁剪阈值 | 10.0 |
 | `--fsdp_reduce_fp32` | 可选：FSDP 混精下梯度以 fp32 做跨卡 reduce（默认 bf16） | - |
 | `--enable_bucket` | 启用分桶训练，不裁剪图片/视频，按分辨率分组训练 | - |
 | `--random_hw_adapt` | 自动缩放图片/视频到 `[min_size, max_size]` 范围内的随机尺寸 | - |
@@ -278,7 +287,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 |-----|------|-------|
 | `--denoising_step_indices_list` | 去噪步骤列表（蒸馏核心参数） | `1000 750 500 250` |
 | `--randomize_step_indices` | 训练时随机化去噪 timestep 索引 | - |
-| `--real_guidance_scale` | 用于评分的真实 guidance scale | 6.0 |
+| `--real_guidance_scale` | 用于评分的真实 guidance scale | 4.0 |
 | `--score_timestep_clamp` | 可选：将 DMD/critic 的 timestep 截断到 `[0.02, 0.98] * num_train_timesteps` | - |
 | `--fake_guidance_scale` | 用于评分的虚拟 guidance scale | 0.0 |
 | `--gen_update_interval` | 生成器更新间隔 | 5 |
@@ -366,6 +375,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -376,6 +386,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP --fsdp_transformer_layer_cls_to_wrap=CasualWanAttentionBlock --fsdp_sharding_strategy "FULL_SHARD" --fsdp_state_dict_type=SHARDED_STATE_DICT --fsdp_backward_prefetch "BACKWARD_PRE" --fsdp_cpu_ram_efficient_loading False scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -391,21 +402,26 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \
@@ -428,6 +444,7 @@ python scripts/zero_to_bf16.py output_dir/checkpoint-{our-num-steps} output_dir/
 训练 shell 命令如下：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -438,6 +455,7 @@ NCCL_DEBUG=INFO
 accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag true --use_deepspeed --deepspeed_config_file config/zero_stage3_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -453,21 +471,26 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \
@@ -482,6 +505,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -492,6 +516,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -507,21 +532,26 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \
@@ -541,6 +571,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
 **机器 0（Master）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # Master 机器 IP
@@ -556,6 +587,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main_process_port=$MASTER_PORT --num_machines=$WORLD_SIZE --num_processes=$NUM_PROCESS --machine_rank=$RANK --use_deepspeed --deepspeed_config_file config/zero_stage2_config.json --deepspeed_multinode_launcher standard scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -571,21 +603,26 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \
@@ -597,6 +634,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 **机器 1（Worker）**：
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export MASTER_ADDR="192.168.1.100"  # 与 Master 相同

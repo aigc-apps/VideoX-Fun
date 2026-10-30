@@ -41,6 +41,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ccd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \

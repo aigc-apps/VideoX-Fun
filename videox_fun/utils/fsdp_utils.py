@@ -91,7 +91,13 @@ def checkpoint_fsdp_forward(model, accumulated, *, context_fn=None, **kwargs):
                     else:
                         parameter.grad.add_(previous)
                 if parameter.grad is not None:
-                    accumulated[parameter] = parameter.grad.detach().clone()
+                    if previous is None:
+                        accumulated[parameter] = parameter.grad.detach().clone()
+                    else:
+                        # Keep one independent accumulator per shard across blocks.
+                        # Replacing it with a clone retains both full copies until
+                        # previous_grads leaves this backward call.
+                        previous.copy_(parameter.grad)
             result = [None] * len(keys)
             for index, tensor in zip(ctx.tensor_indices, tensors):
                 result[index] = tensor.grad

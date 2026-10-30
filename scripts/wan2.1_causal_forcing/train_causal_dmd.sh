@@ -38,13 +38,14 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2.0e-06 \
-  --learning_rate_critic=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_causal_forcing_dmd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -56,8 +57,10 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --enable_bucket \
   --num_frame_per_block=3 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 667 334 1 \
-  --real_guidance_scale=6.0 \
+  --use_ema \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
