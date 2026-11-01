@@ -188,8 +188,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --num_train_epochs=100 \
   --max_train_steps=200 \
   --checkpointing_steps=100 \
-  --learning_rate=1.0e-05 \
-  --learning_rate_critic=1.0e-05 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant" \
   --seed=42 \
   --output_dir="output_dir_wan2.1_one_forcing_framewise_1step" \
@@ -239,7 +239,7 @@ The One-Forcing recipe sets these launcher flags:
 | `num_frame_per_block: 1` | `--num_frame_per_block` | `1` (frame-wise) |
 | `num_training_frames: 21` / `score_num_frames: 21` | `--video_sample_n_frames=81` @ 480×832 | 21 latent frames |
 | `guidance_scale: 5.0` | `--real_guidance_scale` | `6.0` (see CFG note below) |
-| `lr: 1e-5` / `lr_critic: 1e-5` | `--learning_rate` / `--learning_rate_critic` | `1.0e-05` |
+| `lr: 2e-6` / `lr_critic: 4e-7` (gen:critic=5:1) | `--learning_rate` / `--learning_rate_critic` | `2.0e-06` / `4.0e-07` |
 | `beta1: 0.0`, `beta2: 0.999`, `weight_decay: 0.01` | `--adam_beta1`, `--adam_beta2`, `--adam_weight_decay` | `0.0`, `0.999`, `0.01` |
 | `ema_weight: 0.99` | `--use_ema`, `--ema_decay` | on, `0.99` |
 | `max_steps: 200` | `--max_train_steps` | `200` |
