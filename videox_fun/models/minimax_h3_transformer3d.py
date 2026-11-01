@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -264,7 +264,11 @@ class MiniMaxH3Attention(nn.Module):
         rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         valid_length: Optional[int] = None,
+        vsa_segments=None,
     ) -> torch.Tensor:
+        if vsa_segments is not None:
+            return self.processor(self, hidden_states, rotary_emb, attention_mask, valid_length,
+                                  vsa_segments=vsa_segments)
         return self.processor(self, hidden_states, rotary_emb, attention_mask, valid_length)
 
 
@@ -374,6 +378,7 @@ class MiniMaxH3TransformerBlock(nn.Module):
         rotary_emb: Tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor] = None,
         valid_length: Optional[int] = None,
+        vsa_segments=None,
     ) -> torch.Tensor:
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
 
@@ -382,7 +387,8 @@ class MiniMaxH3TransformerBlock(nn.Module):
         norm_hidden_states = norm_hidden_states * (
             1.0 + _index_select_rows(scale_msa, adaln_indices)
         ) + _index_select_rows(shift_msa, adaln_indices)
-        attn_output = self.attn(norm_hidden_states, rotary_emb, attention_mask, valid_length)
+        attn_output = self.attn(norm_hidden_states, rotary_emb, attention_mask, valid_length,
+                                vsa_segments=vsa_segments)
         hidden_states = residual + _index_select_rows(gate_msa, adaln_indices) * attn_output
 
         residual = hidden_states
@@ -546,6 +552,9 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
 
         self.gradient_checkpointing = False
         self.gradient_checkpointing_save_on_cpu = False
+        # Optional non-reentrant checkpoint `context_fn` for the main blocks; the streaming KV cache installs one so
+        # backward recomputes see the cache view of the original forward.
+        self.gradient_checkpointing_context_fn = None
         self.sp_world_size = 1
         self.sp_world_rank = 0
         self.all_gather = None
@@ -747,10 +756,14 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
             adaln_indices = adaln_indices[rows]
             rotary_emb = (rotary_emb[0][rows], rotary_emb[1][rows])
 
+        vsa_segments = attention_kwargs.get("vsa_segments") if attention_kwargs else None
+        block_kwargs = {"vsa_segments": vsa_segments} if vsa_segments is not None else {}
         for block in self.transformer_blocks:
             with torch.autograd.graph.save_on_cpu() if self.gradient_checkpointing_save_on_cpu else nullcontext():
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
                     ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    if self.gradient_checkpointing_context_fn is not None:
+                        ckpt_kwargs["context_fn"] = self.gradient_checkpointing_context_fn
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         block,
                         hidden_states,
@@ -759,10 +772,12 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
                         rotary_emb,
                         attention_mask,
                         valid_length,
+                        **block_kwargs,
                         **ckpt_kwargs,
                     )
                 else:
-                    hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb, attention_mask, valid_length)
+                    hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb, attention_mask,
+                                          valid_length, **block_kwargs)
 
         if self.sp_world_size > 1:
             hidden_states = self.all_gather(hidden_states.contiguous(), dim=1)[:, :sequence_length]
@@ -822,11 +837,20 @@ class MiniMaxH3StreamingKVCache:
     Args:
         num_layers (`int`): The number of main transformer blocks (50 for the released H3).
         dtype (`torch.dtype`, defaults to `torch.bfloat16`): The dtype the clean K/V is stored at.
+        offload_to_cpu (`bool`, defaults to `False`): Whether the clean K/V is parked on the CPU.
+        commit_attend_history (`bool`, defaults to `False`): Whether a clean commit pass runs the
+            live attention pattern (media rows attend `[text K/V; persistent history; current chunk
+            K/V]`, text rows self-attend) instead of the legacy standalone pass over
+            `[text | current chunk]`. Enable it when the history must condition the committed K/V,
+            as in the Self-Forcing clean refresh pass.
     """
 
-    def __init__(self, num_layers: int, dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, num_layers: int, dtype: torch.dtype = torch.bfloat16, offload_to_cpu: bool = False,
+                 commit_attend_history: bool = False):
         self.layer_names = tuple(f"transformer_blocks.{index}.attn" for index in range(num_layers))
         self.dtype = dtype
+        self.offload_to_cpu = offload_to_cpu
+        self.commit_attend_history = commit_attend_history
         self._history: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._staged: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._commit_active = False
@@ -838,6 +862,10 @@ class MiniMaxH3StreamingKVCache:
         # Per-forward attention mode: None ("plain"), "live" or "commit".
         self.mode: Optional[str] = None
         self.token_tags: Optional[torch.Tensor] = None
+        # Activation-checkpoint replay: while set, `history_pair` exposes only this many leading history rows (the
+        # history a checkpointed forward saw); `_epoch` changes whenever rows are dropped, invalidating pending replays.
+        self._history_view_rows: Optional[int] = None
+        self._epoch = 0
 
     # ------------------------------------------------------------------
     # Per-forward setup consumed by the streaming processor.
@@ -902,11 +930,51 @@ class MiniMaxH3StreamingKVCache:
             self._staged_row_count = int(key.shape[0])
         elif int(key.shape[0]) != self._staged_row_count:
             raise RuntimeError(f"{layer_name}: staged row count differs across layers")
-        self._staged[layer_name] = (key, value)
+        device = torch.device("cpu") if self.offload_to_cpu else key.device
+        self._staged[layer_name] = (
+            key.detach().to(device=device, dtype=self.dtype).contiguous(),
+            value.detach().to(device=device, dtype=self.dtype).contiguous(),
+        )
 
     def history_pair(self, layer_name: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
         r"""Return the persistent `(key, value)` of one layer, or `None` when empty."""
-        return self._history.get(layer_name)
+        pair = self._history.get(layer_name)
+        if pair is None or self._history_view_rows is None:
+            return pair
+        if self._history_view_rows == 0:
+            return None
+        return pair[0][: self._history_view_rows], pair[1][: self._history_view_rows]
+
+    # ------------------------------------------------------------------
+    # Activation checkpointing.
+    # ------------------------------------------------------------------
+    def checkpoint_context(self):
+        r"""
+        `context_fn` for non-reentrant `torch.utils.checkpoint` over a main block.
+
+        Called when the checkpointed forward runs, it snapshots the cache view that forward sees — the mode, the
+        token tags and the committed history length — and returns `(forward_context, recompute_context)`; the
+        recompute context restores that view while backward replays the block, after `end_forward()` cleared the
+        mode and later commits appended more history. The history is append-only (`commit` concatenates), so the
+        snapshot is a row count, not a tensor copy: the replay reads a prefix view of the current history.
+        """
+        history_rows = self.history_tokens if self._history_view_rows is None else self._history_view_rows
+        snapshot = (self.mode, self.token_tags, history_rows, self._epoch)
+        return nullcontext(), self._replay_view(*snapshot)
+
+    @contextmanager
+    def _replay_view(self, mode, token_tags, history_rows, epoch):
+        if epoch != self._epoch:
+            raise RuntimeError(
+                "the streaming KV history was cleared or trimmed between a checkpointed forward and its backward "
+                "recompute; clear the cache only after backward"
+            )
+        saved = (self.mode, self.token_tags, self._history_view_rows)
+        self.mode, self.token_tags, self._history_view_rows = mode, token_tags, history_rows
+        try:
+            yield
+        finally:
+            self.mode, self.token_tags, self._history_view_rows = saved
 
     # ------------------------------------------------------------------
     # Transaction control.
@@ -931,6 +999,7 @@ class MiniMaxH3StreamingKVCache:
                     torch.cat((previous[1], current[1]), dim=0),
                 )
             self._history[layer_name] = combined
+            del current, previous, combined
         self._commit_token_counts.append(len(self._commit_tags))
         self._commit_token_tags.append(self._commit_tags)
         self._commit_active = False
@@ -1005,6 +1074,7 @@ class MiniMaxH3StreamingKVCache:
     def clear(self) -> None:
         r"""Clear persistent and staged KV and reset the logical chunk count."""
         self._history.clear()
+        self._epoch += 1
         self._commit_token_counts.clear()
         self._commit_token_tags.clear()
         self._staged.clear()
@@ -1014,6 +1084,7 @@ class MiniMaxH3StreamingKVCache:
         self.end_forward()
 
     def _retain_commit_rows(self, selection) -> None:
+        self._epoch += 1
         offsets = [0]
         for count in self._commit_token_counts:
             offsets.append(offsets[-1] + count)
@@ -1068,9 +1139,11 @@ class MiniMaxH3StreamingKVCacheAttnProcessor:
       [`MiniMaxH3AttnProcessor`];
     * *live*: text rows self-attend, while media rows attend to
       `[text K/V; persistent clean history; current chunk K/V]`;
-    * *commit*: a plain pass whose output is discarded, staging the media rows' K/V of
-      every layer into the cache (the K/V of a row depends only on that row's input, so
-      the commit pass's attention output is irrelevant).
+    * *commit*: the pass whose output is discarded, staging the media rows' K/V of every
+      layer into the cache. With `commit_attend_history` off (legacy) it is a plain pass over
+      `[text | current chunk]`; with it on, the commit pass runs the live attention pattern so
+      the staged K/V is conditioned on the persistent history, matching the Self-Forcing clean
+      refresh pass.
 
     Live and commit passes must be padless (`attention_mask is None`); the streaming
     packed sequences are single documents by construction.
@@ -1107,19 +1180,19 @@ class MiniMaxH3StreamingKVCacheAttnProcessor:
             query = apply_minimax_h3_rotary_emb(query, *rotary_emb)
             key = apply_minimax_h3_rotary_emb(key, *rotary_emb)
 
-        if cache.mode == "commit":
-            # The committed rows' K/V depend only on their own inputs; the attention output
-            # of a commit pass is discarded by the caller.
+        if cache.mode == "commit" and not cache.commit_attend_history:
+            # Legacy commit: a plain pass over [text | current chunk]; the attention output is
+            # discarded by the caller and only the staged media K/V rows matter.
             output = attention(query, key, value, causal=False)
             rows = cache.commit_row_indices.to(key.device)
             staged_key = key.index_select(1, rows).squeeze(0)
             staged_value = value.index_select(1, rows).squeeze(0)
             cache.stage(
                 self.layer_name,
-                staged_key.detach().to(cache.dtype).contiguous(),
-                staged_value.detach().to(cache.dtype).contiguous(),
+                staged_key,
+                staged_value,
             )
-        else:  # live
+        else:  # live, or a commit with commit_attend_history: media rows attend the history.
             tags = cache.token_tags
             text_rows = tags == MINIMAX_H3_STREAMING_TEXT_TAG
             media_rows = ~text_rows
@@ -1152,6 +1225,16 @@ class MiniMaxH3StreamingKVCacheAttnProcessor:
                     keys.transpose(1, 2),
                     values.transpose(1, 2),
                 ).transpose(1, 2)
+
+        if cache.mode == "commit" and cache.commit_attend_history:
+            # The history-conditioned commit pass output is still discarded; only the staged K/V
+            # rows matter, now computed with the history in context.
+            rows = cache.commit_row_indices.to(key.device)
+            cache.stage(
+                self.layer_name,
+                key.index_select(1, rows).squeeze(0),
+                value.index_select(1, rows).squeeze(0),
+            )
 
         output = output.flatten(2, 3).type_as(query)
         output = attn.to_out[0](output)
@@ -1201,21 +1284,26 @@ def install_minimax_h3_streaming_kv_cache(
     transformer: "MiniMaxH3Transformer3DModel",
     *,
     dtype: torch.dtype = torch.bfloat16,
+    offload_to_cpu: bool = False,
+    commit_attend_history: bool = False,
 ) -> MiniMaxH3StreamingKVCache:
     r"""
     Swap every main block's attention processor for the streaming one and return the shared
     cache.
 
     The token refiner keeps its standard processor: the streaming contract only concerns the
-    main block stack over the media sequence.
+    main block stack over the media sequence. `commit_attend_history` is forwarded to
+    [`MiniMaxH3StreamingKVCache`].
     """
     cache = MiniMaxH3StreamingKVCache(
-        num_layers=len(transformer.transformer_blocks), dtype=dtype
+        num_layers=len(transformer.transformer_blocks), dtype=dtype, offload_to_cpu=offload_to_cpu,
+        commit_attend_history=commit_attend_history,
     )
     for index, block in enumerate(transformer.transformer_blocks):
         block.attn.set_processor(
             MiniMaxH3StreamingKVCacheAttnProcessor(cache, cache.layer_names[index])
         )
+    transformer.gradient_checkpointing_context_fn = cache.checkpoint_context
     return cache
 
 
@@ -1223,3 +1311,4 @@ def uninstall_minimax_h3_streaming_kv_cache(transformer: "MiniMaxH3Transformer3D
     r"""Restore the standard attention processor on every main block."""
     for block in transformer.transformer_blocks:
         block.attn.set_processor(MiniMaxH3AttnProcessor())
+    transformer.gradient_checkpointing_context_fn = None

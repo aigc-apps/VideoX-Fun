@@ -345,6 +345,32 @@ def attention(
     return out
 
 
+def _head_shard_seq_sum(x, heads_total, head_start):
+    """``torch.sum(x, dim=-2, keepdim=True)`` that is bitwise-invariant to Ulysses head-sharding.
+
+    ``x`` is ``[B, h_local, L, D]``. The pipeline runs under autocast and ``torch.sum`` is in
+    PyTorch's float32 promotion list, so this normalizer accumulates in fp32 over ``L`` and
+    returns fp32; the CUDA ReduceConfig picks its accumulation tree from the output count
+    ``B*H*D``. When head-parallelism shrinks ``H`` (e.g. 12 -> 6 -> 3) the tree changes and the
+    fp32 sum moves in its last bits (~1e-7), which the linear branch's denominator passes through
+    undamped -- a bf16 output would absorb it, fp32 does not. Padding the head dim back to
+    ``heads_total`` makes every rank reduce over the full ``B*heads_total*D`` outputs, i.e. the
+    single-GPU tree, then this shard's own head block is sliced back out, so multi-GPU reproduces
+    the single-GPU result bitwise.
+
+    Uninitialized padding is safe: each output element reads only its own head's rows, so the
+    garbage heads (sliced away) never touch the real ones. ``heads_total=None`` or an already-full
+    head count falls back to the plain reduction, leaving the single-GPU path unchanged.
+    """
+    h_local = x.shape[1]
+    if heads_total is None or h_local == heads_total:
+        return torch.sum(x, dim=-2, keepdim=True)
+    buf = torch.empty(x.shape[0], heads_total, x.shape[2], x.shape[3],
+                      device=x.device, dtype=x.dtype)
+    buf[:, head_start:head_start + h_local].copy_(x)
+    return torch.sum(buf, dim=-2, keepdim=True)[:, head_start:head_start + h_local]
+
+
 class SparseLinearAttention(nn.Module):
     # Modified from https://github.com/thu-ml/TurboDiffusion/blob/main/turbodiffusion/SLA/kernel.py
     def __init__(self, head_dim, topk, feature_map='softmax', BLKQ=64, BLKK=64, use_bf16=True, tie_feature_map_qk=True):
@@ -391,13 +417,18 @@ class SparseLinearAttention(nn.Module):
             nn.init.zeros_(self.proj_l.weight)
             nn.init.zeros_(self.proj_l.bias)
 
-    def forward(self, q, k, v, return_sparsity=False):
+    def forward(self, q, k, v, return_sparsity=False, heads_total=None, head_start=0):
         R'''
         Args:
             q: queries  [B, L, H, D]
             k: keys     [B, L, H, D].
             v: values   [B, L, H, D].
             return_sparsity: whether to return the actual sparsity.
+            heads_total: full head count before Ulysses head-sharding, or None when unsharded.
+                Kept so the linear branch's fp32 normalizer sum stays bitwise-equal to the
+                single-GPU result under sequence parallelism (see _head_shard_seq_sum).
+            head_start: this shard's offset into the full head range; used only when heads_total
+                is not None.
         '''
         dtype = q.dtype
         
@@ -417,7 +448,7 @@ class SparseLinearAttention(nn.Module):
 
         def calc_linear(q, k, v):
             kvsum = k.transpose(-1, -2) @ v
-            ksum = torch.sum(k, dim=-2, keepdim=True)
+            ksum = _head_shard_seq_sum(k, heads_total, head_start)
             return (q @ kvsum) / (1e-5 + (q * ksum).sum(dim=-1, keepdim=True))
         o_l = calc_linear(q, k, v)
 
@@ -943,7 +974,7 @@ class VSASparseAttention(nn.Module):
         oc = oc_blocks.repeat_interleave(self.BLKQ, dim=2)[:, :, :L]
         return oc
 
-    def forward_h3(self, q, k, v, x, segments, return_sparsity=False):
+    def forward_h3(self, q, k, v, x, segments, return_sparsity=False, gate=None):
         R'''Segment-aware H3 VSA -- the official FastVideo segment/tile mask semantics.
 
         Args:
@@ -951,6 +982,12 @@ class VSASparseAttention(nn.Module):
             x:       [B, L, C] attention-input hidden states (drives the compress gate).
             segments: packed layout -- dense row counts (``int``) and video region
                 ``(t, h, w)`` token grid, in packed order. Built by the model forward.
+            gate: [B, L, H, D] pre-computed ``to_gate_compress`` output; when given, ``x`` is
+                ignored. ``to_gate_compress`` is a ``Linear(dim, num_heads*head_dim)`` and thus
+                mixes heads, so under Ulysses head-parallelism the caller must evaluate it on
+                its own sequence shard (where the FULL hidden dim is still present) and
+                all-to-all the result -- passing the head shard in here keeps this module
+                head-local. ``H`` is then the local head count.
         Returns:
             [B, L, H, D] attention output (before the output projection).
 
@@ -985,7 +1022,8 @@ class VSASparseAttention(nn.Module):
         qb = _tile(q, self.dtype, 'q')
         kb = _tile(k, self.dtype, 'k')
         vb = _tile(v, self.dtype, 'v')
-        gate = self.to_gate_compress(x).view(B, L, H, D)
+        gate = self.to_gate_compress(x) if gate is None else gate
+        gate = gate.view(B, L, H, D)
         gb = _tile(gate, gate.dtype, 'g')
 
         pq = _h3_pool_tiles(qb, vbs, tile_elems, n_tiles)     # [B,H,n_tiles,D] fp32
@@ -1017,12 +1055,15 @@ class VSASparseAttention(nn.Module):
             return out, self.topk
         return out
 
-    def forward(self, q, k, v, x, return_sparsity=False, segments=None):
+    def forward(self, q, k, v, x, return_sparsity=False, segments=None, gate=None):
         R'''
         Args:
             q, k, v: [B, L, H, D] POST-RoPE queries/keys/values.
             x:       [B, L, C] attention-input hidden states (drives the compress gate).
             return_sparsity: also return the sparse-branch keep ratio.
+            gate: [B, L, H, D] pre-computed ``to_gate_compress`` output; see ``forward_h3``
+                (required under Ulysses head-parallelism, where ``x`` is unavailable in the
+                head-shard layout because the gate Linear mixes heads).
         Returns:
             [B, L, H, D] attention output (before the output projection).
         '''
@@ -1031,7 +1072,8 @@ class VSASparseAttention(nn.Module):
             # kernel (forward + backward), so training and inference share one selection
             # semantics. Falls back to the flat 1-D block map only when the caller cannot
             # supply a clean segment layout (segments is None).
-            return self.forward_h3(q, k, v, x, segments, return_sparsity=return_sparsity)
+            return self.forward_h3(q, k, v, x, segments, return_sparsity=return_sparsity,
+                                   gate=gate)
         B, L, H, D = q.shape
         qb = q.transpose(1, 2).contiguous()                   # [B,H,L,D]
         kb = k.transpose(1, 2).contiguous()
@@ -1042,7 +1084,8 @@ class VSASparseAttention(nn.Module):
             # Shorter than one block: exact dense attention (sparsity gives no benefit).
             o_s = F.scaled_dot_product_attention(
                 qb.float(), kb.float(), vb.float()).to(qb.dtype)
-        gate = self.to_gate_compress(x).view(B, L, H, D).transpose(1, 2)  # [B,H,L,D]
+        gate = self.to_gate_compress(x) if gate is None else gate
+        gate = gate.view(B, L, H, D).transpose(1, 2)          # [B,H,L,D]
         o_c = self.compressed(qb, kb, vb)
         out = o_s + gate.to(o_s.dtype) * o_c.to(o_s.dtype)
         out = out.transpose(1, 2)                             # [B,L,H,D]

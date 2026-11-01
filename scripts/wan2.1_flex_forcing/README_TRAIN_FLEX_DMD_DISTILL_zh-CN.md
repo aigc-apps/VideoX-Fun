@@ -34,6 +34,7 @@
   - [3.5 使用 FSDP 训练](#35-使用-fsdp-训练)
   - [3.6 其他后端](#36-其他后端)
   - [3.7 多机分布式训练](#37-多机分布式训练)
+  - [3.8 可选的 One-Forcing GAN、EMA 与精度开关](#38-可选的-one-forcing-ganema-与精度开关)
 - [四、推理测试](#四推理测试)
   - [4.1 推理参数解析](#41-推理参数解析)
   - [4.2 文生视频（T2V）推理](#42-文生视频t2v推理)
@@ -107,6 +108,8 @@ DMD 使用 **TextDataset**（`--train_mode="normal"`）——生成器通过 rol
 
 `train_distill.sh` 默认指向 `datasets/internal_datasets/metadata.json`。真实训练请换成论文使用的 **VidProM extended** prompt 集。
 
+开启任何 GAN/R1/R2 权重（见 **3.8**）会把数据加载切到 **ImageVideoDataset**：此时需要带标注的真实视频，并会裁剪到 critic fake 输入的帧数。
+
 ---
 
 ## 三、蒸馏训练
@@ -174,15 +177,16 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -204,6 +208,8 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --use_ema \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
@@ -220,6 +226,7 @@ launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒�
 |-----------|-------------|---------------|
 | `--config_path` | 组件子路径 / `transformer_additional_kwargs` | `config/wan2.1/wan_civitai.yaml` |
 | `--pretrained_model_name_or_path` | 底座模型目录（1.3B） | `$MODEL_NAME` |
+| `--real_score_pretrained_model_name_or_path` | 14B 真实分数教师目录；默认回落 `--pretrained_model_name_or_path` | `models/Diffusion_Transformer/Wan2.1-T2V-14B` |
 | `--train_data_meta` | prompt JSON（只读 `"text"` 字段） | `$DATASET_META_NAME` |
 | `--ode_transformer_path` | 用于生成器 / critic 初始化的阶段 1 ODE checkpoint | `$STAGE1_CKPT` |
 | `--fix_sample_size` | 固定训练片段的 `H W` | `480 832` |
@@ -230,9 +237,9 @@ launcher 钉死的是：81 个像素帧 = **21 个 latent 帧**（一段 5 秒�
 | `--dataloader_num_workers` | DataLoader 工作进程数 | 8 |
 | `--num_train_epochs` | 训练 epoch 数（被 `--max_train_steps` 覆盖） | 100 |
 | `--max_train_steps` | 硬性步数上限；论文用 600 | 600 |
-| `--checkpointing_steps` | 每 N 步保存一次 checkpoint | 50 |
-| `--learning_rate` | 生成器学习率 | `2e-06` |
-| `--learning_rate_critic` | critic 学习率 | `2e-06` |
+| `--checkpointing_steps` | 每 N 步保存一次 checkpoint | 200 |
+| `--learning_rate` | 生成器学习率 | `2.0e-06` |
+| `--learning_rate_critic` | critic 学习率 | `4.0e-07` |
 | `--lr_scheduler` | 学习率调度器类型 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--real_guidance_scale` | 真实分数（14B 教师）的 CFG scale | 4.5 |
@@ -333,15 +340,16 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -363,6 +371,8 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --use_ema \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
@@ -405,15 +415,16 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -435,9 +446,12 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
+
+此处去掉 `--use_ema`：DeepSpeed Zero-3 下 `train_distill.py` 会对 EMA 抛出 `NotImplementedError`。
 
 DeepSpeed-Zero-3 训练完成之后，得到 `checkpoint-xxx` 状态的保存权重，我们需要将权重文件合并为单个，可以使用提供的`scripts/zero_to_bf16.py`脚本。
 
@@ -473,15 +487,16 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_flex_forcing/train_dis
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -503,6 +518,8 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_flex_forcing/train_dis
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --use_ema \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
@@ -548,15 +565,16 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -578,6 +596,8 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --use_ema \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
 ```
@@ -603,6 +623,44 @@ export RANK=1
 > - Verify network connectivity between machines, especially the reachability of `MASTER_ADDR` and `MASTER_PORT`.
 > - Use `NCCL_DEBUG=INFO` to troubleshoot issues in multi-machine training.
 > - If there is no RDMA environment, set `export NCCL_IB_DISABLE=1` and `export NCCL_P2P_DISABLE=1` to avoid communication issues.
+
+### 3.8 可选的 One-Forcing GAN、EMA 与精度开关
+
+这些开关把 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 的机制（因果 forcing 的 DMD trainer 已在用）移植过来。所有 GAN/R1/R2 权重默认是 **0**，launcher 中也保持关闭；`--use_ema`、`--fsdp_reduce_fp32` 与 `--score_timestep_clamp` 在 argparse 中默认**关闭**，但 `train_distill.sh` 把三者都打开了；**3.6.1** 的 DeepSpeed Zero-3 命令则去掉了 Zero-3 不支持的 `--use_ema`。
+
+判别器与 **fake-score 骨干共享**，每个被选中的特征层有一个可学习的 register token。判别器头由 critic 优化器优化，而不是生成器优化器。生成器损失为 `DMD + 加权 GAN`；critic 损失为 `去噪 + 加权 GAN + R1 + R2`。
+
+| 参数 | 说明 | 默认 |
+|-----------|-------------|---------|
+| `--use_ema` | 对生成器做 EMA；checkpoint 额外保存 `transformer_ema` 子目录，验证样片采样自 EMA 权重 | 关（launcher 已启用） |
+| `--gan_g_weight` | 非饱和生成器 GAN 损失权重 | `0.0` |
+| `--gan_d_weight` | 判别器 GAN 损失权重 | `0.0` |
+| `--gan_feature_layers` | 判别器头使用的 fake-score block 索引 | `21 29` |
+| `--gan_block_ffn_dim` | 判别器头 cross-attention FFN 维度 | `2048` |
+| `--gan_block_num_heads` | 判别器头 head 数；必须整除 fake-score 隐维度 | `12` |
+| `--relativistic_discriminator` | 使用成对的 real/fake logit 差值 | 关 |
+| `--r1_weight` | 对含噪真实 latent 的 APT 式有限差分惩罚 | `0.0` |
+| `--r1_sigma` | R1 扰动标准差 | `0.01` |
+| `--r2_weight` | 对含噪生成 latent 的归一化有限差分惩罚 | `0.0` |
+| `--r2_sigma` | R2 扰动标准差 | `0.01` |
+| `--fsdp_reduce_fp32` | FSDP 梯度归约用 FP32；参数收集保持低精度 | 关（launcher 已启用） |
+| `--score_timestep_clamp` | 把 DMD、生成器 GAN 与 critic 的时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关（launcher 已启用） |
+
+对 logit `D_fake` 与 `D_real`，普通 GAN 损失是生成器 `softplus(-D_fake)`、判别器 `softplus(-D_real) + softplus(D_fake)`；相对论版本改用 `softplus(-(D_fake - D_real))` 与 `softplus(-(D_real - D_fake))`。
+
+R1 沿用来源的 APT 形式：`r1_weight * mean((D_real_perturbed - D_real)^2)`，**不除以 sigma**。R2 是 `0.5 * r2_weight * mean(((D_fake_perturbed - D_fake) / r2_sigma)^2)`。两者都是有限差分惩罚，不是输入梯度二重反向的正则。real/fake 样本共享时间步与噪声；扰动使用独立噪声。非相对论 critic 把 fake 与 real 拆成两次 1x batch 前向、各自一次 backward（省显存的拆分路径），相对论 critic 跑一次打包的 2x batch 前向，R1/R2 则在主 backward 之后各自再前向自己的 2x batch。
+
+启用 GAN 需要给 `train_distill.py` 传入正的生成器/判别器权重，可选再加 R1/R2 权重。要求：
+- 带标注的真实视频，不能是只有 prompt 的 JSON。真实 latent 会裁剪到 critic fake 输入的帧数，因此片段至少要覆盖那么多 latent 帧。
+- `--gradient_accumulation_steps=1`；GAN 分支不支持 DeepSpeed。
+- 特征层索引必须对所选 fake-score 模型有效。默认的 `21 29` 层与 `12` head 适配 Wan2.1-T2V-1.3B；换骨干可能需要不同配置。
+- 只开 `gan_g_weight` 不会给判别器提供分类学习目标。请有意识地选择判别器权重；非零值不保证质量提升。
+
+可训练的 fake-score 与判别器头 master 权重保持 **FP32**，前向使用配置的 autocast/FSDP 精度。logit、softplus 损失与有限差分归约都在 FP32 下计算。`--fsdp_reduce_fp32` 只改梯度通信精度，不改前向 dtype 或模型结构。时间步 clamp 只改分数训练的时间步，不改生成器 rollout 或验证调度。
+
+恢复 GAN checkpoint 时请使用相同的 GAN/判别器头配置。判别器头随 fake-score 一起保存（含 FP32 的 head 张量），加载前重建。它不属于导出的生成器，因此推理不需要判别器或新的 GAN 旗标。
+
+开启 `--use_ema` 时，shadow 保持 FP32 并与 live 模型的混合精度策略对齐；FSDP EMA 仅支持 FSDP1，DeepSpeed Zero-3 会被拒绝。
 
 ---
 
@@ -741,4 +799,5 @@ num_frame_per_block = 7          # 干净上下文的提交粒度；None = 整�
 ## 五、更多资源
 
 - **Flex-Forcing 论文**：https://arxiv.org/abs/2607.03509
+- **One-Forcing（可选 GAN 机制）**：https://github.com/Aurora-edu/One-Forcing
 - **官方 GitHub**：https://github.com/aigc-apps/VideoX-Fun

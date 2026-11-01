@@ -28,15 +28,16 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --num_train_epochs=100 \
-  --checkpointing_steps=50 \
-  --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --checkpointing_steps=200 \
+  --learning_rate=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --fsdp_reduce_fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -58,5 +59,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --randomize_step_indices \
   --flow_euler_rollout \
   --use_kv_cache_training \
+  --use_ema \
+  --score_timestep_clamp \
   --num_frame_per_block=3 \
   --ode_transformer_path="output_dir_wan2.1_flex_forcing_ode_regression/checkpoint-1000/diffusion_pytorch_model.safetensors"
