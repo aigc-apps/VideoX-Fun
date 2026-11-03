@@ -65,7 +65,7 @@ pdd_lora_path       = None
 
 # Other params
 # MiniMax-H3 generates at a fixed 24 fps, only accepts multiples of 32 as height / width, and snaps video_length up
-# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 5 and 15 seconds).
+# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 0 and 16 seconds).
 # Leave sample_size as None to use MiniMax-H3's own 16:9 canvas (768x1344).
 sample_size         = [704, 1280]
 video_length        = 124

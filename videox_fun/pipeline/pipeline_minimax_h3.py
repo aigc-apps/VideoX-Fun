@@ -81,8 +81,8 @@ MINIMAX_H3_MAX_PIXELS = 768 * 1344
 MINIMAX_H3_CANVAS_MULTIPLE = 32
 MINIMAX_H3_MIN_ASPECT_RATIO = 1 / 4
 MINIMAX_H3_MAX_ASPECT_RATIO = 4
-MINIMAX_H3_MIN_DURATION = 5.0
-MINIMAX_H3_MAX_DURATION = 15.0
+MINIMAX_H3_MIN_DURATION = 0.0
+MINIMAX_H3_MAX_DURATION = 16.0
 
 # The video VAE encodes 17 pixel frames per chunk and drops the 3 trailing latent frames of every chunk, so
 # `17 * n + 5` pixel frames map to `5 * n + 2` latent frames.
@@ -1512,8 +1512,7 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
     model_cpu_offload_seq = "text_encoder->transformer->vae->audio_vae"
     _callback_tensor_inputs = ["latents", "audio_latents", "prompt_embeds"]
 
-    # The duration window a request must fit into; the control variant lowers the bound, since it follows the
-    # control video's actual length without padding a short one.
+    # The duration window a request must fit into.
     _min_duration = MINIMAX_H3_MIN_DURATION
     _max_duration = MINIMAX_H3_MAX_DURATION
 
@@ -2388,7 +2387,7 @@ class MiniMaxH3Pipeline(DiffusionPipeline):
                 Width of the generated video in pixels, a multiple of 32.
             num_frames (`int`, defaults to `124`):
                 Number of frames to generate, at the fixed 24 fps. Snapped up to the next `17 * n + 5` the video VAE
-                can decode; the resulting duration must stay between 5 and 15 seconds.
+                can decode; the resulting duration must stay between 0 and 16 seconds.
             num_inference_steps (`int`, defaults to `50`):
                 Number of denoising steps, i.e. of model evaluations. The sigma grid it is built from holds one more
                 point than that, the terminal `0`.
