@@ -21,6 +21,8 @@ and every script picks it up by writing ``model_cpu_offload_and_<quant>``.
 
 import logging
 
+import torch
+
 from .fp4_optimization import (convert_float4_weight_dtype_wrapper,
                                convert_model_weight_to_float4)
 from .fp8_optimization import (convert_model_weight_to_float8,
@@ -36,7 +38,12 @@ GPU_MEMORY_MODES = (
     "model_cpu_offload",
     "model_group_offload",
     "sequential_cpu_offload",
+    "text_encoder_offload",
 )
+
+# Attribute prefix of the conditioner components (`text_encoder`, plus `text_encoder_2` /
+# `text_encoder_3` on the multi-encoder families).
+TEXT_ENCODER_PREFIX = "text_encoder"
 
 # Separator between the memory part and the quantization part of a mode string.
 QUANT_SEPARATOR = "_and_"
@@ -153,6 +160,86 @@ def split_gpu_memory_mode(mode):
     return base, tag
 
 
+def _stream_module_parameters(model, device):
+    """Onload a module's own parameters around its forward and offload them again after it.
+
+    A whole-component onload cannot work for the big conditioners: MiniMax-H3's is 63 GiB
+    (Qwen3-VL, 31.5B parameters in bf16), so even beside a float8 transformer (33 GiB) it is
+    96 GiB on an 80 GiB card. Moving every parameter-owning module on its own keeps the peak
+    at the largest block (~0.8 GiB); the total transferred volume is the same, which is what
+    makes this a placement for a component a request touches once.
+
+    Hooking each module's `forward` also means no input tensor goes through accelerate's
+    `send_to_device`, which trips over the meta-device tensors a `low_cpu_mem_usage`
+    conditioner is built from.
+    """
+    def _onload(module, args):
+        module.to(device)
+        return None  # a non-None return would replace the module inputs
+
+    def _offload(module, args, output):
+        module.to("cpu")
+        return None  # a non-None return would replace the module output
+
+    streamed = 0
+    for module in model.modules():
+        if not any(True for _ in module.parameters(recurse=False)) and not any(
+                True for _ in module.buffers(recurse=False)):
+            continue
+        module.register_forward_pre_hook(_onload)
+        module.register_forward_hook(_offload)
+        streamed += 1
+    return streamed
+
+
+def _place_without_text_encoder(pipeline, device):
+    """Keep every component on `device` except the conditioners, which stream from CPU RAM.
+
+    `model_cpu_offload` offloads all components, the transformer included -- and the transformer
+    is the one that runs once per denoising step, so its transfer dominates the request. A
+    request touches the conditioner exactly once, before the denoising loop, so leaving only it
+    in CPU RAM turns the largest component into a single one-shot transfer.
+
+    FSDP-wrapped components are skipped: `shard_model` has already placed their flat-param
+    shards, and a `.to()` would ask every rank for the unsharded parameters.
+    """
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    conditioners = []
+    for name, component in pipeline.components.items():
+        if not isinstance(component, torch.nn.Module):
+            continue
+        if name.startswith(TEXT_ENCODER_PREFIX):
+            conditioners.append((name, component))
+            continue
+        if isinstance(component, FSDP):
+            continue
+        component.to(device)
+
+    if not conditioners:
+        raise ValueError(
+            "GPU_memory_mode 'text_encoder_offload' needs a '%s' component to offload, and "
+            "%s has none. Use 'model_full_load' or 'model_cpu_offload' for this pipeline."
+            % (TEXT_ENCODER_PREFIX, type(pipeline).__name__))
+
+    for name, component in conditioners:
+        if isinstance(component, FSDP) or isinstance(getattr(component, "model", component), FSDP):
+            # Its shards live in FSDP's hands, not in the module's own parameters, so the per-module
+            # hooks below would find nothing to move. FSDP's CPUOffload is the sharding-side
+            # equivalent and is enabled at wrap time (`shard_model(..., offload_to_cpu=True)`).
+            raise ValueError(
+                "GPU_memory_mode 'text_encoder_offload' cannot offload '%s': it is FSDP-wrapped, "
+                "and only FSDP can move its shards. Set the script's `fsdp_text_encoder = False` "
+                "so this mode can stream the conditioner, or use 'model_cpu_offload', whose "
+                "CPU-offload path shards and offloads the conditioner together." % name)
+        component.to("cpu")
+        streamed = _stream_module_parameters(component, device)
+        print(
+            "GPU_memory_mode 'text_encoder_offload': '%s' kept in CPU RAM, %d "
+            "parameter-owning modules streamed to %s for the single encode pass."
+            % (name, streamed, device))
+
+
 def _target_transformers(pipeline, transformers):
     """Modules the quantization / sequential-offload special cases apply to.
 
@@ -254,6 +341,8 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
             offload_type="leaf_level", use_stream=True)
     elif base == "model_cpu_offload":
         pipeline.enable_model_cpu_offload(device=device)
+    elif base == "text_encoder_offload":
+        _place_without_text_encoder(pipeline, device)
     elif base == "model_full_load":
         pipeline.to(device=device)
     elif strict:

@@ -20,7 +20,7 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
                               convert_model_weight_to_float8, merge_lora,
                               save_videos_with_audio_grid, unmerge_lora)
 
-# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload, text_encoder_offload, text_encoder_offload_and_qfloat8].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -36,6 +36,9 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
+# 
+# text_encoder_offload keeps only the text encoder in CPU RAM, streaming it to the GPU module by module for
+# its single encode pass, so the transformer stays resident (add `_and_qfloat8` for float8 storage).
 GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
