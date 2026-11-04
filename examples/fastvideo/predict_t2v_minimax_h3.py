@@ -47,8 +47,8 @@ GPU_memory_mode     = "model_group_offload"
 ulysses_degree      = 1
 ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus. Unused at ulysses_degree = ring_degree = 1.
-fsdp_dit            = False
-fsdp_text_encoder   = False
+fsdp_dit            = True
+fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
