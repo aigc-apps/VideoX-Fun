@@ -25,7 +25,7 @@ import torch
 
 from .fp4_optimization import (convert_float4_weight_dtype_wrapper,
                                convert_model_weight_to_float4)
-from .fp8_optimization import (convert_model_weight_to_float8,
+from .fp8_optimization import (FLOAT8_DTYPE, convert_model_weight_to_float8,
                                convert_weight_dtype_wrapper,
                                replace_parameters_by_name)
 from .group_offload import register_auto_device_hook, safe_enable_group_offload
@@ -240,6 +240,78 @@ def _place_without_text_encoder(pipeline, device):
             % (name, streamed, device))
 
 
+def _is_fsdp_wrapped(component):
+    """True when `component`, or the `.model` it exposes, is managed by FSDP.
+
+    FSDP1 marks the sharded module with a wrapper class; FSDP2 (`fully_shard`) instead
+    turns its parameters into DTensors, so both forms have to be checked. Looking one
+    `.model` down covers the conditioners, which are sharded on their inner
+    `Qwen3VLModel` because `encode_prompt` calls that submodule directly.
+    """
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    for candidate in (component, getattr(component, "model", None)):
+        if not isinstance(candidate, torch.nn.Module):
+            continue
+        if isinstance(candidate, FSDP):
+            return True
+        try:
+            from torch.distributed.tensor import DTensor
+        except ImportError:  # torch without the DTensor package can only be FSDP1
+            continue
+        if any(isinstance(param, DTensor) for param in candidate.parameters()):
+            return True
+    return False
+
+
+def _place_full_load(pipeline, device, sharded_offload):
+    """`model_full_load` across FSDP shards: move what is movable, leave the shards alone.
+
+    `pipeline.to(device)` asks every rank for its unsharded parameters, because an FSDP
+    flat param is not a module parameter a `.to()` can move -- the transient is the whole
+    model and it OOMs. So when a component is FSDP-wrapped it is skipped: "fully loaded"
+    for a shard means "already on the card", which is where `shard_model` put it. The
+    remaining components are placed one by one, which is what `pipeline.to()` does
+    anyway; the only difference is that a sharded pipeline is not asked for shards it
+    does not hold.
+
+    Returns without touching anything when nothing is sharded, keeping the historical
+    whole-pipeline `.to(device)` for every non-FSDP caller.
+    """
+    from ..dist.fsdp import offload_components_cpu
+
+    sharded = [name for name, component in pipeline.components.items()
+               if isinstance(component, torch.nn.Module) and _is_fsdp_wrapped(component)]
+    if not sharded:
+        pipeline.to(device=device)
+        return
+
+    # The video VAE fits beside the shards at short clip lengths but not at long ones
+    # (9.8 GiB fp32, plus the decode peak, on top of ~58 GiB of shards and activations).
+    # The failure only surfaces on a second request, in decode, so it is offloaded by
+    # default *when the pipeline is sharded*; `sharded_offload=()` turns that off.
+    offload_names = ("vae",) if sharded_offload is None else tuple(sharded_offload)
+    offloaded = [name for name in offload_names
+                 if name not in sharded
+                 and isinstance(getattr(pipeline, name, None), torch.nn.Module)]
+
+    resident = []
+    for name, component in pipeline.components.items():
+        if not isinstance(component, torch.nn.Module):
+            continue
+        if name in sharded or name in offloaded:
+            continue
+        component.to(device)
+        resident.append(name)
+
+    if offloaded:
+        offload_components_cpu(pipeline, device, offloaded)
+
+    print("GPU_memory_mode 'model_full_load': %s already on %s as FSDP shards and left "
+          "there; resident %s; CPU-offloaded %s."
+          % (sharded, device, resident, offloaded or "nothing"))
+
+
 def _target_transformers(pipeline, transformers):
     """Modules the quantization / sequential-offload special cases apply to.
 
@@ -261,7 +333,7 @@ def _target_transformers(pipeline, transformers):
 
 def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
                           transformers=None, exclude_module_name=("modulation",),
-                          quant_tag=None, strict=False):
+                          quant_tag=None, sharded_offload=None, strict=False):
     """Quantize (if the mode asks for it) and place `pipeline` on `device`.
 
     Replaces the per-script if/elif chain. Order is fixed here and is part of the
@@ -284,7 +356,16 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
             checkpoint is already quantized before this call (e.g. converted ahead of
             FSDP sharding) pass the wrapper-only tag ``'qfloat8_preconverted'`` here so
             the conversion is not repeated, while the user-facing `mode` keeps its
-            ``_and_qfloat8`` spelling. ``None`` (default) uses the tag parsed from `mode`.
+            ``_and_qfloat8`` spelling. ``None`` (default) uses the tag parsed from `mode`,
+            except that a ``qfloat8`` target which is already FSDP-sharded is switched to
+            ``qfloat8_preconverted`` automatically -- its conversion rewrites
+            ``param.data``, which after sharding is a flat-storage view.
+        sharded_offload: components to keep off the card while ``model_full_load`` runs
+            on a pipeline with FSDP-sharded parts. ``None`` (default) offloads the video
+            VAE, the one component too large (9.8 GiB fp32 on MiniMax-H3) to share the
+            card with the shards through a long decode; pass ``()`` to keep everything
+            resident, or a name tuple to choose. Ignored when nothing is sharded, where
+            the mode keeps its whole-pipeline `.to(device)` behaviour.
         strict: raise on an unknown *base* mode instead of degrading. It is False by
             default, so an unfamiliar mode keeps the behaviour of the old if/elif chains,
             whose ``else`` branch plain-loaded the pipeline: a warning plus
@@ -298,6 +379,27 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
     base, tag = split_gpu_memory_mode(mode)
     if quant_tag is not None:
         tag = quant_tag
+    if tag == "qfloat8":
+        # Conversion must precede sharding: it rewrites `param.data` per row to compute
+        # the scale, and after `shard_model` that attribute is a flat-storage view. Only
+        # the wrapper half may run on a sharded model, so fall back to it and say so
+        # instead of corrupting the flat param mid-run.
+        sharded_targets = [model for model in _target_transformers(pipeline, transformers)
+                           if _is_fsdp_wrapped(model)]
+        if sharded_targets:
+            tag = "qfloat8_preconverted"
+            has_float8 = any(param.dtype == FLOAT8_DTYPE
+                             for model in sharded_targets for param in model.parameters())
+            if has_float8:
+                logger.info("GPU_memory_mode '%s': transformer is already FSDP-sharded, "
+                            "so only the dequantization wrapper is installed "
+                            "(%s).", mode, tag)
+            else:
+                logger.warning(
+                    "GPU_memory_mode '%s': transformer is FSDP-sharded but holds no "
+                    "float8 weights, so the qfloat8 suffix is a no-op and the model runs "
+                    "in its sharded storage dtype. Run convert_model_weight_to_float8 on "
+                    "CPU BEFORE shard_model to actually save memory.", mode)
 
     if tag is not None:
         applier = QUANT_MODES.get(tag)
@@ -344,7 +446,7 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
     elif base == "text_encoder_offload":
         _place_without_text_encoder(pipeline, device)
     elif base == "model_full_load":
-        pipeline.to(device=device)
+        _place_full_load(pipeline, device, sharded_offload)
     elif strict:
         raise ValueError(
             "Unknown GPU_memory_mode '%s'. Expected one of %s, optionally suffixed by "
