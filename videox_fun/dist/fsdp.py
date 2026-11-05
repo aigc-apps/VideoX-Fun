@@ -4,6 +4,8 @@ import gc
 from functools import partial
 
 import torch
+from accelerate.big_modeling import UserCpuOffloadHook
+from accelerate.hooks import ModelHook, add_hook_to_module, send_to_device
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import CPUOffload, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import (lambda_auto_wrap_policy,
@@ -189,7 +191,127 @@ def free_model(model):
     torch.cuda.empty_cache()
 
 
-def offload_components_cpu(obj, device, component_names):
+# Attribute holding a module's pinned host mirror, installed by `build_pinned_mirror`.
+_PINNED_HOST_ATTR = "_vxf_pinned_host"
+
+
+def _pinned_cpu_copy(tensor):
+    """A pinned CPU copy of `tensor`, reusing it when it is already a pinned host tensor."""
+    src = tensor.detach()
+    if src.device.type != "cpu":
+        src = src.to("cpu")
+    return src if src.is_pinned() else src.pin_memory()
+
+
+def build_pinned_mirror(module):
+    """Keep one pinned host copy per tensor of `module`; load/unload only repoint `.data`.
+
+    A whole-component offload that parks the weights with `.to("cpu")` pays a device-to-host copy on every
+    offload. For a component decoded once per request (the video / audio VAE) that copy is pure overhead: the
+    host copy never changes, so it is built once, pinned, and reused. Onload allocates a fresh device tensor
+    and copies it from the pinned buffer asynchronously; unload drops the device storage by repointing `.data`
+    back at the mirror, with no device-to-host transfer at all.
+
+    Inference only: the mirror captures the weights once and assumes nothing mutates them in place.
+    `named_parameters()` / `named_buffers()` deduplicate tied tensors, so a shared weight is mirrored once and
+    both names repoint to the same host tensor. Pinning needs a locked-memory limit (`ulimit -l`) large enough
+    for the whole mirror; `pin_memory` raises when it is not, and the caller falls back to a two-way offload.
+    """
+    host = {}
+    for name, param in module.named_parameters():
+        host["p:" + name] = _pinned_cpu_copy(param.data)
+    for name, buf in module.named_buffers():
+        host["b:" + name] = _pinned_cpu_copy(buf.data)
+    setattr(module, _PINNED_HOST_ATTR, host)
+    return host
+
+
+def pinned_load(module, device):
+    """Point every tensor of `module` at a fresh device copy of its pinned host mirror."""
+    host = getattr(module, _PINNED_HOST_ATTR, None)
+    if host is None:
+        return module.to(device)
+    device = torch.device(device)
+    for name, param in module.named_parameters():
+        if param.data.device != device:
+            dst = torch.empty_like(host["p:" + name], device=device)
+            dst.copy_(host["p:" + name], non_blocking=True)
+            param.data = dst
+    for name, buf in module.named_buffers():
+        if buf.data.device != device:
+            dst = torch.empty_like(host["b:" + name], device=device)
+            dst.copy_(host["b:" + name], non_blocking=True)
+            buf.data = dst
+    return module
+
+
+def pinned_unload(module):
+    """Repoint every device tensor of `module` back at its pinned host mirror; no device-to-host copy."""
+    host = getattr(module, _PINNED_HOST_ATTR, None)
+    if host is None:
+        return module.to("cpu")
+    for name, param in module.named_parameters():
+        if param.data.device.type != "cpu":
+            param.data = host["p:" + name]
+    for name, buf in module.named_buffers():
+        if buf.data.device.type != "cpu":
+            buf.data = host["b:" + name]
+    return module
+
+
+class PinnedCpuOffload(ModelHook):
+    """One-way CPU-offload hook backed by a pinned host mirror.
+
+    Same contract and same chaining as accelerate's `CpuOffload` -- installed as the module's `_hf_hook` (so
+    `_offload_scope` fires it around `encode` / `decode`), exposes `execution_device` (so `_execution_device`
+    keeps reporting the onload GPU), and offloads the previous component from `pre_forward` -- so it drops into
+    `offload_components_cpu` in place of `cpu_offload_with_hook`. Only the transfer direction differs: offload
+    repoints `.data` at the pinned host copy instead of a device-to-host `.to("cpu")`, and onload copies back
+    asynchronously. The device cache is deliberately left intact across an offload, so the next onload reuses
+    the freed blocks.
+
+    `init_hook` is what `UserCpuOffloadHook.offload()` calls, so it both builds the mirror on attach and
+    re-parks the module on every chained offload; it is idempotent.
+    """
+
+    def __init__(self, execution_device=None, prev_module_hook=None):
+        self.prev_module_hook = prev_module_hook
+        self.execution_device = execution_device
+
+    def init_hook(self, module):
+        if getattr(module, _PINNED_HOST_ATTR, None) is None:
+            build_pinned_mirror(module)
+        pinned_unload(module)
+        return module
+
+    def pre_forward(self, module, *args, **kwargs):
+        if self.prev_module_hook is not None:
+            self.prev_module_hook.offload()
+        pinned_load(module, self.execution_device)
+        return send_to_device(args, self.execution_device), send_to_device(kwargs, self.execution_device)
+
+
+def _offload_component_pinned(model, onload_device, prev_hook):
+    """Attach a `PinnedCpuOffload` hook, falling back to the two-way accelerate hook when pinning is unavailable.
+
+    Returns the same `(model, UserCpuOffloadHook)` pair `cpu_offload_with_hook` does, so the caller chains and
+    records it identically whichever path attached it. The mirror is built before the hook is added, so a
+    `pin_memory` failure under a restricted `ulimit -l` leaves the module's `forward` untouched.
+    """
+    from accelerate import cpu_offload_with_hook
+
+    try:
+        build_pinned_mirror(model)
+    except RuntimeError as exc:
+        print("[offload_components_cpu] pinned mirror unavailable (%s); falling back to two-way CPU "
+              "offload for %s." % (exc, type(model).__name__))
+        return cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
+    hook = PinnedCpuOffload(execution_device=onload_device, prev_module_hook=prev_hook)
+    add_hook_to_module(model, hook, append=True)
+    return model, UserCpuOffloadHook(model, hook)
+
+
+def offload_components_cpu(obj, device, component_names, pinned=False):
     r"""
     Attach top-level accelerate CPU-offload hooks to a chosen subset of a pipeline's whole-model components
     (by default the VAE / audio VAE), leaving every other component untouched.
@@ -208,6 +330,11 @@ def offload_components_cpu(obj, device, component_names):
     Also patches the pipeline's `_execution_device` to keep reporting the onload (GPU) device: the FSDP modules
     carry no `_hf_hook`, so the stock property would otherwise fall back to `self.device` (CPU) as soon as one
     of them leads the component order.
+
+    With `pinned=True` each named component is offloaded through a `PinnedCpuOffload` hook instead: a pinned
+    host mirror is built once and the offload only repoints `.data` back at it, dropping the device-to-host leg
+    a two-way `.to("cpu")` pays on every request. It falls back to the two-way hook per component when pinning
+    is unavailable, so the offload still happens.
     """
     from accelerate import cpu_offload_with_hook
 
@@ -219,7 +346,10 @@ def offload_components_cpu(obj, device, component_names):
         model = getattr(obj, name, None)
         if not isinstance(model, torch.nn.Module):
             continue
-        _, hook = cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
+        if pinned:
+            _, hook = _offload_component_pinned(model, onload_device, prev_hook)
+        else:
+            _, hook = cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
         hooks.append(hook)
         prev_hook = hook
     obj._cpu_offload_component_hooks = hooks

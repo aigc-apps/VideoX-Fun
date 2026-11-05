@@ -61,17 +61,19 @@ def _install_accelerate_dispatch():
     @functools.wraps(original)
     def load_optimizer(plugin, owner, optimizer, model, input_dir, optimizer_index=0, adapter_only=False):
         global _accelerate_patch_warned_unsupported
-        # The adapter requires one optimizer per prepared model. Preserve native
-        # handling for other layouts unless the caller explicitly opts in.
-        automatic = (_accelerate_patches_automatic and _accelerate_patch_requested()
-                     and len(getattr(owner, "_models", ())) == len(getattr(owner, "_optimizers", ())))
+        automatic = _accelerate_patches_automatic and _accelerate_patch_requested()
         enabled = owner in _accelerate_patch_owners or automatic
         if enabled and owner not in _accelerate_patch_disabled_owners and not adapter_only and _eligible_fsdp_checkpoint(plugin):
             if _supported_accelerate_versions():
+                import torch
                 from .utils.checkpoint_utils import \
-                    _load_sharded_fsdp_optimizer
+                    _load_sharded_fsdp_optimizer, _load_generic_fsdp_optimizer
 
-                return _load_sharded_fsdp_optimizer(owner, optimizer, model, input_dir, optimizer_index)
+                raw = getattr(optimizer, "optimizer", optimizer)
+                optimized = (type(raw) in (torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD)
+                             and len(getattr(owner, "_models", ())) == len(getattr(owner, "_optimizers", ())))
+                loader = _load_sharded_fsdp_optimizer if optimized else _load_generic_fsdp_optimizer
+                return loader(owner, optimizer, model, input_dir, optimizer_index)
             if not _accelerate_patch_warned_unsupported:
                 warnings.warn("VideoX FSDP optimizer patch supports Accelerate 1.7.0 / PyTorch 2.7.0; "
                               "using native restore on this version", RuntimeWarning, stacklevel=2)
@@ -91,8 +93,23 @@ def _install_checkpoint_lifecycle():
         return
     native_save, native_load, native_backward = Accelerator.save_state, Accelerator.load_state, Accelerator.backward
 
+    def checkpoint(owner):
+        manager = owner.__dict__.get("_videox_checkpoint_manager")
+        if manager is None:
+            from .utils.checkpoint_utils import AcceleratorCheckpoint
+            manager = AcceleratorCheckpoint(owner)
+            owner.__dict__["_videox_checkpoint_manager"] = manager
+        return manager
+
+    if hasattr(Accelerator, "checkpoint"):
+        raise RuntimeError("Accelerator.checkpoint already exists; cannot install the VideoX checkpoint extension")
+    Accelerator.checkpoint = property(checkpoint)
+
     @functools.wraps(native_save)
     def save_state(owner, output_dir=None, safe_serialization=True, **kwargs):
+        manager = owner.__dict__.get("_videox_checkpoint_manager")
+        if manager is not None and manager.configured:
+            return manager.save_state(output_dir, safe_serialization=safe_serialization, **kwargs)
         if getattr(owner.distributed_type, "name", None) == "FSDP":
             from .utils.checkpoint_utils import dispatch_checkpoint
 
@@ -104,6 +121,9 @@ def _install_checkpoint_lifecycle():
 
     @functools.wraps(native_load)
     def load_state(owner, input_dir=None, **kwargs):
+        manager = owner.__dict__.get("_videox_checkpoint_manager")
+        if manager is not None and manager.configured:
+            return manager.load_state(input_dir, **kwargs)
         if getattr(owner.distributed_type, "name", None) == "FSDP":
             from .utils.checkpoint_utils import dispatch_checkpoint
 

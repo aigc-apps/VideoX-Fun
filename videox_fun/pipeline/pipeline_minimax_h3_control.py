@@ -77,6 +77,10 @@ class MiniMaxH3ControlPipeline(MiniMaxH3Pipeline):
             audio_scheduler=audio_scheduler,
         )
 
+    # The control branch follows the control video's actual length instead of padding a short one, so the base
+    # pipeline's 5-second lower bound does not apply here; the ceiling stays, as the model was trained up to it.
+    _min_duration = 0.0
+
     def _fit_video_to_canvas(
         self,
         pixels: torch.Tensor,

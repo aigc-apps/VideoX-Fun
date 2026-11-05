@@ -223,6 +223,9 @@ if use_qfloat8:
 # sharded modules offload through FSDP's own CPUOffload, enabled here at wrap time; the pipeline then routes the
 # whole-model offload call to the non-FSDP VAE / audio VAE automatically, so no per-mode branch is needed below.
 wants_offload = GPU_memory_mode in ("model_cpu_offload", "model_group_offload", "sequential_cpu_offload")
+# text_encoder_offload keeps the transformer resident and offloads only the conditioner, so under FSDP the text
+# encoder is wrapped with CPUOffload while the DiT stays on the card; match the base to cover `_and_qfloat8`.
+te_wants_offload = wants_offload or GPU_memory_mode.startswith("text_encoder_offload")
 
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
@@ -238,7 +241,7 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype,
                           module_to_wrapper=list(text_encoder.model.language_model.layers),
-                          offload_to_cpu=wants_offload)
+                          offload_to_cpu=te_wants_offload)
         pipeline.text_encoder.model = shard_fn(pipeline.text_encoder.model)
         print("Add FSDP TEXT ENCODER")
 

@@ -57,30 +57,91 @@ def color_transfer(sc, dc):
     dst = cv2.cvtColor(cv2.convertScaleAbs(img_n), cv2.COLOR_LAB2RGB)
     return dst
 
+def _write_frames_ffmpeg_pipe(frame_list, path, fps):
+    """Encode raw RGB frames to mp4 in one ffmpeg pass over stdin.
+
+    libx264 preset ultrafast, several times faster than the imageio mimsave
+    default preset; odd grid sizes are padded to even for yuv420p.
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        return False
+
+    height, width = frame_list[0].shape[:2]
+    vf = ["pad=ceil(iw/2)*2:ceil(ih/2)*2"] if (width % 2 or height % 2) else []
+    command = [
+        ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s:v", f"{width}x{height}", "-r", str(int(fps)),
+        "-i", "pipe:0",
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    ]
+    if vf:
+        command += ["-vf", vf[0]]
+    command.append(path)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE)
+    try:
+        for frame in frame_list:
+            proc.stdin.write(frame.tobytes())
+        proc.stdin.close()
+        return proc.wait() == 0
+    except Exception:
+        proc.kill()
+        proc.wait()
+        return False
+
+def _make_grid_uint8(frames, n_rows, padding=2):
+    """Vectorized equivalent of torchvision.utils.make_grid for [B, H, W, C]
+    uint8 frames (normalize=False, pad_value=0, single image returned as-is);
+    the per-frame python loop in make_grid dominated save time on long videos.
+    """
+    n = len(frames)
+    if n == 1:
+        return frames[0]
+    n_cols = min(n_rows, n)
+    n_row_blocks = (n + n_cols - 1) // n_cols
+    h, w, c = frames[0].shape
+    grid = np.zeros(
+        (n_row_blocks * h + (n_row_blocks + 1) * padding, n_cols * w + (n_cols + 1) * padding, c),
+        dtype=np.uint8,
+    )
+    for i, frame in enumerate(frames):
+        r, col = divmod(i, n_cols)
+        top = padding + r * (h + padding)
+        left = padding + col * (w + padding)
+        grid[top:top + h, left:left + w] = frame
+    return grid
+
 def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, fps=12, imageio_backend=True, color_transfer_post_process=False):
     videos = rearrange(videos, "b c t h w -> t b c h w")
-    outputs = []
+    # Convert on-device and ship uint8 to the host once per frame, instead of
+    # per-frame make_grid + float32 cpu transfers.
+    videos = videos.float()
+    if rescale:
+        videos = (videos + 1.0) / 2.0  # -1,1 -> 0,1
+    videos = (videos * 255).clamp(0, 255).to(torch.uint8).cpu()
+    frames = []
     for x in videos:
-        x = torchvision.utils.make_grid(x, nrow=n_rows)
-        x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
-        if rescale:
-            x = (x + 1.0) / 2.0  # -1,1 -> 0,1
-        x = (x * 255).cpu().numpy().astype(np.uint8)
-        outputs.append(Image.fromarray(x))
+        # [B, C, H, W] -> [B, H, W, C], matching make_grid's default layout.
+        x = x.permute(0, 2, 3, 1).contiguous().numpy()
+        frames.append(_make_grid_uint8(x, n_rows))
 
     if color_transfer_post_process:
-        for i in range(1, len(outputs)):
-            outputs[i] = Image.fromarray(color_transfer(np.uint8(outputs[i]), np.uint8(outputs[0])))
+        for i in range(1, len(frames)):
+            frames[i] = color_transfer(frames[i], frames[0])
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if imageio_backend:
         if path.endswith("mp4"):
-            imageio.mimsave(path, outputs, fps=fps)
+            if not _write_frames_ffmpeg_pipe(frames, path, fps):
+                imageio.mimsave(path, frames, fps=fps)
         else:
-            imageio.mimsave(path, outputs, duration=(1000 * 1/fps))
+            imageio.mimsave(path, frames, duration=(1000 * 1/fps))
     else:
         if path.endswith("mp4"):
             path = path.replace('.mp4', '.gif')
+        outputs = [Image.fromarray(frame) for frame in frames]
         outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
     print(f"Saved video to: {path}")
 
@@ -151,6 +212,50 @@ class SegmentVideoSaver:
         print(f"Saved {len(self.segments)} segments to: {self.out_dir}")
         print(f"Saved full video to: {self.full_path} ({self.num_frames} frames)")
 
+def _save_video_audio_ffmpeg_pipe(frame_list, samples, path, fps, audio_sample_rate):
+    """Encode raw frames + PCM audio in one ffmpeg pass over stdin.
+
+    libx264 preset ultrafast matches FastVideo's save path; the in-process PyAV
+    encode used the x264 default preset and was several times slower.
+    """
+    import tempfile
+    import wave
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        return False
+
+    height, width = frame_list[0].shape[:2]
+    pcm = samples.contiguous().cpu().numpy()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = os.path.join(tmpdir, "audio.wav")
+        with wave.open(wav_path, "wb") as fh:
+            fh.setnchannels(2)
+            fh.setsampwidth(2)
+            fh.setframerate(int(audio_sample_rate))
+            fh.writeframes(pcm.tobytes())
+        command = [
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgb24",
+            "-s:v", f"{width}x{height}", "-r", str(int(fps)),
+            "-i", "pipe:0", "-i", wav_path,
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", "-pix_fmt", "yuv420p",
+            "-af", "apad", "-t", str(len(frame_list) / fps),
+            "-movflags", "+faststart", path,
+        ]
+        proc = subprocess.Popen(command, stdin=subprocess.PIPE)
+        try:
+            for frame in frame_list:
+                proc.stdin.write(frame.tobytes())
+            proc.stdin.close()
+            return proc.wait() == 0
+        except Exception:
+            proc.kill()
+            proc.wait()
+            return False
+
+
 def save_videos_with_audio_grid(
     videos: torch.Tensor, 
     audio: torch.Tensor, 
@@ -213,6 +318,15 @@ def save_videos_with_audio_grid(
     # Create output directory
     os.makedirs(os.path.dirname(path), exist_ok=True)
     
+    samples = audio_tensor
+    if samples.dtype != torch.int16:
+        samples = torch.clip(samples, -1.0, 1.0)
+        samples = (samples * 32767.0).to(torch.int16)
+
+    if _save_video_audio_ffmpeg_pipe(frame_list, samples, path, fps, audio_sample_rate):
+        print(f"Saved video with audio to: {path}")
+        return
+
     # Create video container
     height, width = frame_list[0].shape[:2]
     container = av.open(path, mode="w")
@@ -234,12 +348,6 @@ def save_videos_with_audio_grid(
             container.mux(pkt)
     for pkt in v_stream.encode():
         container.mux(pkt)
-    
-    # Write audio
-    samples = audio_tensor
-    if samples.dtype != torch.int16:
-        samples = torch.clip(samples, -1.0, 1.0)
-        samples = (samples * 32767.0).to(torch.int16)
     
     frame_in = av.AudioFrame.from_ndarray(
         samples.contiguous().reshape(1, -1).cpu().numpy(),

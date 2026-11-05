@@ -382,7 +382,7 @@ def checkpoint_config(owner):
 
 
 def configure_checkpointing(owner, *, model_ids=None, allow_legacy=None, check_finite=None, checksum=None, metadata=None,
-                            legacy_metadata_keys=(), legacy_metadata_groups=()):
+                            legacy_metadata_keys=(), legacy_metadata_groups=(), _validate=True):
     """Configure stable model roles and explicit compatibility/integrity options.
 
     ``model_ids`` maps role names to prepared models. It is required for multiple
@@ -399,7 +399,7 @@ def configure_checkpointing(owner, *, model_ids=None, allow_legacy=None, check_f
     migrated independently, each subject to the same all-or-none check.
     """
     config = checkpoint_config(owner)
-    if getattr(owner, "_models", None):
+    if _validate and getattr(owner, "_models", None):
         validate_checkpoint_owner(owner)
     if model_ids is not None:
         if not all(isinstance(name, str) and name for name in model_ids):
@@ -830,7 +830,9 @@ def _set_failed(owners, failed):
                     if owner_ref() in _failed_checkpoint_owners:
                         raise RuntimeError("Checkpoint restore failed; reload successfully before updating parameters")
                 for optimizer in owner._optimizers:
-                    config.step_guards.append(_raw_optimizer(optimizer).register_step_pre_hook(guard))
+                    register = getattr(_raw_optimizer(optimizer), "register_step_pre_hook", None)
+                    if callable(register):
+                        config.step_guards.append(register(guard))
         else:
             _failed_checkpoint_owners.discard(owner)
             for handle in config.step_guards:
@@ -1137,6 +1139,15 @@ def dispatch_checkpoint(owner, method, original, *args, **kwargs):
             getattr(plugin, "fsdp_version", 1), getattr(plugin.state_dict_type, "name", None)])
     if not enabled or not _eligible_fsdp_checkpoint(plugin):
         return original(owner, *args, **kwargs)
+    available = _protected_checkpoint_available({"": owner})
+    _agree(available)
+    if not available:
+        if method == "load_state" and args and args[0] is not None and (Path(args[0]) / MANIFEST).is_file():
+            raise ValueError("Protected checkpoint requires a compatible Accelerate/PyTorch backend and optimizer")
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            warnings.warn("This Accelerator configuration is not supported by protected checkpoints; "
+                          "using native Accelerate state", RuntimeWarning, stacklevel=2)
+        return original(owner, *args, **kwargs)
     if method == "save_state":
         return save_training_checkpoint(owner, *args, **kwargs)
     return load_training_checkpoint(owner, *args, **kwargs)
@@ -1302,6 +1313,23 @@ def _align_optimizer_groups(state, expected_groups, optimizer, *, allow_reorder=
     state["param_groups"] = aligned
 
 
+def _load_generic_fsdp_optimizer(accelerator, optimizer, model, input_dir, optimizer_index):
+    """Restore an unknown optimizer from checkpoint metadata, including fresh state."""
+    from torch.distributed.checkpoint import FileSystemReader
+    from torch.distributed.checkpoint.optimizer import load_sharded_optimizer_state_dict
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    plugin = accelerator.state.fsdp_plugin
+    path = Path(input_dir) / f"optimizer_{optimizer_index}"
+    with FSDP.state_dict_type(model, plugin.state_dict_type,
+                              plugin.state_dict_config, plugin.optim_state_dict_config):
+        state = load_sharded_optimizer_state_dict(
+            model.state_dict(), "optimizer", FileSystemReader(path),
+        )["optimizer"]
+        local = FSDP.optim_state_dict_to_load(model, optimizer, state)
+        optimizer.load_state_dict(local)
+
+
 def _load_sharded_fsdp_optimizer(accelerator, optimizer, model, input_dir, optimizer_index):
     from torch.distributed.checkpoint import FileSystemReader, load
     from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
@@ -1421,3 +1449,281 @@ def register_checkpoint_state(
 def check_finite_training_value(value, name):
     if value is not None and not torch.isfinite(torch.as_tensor(value)).all():
         raise FloatingPointError(f"Non-finite {name}; refusing to update/save corrupted training weights")
+
+
+def _protected_checkpoint_available(owners):
+    """Select native fallback for configurations outside the validated adapter."""
+    from .. import (_accelerate_patch_requested, _accelerate_patch_owners,
+                    _accelerate_patch_disabled_owners, _supported_accelerate_versions, _eligible_fsdp_checkpoint)
+
+    if not _supported_accelerate_versions():
+        return False
+    for owner in owners.values():
+        if owner in _accelerate_patch_disabled_owners:
+            return False
+        if owner not in _accelerate_patch_owners and not _accelerate_patch_requested():
+            return False
+        mode = owner.distributed_type.name
+        if mode not in ("FSDP", "NO", "MULTI_GPU"):
+            return False
+        if mode == "FSDP" and not _eligible_fsdp_checkpoint(owner.state.fsdp_plugin):
+            return False
+        if (not owner._models or len(owner._models) != len(owner._optimizers)
+                or owner.project_configuration.save_on_each_node):
+            return False
+        if any(type(_raw_optimizer(opt)) not in (torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD)
+               for opt in owner._optimizers):
+            return False
+    return True
+
+
+def _required_native_files(owner, directory, *, all_ranks=False):
+    """Validate registered rank state without assuming an FSDP/DeepSpeed layout."""
+    if not directory.is_dir():
+        raise ValueError(f"Missing checkpoint component: {directory}")
+    ranks = range(owner.num_processes) if all_ranks else (owner.process_index,)
+    for rank in ranks:
+        for validator in checkpoint_config(owner).validators.values():
+            validator(directory, rank=rank)
+        _rng_state(directory / f"random_states_{rank}.pkl")
+
+
+class AcceleratorCheckpoint:
+    """Checkpoint registration and standard Accelerator save/load dispatch.
+
+    Registered participants are saved together. Supported configurations use
+    the protected format; other backends and explicit opt-outs use Accelerate's
+    native format. Training code does not need to choose the implementation.
+    """
+
+    def __init__(self, accelerator):
+        self.accelerator = accelerator
+        self.owners = {"": accelerator}
+        self.checkpoint_limit = None
+        self.configured = False
+        self._warned_fallback = False
+        self._native_run_id = None
+
+    def configure(self, *, model_ids=None, companions=None, generators=None, progress=None,
+                  filename="training_state_{rank}.pt", progress_keys=None, checkpoint_limit=None, **options):
+        if self.configured:
+            raise RuntimeError("Checkpoint registration must only happen once per Accelerator")
+        owners = {"": self.accelerator}
+        roles = {"": model_ids}
+        for name, (owner, owner_roles) in (companions or {}).items():
+            owners[name] = owner
+            roles[name] = owner_roles
+        self.owners = _participants(owners)
+        local_world = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+        if (len(self.owners) > 1 and any(owner.project_configuration.save_on_each_node
+                                        and owner.num_processes > local_world for owner in self.owners.values())):
+            raise ValueError("Multi-node grouped checkpoints with save_on_each_node require shared storage")
+        if checkpoint_limit is not None and checkpoint_limit < 1:
+            raise ValueError("checkpoint_limit must be at least 1")
+        self.checkpoint_limit = checkpoint_limit
+        for name, owner in self.owners.items():
+            configure_checkpointing(owner, model_ids=roles[name], _validate=False, **options)
+        if generators is not None:
+            if progress is None:
+                raise ValueError("Checkpoint progress is required with private generators")
+            register_checkpoint_state(self.accelerator, generators, progress, filename=filename,
+                                      progress_keys=progress_keys)
+        self.configured = True
+        return self
+
+    def _protected(self):
+        return _protected_checkpoint_available(self.owners)
+
+    def _use_protected(self):
+        protected = self._protected()
+        _agree(protected)
+        if not protected and not self._warned_fallback:
+            warnings.warn("Checkpoint protection is unavailable or disabled; using native Accelerate state "
+                          "without manifest configuration checks", RuntimeWarning, stacklevel=2)
+            self._warned_fallback = True
+        return protected
+
+    def save_state(self, output_dir=None, *, safe_serialization=True, **kwargs):
+        automatic = self.accelerator.project_configuration.automatic_checkpoint_naming
+        projects = {id(owner.project_configuration): (owner.project_configuration, owner.project_configuration.iteration)
+                    for owner in self.owners.values()}
+        if automatic:
+            output_dir = None
+        if self._use_protected():
+            result = save_training_checkpoint(self.owners, output_dir, checkpoint_limit=self.checkpoint_limit,
+                                              safe_serialization=safe_serialization, **kwargs)
+        elif self.accelerator.project_configuration.save_on_each_node and len(self.owners) == 1:
+            result = _native(self.accelerator, "save_state", output_dir, safe_serialization=safe_serialization, **kwargs)
+        else:
+            result = self._save_native_group(output_dir, safe_serialization, kwargs)
+        if automatic:
+            for project, iteration in projects.values():
+                project.iteration = iteration + 1
+        return result
+
+    def load_state(self, input_dir=None, **kwargs):
+        if self._use_protected():
+            return load_training_checkpoint(self.owners, input_dir, **kwargs)
+        if self.accelerator.project_configuration.save_on_each_node and len(self.owners) == 1:
+            return _native(self.accelerator, "load_state", input_dir, **kwargs)
+        if input_dir is None and self.accelerator.project_configuration.automatic_checkpoint_naming:
+            input_dir = self.latest(Path(self.accelerator.project_dir) / "checkpoints")
+        if input_dir is None:
+            raise ValueError("A checkpoint directory is required")
+        path = checkpoint_phase(lambda: Path(input_dir).expanduser().absolute())
+        from .. import _accelerate_patch_requested, _accelerate_patch_disabled_owners
+        opted_out = not _accelerate_patch_requested() or any(
+            owner in _accelerate_patch_disabled_owners for owner in self.owners.values())
+        if not opted_out and (path / MANIFEST).is_file():
+            raise ValueError("Protected checkpoint requires a compatible Accelerate/PyTorch backend and optimizer")
+        _agree([str(path), _hook_counts(self.owners)])
+        checkpoint_phase(lambda: [_required_native_files(owner, path / name) for name, owner in self.owners.items()])
+        def identity():
+            marker = path / ".videox_native_checkpoint.json"
+            if not marker.exists():
+                return None
+            value = json.loads(marker.read_text())
+            if value.get("components") != list(self.owners) or not isinstance(value.get("run_id"), str):
+                raise ValueError("Native checkpoint group metadata differs")
+            return value["run_id"]
+        self._native_run_id = _main_value(identity)
+        try:
+            for name, owner in self.owners.items():
+                def restore(owner=owner, name=name):
+                    with _synchronized_hooks(owner):
+                        return _native(owner, "load_state", str(path / name), **kwargs)
+                checkpoint_phase(restore)
+        except BaseException:
+            _set_failed(self.owners.values(), True)
+            raise
+        _set_failed(self.owners.values(), False)
+        match = _CHECKPOINT_NAME.fullmatch(path.name)
+        if match:
+            for owner in self.owners.values():
+                if owner.project_configuration.automatic_checkpoint_naming:
+                    owner.project_configuration.iteration = max(owner.save_iteration, int(match.group(1)) + 1)
+
+    def _save_native_group(self, output_dir, safe_serialization, kwargs):
+        from .. import _failed_checkpoint_owners
+        if any(owner in _failed_checkpoint_owners for owner in self.owners.values()):
+            raise RuntimeError("Cannot save after a failed restore; reload successfully first")
+        if output_dir is None:
+            if not self.accelerator.project_configuration.automatic_checkpoint_naming:
+                raise ValueError("output_dir is required for a checkpoint group")
+            output_dir = Path(self.accelerator.project_dir) / "checkpoints" / f"checkpoint_{self.accelerator.save_iteration}"
+        path = checkpoint_phase(lambda: Path(output_dir).expanduser().absolute())
+        _agree([str(path), _hook_counts(self.owners)])
+        run_id = _main_value(lambda: self._native_run_id or uuid.uuid4().hex)
+        def reserve():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock = path.parent / ".training-checkpoints.lock"
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            try:
+                if path.exists():
+                    raise ValueError(f"Refusing to overwrite an existing checkpoint: {path}")
+                return str(lock), tempfile.mkdtemp(prefix=f".{path.name}.staging-", dir=path.parent)
+            except BaseException:
+                lock.unlink()
+                raise
+        lock, stage = _main_value(reserve)
+        iterations = {owner: owner.project_configuration.iteration for owner in self.owners.values()}
+        try:
+            for name, owner in self.owners.items():
+                checkpoint_phase(lambda owner=owner, name=name: _save_native(owner, Path(stage) / name,
+                                                                             safe_serialization, kwargs))
+            def publish():
+                if path.exists():
+                    raise ValueError("Checkpoint destination appeared while saving")
+                (Path(stage) / ".videox_native_checkpoint.json").write_text(json.dumps(
+                    {"run_id": run_id, "components": list(self.owners)}, sort_keys=True))
+                os.rename(stage, path)
+            _main_value(publish)
+            self._native_run_id = run_id
+        except BaseException:
+            for owner, iteration in iterations.items():
+                owner.project_configuration.iteration = iteration
+            raise
+        finally:
+            def cleanup():
+                if Path(stage).exists():
+                    shutil.rmtree(stage)
+                try:
+                    Path(lock).unlink()
+                except FileNotFoundError:
+                    pass
+            _main_value(cleanup)
+        limit = self.checkpoint_limit
+        if limit is None and self.accelerator.project_configuration.automatic_checkpoint_naming:
+            limit = self.accelerator.project_configuration.total_limit
+        if limit is not None:
+            def prune():
+                candidates = []
+                for candidate in path.parent.iterdir():
+                    match = _CHECKPOINT_NAME.fullmatch(candidate.name)
+                    marker = candidate / ".videox_native_checkpoint.json"
+                    if not match or not candidate.is_dir() or candidate.is_symlink() or not marker.is_file():
+                        continue
+                    try:
+                        value = json.loads(marker.read_text())
+                    except (OSError, ValueError):
+                        continue
+                    if value.get("run_id") == run_id and value.get("components") == list(self.owners):
+                        candidates.append((int(match.group(1)), candidate))
+                for _, candidate in sorted(candidates)[:-limit]:
+                    if candidate != path:
+                        shutil.rmtree(candidate)
+            _main_value(prune)
+        return str(path)
+
+    def latest(self, output_dir):
+        if self._use_protected():
+            result = checkpoint_phase(lambda: latest_training_checkpoint(output_dir, self.owners))
+            _agree(result)
+            return result
+        def find_native():
+            root = Path(output_dir)
+            if not root.is_dir():
+                return None
+            candidates = sorted(((int(match.group(1)), path) for path in root.iterdir()
+                                 if (match := _CHECKPOINT_NAME.fullmatch(path.name)) and path.is_dir()), reverse=True)
+            for _, path in candidates:
+                try:
+                    manifest = path / MANIFEST
+                    if manifest.exists():
+                        value = json.loads(manifest.read_text())
+                        _verify_inventory(path, value, full=False)
+                        if set(value["components"]) != set(self.owners):
+                            continue
+                    marker = path / ".videox_native_checkpoint.json"
+                    if marker.exists() and json.loads(marker.read_text()).get("components") != list(self.owners):
+                        continue
+                    for name, owner in self.owners.items():
+                        _required_native_files(owner, path / name,
+                                               all_ranks=not owner.project_configuration.save_on_each_node)
+                    return str(path)
+                except (OSError, ValueError, KeyError, RuntimeError):
+                    continue
+            if candidates:
+                raise ValueError("No complete native checkpoint matching the required training state")
+            return None
+        result = checkpoint_phase(find_native)
+        _agree(result)
+        return result
+
+    @staticmethod
+    def phase(function): return checkpoint_phase(function)
+    @staticmethod
+    def fingerprint(path): return checkpoint_source_identity(path)
+    @staticmethod
+    def load_model(*args, **kwargs): return load_model_checkpoint(*args, **kwargs)
+    @staticmethod
+    def copy_model(*args, **kwargs): return copy_diffusers_checkpoint(*args, **kwargs)
+    @staticmethod
+    def complete_model(*args, **kwargs): return is_complete_diffusers_checkpoint(*args, **kwargs)
+    @staticmethod
+    def save_model(*args, **kwargs): return save_diffusers_state_dict(*args, **kwargs)
+    @staticmethod
+    def read_model(*args, **kwargs): return read_diffusers_state_dict(*args, **kwargs)
+    @staticmethod
+    def check_finite(value, name): return check_finite_training_value(value, name)

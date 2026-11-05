@@ -80,9 +80,11 @@ def _quant_qfloat8(model, device=None, weight_dtype=None, exclude_module_name=("
 
     Two calls belong together and must stay in this order: the conversion rewrites the
     parameters into FP8 storage, and `convert_weight_dtype_wrapper` installs the forward
-    hook that brings them back to `weight_dtype` on the fly. The wrapper detects FSDP
-    itself (non-mutating output-side dequant), which is why installing it on the already
-    sharded ``pipeline.transformer`` is the supported order.
+    hook that brings them back to `weight_dtype` on the fly. Only the wrapper half is
+    safe on an already-sharded model -- the conversion rewrites `param.data`, which after
+    `shard_model` is a flat-storage view. So this applier runs BEFORE sharding; on a
+    sharded target `apply_gpu_memory_mode` downgrades to `qfloat8_preconverted` (wrapper
+    only), and this conversion is never reached.
     """
     if weight_dtype is None:
         raise ValueError(
@@ -223,15 +225,26 @@ def _place_without_text_encoder(pipeline, device):
             % (TEXT_ENCODER_PREFIX, type(pipeline).__name__))
 
     for name, component in conditioners:
-        if isinstance(component, FSDP) or isinstance(getattr(component, "model", component), FSDP):
-            # Its shards live in FSDP's hands, not in the module's own parameters, so the per-module
-            # hooks below would find nothing to move. FSDP's CPUOffload is the sharding-side
-            # equivalent and is enabled at wrap time (`shard_model(..., offload_to_cpu=True)`).
+        if _is_fsdp_wrapped(component):
+            # Its shards live in FSDP's hands, not in the module's own parameters, so the per-module hooks
+            # below would find nothing to move. When FSDP was wrapped with CPUOffload it already does what
+            # this mode wants -- the shards stay in CPU RAM and stream to the card around each encode -- so
+            # the component is left to FSDP instead of being hooked again here.
+            if _fsdp_cpu_offload_enabled(component):
+                print(
+                    "GPU_memory_mode 'text_encoder_offload': '%s' is FSDP-sharded with CPUOffload, so its "
+                    "shards already live in CPU RAM and stream to %s for the encode pass; left to FSDP."
+                    % (name, device))
+                continue
+            # CPUOffload is fixed at wrap time and cannot be turned on afterwards, so the only fixes are
+            # upstream: wrap the conditioner with offload, or leave it un-sharded for this mode to stream.
             raise ValueError(
-                "GPU_memory_mode 'text_encoder_offload' cannot offload '%s': it is FSDP-wrapped, "
-                "and only FSDP can move its shards. Set the script's `fsdp_text_encoder = False` "
-                "so this mode can stream the conditioner, or use 'model_cpu_offload', whose "
-                "CPU-offload path shards and offloads the conditioner together." % name)
+                "GPU_memory_mode 'text_encoder_offload' cannot offload '%s': it is FSDP-sharded but was "
+                "wrapped WITHOUT CPU offload, so its shards are GPU-resident and only FSDP can move them. "
+                "FSDP's CPUOffload is set at wrap time and cannot be enabled afterwards -- wrap this "
+                "component with `shard_model(..., offload_to_cpu=True)` (the minimax_h3 scripts derive it "
+                "from GPU_memory_mode), or set the script's `fsdp_text_encoder = False` so this mode can "
+                "stream the un-sharded conditioner." % name)
         component.to("cpu")
         streamed = _stream_module_parameters(component, device)
         print(
@@ -247,24 +260,62 @@ def _is_fsdp_wrapped(component):
     turns its parameters into DTensors, so both forms have to be checked. Looking one
     `.model` down covers the conditioners, which are sharded on their inner
     `Qwen3VLModel` because `encode_prompt` calls that submodule directly.
+
+    The FSDP1 test scans the whole subtree and matches `FlatParameter`, not just the
+    candidate's own class: `shard_model` returns a root wrapper today, so the candidate
+    *is* the `FullyShardedDataParallel`, but a per-block wrap that left the root
+    un-wrapped would only show FSDP on the children. A false negative here keeps the
+    `qfloat8` conversion's `param.data` rewrite, which lands on a flat-storage view and
+    corrupts it. This mirrors the sharding test in the TurboX converter's dispatch, so
+    the downgrade guard in `apply_gpu_memory_mode` and the wrapper it downgrades to
+    always agree on whether a model is sharded.
+    """
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:  # torch without the DTensor package can only be FSDP1
+        DTensor = None
+
+    for candidate in (component, getattr(component, "model", None)):
+        if not isinstance(candidate, torch.nn.Module):
+            continue
+        # `.modules()` includes the candidate itself, so a root wrapper is caught here
+        # too, along with per-block wrappers deeper down.
+        if any(isinstance(sub, FSDP) for sub in candidate.modules()):
+            return True
+        for param in candidate.parameters():
+            # `FlatParameter` lives in a private module, so match on the type name.
+            if type(param).__name__ == "FlatParameter":
+                return True
+            if DTensor is not None and isinstance(param, DTensor):
+                return True
+    return False
+
+
+def _fsdp_cpu_offload_enabled(component):
+    """True when the FSDP1 wrapper managing `component` was built with `CPUOffload(offload_params=True)`.
+
+    `shard_model(..., offload_to_cpu=True)` keeps the flat-param shards in CPU RAM and streams them to the
+    card around each wrapped forward, which is exactly the conditioner placement `text_encoder_offload` wants;
+    when it is on, that component is left to FSDP rather than hooked again here. The wrapper may sit one
+    `.model` down (the conditioner is sharded on the inner model `encode_prompt` calls), so both the component
+    and its subtree are scanned. FSDP fixes CPUOffload at construction, so this only reports the setting the
+    wrap already chose -- it cannot turn it on.
     """
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     for candidate in (component, getattr(component, "model", None)):
         if not isinstance(candidate, torch.nn.Module):
             continue
-        if isinstance(candidate, FSDP):
-            return True
-        try:
-            from torch.distributed.tensor import DTensor
-        except ImportError:  # torch without the DTensor package can only be FSDP1
-            continue
-        if any(isinstance(param, DTensor) for param in candidate.parameters()):
-            return True
+        for sub in candidate.modules():
+            if isinstance(sub, FSDP):
+                if getattr(getattr(sub, "cpu_offload", None), "offload_params", False):
+                    return True
     return False
 
 
-def _place_full_load(pipeline, device, sharded_offload):
+def _place_full_load(pipeline, device, sharded_offload, sharded_offload_pinned=True):
     """`model_full_load` across FSDP shards: move what is movable, leave the shards alone.
 
     `pipeline.to(device)` asks every rank for its unsharded parameters, because an FSDP
@@ -305,7 +356,7 @@ def _place_full_load(pipeline, device, sharded_offload):
         resident.append(name)
 
     if offloaded:
-        offload_components_cpu(pipeline, device, offloaded)
+        offload_components_cpu(pipeline, device, offloaded, pinned=sharded_offload_pinned)
 
     print("GPU_memory_mode 'model_full_load': %s already on %s as FSDP shards and left "
           "there; resident %s; CPU-offloaded %s."
@@ -333,7 +384,8 @@ def _target_transformers(pipeline, transformers):
 
 def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
                           transformers=None, exclude_module_name=("modulation",),
-                          quant_tag=None, sharded_offload=None, strict=False):
+                          quant_tag=None, sharded_offload=None, sharded_offload_pinned=True,
+                          strict=False):
     """Quantize (if the mode asks for it) and place `pipeline` on `device`.
 
     Replaces the per-script if/elif chain. Order is fixed here and is part of the
@@ -365,7 +417,13 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
             VAE, the one component too large (9.8 GiB fp32 on MiniMax-H3) to share the
             card with the shards through a long decode; pass ``()`` to keep everything
             resident, or a name tuple to choose. Ignored when nothing is sharded, where
-            the mode keeps its whole-pipeline `.to(device)` behaviour.
+            the mode keeps its whole-pipeline ``.to(device)`` behaviour.
+        sharded_offload_pinned: offload the ``sharded_offload`` components through a pinned
+            host mirror (one-way: the offload repoints ``.data`` at the pinned copy instead
+            of a device-to-host ``.to("cpu")``), which drops the per-request device-to-host
+            leg for a component decoded once such as the VAE. True by default; each component
+            falls back to the two-way offload when pinning is unavailable (a restricted
+            ``ulimit -l``). Only used when something is sharded.
         strict: raise on an unknown *base* mode instead of degrading. It is False by
             default, so an unfamiliar mode keeps the behaviour of the old if/elif chains,
             whose ``else`` branch plain-loaded the pipeline: a warning plus
@@ -395,11 +453,18 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
                             "so only the dequantization wrapper is installed "
                             "(%s).", mode, tag)
             else:
+                # "No float8 storage" is not the same as "no effect": a converter
+                # patched in at runtime may decline to write FP8 into a model FSDP
+                # already owns and quantize each all-gathered weight inside the
+                # forward instead, which is a real FP8 GEMM but saves nothing. Only
+                # the memory claim is unconditionally false here, so only say that.
                 logger.warning(
                     "GPU_memory_mode '%s': transformer is FSDP-sharded but holds no "
-                    "float8 weights, so the qfloat8 suffix is a no-op and the model runs "
-                    "in its sharded storage dtype. Run convert_model_weight_to_float8 on "
-                    "CPU BEFORE shard_model to actually save memory.", mode)
+                    "float8 weights, so the qfloat8 suffix saves no memory. The wrapper "
+                    "installed now may still quantize each all-gathered weight inside "
+                    "the forward -- a speed path, not a memory one, and only if the "
+                    "live converter does that. Run convert_model_weight_to_float8 on "
+                    "CPU BEFORE shard_model to actually save the memory.", mode)
 
     if tag is not None:
         applier = QUANT_MODES.get(tag)
@@ -446,7 +511,7 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
     elif base == "text_encoder_offload":
         _place_without_text_encoder(pipeline, device)
     elif base == "model_full_load":
-        _place_full_load(pipeline, device, sharded_offload)
+        _place_full_load(pipeline, device, sharded_offload, sharded_offload_pinned)
     elif strict:
         raise ValueError(
             "Unknown GPU_memory_mode '%s'. Expected one of %s, optionally suffixed by "
