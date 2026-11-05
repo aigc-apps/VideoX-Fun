@@ -231,17 +231,23 @@ def shard_model_fsdp2(model, device_id, param_dtype=None, cpu_offload=True,
     must not be passed here. `fully_shard` mutates the layers in place rather than wrapping the root, so
     the caller keeps using the same object it passed in, which is what is returned.
 
-    NOT wired into the example scripts, and deliberately so on this repo's torch 2.7. Measured there
-    (`_qtwork/_probe_fsdp2_mem.py`, 2 ranks, `no_grad`): the wrap does park the shards on the host (at-rest
-    ~0 GiB on-card), but a forward unshards every wrapped layer to the GPU and -- inference having no
-    backward to trigger the reshard -- leaves them all resident afterwards (after-forward ~ the whole
-    decoder, params turned back into plain CUDA tensors). `shard_model(..., offload_to_cpu=True)`'s
-    FSDP1 CPUOffload does not do this: its forward hooks reshard each layer to the host right after it
-    runs (peak ~2 layers, after-forward ~at-rest), and on an NVLink box its per-layer all-gather is
-    cheap, so FSDP1 is both correct and fast here. Wiring this FSDP2 path as the text-encoder offload
-    would therefore leave a 58 GiB conditioner on-card after the first encode and OOM beside the DiT.
-    It is kept for a torch whose FSDP2 reshards/offloads after a pure-forward pass (the source protocol
-    measured 1.24 s on torch 2.12); verify with `_qtwork/_probe_fsdp2_mem.py` before wiring it anywhere.
+    NOT wired into the example scripts, and deliberately so. Measured on this box (torch 2.7,
+    `_qtwork/_probe_fsdp2_root.py`, 2 ranks, `no_grad`): this wraps only the decoder layers and never a
+    `fully_shard`'d root -- the shape the source protocol uses to keep `embed_tokens` out of DTensor (a
+    DTensor embedding weight against a plain `input_ids` raises `aten.embedding.default got mixed
+    torch.Tensor and DTensor`). But FSDP2 requires a single `fully_shard`'d root: it promotes the first
+    layer that runs forward to the de-facto root, disables reshard-after-forward on it, and the sibling
+    layers never get the root's orchestration, so a forward unshards every layer to the GPU and leaves
+    them all resident afterwards (after-forward ~ the whole decoder) instead of offloading back. This is
+    not a torch-version or inference limitation: adding a real `fully_shard`'d root makes reshard +
+    offload-back fire correctly on torch 2.7 (peak ~ a few layers, after-forward ~ at-rest). Fixing it
+    for a conditioner means also `fully_shard`'d the root with the embedding passed to `ignored_params`
+    so it stays a plain replicated tensor. `shard_model(..., offload_to_cpu=True)`'s FSDP1 CPUOffload
+    needs no such root -- its forward hooks reshard each layer to the host right after it runs -- and on
+    an NVLink box its per-layer all-gather is cheap, so FSDP1 is both correct and fast here; wiring this
+    FSDP2 shape as the text-encoder offload would leave a 58 GiB conditioner on-card after the first
+    encode and OOM beside the DiT. Kept un-wired; verify with `_qtwork/_probe_fsdp2_root.py` (and add a
+    root wrap) before wiring it anywhere.
     """
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
