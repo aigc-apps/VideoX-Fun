@@ -56,7 +56,7 @@ fsdp_text_encoder   = True
 compile_dit         = False
 
 # model path
-model_name          = "/root/MiniMax-H3"
+model_name          = "models/Diffusion_Transformer/MiniMax-H3"
 
 # Load pretrained model if need
 # A full finetune goes in `transformer_path`, either as the `transformer` folder a training checkpoint writes
