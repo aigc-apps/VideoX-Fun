@@ -162,7 +162,62 @@ def split_gpu_memory_mode(mode):
     return base, tag
 
 
-def _stream_module_parameters(model, device):
+def _locate_decoder_layers(model):
+    """The conditioner's decoder-layer stack, or None when the layout is not recognised.
+
+    Delegates to the canonical `fsdp.locate_decoder_layers`, shared with the FSDP2 sharding strategy so
+    both the pinned-streaming path here and `shard_model_fsdp2` agree on which stack the encode walks.
+    """
+    from ..dist.fsdp import locate_decoder_layers
+
+    return locate_decoder_layers(model)
+
+
+def _stream_decoder_layers_pinned(model, layers, device):
+    """Stream `layers` one-way off a pinned host mirror; keep the rest of `model` resident.
+
+    Returns the number of streamed layers. Every layer's mirror is built first, so a `pin_memory`
+    failure under a restricted `ulimit -l` raises before any parameter is moved or hooked and the
+    caller's pageable fallback stays clean. Each layer is then repointed at its mirror (releasing
+    the pageable original) and starts host-resident; the forward hooks load a layer to the card
+    before it runs and drop it back afterwards, so the peak is one layer. The pieces outside the
+    stack (embedding, final norm, vision tower -- ~2.6 GiB) move to the card once and stay, the
+    replicated part the FSDP2 1-wide offload keeps on the device too.
+    """
+    from ..dist.fsdp import build_pinned_mirror, pinned_load, pinned_unload
+
+    mirrors = [build_pinned_mirror(layer) for layer in layers]
+
+    layer_module_ids = {id(module) for layer in layers for module in layer.modules()}
+    for module in model.modules():
+        if id(module) in layer_module_ids:
+            continue
+        for param in module.parameters(recurse=False):
+            param.data = param.data.to(device)
+        for buf in module.buffers(recurse=False):
+            buf.data = buf.data.to(device)
+
+    for layer, host in zip(layers, mirrors):
+        for name, param in layer.named_parameters():
+            param.data = host["p:" + name]
+        for name, buf in layer.named_buffers():
+            buf.data = host["b:" + name]
+
+    def _onload(module, args):
+        pinned_load(module, device)
+        return None  # a non-None return would replace the module inputs
+
+    def _offload(module, args, output):
+        pinned_unload(module)
+        return None  # a non-None return would replace the module output
+
+    for layer in layers:
+        layer.register_forward_pre_hook(_onload)
+        layer.register_forward_hook(_offload)
+    return len(layers)
+
+
+def _stream_module_parameters(model, device, pinned=False):
     """Onload a module's own parameters around its forward and offload them again after it.
 
     A whole-component onload cannot work for the big conditioners: MiniMax-H3's is 63 GiB
@@ -174,7 +229,21 @@ def _stream_module_parameters(model, device):
     Hooking each module's `forward` also means no input tensor goes through accelerate's
     `send_to_device`, which trips over the meta-device tensors a `low_cpu_mem_usage`
     conditioner is built from.
+
+    With `pinned=True` and a recognisable decoder stack the layers instead stream one-way off a
+    pinned host mirror (`_stream_decoder_layers_pinned`): a request then pays no device-to-host
+    leg, only the asynchronous host-to-card copy. An unrecognised layout, or a `pin_memory`
+    failure, keeps the pageable per-module path below.
     """
+    if pinned:
+        layers = _locate_decoder_layers(model)
+        if layers is not None:
+            try:
+                return _stream_decoder_layers_pinned(model, layers, device)
+            except (RuntimeError, OSError) as exc:
+                print("[text_encoder_offload] pinned layer mirror unavailable (%s); falling back "
+                      "to pageable per-module streaming." % exc)
+
     def _onload(module, args):
         module.to(device)
         return None  # a non-None return would replace the module inputs
@@ -194,20 +263,32 @@ def _stream_module_parameters(model, device):
     return streamed
 
 
-def _place_without_text_encoder(pipeline, device):
-    """Keep every component on `device` except the conditioners, which stream from CPU RAM.
+def _place_without_text_encoder(pipeline, device, offload_names=None, offload_pinned=True):
+    """Keep the transformer on `device`, stream the conditioners, and offload the one-shot VAE.
 
     `model_cpu_offload` offloads all components, the transformer included -- and the transformer
     is the one that runs once per denoising step, so its transfer dominates the request. A
     request touches the conditioner exactly once, before the denoising loop, so leaving only it
     in CPU RAM turns the largest component into a single one-shot transfer.
 
+    The video VAE is also touched once per request (a single decode), and at 9.8 GiB fp32 it does
+    not fit beside the transformer through a long decode, so it is offloaded by default through
+    `offload_components_cpu` (`offload_names=None` -> ``("vae",)``; pass ``()`` to keep it
+    resident). `offload_pinned` routes it through the pinned one-way mirror, dropping the
+    device-to-host leg a two-way offload pays per request.
+
     FSDP-wrapped components are skipped: `shard_model` has already placed their flat-param
-    shards, and a `.to()` would ask every rank for the unsharded parameters.
+    shards, and a `.to()` would ask every rank for the unsharded parameters. A sharded VAE is
+    therefore left to FSDP rather than offloaded here.
     """
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
+    from ..dist.fsdp import offload_components_cpu
+
+    offload_set = ("vae",) if offload_names is None else tuple(offload_names)
+
     conditioners = []
+    deferred_offload = []
     for name, component in pipeline.components.items():
         if not isinstance(component, torch.nn.Module):
             continue
@@ -215,6 +296,9 @@ def _place_without_text_encoder(pipeline, device):
             conditioners.append((name, component))
             continue
         if isinstance(component, FSDP):
+            continue
+        if name in offload_set:
+            deferred_offload.append(name)
             continue
         component.to(device)
 
@@ -246,11 +330,18 @@ def _place_without_text_encoder(pipeline, device):
                 "from GPU_memory_mode), or set the script's `fsdp_text_encoder = False` so this mode can "
                 "stream the un-sharded conditioner." % name)
         component.to("cpu")
-        streamed = _stream_module_parameters(component, device)
+        streamed = _stream_module_parameters(component, device, pinned=offload_pinned)
         print(
-            "GPU_memory_mode 'text_encoder_offload': '%s' kept in CPU RAM, %d "
-            "parameter-owning modules streamed to %s for the single encode pass."
-            % (name, streamed, device))
+            "GPU_memory_mode 'text_encoder_offload': '%s' kept in CPU RAM, %d streamed "
+            "units (pinned=%s) loaded to %s for the single encode pass."
+            % (name, streamed, offload_pinned, device))
+
+    # Offload the one-shot VAE only after the conditioner guards above, so a raise there leaves no
+    # half-attached hooks. This also pins `pipeline._execution_device` to the onload GPU.
+    if deferred_offload:
+        offload_components_cpu(pipeline, device, deferred_offload, pinned=offload_pinned)
+        print("GPU_memory_mode 'text_encoder_offload': CPU-offloaded %s (pinned=%s); the "
+              "transformer stays resident on %s." % (deferred_offload, offload_pinned, device))
 
 
 def _is_fsdp_wrapped(component):
@@ -412,18 +503,20 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
             except that a ``qfloat8`` target which is already FSDP-sharded is switched to
             ``qfloat8_preconverted`` automatically -- its conversion rewrites
             ``param.data``, which after sharding is a flat-storage view.
-        sharded_offload: components to keep off the card while ``model_full_load`` runs
-            on a pipeline with FSDP-sharded parts. ``None`` (default) offloads the video
-            VAE, the one component too large (9.8 GiB fp32 on MiniMax-H3) to share the
-            card with the shards through a long decode; pass ``()`` to keep everything
-            resident, or a name tuple to choose. Ignored when nothing is sharded, where
-            the mode keeps its whole-pipeline ``.to(device)`` behaviour.
+        sharded_offload: components to keep off the card. For ``model_full_load`` this applies
+            only when the pipeline has FSDP-sharded parts (otherwise the mode keeps its
+            whole-pipeline ``.to(device)`` behaviour); for ``text_encoder_offload`` it applies
+            unconditionally, since that mode already leaves the transformer resident and streams
+            the conditioner. ``None`` (default) offloads the video VAE, the one component too
+            large (9.8 GiB fp32 on MiniMax-H3) to share the card through a long decode; pass
+            ``()`` to keep everything resident, or a name tuple to choose.
         sharded_offload_pinned: offload the ``sharded_offload`` components through a pinned
             host mirror (one-way: the offload repoints ``.data`` at the pinned copy instead
             of a device-to-host ``.to("cpu")``), which drops the per-request device-to-host
             leg for a component decoded once such as the VAE. True by default; each component
             falls back to the two-way offload when pinning is unavailable (a restricted
-            ``ulimit -l``). Only used when something is sharded.
+            ``ulimit -l``). Used by ``model_full_load`` only when something is sharded, and by
+            ``text_encoder_offload`` for its VAE offload.
         strict: raise on an unknown *base* mode instead of degrading. It is False by
             default, so an unfamiliar mode keeps the behaviour of the old if/elif chains,
             whose ``else`` branch plain-loaded the pipeline: a warning plus
@@ -509,7 +602,7 @@ def apply_gpu_memory_mode(pipeline, mode, device, weight_dtype=None, *,
     elif base == "model_cpu_offload":
         pipeline.enable_model_cpu_offload(device=device)
     elif base == "text_encoder_offload":
-        _place_without_text_encoder(pipeline, device)
+        _place_without_text_encoder(pipeline, device, sharded_offload, sharded_offload_pinned)
     elif base == "model_full_load":
         _place_full_load(pipeline, device, sharded_offload, sharded_offload_pinned)
     elif strict:
