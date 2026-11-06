@@ -173,7 +173,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2.0e-06 \
-  --learning_rate_critic=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -192,8 +192,10 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --enable_bucket \
   --num_frame_per_block=3 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 667 334 1 \
-  --real_guidance_scale=6.0 \
+  --use_ema \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
@@ -222,7 +224,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--num_train_epochs` | Number of training epochs | 100 |
 | `--checkpointing_steps` | Save checkpoint every N steps | 200 |
 | `--learning_rate` | Generator learning rate | 2e-06 |
-| `--learning_rate_critic` | Critic learning rate | 2e-06 |
+| `--learning_rate_critic` | Critic learning rate | 4.0e-07 |
 | `--lr_scheduler` | LR scheduler type | `constant_with_warmup` |
 | `--lr_warmup_steps` | LR warmup steps | 100 |
 | `--output_dir` | Output directory | `output_dir_wan2.1_causal_forcing_dmd` |
@@ -235,6 +237,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--max_grad_norm` | Gradient clipping threshold | 10.0 |
 | `--trainable_modules` | Trainable modules (`"."` = all) | `"."` |
 | `--low_vram` | Enable low VRAM mode (offload VAE/text encoder) | - |
+| `--use_ema` | Maintain an EMA copy of the generator weights | - |
 
 **Video Sampling Parameters**:
 
@@ -255,8 +258,8 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
-| `--denoising_step_indices_list` | Denoising step indices (DMD core param). Example runs 4-step; parser default `[1000, 500]` = 2-step | `1000 667 334 1` |
-| `--real_guidance_scale` | CFG scale for the real-score (14B teacher) | 6.0 |
+| `--denoising_step_indices_list` | Denoising step indices (DMD core param). Example runs 4-step; parser default `[1000, 500]` = 2-step | `1000 750 500 250` |
+| `--real_guidance_scale` | CFG scale for the real-score (14B teacher) | 4.0 |
 | `--randomize_step_indices` | Randomize the denoising step indices during training | - |
 | `--fake_guidance_scale` | CFG scale for the fake-score (generator). 0.0 = no CFG | 0.0 |
 | `--gen_update_interval` | Generator update interval (generator updates every N critic steps) | 5 |
@@ -273,7 +276,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 ### 5.4 Optional One-Forcing GAN and Precision Controls
 
-These options reuse the [One-Forcing](https://github.com/Aurora-edu/One-Forcing) mechanisms in `scripts/wan2.1_self_forcing/train_distill.py`. All GAN/R1/R2 weights default to **0**, and both precision flags default to **off** in argparse. The AR diffusion, CCD, and DMD launchers enable `--fsdp_reduce_fp32`; GAN/R1/R2 and `--score_timestep_clamp` remain off. AR diffusion and CCD do not gain GAN losses.
+These options reuse the [One-Forcing](https://github.com/Aurora-edu/One-Forcing) mechanisms in `scripts/wan2.1_self_forcing/train_distill.py`. All GAN/R1/R2 weights default to **0**, and both precision flags default to **off** in argparse. The AR diffusion, CCD, and DMD launchers enable `--fsdp_reduce_fp32`; GAN/R1/R2 remain off, and the DMD launcher additionally enables `--score_timestep_clamp`. AR diffusion and CCD do not gain GAN losses.
 
 The discriminator shares the **fake-score backbone**, with one learnable register token per selected feature layer. Its head is optimized by the critic optimizer, not the generator optimizer. Generator loss is `DMD + weighted GAN`; critic loss is `denoising + weighted GAN + R1 + R2`.
 
@@ -290,7 +293,7 @@ The discriminator shares the **fake-score backbone**, with one learnable registe
 | `--r2_weight` | Normalized finite-difference penalty on noisy generated latents | `0.0` |
 | `--r2_sigma` | R2 perturbation standard deviation | `0.01` |
 | `--fsdp_reduce_fp32` | FSDP FP32 gradient reduction; parameter gathering stays low precision | off (enabled in the launcher) |
-| `--score_timestep_clamp` | Clamp DMD, generator GAN, and critic timesteps to `[0.02, 0.98] * num_train_timesteps` | off |
+| `--score_timestep_clamp` | Clamp DMD, generator GAN, and critic timesteps to `[0.02, 0.98] * num_train_timesteps` | off (enabled in the DMD launcher) |
 
 For logits `D_fake` and `D_real`, ordinary GAN losses are `softplus(-D_fake)` for the generator and `softplus(-D_real) + softplus(D_fake)` for the discriminator. Relativistic losses instead use `softplus(-(D_fake - D_real))` and `softplus(-(D_real - D_fake))`.
 

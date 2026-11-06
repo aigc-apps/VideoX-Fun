@@ -173,7 +173,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --num_train_epochs=100 \
   --checkpointing_steps=200 \
   --learning_rate=2.0e-06 \
-  --learning_rate_critic=2.0e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
@@ -192,8 +192,10 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --enable_bucket \
   --num_frame_per_block=3 \
   --use_kv_cache_training \
-  --denoising_step_indices_list 1000 667 334 1 \
-  --real_guidance_scale=6.0 \
+  --use_ema \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --randomize_step_indices \
   --fake_guidance_scale=0.0 \
   --gen_update_interval=5 \
@@ -222,7 +224,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 200 |
 | `--learning_rate` | 生成器学习率 | 2e-06 |
-| `--learning_rate_critic` | 判别器学习率 | 2e-06 |
+| `--learning_rate_critic` | 判别器学习率 | 4.0e-07 |
 | `--lr_scheduler` | 学习率调度器 | `constant_with_warmup` |
 | `--lr_warmup_steps` | 学习率预热步数 | 100 |
 | `--output_dir` | 输出目录 | `output_dir_wan2.1_causal_forcing_dmd` |
@@ -235,6 +237,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--max_grad_norm` | 梯度裁剪阈值 | 10.0 |
 | `--trainable_modules` | 可训练模块（`"."` = 全部） | `"."` |
 | `--low_vram` | 低显存模式（卸载 VAE/文本编码器） | - |
+| `--use_ema` | 维护生成器权重的 EMA 副本 | - |
 
 **视频采样参数**：
 
@@ -255,8 +258,8 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 | 参数 | 说明 | 示例值 |
 |------|------|--------|
-| `--denoising_step_indices_list` | 去噪步骤索引（DMD 核心参数）。示例为 4 步；解析器默认 `[1000, 500]` = 2 步 | `1000 667 334 1` |
-| `--real_guidance_scale` | real-score（14B teacher）的 CFG scale | 6.0 |
+| `--denoising_step_indices_list` | 去噪步骤索引（DMD 核心参数）。示例为 4 步；解析器默认 `[1000, 500]` = 2 步 | `1000 750 500 250` |
+| `--real_guidance_scale` | real-score（14B teacher）的 CFG scale | 4.0 |
 | `--randomize_step_indices` | 训练时随机化去噪步骤索引 | - |
 | `--fake_guidance_scale` | fake-score（生成器）的 CFG scale。0.0 = 无 CFG | 0.0 |
 | `--gen_update_interval` | 生成器更新间隔（每 N 步判别器更新后更新 1 次生成器） | 5 |
@@ -272,7 +275,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 ### 5.4 可选 One-Forcing GAN 与精度控制
 
-这些选项复用 `scripts/wan2.1_self_forcing/train_distill.py` 中的 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 机制。GAN/R1/R2 权重默认均为 **0**，两个精度开关在 argparse 中默认均**关闭**。AR diffusion、CCD 和 DMD 的 launcher 均启用 `--fsdp_reduce_fp32`；GAN/R1/R2 和 `--score_timestep_clamp` 仍关闭。AR diffusion 和 CCD 不添加 GAN 损失。
+这些选项复用 `scripts/wan2.1_self_forcing/train_distill.py` 中的 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 机制。GAN/R1/R2 权重默认均为 **0**，两个精度开关在 argparse 中默认均**关闭**。AR diffusion、CCD 和 DMD 的 launcher 均启用 `--fsdp_reduce_fp32`；GAN/R1/R2 仍关闭，DMD 的 launcher 额外启用 `--score_timestep_clamp`。AR diffusion 和 CCD 不添加 GAN 损失。
 
 判别器共享 **fake-score backbone**，每个选定特征层对应一个可学习 register token。判别器头由 critic optimizer 更新，不加入 generator optimizer。生成器损失为 `DMD + 加权 GAN`，critic 损失为 `denoising + 加权 GAN + R1 + R2`。
 
@@ -289,7 +292,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--r2_weight` | 噪声生成 latent 上的归一化有限差分正则权重 | `0.0` |
 | `--r2_sigma` | R2 扰动标准差 | `0.01` |
 | `--fsdp_reduce_fp32` | FSDP 使用 FP32 梯度归约，参数仍以低精度聚合 | 关闭（launcher 已启用） |
-| `--score_timestep_clamp` | 将 DMD、生成器 GAN 和 critic 时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关闭 |
+| `--score_timestep_clamp` | 将 DMD、生成器 GAN 和 critic 时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关闭（DMD launcher 已启用） |
 
 设 logits 为 `D_fake` 和 `D_real`，普通 GAN 的生成器损失为 `softplus(-D_fake)`，判别器损失为 `softplus(-D_real) + softplus(D_fake)`。相对论模式分别使用 `softplus(-(D_fake - D_real))` 和 `softplus(-(D_real - D_fake))`。
 

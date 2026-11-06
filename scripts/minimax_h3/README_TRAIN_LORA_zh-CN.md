@@ -259,7 +259,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--fix_sample_size` | 固定的 `[高, 宽]` 画布（都为 32 的倍数），覆盖 `--video_sample_size`；需配合 `--enable_bucket`，并关闭 `--random_hw_adapt` / `--training_with_video_token_length` | None |
 | `--token_sample_size` | token 长度采样尺寸 | 960 |
 | `--video_sample_stride` | 抽帧步长（MiniMax-H3 为 24 fps） | 1 |
-| `--video_sample_n_frames` | 采样帧数，须满足视频 VAE 的 `17*n+5` 形式（时长保持在 5 到 15 秒之间） | 124 |
+| `--video_sample_n_frames` | 采样帧数，须满足视频 VAE 的 `17*n+5` 形式（时长保持在 0 到 16 秒之间） | 124 |
 | `--video_repeat` | 每个 epoch 中每个视频重复的次数 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效更大的 batch） | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 4 |
@@ -515,7 +515,7 @@ NCCL_DEBUG=INFO
 | `vae_path` | 训练好的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `output_dir_minimax_h3_lora/checkpoint-xxx/lora_diffusion_pytorch_model.safetensors` |
 | `sample_size` | 生成视频分辨率 `[height, width]`；宽高必须是 32 的倍数。设为 `None` 时使用 MiniMax-H3 自带的 16:9 画布（768x1344） | `[704, 1280]` |
-| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 5 到 15 秒之间） | 124 |
+| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 0 到 16 秒之间） | 124 |
 | `fps` | 每秒帧数（MiniMax-H3 固定以 24 fps 生成） | 24 |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的 GPU 请使用 `torch.float16` | `torch.bfloat16` |
 | `prompt` | 描述生成内容的正向提示词 | `"A red fox trotting..."` |

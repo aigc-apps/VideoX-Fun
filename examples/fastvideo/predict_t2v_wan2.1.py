@@ -239,6 +239,12 @@ pipeline = WanPipeline(
     scheduler=scheduler,
 )
 if ulysses_degree > 1 or ring_degree > 1:
+    # The VSA kernel has no ring-attention path; a sparse student under ring_degree>1 would
+    # silently mis-attend. student_topk >= 1.0 is the dense fallback, which ring does support.
+    if ring_degree > 1 and student_topk < 1.0:
+        raise ValueError(
+            "FastVideo VSA multi-GPU requires ring_degree=1; put every GPU into ulysses_degree "
+            "instead (num_heads must divide ulysses_degree).")
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:

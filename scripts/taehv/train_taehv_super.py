@@ -614,12 +614,8 @@ def main():
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
     if accelerator.is_main_process:
-        os.makedirs(args.output_dir, exist_ok=True)
-        if not args.resume_from_checkpoint and (
-            os.path.exists(os.path.join(args.output_dir, "train.jsonl")) or
-            any(name.startswith("checkpoint-") for name in os.listdir(args.output_dir))
-        ):
-            raise FileExistsError("Use a new output_dir or --resume_from_checkpoint")
+        if args.output_dir is not None:
+            os.makedirs(args.output_dir, exist_ok=True)
 
     # For mixed precision training, keep trainable parameters and Adam moments FP32.
     weight_dtype = torch.float32

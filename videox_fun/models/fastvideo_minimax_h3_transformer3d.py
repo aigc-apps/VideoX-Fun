@@ -240,16 +240,23 @@ class FastVideoMiniMaxH3Transformer3DModel(MiniMaxH3Transformer3DModel):
         return tuple(segments)
 
     def enable_multi_gpus_inference(self,):
-        """VSA has no sequence-parallel path in this repo.
+        """Enable sequence-parallel inference for the VSA sparse student.
 
-        The in-repo VSA kernel only implements the single-GPU coarse-to-fine block-sparse forward;
-        there is no ulysses head-parallel or ring-attention binding for it (unlike the base
-        ``MiniMaxH3MultiGPUsAttnProcessor``). Fail loudly rather than silently falling back to a
-        DENSE multi-GPU processor (which would bypass VSA and drop the gate params).
+        Reuses the parent's packed-sequence SP assembly -- it sizes ``sp_world_size`` /
+        ``all_gather``, pads the sequence to a group multiple, hands every rank a contiguous row
+        slice and checks ``num_heads`` is divisible by the group -- then re-binds the VSA
+        sequence-parallel processor onto every block that carries an ``attn_op``. The parent
+        binding (``MiniMaxH3MultiGPUsAttnProcessor``) is a DENSE core; leaving it on a sparse
+        block would silently bypass VSA and drop the ``to_gate_compress`` params, so the sparse
+        blocks are swapped to ``MiniMaxH3MultiGPUsVSAAttnProcessor``, which turns the row split
+        into a head split around the VSA op. A dense student (``topk >= 1.0``) has no ``attn_op``
+        and keeps the parent's dense processor untouched.
         """
-        raise NotImplementedError(
-            "FastVideoMiniMaxH3Transformer3DModel (VSA) supports single-GPU inference only; the "
-            "VSA kernel has no ulysses/ring sequence-parallel path. Set ulysses_degree=ring_degree=1.")
+        super().enable_multi_gpus_inference()
+        from ..dist import MiniMaxH3MultiGPUsVSAAttnProcessor
+        for block in self.transformer_blocks:
+            if hasattr(block.attn, "attn_op"):
+                block.attn.set_processor(MiniMaxH3MultiGPUsVSAAttnProcessor())
 
     def sparse_trainable_params(self):
         """Names of the extra VSA-branch parameters, for logging / freezing."""

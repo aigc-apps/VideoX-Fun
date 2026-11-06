@@ -22,7 +22,7 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
                               save_videos_with_audio_grid, unmerge_lora)
 
 
-# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, model_group_offload, sequential_cpu_offload, text_encoder_offload, text_encoder_offload_and_qfloat8].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -38,6 +38,9 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
+# 
+# text_encoder_offload keeps only the text encoder in CPU RAM, streaming it to the GPU module by module for
+# its single encode pass, so the transformer stays resident (add `_and_qfloat8` for float8 storage).
 GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
@@ -223,6 +226,9 @@ if use_qfloat8:
 # sharded modules offload through FSDP's own CPUOffload, enabled here at wrap time; the pipeline then routes the
 # whole-model offload call to the non-FSDP VAE / audio VAE automatically, so no per-mode branch is needed below.
 wants_offload = GPU_memory_mode in ("model_cpu_offload", "model_group_offload", "sequential_cpu_offload")
+# text_encoder_offload keeps the transformer resident and offloads only the conditioner, so under FSDP the text
+# encoder is wrapped with CPUOffload while the DiT stays on the card; match the base to cover `_and_qfloat8`.
+te_wants_offload = wants_offload or GPU_memory_mode.startswith("text_encoder_offload")
 
 if ulysses_degree > 1 or ring_degree > 1:
     from functools import partial
@@ -251,7 +257,7 @@ if ulysses_degree > 1 or ring_degree > 1:
     if fsdp_text_encoder:
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype,
                           module_to_wrapper=list(text_encoder.model.language_model.layers),
-                          offload_to_cpu=wants_offload)
+                          offload_to_cpu=te_wants_offload)
         pipeline.text_encoder.model = shard_fn(pipeline.text_encoder.model)
         print("Add FSDP TEXT ENCODER")
 

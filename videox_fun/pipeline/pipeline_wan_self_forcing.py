@@ -23,15 +23,19 @@ from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
+def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000, timestep_list=None):
     """Official FlashHead timestep schedule with shift transform.
 
     Hardcoded schedules match the CF reference for distilled few-step inference:
       - 4-step: [1000, 750, 500, 250] — Stage 2 CCD (`causal_cd_framewise.yaml`)
       - 2-step: [1000, 500]           — Stage 3 DMD (`causal_forcing_dmd_framewise_2step.yaml`)
-    Anything else falls back to linspace.
+    Anything else falls back to linspace. An explicit `timestep_list` overrides
+    all of the above (per-block schedules such as the official One-Forcing
+    first-frame list).
     """
-    if num_inference_steps == 4:
+    if timestep_list is not None:
+        timesteps = list(timestep_list)
+    elif num_inference_steps == 4:
         timesteps = [1000, 750, 500, 250]
     elif num_inference_steps == 2:
         timesteps = [1000, 500]
@@ -589,6 +593,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
         independent_first_frame: bool = True,
         context_noise: int = 0,
         stochastic_sampling: bool = True,
+        first_frame_denoising_step_list: Optional[List[int]] = None,
         streaming: bool = False,
         decode_callback: Optional[Callable[[torch.Tensor, int], None]] = None,
         forcing_kv_enable: Optional[bool] = None,
@@ -611,6 +616,12 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             num_frame_per_block: Number of frames to generate per block.
             independent_first_frame: Whether to generate the first frame independently (T2V mode).
             context_noise: Context noise level for KV cache update (matches training config).
+            first_frame_denoising_step_list: Optional explicit raw timestep list
+                (e.g. [1000, 750, 500, 250]) used only for the block that starts at
+                frame 0, mirroring the official One-Forcing
+                `first_frame_denoising_step_list`: that block is the only one with
+                an empty KV context and benefits from a multi-step schedule while
+                all other blocks keep the global one. None disables the override.
             streaming: If True, decode each causal block into pixels right after it is
                 generated (instead of accumulating all latents and decoding once at the end).
                 The VAE's causal temporal cache is threaded across blocks so the result is
@@ -696,6 +707,7 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             in_prompt_embeds = prompt_embeds
 
         # 4. Prepare timesteps
+        custom_timesteps = timesteps
         if stochastic_sampling:
             timesteps = stochastic_sampling_timesteps(num_inference_steps, shift, device)
         elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
@@ -868,16 +880,40 @@ class WanSelfForcingPipeline(DiffusionPipeline):
             end_idx = start_idx + current_num_frames
             noisy_input = noise[:, :, start_idx:end_idx]
 
-            if not stochastic_sampling and isinstance(self.scheduler, FlowUniPCMultistepScheduler):
-                self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
-                timesteps = self.scheduler.timesteps
-            elif not stochastic_sampling and isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
-                self.scheduler.set_timesteps(device=device, sigmas=sampling_sigmas)
-                timesteps = self.scheduler.timesteps
-            else:
+            # Official One-Forcing gives the block starting at frame 0 (the only
+            # block with an empty KV context) its own multi-step schedule; all
+            # other blocks keep the global one.
+            if current_start_frame == 0 and first_frame_denoising_step_list is not None:
+                if stochastic_sampling:
+                    block_timesteps = stochastic_sampling_timesteps(
+                        len(first_frame_denoising_step_list), shift, device,
+                        timestep_list=first_frame_denoising_step_list)
+                elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+                    self.scheduler.set_timesteps(
+                        timesteps=list(first_frame_denoising_step_list), device=device)
+                    block_timesteps = self.scheduler.timesteps
+                else:
+                    raise ValueError(
+                        "first_frame_denoising_step_list requires stochastic sampling or "
+                        f"FlowMatchEulerDiscreteScheduler, got {type(self.scheduler)}")
                 self.scheduler._step_index = None
-            
-            denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
+            else:
+                if not stochastic_sampling and isinstance(self.scheduler, FlowUniPCMultistepScheduler):
+                    self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
+                    timesteps = self.scheduler.timesteps
+                elif not stochastic_sampling and isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
+                    self.scheduler.set_timesteps(device=device, sigmas=sampling_sigmas)
+                    timesteps = self.scheduler.timesteps
+                elif (not stochastic_sampling and first_frame_denoising_step_list is not None
+                        and isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler)):
+                    # Restore the global schedule overridden by the first-frame block
+                    timesteps, num_inference_steps = retrieve_timesteps(
+                        self.scheduler, num_inference_steps, device, custom_timesteps)
+                else:
+                    self.scheduler._step_index = None
+                block_timesteps = timesteps
+
+            denoise_timesteps = block_timesteps[:-1] if stochastic_sampling else block_timesteps
             with self.progress_bar(total=len(denoise_timesteps)) as progress_bar:
                 for step_idx, t in enumerate(denoise_timesteps):
                     # Per-frame timesteps for causal generation
@@ -947,8 +983,8 @@ class WanSelfForcingPipeline(DiffusionPipeline):
                     
                     # compute the previous noisy sample x_t -> x_t-1
                     if stochastic_sampling:
-                        t_i = (timesteps[step_idx] / 1000).to(weight_dtype)
-                        t_i_1 = (timesteps[step_idx + 1] / 1000).to(weight_dtype)
+                        t_i = (block_timesteps[step_idx] / 1000).to(weight_dtype)
+                        t_i_1 = (block_timesteps[step_idx + 1] / 1000).to(weight_dtype)
                         denoised_pred = noisy_input - flow_pred * t_i
                         noisy_input = (1 - t_i_1) * denoised_pred + t_i_1 * torch.randn(
                             denoised_pred.shape, dtype=denoised_pred.dtype, device=device, generator=generator

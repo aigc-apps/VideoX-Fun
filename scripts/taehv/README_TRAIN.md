@@ -180,25 +180,32 @@ NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --config_path="config/wan2.2/wan_civitai_5b.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --tae_path=$TAE_PATH \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=33 \
+  --pretrained_model_name_or_path="$MODEL_NAME" \
+  --tae_path="$TAE_PATH" \
+  --train_data_dir="$DATASET_NAME" \
+  --train_data_meta="$DATASET_META_NAME" \
+  --fix_sample_size 720 1280 \
+  --video_sample_strides 1 2 3 \
+  --video_sample_n_frames=25 \
+  --validation_n_frames=49 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=4 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --dataloader_num_workers=8 \
+  --max_train_steps=10000 \
+  --checkpointing_steps=1000 \
+  --validation_steps=1000 \
+  --validation_paths "asset/inpaint_video.mp4" \
   --learning_rate=1e-04 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
+  --lr_warmup_steps=200 \
   --latent_loss_weight=1.0 \
+  --use_ema \
+  --ema_decay=0.999 \
   --seed=42 \
   --output_dir="output_dir_taehv_w2.2" \
   --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
   --adam_weight_decay=1e-2 \
   --adam_epsilon=1e-08 \
   --vae_mini_batch=1 \
@@ -207,6 +214,8 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --trainable_modules "." \
   --resume_from_checkpoint=latest
 ```
+
+These settings are also provided in `scripts/taehv/train_taehv.sh`. Edit its training arguments and run `bash scripts/taehv/train_taehv.sh`.
 
 **Wan2.1 / Wan2.2 14B (taew2_1) Example**:
 
@@ -246,6 +255,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
 | `--dataloader_num_workers` | Number of DataLoader workers | 4 |
 | `--num_train_epochs` | Number of training epochs | 100 |
+| `--max_train_steps` | Total training steps; overrides `--num_train_epochs` when set | 10000 |
 | `--checkpointing_steps` | Save a checkpoint every N steps | 500 |
 | `--checkpoints_total_limit` | Max number of checkpoints to store | `None` |
 | `--learning_rate` | Initial learning rate | 1e-4 |
@@ -265,7 +275,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--trainable_modules_low_learning_rate` | Trainable modules with lr/2 | `[]` |
 | `--resume_from_checkpoint` | Resume training from checkpoint, use `"latest"` to auto-select | `latest` |
 | `--validation_steps` / `--validation_epochs` | Run validation every N steps / epochs | 2000 / 5 |
-| `--validation_paths` | Video paths for validation reconstruction comparison | `"asset/1.mp4"` |
+| `--validation_paths` | Video paths for validation reconstruction comparison | `"asset/inpaint_video.mp4"` |
 | `--validation_n_frames` | Validation clip length (4k+1); defaults to `--video_sample_n_frames` | `None` |
 
 **Sample Size Configuration Guide**:
@@ -282,11 +292,11 @@ You can configure validation parameters to periodically reconstruct test videos 
 |-----------|-------------|-------------------|
 | `--validation_steps` | Run validation every N steps | 2000 |
 | `--validation_epochs` | Run validation every N epochs | 5 |
-| `--validation_paths` | Validation video paths | `"asset/1.mp4"` |
+| `--validation_paths` | Validation video paths | `"asset/inpaint_video.mp4"` |
 | `--validation_n_frames` | Validation clip length, **4k+1**; omit to reuse `--video_sample_n_frames` | 81 |
 
 ```bash
-  --validation_paths "asset/1.mp4" \
+  --validation_paths "asset/inpaint_video.mp4" \
   --validation_steps=2000 \
   --validation_epochs=5 \
   --validation_n_frames=81
@@ -304,7 +314,7 @@ You can configure validation parameters to periodically reconstruct test videos 
 - **Decoder-only distillation**: Add `--freeze_tae_encoder` to only improve decoding quality.
 - **Memory**: The teacher full VAE is the main memory consumer. Use `--low_vram` to keep it on CPU between encoding steps, or reduce `--video_sample_n_frames` / `--video_sample_size`.
 - **Sequential TAE**: `--use_taehv_sequential` trades speed for O(1) activation memory w.r.t. video length.
-- **EMA**: `--use_ema` is recommended for the final deliverable; the final saved `taehv` directory contains the EMA weights. Pass `--ema_decay` (e.g. `0.999`, as `train_taehv_super.sh` does) when short runs need the average to catch up faster than the 0.9999 default.
+- **EMA**: `--use_ema` is recommended for the final deliverable; the final saved `taehv` directory contains the EMA weights. Pass `--ema_decay` (e.g. `0.999`, as both `train_taehv.sh` and `train_taehv_super.sh` do) when short runs need the average to catch up faster than the 0.9999 default.
 
 ### 3.6 Multi-Node Distributed Training
 

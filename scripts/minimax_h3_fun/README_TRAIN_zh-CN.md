@@ -296,7 +296,7 @@ accelerate launch --mixed_precision="bf16" \
 | `--video_sample_size` | 视频最大训练分辨率 | 960 |
 | `--token_sample_size` | 开启 `training_with_video_token_length` 时最大 token 长度对应的分辨率 | 960 |
 | `--video_sample_stride` | 抽帧步长（MiniMax-H3 为 24 fps） | 1 |
-| `--video_sample_n_frames` | 采样帧数，需满足视频 VAE 的 `17*n+5` 形式（时长保持在 5～15 秒之间） | 311 |
+| `--video_sample_n_frames` | 采样帧数，需满足视频 VAE 的 `17*n+5` 形式（时长保持在 0～16 秒之间） | 311 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 8 |
 | `--num_train_epochs` | 训练轮数 | 100 |

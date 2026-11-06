@@ -51,17 +51,6 @@ import triton.language as tl
 # loads, a fused tl.dot(p, v, acc) accumulate, and a per-query-tile variable kv-block count (vs a
 # uniform-MAXK loop over a dummy-padded tile).
 #
-# This is deliberately NOT the fastest forward available. That same sm90 CUDA kernel (ThunderKittens)
-# IS buildable from source on this box -- only its prebuilt wheels are pinned -- and measures
-# 4.66 ms/call on the workload above, i.e. 1.35x over this Triton kernel (step-level VSA-vs-dense
-# 1.019x -> 1.115x at 480P, 1.233x -> 1.381x at 720P). It stays out of the production path because
-# it adds a build dependency and fails SILENTLY three ways: on a non-sm90a device pass it compiles
-# to an empty stub returning uninitialised memory; it reinterpret_casts `variable_block_sizes` to
-# int32 with no dtype check, so an int64 tensor yields all-NaN; and its lse is [B,H,L,1] in the
-# natural-log domain scaled by -1/qk_scale rather than our [B,H,L] base-2. The build recipe, the
-# runtime gate it would need, and the measurement set are archived in
-# `_fastvideo_sm90_kernel/README.md`.
-#
 # Deviations from upstream, listed so a diff against the sdist still audits this block:
 #   1. its `import torch / triton / triton.language`, and its SPARSE-ADDITION `import math`, are
 #      hoisted to this module's top import block -- same names, no behavioural change, and the
@@ -495,12 +484,10 @@ class _sparse_linear_attention_varlen(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q_tile, k_tile, v_tile, q2k_idx, q2k_num, block_sizes, kb_id, qk_scale):
         assert q_tile.is_contiguous() and k_tile.is_contiguous() and v_tile.is_contiguous()
-        B, H, L_BUF, D = q_tile.shape
-        # Forward runs the vendored official Triton block-sparse kernel, which consumes the
-        # official (q2k_index, q2k_num) pair map_to_index produced: the first q2k_num[row] entries
-        # of each row are that query tile's kv-tile ids and the -1 pads are never read. Its M is
-        # [B,H,L_BUF] base-2 lse (m_i + log2 l_i), byte-compatible with what our backward expects,
-        # so the save_for_backward contract is unchanged.
+        # The forward consumes the official (q2k_index, q2k_num) pair map_to_index produced:
+        # the first q2k_num[row] entries of each row are that query tile's kv-tile ids and the
+        # -1 pads are never read. It produces M as [B,H,L_BUF] base-2 lse (m_i + log2 l_i),
+        # which is exactly what the varlen backward kernels below consume.
         out, lse = triton_block_sparse_attn_forward(
             q_tile, k_tile, v_tile, q2k_idx, q2k_num, block_sizes)
         ctx.save_for_backward(q_tile, k_tile, v_tile, q2k_idx, q2k_num,
@@ -625,7 +612,13 @@ def get_block_map(q, k, topk_ratio, BLKQ=64, BLKK=64):
     pooled_score = pooled_qblocks @ pooled_kblocks.transpose(-1, -2)
 
     K = pooled_score.shape[-1]
-    topk = min(K, int(topk_ratio * K))
+    # Clamp to at least one key block. A truncating int() selects ZERO blocks whenever
+    # topk_ratio * K < 1 (short sequence and/or aggressive ratio -- e.g. RoLa's default 0.03
+    # below 2176 tokens, SLA's 0.1 below 640), and the sparse kernel then attends to nothing and
+    # emits all-NaN. Keeps the truncating count everywhere else, so no existing configuration
+    # changes its selection; matches the lower bound the VSA paths already apply
+    # (VSASparseAttention.sparse / _h3_compute_topk).
+    topk = max(1, min(K, int(topk_ratio * K)))
     lut = torch.topk(pooled_score, topk, dim=-1, sorted=False).indices
 
     sparse_map = torch.zeros_like(pooled_score, dtype=torch.int8)
