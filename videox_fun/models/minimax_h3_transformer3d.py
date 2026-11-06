@@ -139,7 +139,8 @@ class MiniMaxH3AdaLayerNormModulation(nn.Module):
         # mixed-precision checkpoint — and only its result is cast down to the bfloat16 projection. Every block reads
         # the same `temb`, so a rounding applied before the activation biases every block's modulation parameters
         # identically at every sampling step, which accumulates coherently over the denoising trajectory.
-        temb = self.linear(F.silu(temb).to(self.linear.weight.dtype))
+        projection_dtype = getattr(self.linear, "original_dtype", self.linear.weight.dtype)
+        temb = self.linear(F.silu(temb).to(projection_dtype))
         temb = temb.view(-1, 6 * self.hidden_size)
         return temb.chunk(6, dim=-1)
 
@@ -173,7 +174,8 @@ class MiniMaxH3AdaLayerNormOut(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, temb: torch.Tensor, timestep_indices: torch.Tensor) -> torch.Tensor:
         # As in `MiniMaxH3AdaLayerNormModulation`: activate at `temb`'s precision, cast to the projection's dtype after.
-        shift, scale = self.linear(F.silu(temb).to(self.linear.weight.dtype)).chunk(2, dim=-1)
+        projection_dtype = getattr(self.linear, "original_dtype", self.linear.weight.dtype)
+        shift, scale = self.linear(F.silu(temb).to(projection_dtype)).chunk(2, dim=-1)
         # The modulation itself stays at the block stack's precision; `forward` casts to the output heads' dtype.
         hidden_states = self.norm(hidden_states)
         return hidden_states * (1.0 + _index_select_rows(scale, timestep_indices)) + _index_select_rows(

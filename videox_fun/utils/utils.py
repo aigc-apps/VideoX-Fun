@@ -10,7 +10,6 @@ import cv2
 import imageio
 import numpy as np
 import torch
-import torchvision
 from einops import rearrange
 from PIL import Image
 
@@ -83,7 +82,7 @@ def _write_frames_ffmpeg_pipe(frame_list, path, fps):
     proc = subprocess.Popen(command, stdin=subprocess.PIPE)
     try:
         for frame in frame_list:
-            proc.stdin.write(frame.tobytes())
+            proc.stdin.write(frame.data)
         proc.stdin.close()
         return proc.wait() == 0
     except Exception:
@@ -91,7 +90,7 @@ def _write_frames_ffmpeg_pipe(frame_list, path, fps):
         proc.wait()
         return False
 
-def _make_grid_uint8(frames, n_rows, padding=2):
+def _make_grid_uint8(frames, n_rows, padding=2, pad_value=0):
     """Vectorized equivalent of torchvision.utils.make_grid for [B, H, W, C]
     uint8 frames (normalize=False, pad_value=0, single image returned as-is);
     the per-frame python loop in make_grid dominated save time on long videos.
@@ -102,8 +101,9 @@ def _make_grid_uint8(frames, n_rows, padding=2):
     n_cols = min(n_rows, n)
     n_row_blocks = (n + n_cols - 1) // n_cols
     h, w, c = frames[0].shape
-    grid = np.zeros(
+    grid = np.full(
         (n_row_blocks * h + (n_row_blocks + 1) * padding, n_cols * w + (n_cols + 1) * padding, c),
+        pad_value,
         dtype=np.uint8,
     )
     for i, frame in enumerate(frames):
@@ -113,19 +113,30 @@ def _make_grid_uint8(frames, n_rows, padding=2):
         grid[top:top + h, left:left + w] = frame
     return grid
 
+def _video_grid_frames_uint8(videos, n_rows, rescale):
+    """Convert a clip on its device, then transfer packed uint8 RGB once."""
+    if videos.shape[1] != 3:
+        videos = videos.permute(0, 2, 1, 3, 4)
+    videos = videos.permute(2, 0, 1, 3, 4)
+    if rescale:
+        videos = (videos + 1.0) / 2.0
+    # Preserve the original save helper's truncating uint8 conversion. Grid
+    # padding was zero before rescaling, so it becomes 127 for [-1, 1] input.
+    padding = int(((videos.new_zeros(()) + 1.0) / 2.0 * 255).item()) if rescale else 0
+    frames = (videos * 255).to(torch.uint8)
+    frames = frames.permute(0, 1, 3, 4, 2).contiguous().cpu().numpy()
+    return [_make_grid_uint8(frame, n_rows, pad_value=padding) for frame in frames]
+
 def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, fps=12, imageio_backend=True, color_transfer_post_process=False):
     videos = rearrange(videos, "b c t h w -> t b c h w")
-    # Convert on-device and ship uint8 to the host once per frame, instead of
-    # per-frame make_grid + float32 cpu transfers.
+    # Convert on-device, transpose to [T, B, H, W, C] once, and ship uint8 to
+    # the host in a single transfer; grids are then assembled in numpy.
     videos = videos.float()
     if rescale:
         videos = (videos + 1.0) / 2.0  # -1,1 -> 0,1
-    videos = (videos * 255).clamp(0, 255).to(torch.uint8).cpu()
-    frames = []
-    for x in videos:
-        # [B, C, H, W] -> [B, H, W, C], matching make_grid's default layout.
-        x = x.permute(0, 2, 3, 1).contiguous().numpy()
-        frames.append(_make_grid_uint8(x, n_rows))
+    videos = (videos * 255).clamp(0, 255).to(torch.uint8)
+    videos = videos.permute(0, 1, 3, 4, 2).contiguous().cpu().numpy()
+    frames = [_make_grid_uint8(x, n_rows) for x in videos]
 
     if color_transfer_post_process:
         for i in range(1, len(frames)):
@@ -247,7 +258,7 @@ def _save_video_audio_ffmpeg_pipe(frame_list, samples, path, fps, audio_sample_r
         proc = subprocess.Popen(command, stdin=subprocess.PIPE)
         try:
             for frame in frame_list:
-                proc.stdin.write(frame.tobytes())
+                proc.stdin.write(frame.data)
             proc.stdin.close()
             return proc.wait() == 0
         except Exception:
@@ -281,19 +292,7 @@ def save_videos_with_audio_grid(
 
     import av
 
-    # Convert video frames to numpy arrays
-    # Support both [b, c, t, h, w] and [b, t, c, h, w]
-    if videos.shape[1] != 3:  # shape[1] is T (frames), not C (channels)
-        videos = rearrange(videos, "b t c h w -> b c t h w")
-    videos = rearrange(videos, "b c t h w -> t b c h w")
-    frame_list = []
-    for x in videos:
-        x = torchvision.utils.make_grid(x, nrow=n_rows)
-        x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
-        if rescale:
-            x = (x + 1.0) / 2.0  # -1,1 -> 0,1
-        x = (x * 255).cpu().numpy().astype(np.uint8)
-        frame_list.append(x)
+    frame_list = _video_grid_frames_uint8(videos, n_rows, rescale)
     
     # Handle single frame case (save as image)
     if len(frame_list) == 1:
