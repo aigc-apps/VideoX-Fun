@@ -1,10 +1,12 @@
 """Model weight I/O and transactional Accelerate training checkpoints."""
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import errno
 import functools
 import gc
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -13,8 +15,12 @@ import shutil
 import tempfile
 import types
 import uuid
-import warnings
 from weakref import WeakKeyDictionary, ref
+
+try:
+    import fcntl
+except ImportError:  # Lock recovery is unavailable on platforms without flock.
+    fcntl = None
 
 import numpy as np
 import torch
@@ -365,6 +371,7 @@ class CheckpointConfig:
     check_finite: bool = False
     checksum: str = "metadata"
     private_states: dict = field(default_factory=dict)
+    private_load_hook_ids: set = field(default_factory=set)
     validators: dict = field(default_factory=dict)
     run_id: str = None
     metadata: dict = field(default_factory=dict)
@@ -385,18 +392,16 @@ def configure_checkpointing(owner, *, model_ids=None, allow_legacy=None, check_f
                             legacy_metadata_keys=(), legacy_metadata_groups=(), _validate=True):
     """Configure stable model roles and explicit compatibility/integrity options.
 
-    ``model_ids`` maps role names to prepared models. It is required for multiple
-    models of the same class when saving new checkpoints. Legacy checkpoints
-    are detected automatically; ``allow_legacy=False`` opts into manifest-only
-    restore. Missing required training state is an error in either format.
+    ``model_ids`` maps role names to prepared models. When omitted, stable
+    default roles are assigned, including for multiple models of the same class.
+    Restore uses native Accelerate loading; manifest and configuration checks
+    do not block it.
+    ``allow_legacy`` and the legacy metadata arguments remain accepted for
+    compatibility with existing training scripts.
     ``checksum='full'`` adds streaming hashes of large payloads; the default
     hashes control files and records the size of every payload.
-    ``legacy_metadata_keys`` names fields newly added by the caller. Older
-    manifests missing that entire set can load with a warning. A partially
-    missing set is invalid; existing values must still match. No model,
-    optimizer or topology checks are relaxed.
-    ``legacy_metadata_groups`` allows separate generations of fields to be
-    migrated independently, each subject to the same all-or-none check.
+    The legacy metadata arguments only describe the saved configuration; they
+    do not impose extra restrictions on loading an older checkpoint.
     """
     config = checkpoint_config(owner)
     if _validate and getattr(owner, "_models", None):
@@ -408,11 +413,12 @@ def configure_checkpointing(owner, *, model_ids=None, allow_legacy=None, check_f
             raise ValueError("Each checkpoint model must have exactly one ID")
         config.model_ids = WeakKeyDictionary((model, name) for name, model in model_ids.items())
     if metadata is not None:
-        config.metadata = _plain(metadata)
+        try:
+            config.metadata = _manifest_value(metadata)
+        except Exception:
+            config.metadata = {"type": _class_name(metadata), "omitted": True}
     config.legacy_metadata_keys = tuple(legacy_metadata_keys)
     config.legacy_metadata_groups = tuple(tuple(group) for group in legacy_metadata_groups)
-    if any(key not in config.metadata for group in (config.legacy_metadata_keys, *config.legacy_metadata_groups) for key in group):
-        raise ValueError("Legacy metadata keys must exist in the current training metadata")
     if allow_legacy is not None:
         config.allow_legacy = bool(allow_legacy)
     if check_finite is not None:
@@ -482,6 +488,35 @@ def _plain(value):
     raise ValueError(f"Unsupported checkpoint configuration value: {_class_name(value)}")
 
 
+def _manifest_value(value, seen=None):
+    """Describe optional metadata deterministically without blocking native save."""
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, (torch.dtype, torch.device, os.PathLike)):
+        return str(value)
+    if isinstance(value, torch.Tensor) and value.numel() == 1:
+        try:
+            return _manifest_value(value.item(), seen)
+        except (RuntimeError, ValueError, TypeError):
+            pass
+    if isinstance(value, (tuple, list, dict)):
+        seen = set() if seen is None else seen
+        if id(value) in seen:
+            return {"type": _class_name(value), "omitted": "recursive"}
+        seen.add(id(value))
+        try:
+            if isinstance(value, dict):
+                items = ((key if isinstance(key, str) else str(key), item) for key, item in value.items()
+                         if key is None or isinstance(key, (str, int, float, bool)))
+                return {key: _manifest_value(item, seen) for key, item in sorted(items, key=lambda pair: pair[0])}
+            return [_manifest_value(item, seen) for item in value]
+        finally:
+            seen.remove(id(value))
+    return {"type": _class_name(value), "omitted": True}
+
+
 def _callable_signature(function):
     if isinstance(function, functools.partial):
         return {"partial": _callable_signature(function.func), "args": _plain(function.args),
@@ -490,27 +525,22 @@ def _callable_signature(function):
         return {"function": function.__name__, "defaults": _plain(function.__defaults__),
                 "keywords": _plain(function.__kwdefaults__),
                 "closure": [_plain(cell.cell_contents) for cell in function.__closure__ or ()]}
-    # Callable scheduler objects may carry arbitrary mutable behavior. Require
-    # an explicit implementation instead of claiming generic compatibility.
-    raise ValueError("Unsupported scheduler callable; use a supported function or functools.partial")
+    return {"callable_type": _class_name(function)}
 
 
-def _normalize_scheduler_callable(signature):
-    """Read older signatures without tying compatibility to module or bytecode."""
-    signature = dict(signature)
-    if "partial" in signature:
-        signature["partial"] = _normalize_scheduler_callable(signature["partial"])
-    if "function" in signature:
-        signature["function"] = signature["function"].rsplit(".", 1)[-1]
-        signature.pop("code", None)
-    return signature
+def _scheduler_callable_description(function):
+    # This is informational metadata. Arbitrary callable internals are already
+    # handled by the scheduler's native state_dict and must not block saving.
+    try:
+        return _callable_signature(function)
+    except Exception:
+        return {"callable_type": _class_name(function)}
 
 
-def _hook_counts(owners):
-    # The synchronized wrapper invokes one collective per registered hook.
-    # Agree on their counts across ranks, not their Python implementation.
-    return {name: [len(owner._save_model_state_pre_hook), len(owner._load_model_state_pre_hook)]
-            for name, owner in owners.items()}
+
+def _save_hook_counts(owners):
+    # Only save hooks run during saving, and each wrapper invokes a collective.
+    return {name: len(owner._save_model_state_pre_hook) for name, owner in owners.items()}
 
 
 def _raw_optimizer(optimizer):
@@ -571,18 +601,21 @@ def _descriptor(owner, *, require_model_ids=True):
             units = []
         role = config.model_ids.get(model)
         if role is None:
-            if classes.count(classes[index]) > 1 and require_model_ids:
-                raise ValueError("Multiple models of the same class require configure_checkpointing(model_ids={role: model})")
-            role = (f"legacy_model_{index}" if classes.count(classes[index]) > 1
+            role = (f"model_{index}" if classes.count(classes[index]) > 1
                     else "model" if len(classes) == 1 else classes[index])
         parameters = {name: {"shape": list(shapes[name]), "dtype": str(parameter.dtype),
                              "requires_grad": parameter.requires_grad}
                       for parameter, fqns in names.items() for name in fqns}
         unwrapped = owner.unwrap_model(model, keep_torch_compile=False)
-        model_config = getattr(unwrapped, "config", {})
-        model_config = {key: value for key, value in dict(model_config).items() if not key.startswith("_")} if hasattr(model_config, "items") else {}
+        try:
+            model_config = getattr(unwrapped, "config", {})
+            model_config = {key: value for key, value in dict(model_config).items()
+                            if isinstance(key, str) and not key.startswith("_")} if hasattr(model_config, "items") else {}
+            model_config = _manifest_value(model_config)
+        except Exception:
+            model_config = {"omitted": True}
         models.append({"id": role, "class": classes[index], "parameters": parameters,
-                       "config": _plain(model_config), "fsdp": units})
+                       "config": model_config, "fsdp": units})
         optimizers.append({"class": _class_name(optimizer), "groups": groups,
                            "execution": [{key: _plain(group.get(key, False)) for key in
                                           ("capturable", "fused", "differentiable")} for group in optimizer.param_groups]})
@@ -597,7 +630,7 @@ def _descriptor(owner, *, require_model_ids=True):
             raise ValueError("Scheduler is not bound to a prepared optimizer")
         row = {"class": type(scheduler).__name__, "optimizer": index}
         if hasattr(scheduler, "lr_lambdas"):
-            row["functions"] = [_callable_signature(function) for function in scheduler.lr_lambdas]
+            row["functions"] = [_scheduler_callable_description(function) for function in scheduler.lr_lambdas]
         schedulers.append(row)
     return {"world_size": owner.num_processes, "backend": owner.distributed_type.name,
             "mixed_precision": owner.mixed_precision, "accumulation_steps": owner.gradient_accumulation_steps,
@@ -689,45 +722,42 @@ def _verify_inventory(directory, manifest, *, full=True):
             raise ValueError(f"Checkpoint state schema changed: {name}")
 
 
-def latest_training_checkpoint(output_dir, owners=None):
-    """Select a complete checkpoint; pass owners to also inspect legacy formats.
+def latest_training_checkpoint(output_dir, owners=None, *, native_names=False):
+    """Select the latest named checkpoint without imposing a file format.
 
-    Legacy files cannot describe required models, components or private state,
-    so their requirements come from the prepared Accelerator(s). Inspect every
-    rank's files so all callers select the same checkpoint. This function uses
-    no collectives; distributed callers synchronize errors at the call site.
+    Like Accelerator.load_state, actual compatibility is decided by the
+    loaders. Atomic saves never publish the staging directory under this name.
+    ``owners`` remains accepted for compatibility with existing callers.
     """
-    participants = _participants(owners) if owners is not None else None
     root = Path(output_dir)
     if not root.is_dir():
         return None
     candidates = []
     for path in root.iterdir():
-        match = _CHECKPOINT_NAME.fullmatch(path.name)
-        if match and path.is_dir():
-            candidates.append((int(match.group(1)), path))
-    candidates.sort()
-    for _, path in reversed(candidates):
-        try:
-            manifest_path = path / MANIFEST
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
-                _verify_inventory(path, manifest, full=False)
-                if participants is not None and set(manifest["components"]) != set(participants):
-                    raise ValueError("Checkpoint participants differ")
-            elif participants is None or not all(checkpoint_config(owner).allow_legacy for owner in participants.values()):
-                continue
-            if participants is not None:
-                for name, owner in participants.items():
-                    _required_files(owner, path / name, all_ranks=True)
-            return str(path)
-        except Exception:
-            # A broken candidate must not prevent trying the preceding one.
-            # Direct load still reports the actual validation error.
+        if path.name.startswith(".") or not path.is_dir():
             continue
-    if candidates:
-        raise ValueError("No complete checkpoint matching the required training state")
-    return None
+        match = (_CHECKPOINT_NAME.fullmatch(path.name) or
+                 (re.search(r"(\d+)", path.name) if native_names else None))
+        if match:
+            candidates.append((int(match.group(1)), path))
+    return str(max(candidates)[1]) if candidates else None
+
+
+def _coordinated_latest_training_checkpoint(output_dir, *, native_names=False):
+    """Choose one checkpoint name on rank zero and rebase it on each rank."""
+    def choose_name():
+        selected = latest_training_checkpoint(output_dir, native_names=native_names)
+        return None if selected is None else Path(selected).name
+
+    name = _main_value(choose_name)
+    if name is None:
+        def require_absent():
+            if latest_training_checkpoint(output_dir, native_names=native_names) is not None:
+                raise RuntimeError("Rank 0 found no checkpoint, but a rank found one")
+
+        checkpoint_phase(require_absent)
+        return None
+    return checkpoint_phase(lambda: str(Path(output_dir) / name))
 
 
 def _rng_state(path):
@@ -759,7 +789,7 @@ def _apply_rng(state):
         torch.cuda.set_rng_state_all(state["torch_cuda_manual_seed"])
 
 
-def _required_files(owner, directory, *, all_ranks=False):
+def _required_files(owner, directory, *, all_ranks=False, safe_serialization=True):
     if owner.distributed_type.name == "FSDP":
         for index in range(len(owner._models)):
             for stem in ("pytorch_model_fsdp", "optimizer"):
@@ -772,6 +802,25 @@ def _required_files(owner, directory, *, all_ranks=False):
                     payload = path.parent / _relative(storage.relative_path)
                     if not payload.is_file() or payload.stat().st_size < storage.offset + storage.length:
                         raise ValueError(f"Missing or truncated DCP payload: {payload}")
+    else:
+        from accelerate.utils.constants import OPTIMIZER_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_NAME
+
+        def require_payload(name, kind):
+            path = directory / name
+            if not path.is_file() or path.stat().st_size == 0:
+                raise ValueError(f"Missing or empty native {kind} state: {path}")
+
+        # A save hook may remove entries from Accelerate's weights list and
+        # replace them with its own format, so native model files are only
+        # predictable when no such hooks are registered.
+        if not owner._save_model_state_pre_hook:
+            model_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
+            for index in range(len(owner._models)):
+                name = model_name if index == 0 else model_name.replace(".", f"_{index}.")
+                require_payload(name, "model")
+        for index in range(len(owner._optimizers)):
+            name = f"{OPTIMIZER_NAME}.bin" if index == 0 else f"{OPTIMIZER_NAME}_{index}.bin"
+            require_payload(name, "optimizer")
     for index in range(len(owner._schedulers)):
         name = "scheduler.bin" if index == 0 else f"scheduler_{index}.bin"
         if not (directory / name).is_file():
@@ -847,38 +896,43 @@ def _native(owner, method, *args, **kwargs):
 
 
 @contextmanager
-def _synchronized_hooks(owner):
+def _synchronized_hooks(owner, *, load_only=False):
     """Make local hook failures visible before the next native phase."""
     changes = []
-    for hooks in (owner._save_model_state_pre_hook, owner._load_model_state_pre_hook):
+    hook_sets = ((owner._load_model_state_pre_hook,) if load_only else
+                 (owner._save_model_state_pre_hook,))
+    for hooks in hook_sets:
         for key, function in list(hooks.items()):
             def synchronized(*args, function=function):
                 return checkpoint_phase(lambda: function(*args))
-            changes.append((hooks, key, function))
+            changes.append((hooks, key, function, synchronized))
             hooks[key] = synchronized
     try:
         yield
     finally:
-        for hooks, key, function in changes:
-            hooks[key] = function
+        for hooks, key, function, synchronized in changes:
+            # Preserve hook removal or replacement performed by user code.
+            if hooks.get(key) is synchronized:
+                hooks[key] = function
 
 
-@contextmanager
-def _optimizer_adapter(owner):
-    from .. import (enable_accelerate_patch, _accelerate_patch_owners,
-                    _accelerate_patch_disabled_owners)
+def _synchronize_load_hooks(owner):
+    """Use synchronized load hooks only when their structure matches on all ranks."""
+    config = checkpoint_config(owner)
+    if not dist.is_initialized() or not config.private_states:
+        return False
+    signature = [key in config.private_load_hook_ids for key in owner._load_model_state_pre_hook]
+    signatures = [None] * dist.get_world_size()
+    dist.all_gather_object(signatures, signature)
+    return any(signature) and all(other == signature for other in signatures)
 
-    explicit = owner in _accelerate_patch_owners
-    disabled = owner in _accelerate_patch_disabled_owners
-    if owner.distributed_type.name == "FSDP":
-        enable_accelerate_patch(owner)
-    try:
-        yield
-    finally:
-        if not explicit:
-            _accelerate_patch_owners.discard(owner)
-        if disabled:
-            _accelerate_patch_disabled_owners.add(owner)
+
+def _load_native(owner, path, kwargs):
+    if _synchronize_load_hooks(owner):
+        with _synchronized_hooks(owner, load_only=True):
+            return _native(owner, "load_state", str(path), **kwargs)
+    return _native(owner, "load_state", str(path), **kwargs)
+
 
 
 def _save_native(owner, path, safe_serialization, kwargs):
@@ -900,12 +954,226 @@ def _save_preflight(owners):
         if owner in _failed_checkpoint_owners:
             raise ValueError("Cannot save after a failed restore; reload successfully first")
         descriptions[name] = _descriptor(owner)
-        if not owner.sync_gradients or any(parameter.grad is not None for model in owner._models for parameter in model.parameters()):
-            raise ValueError("Save checkpoints after an optimizer update and zero_grad(set_to_none=True)")
+        def has_nonzero_gradient(parameter):
+            grad = parameter.grad
+            if grad is None:
+                return False
+            if grad.layout != torch.strided:
+                grad = grad.coalesce().values() if grad.layout == torch.sparse_coo else grad.values()
+            return bool(torch.count_nonzero(grad).item())
+        if not owner.sync_gradients or any(has_nonzero_gradient(parameter)
+                                           for model in owner._models for parameter in model.parameters()):
+            raise ValueError("Save checkpoints after an optimizer update and clearing gradients")
         if checkpoint_config(owner).check_finite:
             check_finite_state([list(model.parameters()) for model in owner._models])
             check_finite_state([_raw_optimizer(optimizer).state for optimizer in owner._optimizers])
     return descriptions
+
+
+def _save_agreement_descriptors(descriptions):
+    """Compare structural state while keeping optional metadata informational."""
+    result = {}
+    for name, descriptor in descriptions.items():
+        shared = dict(descriptor)
+        shared.pop("training", None)
+        shared["models"] = [{key: value for key, value in model.items() if key != "config"}
+                            for model in descriptor["models"]]
+        shared["schedulers"] = [{key: value for key, value in scheduler.items() if key != "functions"}
+                                for scheduler in descriptor["schedulers"]]
+        result[name] = shared
+    return result
+
+
+def _cleanup_save_stage(stage, guard):
+    """Release the lock even if removing the staging directory fails."""
+    errors = []
+    try:
+        if stage and Path(stage).exists():
+            shutil.rmtree(stage)
+    except Exception as exc:
+        errors.append(f"could not remove staging directory {stage}: {type(exc).__name__}: {exc}")
+    finally:
+        if guard is not None:
+            try:
+                guard.release()
+            except Exception as exc:
+                errors.append(f"could not release checkpoint lock {guard.path}: {type(exc).__name__}: {exc}")
+    return errors
+
+
+def _prune_checkpoints(parent, current, limit, run_id, *, marker, components=None):
+    """Prune matching old checkpoints without changing the published save result."""
+    errors, candidates = [], []
+    try:
+        for candidate in parent.iterdir():
+            match = _CHECKPOINT_NAME.fullmatch(candidate.name)
+            file = candidate / marker
+            if not match or candidate.is_symlink() or not candidate.is_dir() or not file.is_file():
+                continue
+            try:
+                value = json.loads(file.read_text())
+            except (OSError, ValueError):
+                continue
+            if (isinstance(value, dict) and value.get("run_id") == run_id
+                    and (components is None or value.get("components") == components)):
+                candidates.append((int(match.group(1)), candidate))
+        excess = max(0, len(candidates) - limit)
+        removable = [candidate for _, candidate in sorted(candidates) if candidate != current]
+        for candidate in removable[:excess]:
+            try:
+                shutil.rmtree(candidate)
+            except Exception as exc:
+                errors.append(f"could not remove {candidate}: {type(exc).__name__}: {exc}")
+    except Exception as exc:
+        errors.append(f"could not scan {parent}: {type(exc).__name__}: {exc}")
+    return errors
+
+
+def _report_checkpoint_maintenance(context, errors):
+    if errors and (not dist.is_initialized() or dist.get_rank() == 0):
+        from .. import _checkpoint_warning
+        _checkpoint_warning(f"{context}: " + "; ".join(errors))
+
+
+def _stage_was_committed(path, identity, committed):
+    """Distinguish our published directory from an unrelated destination."""
+    if committed:
+        return True
+    if identity is None:
+        return False
+    try:
+        st = os.stat(path, follow_symlinks=False)
+        return (st.st_dev, st.st_ino) == identity
+    except OSError:
+        return False
+
+
+def _process_start_time(pid):
+    """Return a Linux process start token, None if absent, or False if unknown."""
+    try:
+        text = (Path("/proc") / str(pid) / "stat").read_text()
+        return text.rsplit(")", 1)[1].split()[19]
+    except FileNotFoundError:
+        # hidepid may conceal a live process; only ESRCH proves absence.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return None
+        except OSError:
+            return False
+        return False
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _local_lock_identity():
+    try:
+        return {"host": os.uname().nodename,
+                "boot": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "pid_namespace": os.readlink("/proc/self/ns/pid")}
+    except (OSError, AttributeError):
+        return None
+
+
+class _CheckpointLock:
+    """NFS-compatible exclusive lock with conservative same-host stale recovery.
+
+    O_EXCL-compatible hard-link publication also excludes older writers. Only
+    locks from this process namespace with a provably dead owner are recovered;
+    unknown/legacy/remote locks require manual verification.
+    """
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.path = self.directory / ".training-checkpoints.lock"
+        self.inode = None
+
+    def _stale_local_owner(self):
+        try:
+            owner = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return False
+        identity = _local_lock_identity()
+        if (not isinstance(owner, dict) or owner.get("format") != "videox-checkpoint-lock-v1"
+                or identity is None or any(owner.get(key) != value for key, value in identity.items())
+                or not isinstance(owner.get("pid"), int) or owner["pid"] <= 0
+                or not isinstance(owner.get("start"), str)):
+            return False
+        current = _process_start_time(owner["pid"])
+        return current is None or (current is not False and current != owner["start"])
+
+    def _publish_owner(self, source):
+        source_stat = os.stat(source)
+        try:
+            os.link(source, self.path)
+            return source_stat.st_dev, source_stat.st_ino
+        except OSError as exc:
+            if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV):
+                raise
+            # Some filesystems do not support hard links. Preserve the original
+            # O_EXCL behavior; a crash during this short write may leave an
+            # unverifiable lock that requires manual inspection.
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            created = os.fstat(fd)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(Path(source).read_bytes())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except BaseException:
+                try:
+                    current = self.path.stat()
+                    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                        self.path.unlink()
+                except OSError:
+                    pass
+                raise
+            return created.st_dev, created.st_ino
+
+    def acquire(self):
+        identity = _local_lock_identity() or {}
+        owner = {"format": "videox-checkpoint-lock-v1", **identity, "pid": os.getpid(),
+                 "start": _process_start_time(os.getpid()), "token": uuid.uuid4().hex}
+        fd, name = tempfile.mkstemp(prefix=".training-checkpoint-owner-", dir=self.directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(owner, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                self.inode = self._publish_owner(name)
+            except FileExistsError:
+                # On NFS mounts with local-only flock, this guards only recovery
+                # for processes proven to be in this same PID namespace.
+                if fcntl is None:
+                    raise FileExistsError(f"Checkpoint lock cannot be safely recovered: {self.path}")
+                parent_fd = os.open(self.directory, os.O_RDONLY)
+                try:
+                    fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if not self._stale_local_owner():
+                        raise FileExistsError(f"Checkpoint lock is active or cannot be safely recovered: {self.path}")
+                    self.path.unlink()
+                    self.inode = self._publish_owner(name)
+                finally:
+                    os.close(parent_fd)
+        finally:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                from .. import _checkpoint_warning
+                _checkpoint_warning(f"Could not remove temporary checkpoint lock owner file {name}: {exc}")
+
+    def release(self):
+        if self.inode is None:
+            return
+        try:
+            st = self.path.stat()
+            if (st.st_dev, st.st_ino) == self.inode:
+                self.path.unlink()
+        except FileNotFoundError:
+            pass
+        self.inode = None
 
 
 def save_training_checkpoint(owners, output_dir=None, *, checkpoint_limit=None, safe_serialization=True, **kwargs):
@@ -920,7 +1188,7 @@ def save_training_checkpoint(owners, output_dir=None, *, checkpoint_limit=None, 
     descriptions = checkpoint_phase(lambda: _save_preflight(owners))
     policies = {name: {"finite": checkpoint_config(owner).check_finite, "checksum": checkpoint_config(owner).checksum}
                 for name, owner in owners.items()}
-    _agree([str(path), descriptions, policies, checkpoint_limit, _hook_counts(owners)])
+    _agree([str(path), _save_agreement_descriptors(descriptions), policies, checkpoint_limit, _save_hook_counts(owners)])
     if checkpoint_limit is not None and checkpoint_limit < 1:
         raise ValueError("checkpoint_limit must be at least 1")
     run_ids = {checkpoint_config(owner).run_id for owner in owners.values()} - {None}
@@ -929,32 +1197,32 @@ def save_training_checkpoint(owners, output_dir=None, *, checkpoint_limit=None, 
         raise ValueError("Checkpoint participants belong to different training runs")
     run_id = _main_value(lambda: next(iter(run_ids), None) or uuid.uuid4().hex)
     lock, stage = None, None
+    committed = [False]
+    stage_identity = [None]
+    held_lock = [None]
     iterations = {owner: owner.project_configuration.iteration for owner in owners.values()}
 
     def reserve():
         path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.parent / ".training-checkpoints.lock"
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(descriptor)
+        guard = _CheckpointLock(path.parent)
+        guard.acquire()
+        held_lock[0] = guard
         try:
-            if path.exists():
+            if os.path.lexists(path):
                 raise ValueError(f"Refusing to overwrite an existing checkpoint: {path}")
-            for sibling in path.parent.iterdir():
-                if _CHECKPOINT_NAME.fullmatch(sibling.name) and (sibling / MANIFEST).is_file():
-                    other = json.loads((sibling / MANIFEST).read_text())
-                    if other.get("run_id") != run_id:
-                        raise ValueError("Output directory contains checkpoints from another run; resume that run or use a new output directory")
             stage_path = tempfile.mkdtemp(prefix=f".{path.name}.staging-", dir=path.parent)
-            return str(lock_path), stage_path
+            return str(guard.path), stage_path
         except BaseException:
-            lock_path.unlink()
+            _report_checkpoint_maintenance("Checkpoint lock cleanup failed", _cleanup_save_stage(None, guard))
+            held_lock[0] = None
             raise
 
     lock, stage = _main_value(reserve)
     try:
         for name, owner in owners.items():
             checkpoint_phase(lambda owner=owner, name=name: _save_native(owner, Path(stage) / name, safe_serialization, kwargs))
-            checkpoint_phase(lambda owner=owner, name=name: _required_files(owner, Path(stage) / name))
+            checkpoint_phase(lambda owner=owner, name=name: _required_files(
+                owner, Path(stage) / name, safe_serialization=safe_serialization))
 
         def publish():
             directory = Path(stage)
@@ -967,9 +1235,12 @@ def save_training_checkpoint(owners, output_dir=None, *, checkpoint_limit=None, 
                 json.dump(manifest, stream, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
-            if path.exists():
+            if os.path.lexists(path):
                 raise ValueError("Checkpoint destination appeared while saving")
+            st = os.stat(directory, follow_symlinks=False)
+            stage_identity[0] = (st.st_dev, st.st_ino)
             os.rename(directory, path)
+            committed[0] = True
             descriptor = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
@@ -980,144 +1251,85 @@ def save_training_checkpoint(owners, output_dir=None, *, checkpoint_limit=None, 
         for owner in owners.values():
             checkpoint_config(owner).run_id = run_id
         if checkpoint_limit is not None:
-            def prune():
-                checkpoints = []
-                for candidate in path.parent.iterdir():
-                    match = _CHECKPOINT_NAME.fullmatch(candidate.name)
-                    if match and (candidate / MANIFEST).is_file():
-                        checkpoints.append((int(match.group(1)), candidate))
-                checkpoints.sort()
-                for _, candidate in checkpoints[:-checkpoint_limit]:
-                    manifest = json.loads((candidate / MANIFEST).read_text())
-                    if candidate != path and manifest.get("run_id") == run_id:
-                        shutil.rmtree(candidate)
-            _main_value(prune)
+            errors = _main_value(lambda: _prune_checkpoints(
+                path.parent, path, checkpoint_limit, run_id, marker=MANIFEST))
+            _report_checkpoint_maintenance("Checkpoint saved, but retention cleanup failed", errors)
     except BaseException:
         # Native save increments this counter even before a later component fails.
-        if not path.exists():
+        if _main_value(lambda: _stage_was_committed(path, stage_identity[0], committed[0])):
+            for owner in owners.values():
+                checkpoint_config(owner).run_id = run_id
+        else:
             for owner, iteration in iterations.items():
                 owner.project_configuration.iteration = iteration
         raise
     finally:
-        def cleanup():
-            if stage and Path(stage).exists():
-                shutil.rmtree(stage)
-            if lock:
-                try:
-                    Path(lock).unlink()
-                except FileNotFoundError:
-                    pass
-        _main_value(cleanup)
+        errors = _main_value(lambda: _cleanup_save_stage(stage, held_lock[0]))
+        _report_checkpoint_maintenance("Checkpoint staging cleanup failed", errors)
     return path
 
 
-def _compare_descriptor(saved, current, *, legacy_metadata_keys=(), legacy_metadata_groups=()):
-    # Preserve the previously supported no-scheduler group reordering. Group
-    # membership changes remain invalid; scheduler-bound group order is exact.
-    saved, current = json.loads(json.dumps(saved)), json.loads(json.dumps(current))
-    for descriptor in (saved, current):
-        descriptor.pop("hooks", None)  # Legacy manifests recorded Python hook identities.
-        for state in descriptor.get("private_states", {}).values():
-            # The existing RNG/progress schema predates explicit versioning.
-            state.setdefault("schema_version", 1)
-        for scheduler in descriptor["schedulers"]:
-            scheduler["class"] = scheduler["class"].rsplit(".", 1)[-1]
-            if "functions" in scheduler:
-                scheduler["functions"] = [_normalize_scheduler_callable(fn) for fn in scheduler["functions"]]
-    missing = []
-    for group in (legacy_metadata_keys, *legacy_metadata_groups):
-        absent = sorted(set(group) - saved["training"].keys())
-        if absent and set(group) & saved["training"].keys():
-            raise ValueError("Checkpoint training metadata is incomplete; refusing partial legacy metadata migration")
-        missing.extend(absent)
-    for key in missing:
-        saved["training"][key] = current["training"][key]
-    if saved["backend"] == current["backend"] == "FSDP" and not saved["schedulers"] and not current["schedulers"]:
-        for descriptor in (saved, current):
-            for optimizer in descriptor["optimizers"]:
-                pairs = sorted(zip(optimizer["groups"], optimizer["execution"]), key=lambda pair: sorted(pair[0]))
-                optimizer["groups"] = [sorted(group) for group, _ in pairs]
-                optimizer["execution"] = [execution for _, execution in pairs]
-    if saved != current:
-        raise ValueError("Checkpoint training configuration differs: verify model roles, optimizer type/groups, scheduler, precision and topology")
-    if missing and (not dist.is_initialized() or dist.get_rank() == 0):
-        warnings.warn("Older checkpoint lacks training metadata for " + ", ".join(missing) +
-                      "; using the current configuration for these fields. Historical values cannot be verified. "
-                      "The next save will record them.", RuntimeWarning, stacklevel=2)
+
+def _checkpoint_run_id(path):
+    """Read optional save metadata without making it a restore requirement."""
+    def identity(directory):
+        for name in (MANIFEST, ".videox_native_checkpoint.json"):
+            try:
+                value = json.loads((directory / name).read_text())
+                run_id = value.get("run_id") if isinstance(value, dict) else None
+                if isinstance(run_id, str) and run_id:
+                    return run_id
+            except (OSError, ValueError, TypeError):
+                continue
+        return None
+
+    run_id = identity(path)
+    if run_id:
+        return run_id
+    # A sibling's identity does not prove the legacy checkpoint belongs to the
+    # same run. Starting a new identity keeps retention from deleting another
+    # run's checkpoints while leaving native restore semantics unchanged.
+    return uuid.uuid4().hex
 
 
 def load_training_checkpoint(owners, input_dir=None, **kwargs):
-    """Validate every participant before mutating any model; stop training on failure."""
+    """Load each registered participant using Accelerate's native semantics."""
     owners = checkpoint_phase(lambda: _participants(owners))
     primary = next(iter(owners.values()))
+    # These values control which collectives each rank enters below (including
+    # private RNG hooks). They do not constrain the checkpoint's file format.
+    _agree([list(owners), input_dir is None,
+            input_dir is None and primary.project_configuration.automatic_checkpoint_naming,
+            [(owner.distributed_type.name, checkpoint_config(owner).check_finite,
+              len(checkpoint_config(owner).private_states)) for owner in owners.values()]])
     if input_dir is None and primary.project_configuration.automatic_checkpoint_naming:
-        input_dir = _main_value(lambda: latest_training_checkpoint(Path(primary.project_dir) / "checkpoints", owners))
+        input_dir = _coordinated_latest_training_checkpoint(
+            Path(primary.project_dir) / "checkpoints", native_names=True)
+    if input_dir is None:
+        raise ValueError("No checkpoint directory was provided or found")
     path = checkpoint_phase(lambda: Path(input_dir).expanduser().absolute())
-    def read_manifest():
-        manifest_path = path / MANIFEST
-        if not manifest_path.exists():
-            return None
-        value = json.loads(manifest_path.read_text())
-        if not isinstance(value, dict):
-            raise ValueError("Invalid checkpoint manifest")
-        return value
-    manifest = checkpoint_phase(read_manifest)
-    descriptions = checkpoint_phase(lambda: {
-        name: _descriptor(owner, require_model_ids=manifest is not None) for name, owner in owners.items()
-    })
-    _agree([str(path), descriptions, _hook_counts(owners), {name: {"legacy": checkpoint_config(owner).allow_legacy,
-                                           "finite": checkpoint_config(owner).check_finite}
-                                    for name, owner in owners.items()}])
-
-    def preflight():
-        if any(parameter.grad is not None for owner in owners.values()
-               for model in owner._models for parameter in model.parameters()):
-            raise ValueError("Clear accumulated gradients with zero_grad(set_to_none=True) before restoring")
-        if manifest is None:
-            if not all(checkpoint_config(owner).allow_legacy for owner in owners.values()):
-                raise ValueError("Checkpoint has no completion manifest; allow_legacy=False requires a new-format checkpoint")
-        else:
-            if set(manifest["components"]) != set(owners):
-                raise ValueError("Checkpoint participants differ; restore the complete named group")
-            if manifest.get("versions") != {"accelerate": "1.7.0", "torch": "2.7.0"}:
-                raise ValueError("Checkpoint library versions differ")
-            _verify_inventory(path, manifest)
-            for name, current in descriptions.items():
-                config = checkpoint_config(owners[name])
-                _compare_descriptor(manifest["components"][name], current,
-                                    legacy_metadata_keys=config.legacy_metadata_keys if config.allow_legacy else (),
-                                    legacy_metadata_groups=config.legacy_metadata_groups if config.allow_legacy else ())
-        rng_states = {name: _required_files(owner, path / name) for name, owner in owners.items()}
-        return manifest, rng_states
-
-    manifest, rng_states = checkpoint_phase(preflight)
-    _agree(hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
-    if manifest is None:
-        def warn_legacy():
-            if primary.is_main_process:
-                warnings.warn("Loading a legacy checkpoint using native component order; required files were checked, "
-                              "but historical component identity and atomic completion cannot be verified. "
-                              "The next save will include a completion manifest.", RuntimeWarning, stacklevel=2)
-        checkpoint_phase(warn_legacy)
     try:
+        def require_directories():
+            for name in owners:
+                directory = path / name
+                if not directory.is_dir():
+                    raise ValueError(f"Tried to find {directory} but folder does not exist")
+
+        # Accelerate requires these directories too; check all ranks before
+        # any model enters native distributed loading collectives.
+        checkpoint_phase(require_directories)
         for name, owner in owners.items():
-            def restore(owner=owner, name=name):
-                with _optimizer_adapter(owner), _synchronized_hooks(owner):
-                    _native(owner, "load_state", str(path / name), **kwargs)
-            checkpoint_phase(restore)
-            owner.step = rng_states[name]["step"]
+            checkpoint_phase(lambda owner=owner, name=name:
+                             _load_native(owner, path / name, kwargs))
             if checkpoint_config(owner).check_finite:
                 checkpoint_phase(lambda: check_finite_state([list(model.parameters()) for model in owner._models]))
                 if owner.distributed_type.name != "FSDP":
                     checkpoint_phase(lambda: check_finite_state([_raw_optimizer(optimizer).state for optimizer in owner._optimizers]))
-        # Native Accelerate swallows RNG errors. Apply the prevalidated state
-        # explicitly after all hooks/components, and propagate any failure.
-        checkpoint_phase(lambda: _apply_rng(next(reversed(rng_states.values()))))
     except BaseException:
         _set_failed(owners.values(), True)
         raise
     _set_failed(owners.values(), False)
-    run_id = manifest["run_id"] if manifest else _main_value(lambda: uuid.uuid4().hex)
+    run_id = _main_value(lambda: _checkpoint_run_id(path))
     for owner in owners.values():
         checkpoint_config(owner).run_id = run_id
         if owner.project_configuration.automatic_checkpoint_naming:
@@ -1128,26 +1340,35 @@ def load_training_checkpoint(owners, input_dir=None, **kwargs):
 
 def dispatch_checkpoint(owner, method, original, *args, **kwargs):
     """Agree on FSDP dispatch before choosing native or protected checkpoints."""
-    from .. import (_accelerate_patch_requested, _accelerate_patch_owners,
+    from .. import (_accelerate_patch_requested, _accelerate_patch_owners, _checkpoint_warning,
                     _accelerate_patch_disabled_owners, _supported_accelerate_versions,
-                    _eligible_fsdp_checkpoint)
+                    _eligible_fsdp_checkpoint, _failed_checkpoint_owners)
 
     enabled = ((owner in _accelerate_patch_owners or _accelerate_patch_requested())
                and owner not in _accelerate_patch_disabled_owners)
+    failed = owner in _failed_checkpoint_owners
     plugin = owner.state.fsdp_plugin
     _agree([enabled, _supported_accelerate_versions(), owner.distributed_type.name,
-            getattr(plugin, "fsdp_version", 1), getattr(plugin.state_dict_type, "name", None)])
-    if not enabled or not _eligible_fsdp_checkpoint(plugin):
+            getattr(plugin, "fsdp_version", 1), getattr(plugin.state_dict_type, "name", None), failed])
+    if failed and method == "save_state":
+        raise RuntimeError("Cannot save after a failed restore; reload successfully first")
+
+    def native_fallback():
+        if method == "load_state" and failed:
+            result = checkpoint_phase(lambda: original(owner, *args, **kwargs))
+            _set_failed([owner], False)
+            return result
         return original(owner, *args, **kwargs)
+
+    if not enabled or not _eligible_fsdp_checkpoint(plugin):
+        return native_fallback()
     available = _protected_checkpoint_available({"": owner})
     _agree(available)
     if not available:
-        if method == "load_state" and args and args[0] is not None and (Path(args[0]) / MANIFEST).is_file():
-            raise ValueError("Protected checkpoint requires a compatible Accelerate/PyTorch backend and optimizer")
         if not dist.is_initialized() or dist.get_rank() == 0:
-            warnings.warn("This Accelerator configuration is not supported by protected checkpoints; "
-                          "using native Accelerate state", RuntimeWarning, stacklevel=2)
-        return original(owner, *args, **kwargs)
+            _checkpoint_warning("This Accelerator configuration is not supported by protected checkpoints; "
+                                "using native Accelerate state")
+        return native_fallback()
     if method == "save_state":
         return save_training_checkpoint(owner, *args, **kwargs)
     return load_training_checkpoint(owner, *args, **kwargs)
@@ -1313,6 +1534,10 @@ def _align_optimizer_groups(state, expected_groups, optimizer, *, allow_reorder=
     state["param_groups"] = aligned
 
 
+class _OptimizerAdapterFallback(Exception):
+    """The adapter failed before changing optimizer state; native load may proceed."""
+
+
 def _load_generic_fsdp_optimizer(accelerator, optimizer, model, input_dir, optimizer_index):
     """Restore an unknown optimizer from checkpoint metadata, including fresh state."""
     from torch.distributed.checkpoint import FileSystemReader
@@ -1321,29 +1546,41 @@ def _load_generic_fsdp_optimizer(accelerator, optimizer, model, input_dir, optim
 
     plugin = accelerator.state.fsdp_plugin
     path = Path(input_dir) / f"optimizer_{optimizer_index}"
-    with FSDP.state_dict_type(model, plugin.state_dict_type,
-                              plugin.state_dict_config, plugin.optim_state_dict_config):
-        state = load_sharded_optimizer_state_dict(
-            model.state_dict(), "optimizer", FileSystemReader(path),
-        )["optimizer"]
-        local = FSDP.optim_state_dict_to_load(model, optimizer, state)
-        optimizer.load_state_dict(local)
+    try:
+        reader = FileSystemReader(path)
+        _checkpoint_phase(reader.read_metadata, model.process_group)
+        with FSDP.state_dict_type(model, plugin.state_dict_type,
+                                  plugin.state_dict_config, plugin.optim_state_dict_config):
+            model_state = model.state_dict()
+            state = _checkpoint_phase(lambda: load_sharded_optimizer_state_dict(
+                model_state, "optimizer", reader)["optimizer"], model.process_group)
+            local = _checkpoint_phase(lambda: FSDP.optim_state_dict_to_load(model, optimizer, state),
+                                      model.process_group)
+    except Exception as exc:
+        raise _OptimizerAdapterFallback(str(exc)) from exc
+    # This may mutate local optimizer state, so propagate any rank-local
+    # failure to every rank without falling back to another loader.
+    _checkpoint_phase(lambda: optimizer.load_state_dict(local), model.process_group)
 
 
 def _load_sharded_fsdp_optimizer(accelerator, optimizer, model, input_dir, optimizer_index):
     from torch.distributed.checkpoint import FileSystemReader, load
     from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
     from .fsdp_utils import release_completed_fsdp_gradients
 
     optimizer = getattr(optimizer, "optimizer", optimizer)
     process_group = model.process_group
-    _checkpoint_phase(lambda: validate_checkpoint_owner(accelerator), process_group)
     checkpoint_dir = Path(input_dir) / f"optimizer_{optimizer_index}"
 
     def prepare():
         if len(accelerator._optimizers) != len(accelerator._models):
             raise ValueError("FSDP checkpoint restore requires one optimizer per prepared model")
+        for unit in FSDP.fsdp_modules(model):
+            if (unit.process_group is not process_group or unit._device_mesh is not None
+                    or dist.get_world_size(unit.process_group) != accelerator.num_processes
+                    or unit.sharding_strategy not in (ShardingStrategy.FULL_SHARD, ShardingStrategy.SHARD_GRAD_OP)):
+                raise ValueError("FSDP layout is outside the low-memory optimizer adapter")
         groups, shapes = _optimizer_layout(model, optimizer)
         metadata = FileSystemReader(checkpoint_dir).read_metadata()
         if getattr(accelerator.state.fsdp_plugin.cpu_offload, "offload_params", False):
@@ -1355,19 +1592,26 @@ def _load_sharded_fsdp_optimizer(accelerator, optimizer, model, input_dir, optim
             release_completed_fsdp_gradients(*original_param_models)
         return groups, shapes, metadata
 
-    expected_groups, shapes, metadata = _checkpoint_phase(prepare, process_group)
-    state = _checkpoint_phase(
-        lambda: _optimizer_load_destination(metadata, shapes, process_group), process_group,
-    )
-    # These are already one-dimensional shards. The nested-shard flattener
-    # drops empty local shards and can mis-detect the checkpoint schema.
-    load(state, checkpoint_id=checkpoint_dir, process_group=process_group,
-         planner=DefaultLoadPlanner(flatten_sharded_tensors=False))
-
-    _checkpoint_phase(
-        lambda: _align_optimizer_groups(state["optimizer"], expected_groups, optimizer,
-                                        allow_reorder=not accelerator._schedulers), process_group,
-    )
+    try:
+        expected_groups, shapes, metadata = _checkpoint_phase(prepare, process_group)
+        state = _checkpoint_phase(
+            lambda: _optimizer_load_destination(metadata, shapes, process_group), process_group,
+        )
+        # No optimizer state has been mutated before the native-fallback boundary.
+        _checkpoint_phase(lambda: load(state, checkpoint_id=checkpoint_dir, process_group=process_group,
+                                       planner=DefaultLoadPlanner(flatten_sharded_tensors=False)), process_group)
+        saved_groups = _checkpoint_phase(lambda: [group["params"] for group in
+                                                   state["optimizer"]["param_groups"]], process_group)
+        def warn_reordered_groups():
+            if accelerator._schedulers and saved_groups != expected_groups and accelerator.is_main_process:
+                from .. import _checkpoint_warning
+                _checkpoint_warning("Optimizer parameter groups changed order; their state is matched by name, "
+                                    "but scheduler-specific group state may need adjustment")
+        _checkpoint_phase(warn_reordered_groups, process_group)
+        _checkpoint_phase(lambda: _align_optimizer_groups(state["optimizer"], expected_groups, optimizer),
+                          process_group)
+    except Exception as exc:
+        raise _OptimizerAdapterFallback(str(exc)) from exc
     if checkpoint_config(accelerator).check_finite:
         _checkpoint_phase(lambda: check_finite_state(state["optimizer"]), process_group)
     _restore_fsdp_optimizer_state(model, optimizer, state["optimizer"])
@@ -1435,15 +1679,33 @@ def register_checkpoint_state(
                     "progress": {key: progress[key] for key in progress_keys}}, path)
 
     def load_state(models, input_dir):
-        state = read_state(input_dir)
-        if state is None:
+        state, error = None, None
+        try:
+            state = read_state(input_dir)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        errors = [error]
+        if dist.is_initialized():
+            errors = [None] * dist.get_world_size()
+            dist.all_gather_object(errors, error)
+        if any(errors):
+            def warn_private_fallback():
+                if accelerator.is_main_process:
+                    from .. import _checkpoint_warning
+                    _checkpoint_warning("Checkpoint private RNG/data progress is missing or incompatible; "
+                                        "resuming with the current initialization and training progress fallback. "
+                                        "Continuation will not be exact. " +
+                                        "; ".join(f"rank {i}: {value}" for i, value in enumerate(errors) if value))
+            checkpoint_phase(warn_private_fallback)
             return
         for name, generator in generators.items():
             generator.set_state(state["generators"][name])
         progress.update(state["progress"], restored=True)
 
-    return (accelerator.register_save_state_pre_hook(save_state),
-            accelerator.register_load_state_pre_hook(load_state))
+    save_handle = accelerator.register_save_state_pre_hook(save_state)
+    load_handle = accelerator.register_load_state_pre_hook(load_state)
+    config.private_load_hook_ids.add(load_handle.id)
+    return save_handle, load_handle
 
 
 def check_finite_training_value(value, name):
@@ -1474,18 +1736,22 @@ def _protected_checkpoint_available(owners):
         if any(type(_raw_optimizer(opt)) not in (torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD)
                for opt in owner._optimizers):
             return False
+        if mode != "FSDP":
+            # The protected descriptor pairs each optimizer with one model.
+            # Native Accelerate also supports other registration layouts.
+            for model, wrapped_optimizer in zip(owner._models, owner._optimizers):
+                parameters = {id(parameter) for parameter in model.parameters()}
+                if any(id(parameter) not in parameters
+                       for group in _raw_optimizer(wrapped_optimizer).param_groups
+                       for parameter in group["params"]):
+                    return False
+        if mode == "FSDP":
+            try:
+                validate_checkpoint_owner(owner)
+            except (ValueError, AttributeError, TypeError):
+                return False
     return True
 
-
-def _required_native_files(owner, directory, *, all_ranks=False):
-    """Validate registered rank state without assuming an FSDP/DeepSpeed layout."""
-    if not directory.is_dir():
-        raise ValueError(f"Missing checkpoint component: {directory}")
-    ranks = range(owner.num_processes) if all_ranks else (owner.process_index,)
-    for rank in ranks:
-        for validator in checkpoint_config(owner).validators.values():
-            validator(directory, rank=rank)
-        _rng_state(directory / f"random_states_{rank}.pkl")
 
 
 class AcceleratorCheckpoint:
@@ -1534,25 +1800,36 @@ class AcceleratorCheckpoint:
     def _protected(self):
         return _protected_checkpoint_available(self.owners)
 
-    def _use_protected(self):
+    def _use_protected(self, *, automatic, native_per_node):
+        from .. import _checkpoint_warning
+
         protected = self._protected()
-        _agree(protected)
+        _agree([protected, automatic, native_per_node])
         if not protected and not self._warned_fallback:
-            warnings.warn("Checkpoint protection is unavailable or disabled; using native Accelerate state "
-                          "without manifest configuration checks", RuntimeWarning, stacklevel=2)
+            if self.accelerator.is_main_process:
+                _checkpoint_warning("Checkpoint protection is unavailable or disabled; using native Accelerate state "
+                                    "without manifest configuration checks")
             self._warned_fallback = True
         return protected
 
     def save_state(self, output_dir=None, *, safe_serialization=True, **kwargs):
         automatic = self.accelerator.project_configuration.automatic_checkpoint_naming
+        native_per_node = self.accelerator.project_configuration.save_on_each_node and len(self.owners) == 1
         projects = {id(owner.project_configuration): (owner.project_configuration, owner.project_configuration.iteration)
                     for owner in self.owners.values()}
         if automatic:
             output_dir = None
-        if self._use_protected():
+        if self._use_protected(automatic=automatic, native_per_node=native_per_node):
             result = save_training_checkpoint(self.owners, output_dir, checkpoint_limit=self.checkpoint_limit,
                                               safe_serialization=safe_serialization, **kwargs)
-        elif self.accelerator.project_configuration.save_on_each_node and len(self.owners) == 1:
+        elif native_per_node:
+            from .. import _failed_checkpoint_owners
+
+            def require_restored():
+                if self.accelerator in _failed_checkpoint_owners:
+                    raise RuntimeError("Cannot save after a failed restore; reload successfully first")
+
+            checkpoint_phase(require_restored)
             result = _native(self.accelerator, "save_state", output_dir, safe_serialization=safe_serialization, **kwargs)
         else:
             result = self._save_native_group(output_dir, safe_serialization, kwargs)
@@ -1562,46 +1839,9 @@ class AcceleratorCheckpoint:
         return result
 
     def load_state(self, input_dir=None, **kwargs):
-        if self._use_protected():
-            return load_training_checkpoint(self.owners, input_dir, **kwargs)
-        if self.accelerator.project_configuration.save_on_each_node and len(self.owners) == 1:
-            return _native(self.accelerator, "load_state", input_dir, **kwargs)
-        if input_dir is None and self.accelerator.project_configuration.automatic_checkpoint_naming:
-            input_dir = self.latest(Path(self.accelerator.project_dir) / "checkpoints")
-        if input_dir is None:
-            raise ValueError("A checkpoint directory is required")
-        path = checkpoint_phase(lambda: Path(input_dir).expanduser().absolute())
-        from .. import _accelerate_patch_requested, _accelerate_patch_disabled_owners
-        opted_out = not _accelerate_patch_requested() or any(
-            owner in _accelerate_patch_disabled_owners for owner in self.owners.values())
-        if not opted_out and (path / MANIFEST).is_file():
-            raise ValueError("Protected checkpoint requires a compatible Accelerate/PyTorch backend and optimizer")
-        _agree([str(path), _hook_counts(self.owners)])
-        checkpoint_phase(lambda: [_required_native_files(owner, path / name) for name, owner in self.owners.items()])
-        def identity():
-            marker = path / ".videox_native_checkpoint.json"
-            if not marker.exists():
-                return None
-            value = json.loads(marker.read_text())
-            if value.get("components") != list(self.owners) or not isinstance(value.get("run_id"), str):
-                raise ValueError("Native checkpoint group metadata differs")
-            return value["run_id"]
-        self._native_run_id = _main_value(identity)
-        try:
-            for name, owner in self.owners.items():
-                def restore(owner=owner, name=name):
-                    with _synchronized_hooks(owner):
-                        return _native(owner, "load_state", str(path / name), **kwargs)
-                checkpoint_phase(restore)
-        except BaseException:
-            _set_failed(self.owners.values(), True)
-            raise
-        _set_failed(self.owners.values(), False)
-        match = _CHECKPOINT_NAME.fullmatch(path.name)
-        if match:
-            for owner in self.owners.values():
-                if owner.project_configuration.automatic_checkpoint_naming:
-                    owner.project_configuration.iteration = max(owner.save_iteration, int(match.group(1)) + 1)
+        result = load_training_checkpoint(self.owners, input_dir, **kwargs)
+        self._native_run_id = checkpoint_config(self.accelerator).run_id
+        return result
 
     def _save_native_group(self, output_dir, safe_serialization, kwargs):
         from .. import _failed_checkpoint_owners
@@ -1612,19 +1852,23 @@ class AcceleratorCheckpoint:
                 raise ValueError("output_dir is required for a checkpoint group")
             output_dir = Path(self.accelerator.project_dir) / "checkpoints" / f"checkpoint_{self.accelerator.save_iteration}"
         path = checkpoint_phase(lambda: Path(output_dir).expanduser().absolute())
-        _agree([str(path), _hook_counts(self.owners)])
+        _agree([str(path), _save_hook_counts(self.owners)])
         run_id = _main_value(lambda: self._native_run_id or uuid.uuid4().hex)
+        held_lock = [None]
+        committed = [False]
+        stage_identity = [None]
         def reserve():
             path.parent.mkdir(parents=True, exist_ok=True)
-            lock = path.parent / ".training-checkpoints.lock"
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(fd)
+            guard = _CheckpointLock(path.parent)
+            guard.acquire()
+            held_lock[0] = guard
             try:
-                if path.exists():
+                if os.path.lexists(path):
                     raise ValueError(f"Refusing to overwrite an existing checkpoint: {path}")
-                return str(lock), tempfile.mkdtemp(prefix=f".{path.name}.staging-", dir=path.parent)
+                return str(guard.path), tempfile.mkdtemp(prefix=f".{path.name}.staging-", dir=path.parent)
             except BaseException:
-                lock.unlink()
+                _report_checkpoint_maintenance("Checkpoint lock cleanup failed", _cleanup_save_stage(None, guard))
+                held_lock[0] = None
                 raise
         lock, stage = _main_value(reserve)
         iterations = {owner: owner.project_configuration.iteration for owner in self.owners.values()}
@@ -1633,83 +1877,38 @@ class AcceleratorCheckpoint:
                 checkpoint_phase(lambda owner=owner, name=name: _save_native(owner, Path(stage) / name,
                                                                              safe_serialization, kwargs))
             def publish():
-                if path.exists():
+                if os.path.lexists(path):
                     raise ValueError("Checkpoint destination appeared while saving")
                 (Path(stage) / ".videox_native_checkpoint.json").write_text(json.dumps(
                     {"run_id": run_id, "components": list(self.owners)}, sort_keys=True))
+                st = os.stat(stage, follow_symlinks=False)
+                stage_identity[0] = (st.st_dev, st.st_ino)
                 os.rename(stage, path)
+                committed[0] = True
             _main_value(publish)
             self._native_run_id = run_id
+            limit = self.checkpoint_limit
+            if limit is None and self.accelerator.project_configuration.automatic_checkpoint_naming:
+                limit = self.accelerator.project_configuration.total_limit
+            if limit is not None:
+                errors = _main_value(lambda: _prune_checkpoints(
+                    path.parent, path, limit, run_id, marker=".videox_native_checkpoint.json",
+                    components=list(self.owners)))
+                _report_checkpoint_maintenance("Checkpoint saved, but retention cleanup failed", errors)
         except BaseException:
-            for owner, iteration in iterations.items():
-                owner.project_configuration.iteration = iteration
+            if _main_value(lambda: _stage_was_committed(path, stage_identity[0], committed[0])):
+                self._native_run_id = run_id
+            else:
+                for owner, iteration in iterations.items():
+                    owner.project_configuration.iteration = iteration
             raise
         finally:
-            def cleanup():
-                if Path(stage).exists():
-                    shutil.rmtree(stage)
-                try:
-                    Path(lock).unlink()
-                except FileNotFoundError:
-                    pass
-            _main_value(cleanup)
-        limit = self.checkpoint_limit
-        if limit is None and self.accelerator.project_configuration.automatic_checkpoint_naming:
-            limit = self.accelerator.project_configuration.total_limit
-        if limit is not None:
-            def prune():
-                candidates = []
-                for candidate in path.parent.iterdir():
-                    match = _CHECKPOINT_NAME.fullmatch(candidate.name)
-                    marker = candidate / ".videox_native_checkpoint.json"
-                    if not match or not candidate.is_dir() or candidate.is_symlink() or not marker.is_file():
-                        continue
-                    try:
-                        value = json.loads(marker.read_text())
-                    except (OSError, ValueError):
-                        continue
-                    if value.get("run_id") == run_id and value.get("components") == list(self.owners):
-                        candidates.append((int(match.group(1)), candidate))
-                for _, candidate in sorted(candidates)[:-limit]:
-                    if candidate != path:
-                        shutil.rmtree(candidate)
-            _main_value(prune)
-        return str(path)
+            errors = _main_value(lambda: _cleanup_save_stage(stage, held_lock[0]))
+            _report_checkpoint_maintenance("Checkpoint staging cleanup failed", errors)
+        return path
 
     def latest(self, output_dir):
-        if self._use_protected():
-            result = checkpoint_phase(lambda: latest_training_checkpoint(output_dir, self.owners))
-            _agree(result)
-            return result
-        def find_native():
-            root = Path(output_dir)
-            if not root.is_dir():
-                return None
-            candidates = sorted(((int(match.group(1)), path) for path in root.iterdir()
-                                 if (match := _CHECKPOINT_NAME.fullmatch(path.name)) and path.is_dir()), reverse=True)
-            for _, path in candidates:
-                try:
-                    manifest = path / MANIFEST
-                    if manifest.exists():
-                        value = json.loads(manifest.read_text())
-                        _verify_inventory(path, value, full=False)
-                        if set(value["components"]) != set(self.owners):
-                            continue
-                    marker = path / ".videox_native_checkpoint.json"
-                    if marker.exists() and json.loads(marker.read_text()).get("components") != list(self.owners):
-                        continue
-                    for name, owner in self.owners.items():
-                        _required_native_files(owner, path / name,
-                                               all_ranks=not owner.project_configuration.save_on_each_node)
-                    return str(path)
-                except (OSError, ValueError, KeyError, RuntimeError):
-                    continue
-            if candidates:
-                raise ValueError("No complete native checkpoint matching the required training state")
-            return None
-        result = checkpoint_phase(find_native)
-        _agree(result)
-        return result
+        return _coordinated_latest_training_checkpoint(output_dir)
 
     @staticmethod
     def phase(function): return checkpoint_phase(function)

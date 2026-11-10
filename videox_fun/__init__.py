@@ -1,7 +1,7 @@
 import functools
 import importlib.util
+import logging
 import os
-import warnings
 from weakref import WeakSet
 
 if importlib.util.find_spec("turbox") is not None:
@@ -42,6 +42,14 @@ def _eligible_fsdp_checkpoint(plugin):
             and getattr(getattr(plugin, "state_dict_type", None), "name", None) == "SHARDED_STATE_DICT")
 
 
+def _checkpoint_warning(message):
+    """Log without allowing a warning filter or logging handler to desynchronize ranks."""
+    try:
+        logging.getLogger("videox_fun.checkpoint").warning("%s", message)
+    except Exception:
+        pass
+
+
 def _supported_accelerate_versions():
     import accelerate
     import torch
@@ -67,16 +75,30 @@ def _install_accelerate_dispatch():
             if _supported_accelerate_versions():
                 import torch
                 from .utils.checkpoint_utils import \
-                    _load_sharded_fsdp_optimizer, _load_generic_fsdp_optimizer
+                    _load_sharded_fsdp_optimizer, _load_generic_fsdp_optimizer, _OptimizerAdapterFallback
 
                 raw = getattr(optimizer, "optimizer", optimizer)
                 optimized = (type(raw) in (torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD)
                              and len(getattr(owner, "_models", ())) == len(getattr(owner, "_optimizers", ())))
                 loader = _load_sharded_fsdp_optimizer if optimized else _load_generic_fsdp_optimizer
-                return loader(owner, optimizer, model, input_dir, optimizer_index)
+                try:
+                    return loader(owner, optimizer, model, input_dir, optimizer_index)
+                except _OptimizerAdapterFallback as exc:
+                    if optimized:
+                        # The generic PyTorch DCP reader builds state from the
+                        # checkpoint, even for a newly constructed optimizer.
+                        try:
+                            return _load_generic_fsdp_optimizer(owner, optimizer, model, input_dir, optimizer_index)
+                        except _OptimizerAdapterFallback as generic_exc:
+                            exc = generic_exc
+                    if owner.is_main_process:
+                        _checkpoint_warning(f"VideoX optimizer adapter could not prepare this checkpoint; "
+                                            f"using native Accelerate restore, which may not recover an empty "
+                                            f"optimizer's saved state on this version: {exc}")
+                    return original(plugin, owner, optimizer, model, input_dir, optimizer_index, adapter_only)
             if not _accelerate_patch_warned_unsupported:
-                warnings.warn("VideoX FSDP optimizer patch supports Accelerate 1.7.0 / PyTorch 2.7.0; "
-                              "using native restore on this version", RuntimeWarning, stacklevel=2)
+                _checkpoint_warning("VideoX FSDP optimizer patch supports Accelerate 1.7.0 / PyTorch 2.7.0; "
+                                    "using native restore on this version")
                 _accelerate_patch_warned_unsupported = True
         return original(plugin, owner, optimizer, model, input_dir, optimizer_index, adapter_only)
 

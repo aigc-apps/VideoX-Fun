@@ -5,6 +5,7 @@ from .bucket_sampler import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              AspectRatioBatchSampler, BatchSampler,
                              RandomSampler, get_closest_ratio,
                              get_image_size_without_loading)
+from .dataloader import SeededDataLoader
 from .dataset_image import CC15M, ImageEditDataset
 from .dataset_image_video import (ImageVideoControlDataset, ImageVideoDataset,
                                   ImageVideoSafetensorsDataset,
