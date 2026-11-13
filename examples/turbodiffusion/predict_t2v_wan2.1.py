@@ -67,7 +67,7 @@ sampler_name        = "Flow"
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 # If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
 # If you want to generate a 720p video, it is recommended to set the shift value to 5.0.
-shift               = 3 
+shift               = 5
 
 # Load pretrained model if need
 # Download from https://huggingface.co/TurboDiffusion/TurboWan2.1-T2V-1.3B-480P/
@@ -172,6 +172,12 @@ pipeline = WanPipeline(
     scheduler=scheduler,
 )
 if ulysses_degree > 1 or ring_degree > 1:
+    # The SLA sparse kernel only supports ulysses head-parallel (no ring-attention path); a
+    # sparse student under ring_degree>1 would silently mis-attend.
+    if ring_degree > 1:
+        raise ValueError(
+            "TurboDiffusion SLA multi-GPU requires ring_degree=1; put every GPU into "
+            "ulysses_degree instead (num_heads must divide ulysses_degree).")
     from functools import partial
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
@@ -234,7 +240,6 @@ def save_results():
         image = (image * 255).numpy().astype(np.uint8)
         image = Image.fromarray(image)
         image.save(video_path)
-        print(f"Saved image to: {video_path}")
     else:
         video_path = os.path.join(save_path, prefix + ".mp4")
         save_videos_grid(sample, video_path, fps=fps)

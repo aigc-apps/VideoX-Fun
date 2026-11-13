@@ -180,25 +180,32 @@ NCCL_DEBUG=INFO
 
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --config_path="config/wan2.2/wan_civitai_5b.yaml" \
-  --pretrained_model_name_or_path=$MODEL_NAME \
-  --tae_path=$TAE_PATH \
-  --train_data_dir=$DATASET_NAME \
-  --train_data_meta=$DATASET_META_NAME \
-  --video_sample_size=512 \
-  --video_sample_stride=1 \
-  --video_sample_n_frames=33 \
+  --pretrained_model_name_or_path="$MODEL_NAME" \
+  --tae_path="$TAE_PATH" \
+  --train_data_dir="$DATASET_NAME" \
+  --train_data_meta="$DATASET_META_NAME" \
+  --fix_sample_size 720 1280 \
+  --video_sample_strides 1 2 3 \
+  --video_sample_n_frames=25 \
+  --validation_n_frames=49 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
-  --dataloader_num_workers=4 \
-  --num_train_epochs=100 \
-  --checkpointing_steps=500 \
+  --dataloader_num_workers=8 \
+  --max_train_steps=10000 \
+  --checkpointing_steps=1000 \
+  --validation_steps=1000 \
+  --validation_paths "asset/inpaint_video.mp4" \
   --learning_rate=1e-04 \
   --lr_scheduler="constant_with_warmup" \
-  --lr_warmup_steps=100 \
+  --lr_warmup_steps=200 \
   --latent_loss_weight=1.0 \
+  --use_ema \
+  --ema_decay=0.999 \
   --seed=42 \
   --output_dir="output_dir_taehv_w2.2" \
   --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
   --adam_weight_decay=1e-2 \
   --adam_epsilon=1e-08 \
   --vae_mini_batch=1 \
@@ -207,6 +214,8 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv.py \
   --trainable_modules "." \
   --resume_from_checkpoint=latest
 ```
+
+相同参数已写入 `scripts/taehv/train_taehv.sh`，也可修改其中的训练参数后，运行 `bash scripts/taehv/train_taehv.sh`。
 
 **Wan2.1 / Wan2.2 14B（taew2_1）训练示例**：
 
@@ -246,6 +255,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 4 |
 | `--num_train_epochs` | 训练 epoch 数 | 100 |
+| `--max_train_steps` | 总训练步数；设置后覆盖 `--num_train_epochs` | 10000 |
 | `--checkpointing_steps` | 每 N 步保存 checkpoint | 500 |
 | `--checkpoints_total_limit` | 最多保留的 checkpoint 数量 | `None` |
 | `--learning_rate` | 初始学习率 | 1e-4 |
@@ -265,7 +275,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--trainable_modules_low_learning_rate` | 以 lr/2 训练的模块 | `[]` |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | `latest` |
 | `--validation_steps` / `--validation_epochs` | 每 N 步 / 每 N 个 epoch 执行一次验证 | 2000 / 5 |
-| `--validation_paths` | 用于重建对比验证的视频路径 | `"asset/1.mp4"` |
+| `--validation_paths` | 用于重建对比验证的视频路径 | `"asset/inpaint_video.mp4"` |
 | `--validation_n_frames` | 验证片段帧数（4k+1），不传则复用 `--video_sample_n_frames` | `None` |
 
 **Sample Size 配置指南**：
@@ -282,11 +292,11 @@ export TAE_PATH="taew2_1.safetensors"
 |------|------|--------|
 | `--validation_steps` | 每 N 步执行一次验证 | 2000 |
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 5 |
-| `--validation_paths` | 验证视频路径 | `"asset/1.mp4"` |
+| `--validation_paths` | 验证视频路径 | `"asset/inpaint_video.mp4"` |
 | `--validation_n_frames` | 验证片段帧数，**必须为 4k+1**；不传则复用 `--video_sample_n_frames` | 81 |
 
 ```bash
-  --validation_paths "asset/1.mp4" \
+  --validation_paths "asset/inpaint_video.mp4" \
   --validation_steps=2000 \
   --validation_epochs=5 \
   --validation_n_frames=81
@@ -304,7 +314,7 @@ export TAE_PATH="taew2_1.safetensors"
 - **Decoder-only 蒸馏**：加上 `--freeze_tae_encoder` 只提升解码质量。
 - **显存**：teacher 完整 VAE 是主要的显存消耗者。使用 `--low_vram` 可以将其放在 CPU、仅在编码时搬上 GPU；也可以降低 `--video_sample_n_frames` / `--video_sample_size`。
 - **串行 TAE**：`--use_taehv_sequential` 以速度换显存，激活显存与视频长度无关（O(1)）。
-- **EMA**：推荐开启 `--use_ema` 作为最终交付物；最终保存的 `taehv` 目录里是 EMA 权重。短训练希望均值更快跟上时，可传 `--ema_decay`（如 `train_taehv_super.sh` 用的 `0.999`）替代默认的 0.9999。
+- **EMA**：推荐开启 `--use_ema` 作为最终交付物；最终保存的 `taehv` 目录里是 EMA 权重。短训练希望均值更快跟上时，可传 `--ema_decay`（如 `train_taehv.sh` 与 `train_taehv_super.sh` 用的 `0.999`）替代默认的 0.9999。
 
 ### 3.6 多机分布式训练
 

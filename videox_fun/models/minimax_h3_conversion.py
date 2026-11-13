@@ -111,10 +111,13 @@ class MiniMaxH3MixedPrecisionLoaderMixin:
             kwargs["device_map"] = device_map
         if max_memory is not None:
             kwargs["max_memory"] = max_memory
-        model = super().from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype, **kwargs)
+        result = super().from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype, **kwargs)
+        # ModelMixin returns (model, loading_info) when output_loading_info=True.
+        # Restore precision on the model while preserving that return contract.
+        model = result[0] if isinstance(result, tuple) else result
         if torch_dtype not in (None, torch.float32) and cls._keep_in_fp32_modules:
             restore_fp32_modules(model, pretrained_model_name_or_path, kwargs.get("subfolder", None))
-        return model
+        return result
 
     @classmethod
     def _from_pretrained_with_missing_keys(cls, pretrained_model_name_or_path, torch_dtype, **kwargs):

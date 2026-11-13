@@ -296,7 +296,7 @@ accelerate launch --mixed_precision="bf16" \
 | `--video_sample_size` | Max video training resolution | 960 |
 | `--token_sample_size` | Resolution corresponding to the max token length when `training_with_video_token_length` is on | 960 |
 | `--video_sample_stride` | Frame sampling stride (MiniMax-H3 is 24 fps) | 1 |
-| `--video_sample_n_frames` | Number of frames to sample, must follow the `17*n+5` form of the video VAE (duration stays between 5 and 15 seconds) | 311 |
+| `--video_sample_n_frames` | Number of frames to sample, must follow the `17*n+5` form of the video VAE (duration stays between 0 and 16 seconds) | 311 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
 | `--dataloader_num_workers` | DataLoader subprocess count | 8 |
 | `--num_train_epochs` | Training epochs | 100 |

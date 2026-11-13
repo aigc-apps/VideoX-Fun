@@ -41,7 +41,7 @@ def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance
         if get_sp_group is None:
             raise RuntimeError("xfuser is not installed.")
         dist.init_process_group("nccl")
-        print('parallel inference enabled: ulysses_degree=%d ring_degree=%d classifier_free_guidance_degree=% rank=%d world_size=%d' % (
+        print('parallel inference enabled: ulysses_degree=%d ring_degree=%d classifier_free_guidance_degree=%d rank=%d world_size=%d' % (
             ulysses_degree, ring_degree, classifier_free_guidance_degree, dist.get_rank(),
             dist.get_world_size()))
         assert dist.get_world_size() == ring_degree * ulysses_degree * classifier_free_guidance_degree, \
@@ -53,6 +53,14 @@ def set_multi_gpus_devices(ulysses_degree, ring_degree, classifier_free_guidance
                 ulysses_degree=ulysses_degree)
         # device = torch.device("cuda:%d" % dist.get_rank())
         device = torch.device(f"cuda:{get_world_group().local_rank}")
+        # Bind this process to its own GPU. ``init_process_group`` above runs before xfuser's
+        # ``init_distributed_environment``, whose ``set_device`` is guarded by
+        # ``if not torch.distributed.is_initialized()`` and so never fires; without this call the
+        # current device stays 0 on every rank while the model lives on ``cuda:{local_rank}``.
+        # PyTorch ops dispatch on ``tensor.device`` and are unaffected, but a Triton kernel launches
+        # on ``torch.cuda.current_device()`` and rejects the rank's own pointers as inaccessible,
+        # so any Triton sparse attention (e.g. VSA) would fail on rank > 0.
+        torch.cuda.set_device(device)
         print('rank=%d device=%s' % (get_world_group().rank, str(device)))
     else:
         device = "cuda"

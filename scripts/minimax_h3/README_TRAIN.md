@@ -249,7 +249,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--video_sample_size` | Maximum video resolution for training | 960 |
 | `--token_sample_size` | Token length sampling size | 960 |
 | `--video_sample_stride` | Frame sampling stride (MiniMax-H3 is 24 fps) | 1 |
-| `--video_sample_n_frames` | Number of frames to sample, must follow the `17*n+5` form of the video VAE (duration stays between 5 and 15 seconds) | 124 |
+| `--video_sample_n_frames` | Number of frames to sample, must follow the `17*n+5` form of the video VAE (duration stays between 0 and 16 seconds) | 124 |
 | `--video_repeat` | Number of times each video is repeated per epoch | 1 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps (equivalent to larger batch) | 1 |
 | `--dataloader_num_workers` | DataLoader subprocesses | 4 |
@@ -508,7 +508,7 @@ NCCL_DEBUG=INFO
 | `vae_path` | Path to trained VAE weights | `None` |
 | `lora_path` | LoRA weights path | `None` |
 | `sample_size` | Generated video resolution `[height, width]`; height/width must be multiples of 32. `None` uses MiniMax-H3's own 16:9 canvas (768x1344) | `[704, 1280]` |
-| `video_length` | Number of frames to generate, snapped up to the next `17*n+5` the video VAE can decode (duration stays between 5 and 15 seconds) | 124 |
+| `video_length` | Number of frames to generate, snapped up to the next `17*n+5` the video VAE can decode (duration stays between 0 and 16 seconds) | 124 |
 | `fps` | Frames per second (MiniMax-H3 generates at a fixed 24 fps) | 24 |
 | `weight_dtype` | Model weight precision, use `torch.float16` for GPUs without bf16 support | `torch.bfloat16` |
 | `prompt` | Positive prompt describing the content to generate | `"A red fox trotting..."` |

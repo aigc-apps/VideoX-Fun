@@ -110,6 +110,22 @@ class FSDPEMA:
         self.optimization_step += 1
 
     @torch.no_grad()
+    def reinit_from(self, parameters):
+        r"""Reset the shadow to the current live weights.
+
+        Official One-Forcing builds its EMA at ``ema_start_step`` from the live weights of
+        that step; this reproduces that lazy creation for a shadow instantiated at step 0,
+        dropping whatever warm-start mass it had accumulated before the start step.
+        """
+        source_params, shadow_params = self._paired_params(parameters)
+        for p_shadow, p_source in zip(shadow_params, source_params):
+            if p_shadow.numel() == 0:
+                continue
+            p_shadow.copy_(p_source.detach().to(device=p_shadow.device, dtype=p_shadow.dtype))
+        for b_shadow, b_source in zip(self.module.buffers(), self._source_module.buffers()):
+            b_shadow.copy_(b_source.to(device=b_shadow.device, dtype=b_shadow.dtype))
+
+    @torch.no_grad()
     def store(self, parameters):
         # Snapshots the live local shards so `copy_to` can be undone with
         # `restore` (used to swap the EMA weights in for validation).
@@ -168,11 +184,24 @@ class FSDPEMA:
         from torch.distributed.fsdp import StateDictType
 
         ema_path = os.path.join(load_directory, "diffusion_pytorch_model.safetensors")
-        if not os.path.exists(ema_path):
+        def read_ema():
+            return load_file(ema_path) if os.path.exists(ema_path) else None
+
+        # Do not let one rank enter FSDP collectives while another rank fails
+        # or skips the optional EMA file.
+        state_dict = self.accelerator.checkpoint.phase(read_ema)
+        available = [state_dict is not None]
+        if torch.distributed.is_initialized():
+            available = [None] * torch.distributed.get_world_size()
+            torch.distributed.all_gather_object(available, state_dict is not None)
+        if not all(available):
+            if self.accelerator.is_main_process:
+                from .. import _checkpoint_warning
+                _checkpoint_warning("EMA checkpoint is unavailable on one or more ranks; "
+                                    "keeping the current EMA state, so continuation is not exact")
             return
         # Every rank feeds the full state dict; under the FULL_STATE_DICT
         # context FSDP scatters it into that rank's local shards.
-        state_dict = load_file(ema_path)
         with FSDP.state_dict_type(
             self.module,
             StateDictType.FULL_STATE_DICT,

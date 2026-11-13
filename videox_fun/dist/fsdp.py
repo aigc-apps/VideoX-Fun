@@ -4,8 +4,11 @@ import gc
 from functools import partial
 
 import torch
+from accelerate.big_modeling import UserCpuOffloadHook
+from accelerate.hooks import ModelHook, add_hook_to_module, send_to_device
+from torch.distributed.fsdp import CPUOffload
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import CPUOffload, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import (lambda_auto_wrap_policy,
                                          transformer_auto_wrap_policy)
 from torch.distributed.utils import _free_storage
@@ -84,6 +87,7 @@ def shard_model(
     cast_dtype=True,
     ignored_modules=None,
     offload_to_cpu=False,
+    use_orig_params=None,
 ):  
     """
     Wraps the model with FSDP using the specified configuration.
@@ -104,6 +108,10 @@ def shard_model(
         ignored_modules: Modules excluded from FSDP (kept replicated in their own dtype via ignored_states).
             Use for modules a mixed-precision checkpoint pins to float32: casting them into the shard dtype
             makes AdaLN/output-head rounding accumulate coherently over the denoising trajectory (flicker).
+        use_orig_params: Preserve original parameters inside their modules when FSDP shards them.
+            When None, enable this for Qwen2.5-VL and Qwen3-VL models, whose vision towers inspect
+            their own parameters during forward, and keep it disabled for other models. Explicit
+            True/False overrides this.
         offload_to_cpu: When True, wrap with FSDP's native `CPUOffload(offload_params=True)` so each rank keeps
             its parameter shard in CPU RAM and streams it back to the GPU only around the wrapped module's
             forward. This is the offload path that is compatible with sequence-parallel multi-GPU inference
@@ -114,6 +122,18 @@ def shard_model(
     Returns:
         The FSDP-wrapped model.
     """
+    if use_orig_params is None:
+        # Qwen-VL queries visual.dtype before calling its vision tower; FSDP flattening otherwise
+        # removes the parameters that Transformers uses to infer the dtype. Callers wrap either the
+        # inner multimodal model or the conditional-generation wrapper, depending on the pipeline.
+        qwen_vl_classes = {
+            ("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl", "Qwen2_5_VLModel"),
+            ("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl", "Qwen2_5_VLForConditionalGeneration"),
+            ("transformers.models.qwen3_vl.modeling_qwen3_vl", "Qwen3VLModel"),
+            ("transformers.models.qwen3_vl.modeling_qwen3_vl", "Qwen3VLForConditionalGeneration"),
+        }
+        use_orig_params = any((cls.__module__, cls.__name__) in qwen_vl_classes for cls in type(model).__mro__)
+
     if transformer_layer_cls_to_wrap is not None:
         # Create policy based strictly on transformer layer classes
         auto_wrap_policy = create_transformer_auto_wrap_policy(
@@ -169,7 +189,8 @@ def shard_model(
         sync_module_states=sync_module_states,
         cpu_offload=cpu_offload,
         limit_all_gathers=offload_to_cpu,
-        ignored_states=ignored_modules if ignored_modules else None)
+        ignored_states=ignored_modules if ignored_modules else None,
+        use_orig_params=use_orig_params)
 
     return model
 
@@ -189,7 +210,241 @@ def free_model(model):
     torch.cuda.empty_cache()
 
 
-def offload_components_cpu(obj, device, component_names):
+def locate_decoder_layers(model):
+    """The decoder-layer ModuleList of a conditioner, or None when the layout is not recognised.
+
+    MiniMax-H3's Qwen3-VL nests it at `<inner>.language_model.layers`; the fallbacks cover
+    `<inner>.model.layers` and a top-level `.layers`. Callers pass either the outer text encoder or
+    its inner `Qwen3VLModel`, so both the module and its `.model` are probed as roots. The language
+    model is probed before the vision tower so the stack the encode pass actually walks is returned.
+    """
+    for root in (model, getattr(model, "model", None)):
+        if not isinstance(root, torch.nn.Module):
+            continue
+        for lm in (getattr(root, "language_model", None), getattr(root, "model", None), root):
+            layers = getattr(lm, "layers", None)
+            if isinstance(layers, torch.nn.ModuleList) and len(layers) > 0:
+                return layers
+    return None
+
+
+def shard_model_fsdp2(model, device_id, param_dtype=None, cpu_offload=True,
+                      reshard_after_forward=True):
+    """FSDP2-shard a conditioner's decoder stack, optionally 1-wide with pinned CPU offload.
+
+    This is the FSDP2 counterpart of `shard_model`'s `offload_to_cpu=True` path, for the text encoder
+    under sequence-parallel inference. Only the decoder layers are sharded: wrapping a root would turn
+    `embed_tokens` into a DTensor too, and its forward then mixes a DTensor weight with a plain
+    `input_ids` (`aten.embedding.default got mixed torch.Tensor and DTensor`). The embedding, the final
+    norm and the vision tower stay replicated (~2.6 GiB) and are moved to the card.
+
+    With `cpu_offload=True` the shard mesh is 1 wide (`init_device_mesh("cuda", (1, world))["offload"]`),
+    so every rank keeps a full pinned host copy and the per-request "gather" degenerates into a local
+    copy plus an asynchronous host-to-card transfer -- no collective. A true `world`-wide shard needs one
+    all-gather per decoder layer, which dominates the text stage on a PCIe-only box. The trade is host
+    memory: `world` full copies instead of one sharded set, so this path needs the RAM to hold them and a
+    `ulimit -l` large enough to pin them.
+
+    FSDP1 and FSDP2 are mutually exclusive on the same module, so a model already wrapped by `shard_model`
+    must not be passed here. `fully_shard` mutates the layers in place rather than wrapping the root, so
+    the caller keeps using the same object it passed in, which is what is returned.
+
+    NOT wired into the example scripts, and deliberately so. Measured on this box (torch 2.7,
+    `_qtwork/_probe_fsdp2_root.py`, 2 ranks, `no_grad`): this wraps only the decoder layers and never a
+    `fully_shard`'d root -- the shape the source protocol uses to keep `embed_tokens` out of DTensor (a
+    DTensor embedding weight against a plain `input_ids` raises `aten.embedding.default got mixed
+    torch.Tensor and DTensor`). But FSDP2 requires a single `fully_shard`'d root: it promotes the first
+    layer that runs forward to the de-facto root, disables reshard-after-forward on it, and the sibling
+    layers never get the root's orchestration, so a forward unshards every layer to the GPU and leaves
+    them all resident afterwards (after-forward ~ the whole decoder) instead of offloading back. This is
+    not a torch-version or inference limitation: adding a real `fully_shard`'d root makes reshard +
+    offload-back fire correctly on torch 2.7 (peak ~ a few layers, after-forward ~ at-rest). Fixing it
+    for a conditioner means also `fully_shard`'d the root with the embedding passed to `ignored_params`
+    so it stays a plain replicated tensor. `shard_model(..., offload_to_cpu=True)`'s FSDP1 CPUOffload
+    needs no such root -- its forward hooks reshard each layer to the host right after it runs -- and on
+    an NVLink box its per-layer all-gather is cheap, so FSDP1 is both correct and fast here; wiring this
+    FSDP2 shape as the text-encoder offload would leave a 58 GiB conditioner on-card after the first
+    encode and OOM beside the DiT. Kept un-wired; verify with `_qtwork/_probe_fsdp2_root.py` (and add a
+    root wrap) before wiring it anywhere.
+    """
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import (CPUOffloadPolicy, MixedPrecisionPolicy,
+                                        fully_shard)
+    from torch.distributed.tensor import DTensor
+
+    layers = locate_decoder_layers(model)
+    if layers is None:
+        raise ValueError(
+            "shard_model_fsdp2 cannot locate the decoder-layer stack on %s; pass a conditioner with a "
+            "`.language_model.layers` / `.model.layers` / `.layers` ModuleList." % type(model).__name__)
+
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    if cpu_offload:
+        mesh = init_device_mesh("cuda", (1, world), mesh_dim_names=("offload", "replicate"))["offload"]
+        offload_policy = CPUOffloadPolicy(pin_memory=True)
+    else:
+        mesh = init_device_mesh("cuda", (world,), mesh_dim_names=("shard",))
+        offload_policy = None
+    # `cast_forward_inputs=False` keeps the plain `input_ids` / attention masks untouched; the layers'
+    # params already carry the checkpoint dtype (bf16), so `param_dtype=None` adds no cast unless asked.
+    mp = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=None, output_dtype=None,
+                              cast_forward_inputs=False)
+
+    for layer in layers:
+        kwargs = {"mesh": mesh, "mp_policy": mp, "reshard_after_forward": reshard_after_forward}
+        if offload_policy is not None:
+            kwargs["offload_policy"] = offload_policy
+        fully_shard(layer, **kwargs)
+
+    if cpu_offload:
+        # The shards stay host-resident, so `model.to(device)` is not callable here (it would drag the
+        # offloaded shards onto the card); move only the replicated non-DTensor params and the buffers.
+        for p in model.parameters():
+            if not isinstance(p, DTensor):
+                p.data = p.data.to(device_id)
+        for b in model.buffers():
+            b.data = b.data.to(device_id)
+    else:
+        try:
+            model.to(device_id)
+        except Exception as exc:  # FSDP2 may already have placed the shards
+            print("[shard_model_fsdp2] .to(device) skipped: %s" % exc, flush=True)
+
+    shard_bytes = sum(p.to_local().numel() * p.to_local().element_size()
+                      for p in model.parameters() if isinstance(p, DTensor))
+    replicated_bytes = sum(p.numel() * p.element_size()
+                           for p in model.parameters() if not isinstance(p, DTensor))
+    print("[shard_model_fsdp2] %d layers sharded (cpu_offload=%s, shard-dim=%d, pinned=%s), local "
+          "%.2f GiB sharded + %.2f GiB replicated."
+          % (len(layers), cpu_offload, 1 if cpu_offload else world, cpu_offload,
+             shard_bytes / 2**30, replicated_bytes / 2**30), flush=True)
+    return model
+
+
+# Attribute holding a module's pinned host mirror, installed by `build_pinned_mirror`.
+_PINNED_HOST_ATTR = "_vxf_pinned_host"
+
+
+def _pinned_cpu_copy(tensor):
+    """A pinned CPU copy of `tensor`, reusing it when it is already a pinned host tensor."""
+    src = tensor.detach()
+    if src.device.type != "cpu":
+        src = src.to("cpu")
+    return src if src.is_pinned() else src.pin_memory()
+
+
+def build_pinned_mirror(module):
+    """Keep one pinned host copy per tensor of `module`; load/unload only repoint `.data`.
+
+    A whole-component offload that parks the weights with `.to("cpu")` pays a device-to-host copy on every
+    offload. For a component decoded once per request (the video / audio VAE) that copy is pure overhead: the
+    host copy never changes, so it is built once, pinned, and reused. Onload allocates a fresh device tensor
+    and copies it from the pinned buffer asynchronously; unload drops the device storage by repointing `.data`
+    back at the mirror, with no device-to-host transfer at all.
+
+    Inference only: the mirror captures the weights once and assumes nothing mutates them in place.
+    `named_parameters()` / `named_buffers()` deduplicate tied tensors, so a shared weight is mirrored once and
+    both names repoint to the same host tensor. Pinning needs a locked-memory limit (`ulimit -l`) large enough
+    for the whole mirror; `pin_memory` raises when it is not, and the caller falls back to a two-way offload.
+    """
+    host = {}
+    for name, param in module.named_parameters():
+        host["p:" + name] = _pinned_cpu_copy(param.data)
+    for name, buf in module.named_buffers():
+        host["b:" + name] = _pinned_cpu_copy(buf.data)
+    setattr(module, _PINNED_HOST_ATTR, host)
+    return host
+
+
+def pinned_load(module, device):
+    """Point every tensor of `module` at a fresh device copy of its pinned host mirror."""
+    host = getattr(module, _PINNED_HOST_ATTR, None)
+    if host is None:
+        return module.to(device)
+    device = torch.device(device)
+    for name, param in module.named_parameters():
+        if param.data.device != device:
+            dst = torch.empty_like(host["p:" + name], device=device)
+            dst.copy_(host["p:" + name], non_blocking=True)
+            param.data = dst
+    for name, buf in module.named_buffers():
+        if buf.data.device != device:
+            dst = torch.empty_like(host["b:" + name], device=device)
+            dst.copy_(host["b:" + name], non_blocking=True)
+            buf.data = dst
+    return module
+
+
+def pinned_unload(module):
+    """Repoint every device tensor of `module` back at its pinned host mirror; no device-to-host copy."""
+    host = getattr(module, _PINNED_HOST_ATTR, None)
+    if host is None:
+        return module.to("cpu")
+    for name, param in module.named_parameters():
+        if param.data.device.type != "cpu":
+            param.data = host["p:" + name]
+    for name, buf in module.named_buffers():
+        if buf.data.device.type != "cpu":
+            buf.data = host["b:" + name]
+    return module
+
+
+class PinnedCpuOffload(ModelHook):
+    """One-way CPU-offload hook backed by a pinned host mirror.
+
+    Same contract and same chaining as accelerate's `CpuOffload` -- installed as the module's `_hf_hook` (so
+    `_offload_scope` fires it around `encode` / `decode`), exposes `execution_device` (so `_execution_device`
+    keeps reporting the onload GPU), and offloads the previous component from `pre_forward` -- so it drops into
+    `offload_components_cpu` in place of `cpu_offload_with_hook`. Only the transfer direction differs: offload
+    repoints `.data` at the pinned host copy instead of a device-to-host `.to("cpu")`, and onload copies back
+    asynchronously. The device cache is deliberately left intact across an offload, so the next onload reuses
+    the freed blocks.
+
+    `init_hook` is what `UserCpuOffloadHook.offload()` calls, so it both builds the mirror on attach and
+    re-parks the module on every chained offload; it is idempotent.
+    """
+
+    def __init__(self, execution_device=None, prev_module_hook=None):
+        self.prev_module_hook = prev_module_hook
+        self.execution_device = execution_device
+
+    def init_hook(self, module):
+        if getattr(module, _PINNED_HOST_ATTR, None) is None:
+            build_pinned_mirror(module)
+        pinned_unload(module)
+        return module
+
+    def pre_forward(self, module, *args, **kwargs):
+        if self.prev_module_hook is not None:
+            self.prev_module_hook.offload()
+        pinned_load(module, self.execution_device)
+        return send_to_device(args, self.execution_device), send_to_device(kwargs, self.execution_device)
+
+
+def _offload_component_pinned(model, onload_device, prev_hook):
+    """Attach a `PinnedCpuOffload` hook, falling back to the two-way accelerate hook when pinning is unavailable.
+
+    Returns the same `(model, UserCpuOffloadHook)` pair `cpu_offload_with_hook` does, so the caller chains and
+    records it identically whichever path attached it. The mirror is built before the hook is added, so a
+    `pin_memory` failure under a restricted `ulimit -l` leaves the module's `forward` untouched.
+    """
+    from accelerate import cpu_offload_with_hook
+
+    try:
+        build_pinned_mirror(model)
+    except (RuntimeError, OSError) as exc:
+        # `pin_memory` surfaces a locked-memory failure as RuntimeError, but a restricted `ulimit -l`
+        # can also raise OSError from the underlying cudaHostRegister; either way fall back cleanly.
+        print("[offload_components_cpu] pinned mirror unavailable (%s); falling back to two-way CPU "
+              "offload for %s." % (exc, type(model).__name__))
+        return cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
+    hook = PinnedCpuOffload(execution_device=onload_device, prev_module_hook=prev_hook)
+    add_hook_to_module(model, hook, append=True)
+    return model, UserCpuOffloadHook(model, hook)
+
+
+def offload_components_cpu(obj, device, component_names, pinned=False):
     r"""
     Attach top-level accelerate CPU-offload hooks to a chosen subset of a pipeline's whole-model components
     (by default the VAE / audio VAE), leaving every other component untouched.
@@ -208,6 +463,11 @@ def offload_components_cpu(obj, device, component_names):
     Also patches the pipeline's `_execution_device` to keep reporting the onload (GPU) device: the FSDP modules
     carry no `_hf_hook`, so the stock property would otherwise fall back to `self.device` (CPU) as soon as one
     of them leads the component order.
+
+    With `pinned=True` each named component is offloaded through a `PinnedCpuOffload` hook instead: a pinned
+    host mirror is built once and the offload only repoints `.data` back at it, dropping the device-to-host leg
+    a two-way `.to("cpu")` pays on every request. It falls back to the two-way hook per component when pinning
+    is unavailable, so the offload still happens.
     """
     from accelerate import cpu_offload_with_hook
 
@@ -219,7 +479,10 @@ def offload_components_cpu(obj, device, component_names):
         model = getattr(obj, name, None)
         if not isinstance(model, torch.nn.Module):
             continue
-        _, hook = cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
+        if pinned:
+            _, hook = _offload_component_pinned(model, onload_device, prev_hook)
+        else:
+            _, hook = cpu_offload_with_hook(model, onload_device, prev_module_hook=prev_hook)
         hooks.append(hook)
         prev_hook = hook
     obj._cpu_offload_component_hooks = hooks

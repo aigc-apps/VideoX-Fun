@@ -67,26 +67,45 @@ class FastVideoWanSelfAttention(WanSelfAttention):
 
         q, k = rope_apply_qk(q, k, grid_sizes, freqs)
 
+        out = self._vsa_dispatch(q.to(dtype), k.to(dtype), v.to(dtype), x.to(dtype),
+                                 seq_lens, grid_sizes)
+        x = out.to(dtype).flatten(2)
+        return self.o(x)
+
+    def _vsa_dispatch(self, q, k, v, x, seq_lens, grid_sizes, gate=None):
+        """Run the VSA kernel over POST-RoPE ``q/k/v`` ([B, L, H, D]) -> [B, L, H, D].
+
+        ``x`` drives ``attn_op.to_gate_compress`` unless a pre-computed ``gate`` ([B, L, H, D])
+        is handed in: that Linear mixes heads, so the sequence-parallel path
+        (``usp_attn_fastvideo_forward``) evaluates it on its own sequence shard and passes the
+        head-sharded result, with ``x`` left as None.
+
+        The segment-aware tile geometry needs the sequence length to equal the true video token
+        count. Under sequence parallelism the gathered length is padded to a multiple of the SP
+        degree and can exceed it, so that case takes the per-sample branch below, which attends
+        over the valid grid tokens only and pads the output back to ``L``.
+        """
+        s = q.shape[1]
         g0 = grid_sizes[0]
         if (bool((grid_sizes == g0).all()) and s == int(g0.prod())
                 and bool((seq_lens == s).all())):
             segments = ((int(g0[0]), int(g0[1]), int(g0[2])),)
-            out = self.attn_op(q.to(dtype), k.to(dtype), v.to(dtype), x.to(dtype),
-                               segments=segments)
-        else:
-            outputs = []
-            for i, (grid, length) in enumerate(zip(grid_sizes.tolist(), seq_lens.tolist())):
-                grid = tuple(int(axis) for axis in grid)
-                length = int(length)
-                if min(grid) <= 0 or length != grid[0] * grid[1] * grid[2] or not 0 < length <= s:
-                    raise ValueError("Wan VSA 的 seq_lens 必须等于有效网格 token 数且不超过序列长度。")
-                oi = self.attn_op(q[i:i + 1, :length].to(dtype), k[i:i + 1, :length].to(dtype),
-                                  v[i:i + 1, :length].to(dtype), x[i:i + 1, :length].to(dtype),
-                                  segments=(grid,))
-                outputs.append(torch.nn.functional.pad(oi, (0, 0, 0, 0, 0, s - length)))
-            out = torch.cat(outputs, dim=0)
-        x = out.to(dtype).flatten(2)
-        return self.o(x)
+            return self.attn_op(q, k, v, x, segments=segments, gate=gate)
+
+        outputs = []
+        for i, (grid, length) in enumerate(zip(grid_sizes.tolist(), seq_lens.tolist())):
+            grid = tuple(int(axis) for axis in grid)
+            length = int(length)
+            if min(grid) <= 0 or length != grid[0] * grid[1] * grid[2] or not 0 < length <= s:
+                raise ValueError("Wan VSA 的 seq_lens 必须等于有效网格 token 数且不超过序列长度。")
+            gate_i = None if gate is None else gate[i:i + 1, :length]
+            # x is only consumed by to_gate_compress, so it is dropped once gate is supplied.
+            x_i = None if gate is not None else x[i:i + 1, :length]
+            oi = self.attn_op(q[i:i + 1, :length], k[i:i + 1, :length],
+                              v[i:i + 1, :length], x_i,
+                              segments=(grid,), gate=gate_i)
+            outputs.append(torch.nn.functional.pad(oi, (0, 0, 0, 0, 0, s - length)))
+        return torch.cat(outputs, dim=0)
 
 
 class FastVideoWanTransformer3DModel(WanTransformer3DModel):
@@ -187,17 +206,45 @@ class FastVideoWanTransformer3DModel(WanTransformer3DModel):
             self._apply_sparse_self_attention(topk)
 
     def enable_multi_gpus_inference(self,):
-        """VSA has no sequence-parallel path in this repo.
+        """Bind the VSA-aware USP forward instead of the parent's dense one.
 
-        The in-repo VSA kernel only implements the single-GPU coarse-to-fine block-sparse
-        forward; there is no ulysses head-parallel or ring-attention binding for it (unlike
-        the RoLa/SLA ``usp_attn_*`` forwards). The 1.3B student fits comfortably on one GPU,
-        so run inference single-device. Fail loudly rather than silently falling back to the
-        parent's DENSE ``usp_attn_forward`` (which would bypass VSA and drop the gate params).
+        ``WanTransformer3DModel.enable_multi_gpus_inference`` monkey-patches every
+        ``blocks[i].self_attn.forward`` to ``usp_attn_forward`` (dense full-softmax via
+        ``xFuserLongContextAttention``), which never reaches ``FastVideoWanSelfAttention.attn_op``
+        and would silently drop the VSA kernel plus the trained ``to_gate_compress`` gate.
+        Rebind to ``usp_attn_fastvideo_forward``: Ulysses head-parallel, with the cross-head
+        compress gate evaluated on each rank's sequence shard (where the full hidden dim still
+        lives) and all-to-all'd next to q/k/v.
+
+        Constraint: the VSA kernel has no ring-attention path (no partial-output/logsumexp
+        interface to rescale across KV chunks), so this is pure Ulysses -- ``ring_degree`` must
+        be 1 and ``num_heads`` must divide the SP degree.
         """
-        raise NotImplementedError(
-            "FastVideoWanTransformer3DModel (VSA) supports single-GPU inference only; the VSA "
-            "kernel has no ulysses/ring sequence-parallel path. Set ulysses_degree=ring_degree=1.")
+        import types
+
+        from ..dist import (get_sequence_parallel_rank,
+                            get_sequence_parallel_world_size, get_sp_group,
+                            usp_attn_fastvideo_forward)
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # Ulysses head-split needs num_heads divisible by the SP degree.
+        n_heads = self.blocks[0].self_attn.num_heads
+        if self.sp_world_size > 1 and n_heads % self.sp_world_size != 0:
+            raise ValueError(
+                f"VSA multi-GPU (ulysses) needs num_heads ({n_heads}) divisible by the "
+                f"sequence-parallel degree ({self.sp_world_size}); set ulysses_degree "
+                f"accordingly and keep ring_degree=1 (the VSA kernel has no ring path).")
+
+        for block in self.blocks:
+            block.self_attn.forward = types.MethodType(
+                usp_attn_fastvideo_forward, block.self_attn)
+
+        if hasattr(self, 'vace_blocks'):
+            for block in self.vace_blocks:
+                block.self_attn.forward = types.MethodType(
+                    usp_attn_fastvideo_forward, block.self_attn)
 
     def sparse_trainable_params(self):
         """Names of the extra VSA-branch parameters, for logging / freezing."""

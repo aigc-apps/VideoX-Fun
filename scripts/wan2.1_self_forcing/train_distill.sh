@@ -1,4 +1,5 @@
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-1.3B/"
+export REAL_SCORE_MODEL_NAME="models/Diffusion_Transformer/Wan2.1-T2V-14B"
 export DATASET_NAME="datasets/internal_datasets/"
 export DATASET_META_NAME="datasets/internal_datasets/metadata.json"
 # NCCL_IB_DISABLE=1 and NCCL_P2P_DISABLE=1 are used in multi nodes without RDMA. 
@@ -9,6 +10,7 @@ NCCL_DEBUG=INFO
 accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_distill.py \
   --config_path="config/wan2.1/wan_civitai.yaml" \
   --pretrained_model_name_or_path=$MODEL_NAME \
+  --real_score_model_name_or_path=$REAL_SCORE_MODEL_NAME \
   --train_data_dir=$DATASET_NAME \
   --train_data_meta=$DATASET_META_NAME \
   --image_sample_size=640 \
@@ -24,21 +26,26 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --num_train_epochs=100 \
   --checkpointing_steps=50 \
   --learning_rate=2e-06 \
-  --learning_rate_critic=2e-06 \
+  --learning_rate_critic=4.0e-07 \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --seed=42 \
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --adam_weight_decay=3e-2 \
+  --fsdp_reduce_fp32 \
+  --adam_weight_decay=0.0 \
+  --adam_beta1=0.0 \
+  --adam_beta2=0.999 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
-  --max_grad_norm=0.05 \
+  --max_grad_norm=10.0 \
   --random_hw_adapt \
   --training_with_video_token_length \
   --enable_bucket \
-  --uniform_sampling \
+  --denoising_step_indices_list 1000 750 500 250 \
+  --real_guidance_scale=4.0 \
+  --score_timestep_clamp \
   --use_kv_cache_training \
   --num_frame_per_block=3 \
   --train_mode="normal" \

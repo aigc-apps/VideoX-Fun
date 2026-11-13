@@ -322,7 +322,7 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 | `--train_batch_size` | Must be 1: each rank carries one trajectory | 1 |
 | `--num_train_epochs` | Training epochs when `--max_train_steps` is omitted. One epoch is one pass through the conditioning set | 100 |
 | `--max_train_steps` | Total optimization steps. If set, overrides `--num_train_epochs` | 3000 |
-| `--video_sample_n_frames` | Number of frames, must follow the `17*n+5` form of the video VAE (duration stays between 5 and 15 seconds) | 124 |
+| `--video_sample_n_frames` | Number of frames, must follow the `17*n+5` form of the video VAE (duration stays between 0 and 16 seconds) | 124 |
 | `--video_sample_size` | Square canvas size (height = width); must be a multiple of 32 | 1280 |
 | `--fix_sample_size` | Fixed `[height, width]` overriding `--video_sample_size` for a non-square canvas; both must be multiples of 32 | 768 1344 |
 | `--gradient_accumulation_steps` | Gradient accumulation steps | 1 |
@@ -485,7 +485,7 @@ The default recipe (`N = 32`, `L = 4`) runs at **8** inference steps. `num_infer
 | `pdd_lora_path` | PDD checkpoint directory (loads `pdd_ema.safetensors` if present, else `pdd.safetensors`, plus `pdd_config.json`) or a `.safetensors` file | `output_dir_minimax_h3_pdd_lora/checkpoint-3000` |
 | `lora_path` | Turbo/PEFT LoRA; **cannot** be combined with `pdd_lora_path` | `None` |
 | `sample_size` | Generated video resolution `[height, width]`; height/width must be multiples of 32. `None` uses MiniMax-H3's own 16:9 canvas (768x1344) | `[768, 1344]` |
-| `video_length` | Number of frames to generate, snapped up to the next `17*n+5` the video VAE can decode (duration stays between 5 and 15 seconds) | 124 |
+| `video_length` | Number of frames to generate, snapped up to the next `17*n+5` the video VAE can decode (duration stays between 0 and 16 seconds) | 124 |
 | `fps` | Frames per second (MiniMax-H3 generates at a fixed 24 fps) | 24 |
 | `weight_dtype` | Model weight precision, use `torch.float16` for GPUs without bf16 support | `torch.bfloat16` |
 | `prompt` | Positive prompt describing the content to generate | `"A red fox trotting..."` |

@@ -26,6 +26,29 @@ DETERMINISTIC_LOGVAR = -30.0
 TWorkItem = namedtuple("TWorkItem", ("input_tensor", "block_index"))
 
 
+def _load_raw_state_dict(path):
+    """Load a flat tensor state_dict from a .safetensors/.pth/.bin checkpoint.
+
+    Mirrors the normalization done in AutoencoderTinyWan.from_pretrained so that a
+    companion encoder checkpoint can be borrowed the same way.
+    """
+    path = os.fspath(path)
+    if path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+
+        sd = load_file(path)
+    else:
+        sd = torch.load(path, map_location="cpu", weights_only=True)
+    if isinstance(sd, dict):
+        if isinstance(sd.get("state_dict"), dict):
+            sd = sd["state_dict"]
+        elif isinstance(sd.get("decoder"), dict):
+            sd = sd["decoder"]
+    if isinstance(sd, dict) and all(k.startswith("model.") for k in sd):
+        sd = {k[len("model.") :]: v for k, v in sd.items()}
+    return sd
+
+
 def conv(n_in, n_out, **kwargs):
     return nn.Conv2d(n_in, n_out, 3, padding=1, **kwargs)
 
@@ -566,6 +589,10 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if spatial_compression_ratio is None:
             spatial_compression_ratio = 8 * patch_size
         self.spatial_compression_ratio = spatial_compression_ratio
+        # Persist the derived value into the frozen config as well: some pipelines
+        # read `vae.config.spatial_compression_ratio` (not the attribute), and the
+        # register_to_config decorator would otherwise keep the `None` default.
+        self.register_to_config(spatial_compression_ratio=spatial_compression_ratio)
 
         self.model = TAEWan(
             encoder_time_downscale=tuple(encoder_time_downscale),
@@ -695,6 +722,33 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             raise ValueError("无效的 TAE 权重：需要 tensor state_dict 或 checkpoint['decoder']。")
         if all(k.startswith("model.") for k in state_dict):
             state_dict = {k[len("model.") :]: v for k, v in state_dict.items()}
+
+        # Borrow an encoder when the checkpoint is decoder-only. Some taew2_2_super
+        # releases ship only the Super decoder; without an encoder, encode() would
+        # raise. We merge encoder.* weights from a companion base checkpoint so the
+        # model becomes a full encoder(base)+decoder(super) TAE.
+        # Priority: explicit `encoder_path` (via additional_kwargs / vae_kwargs or
+        # kwargs) > auto sibling found by stripping "_super" from the filename.
+        encoder_path = None
+        if isinstance(additional_kwargs, dict):
+            encoder_path = additional_kwargs.get("encoder_path")
+        if encoder_path is None:
+            encoder_path = kwargs.get("encoder_path")
+        if not any(k.startswith("encoder.") for k in state_dict):
+            if encoder_path is None:
+                root, ext = os.path.splitext(pretrained_model_path)
+                sibling = root.replace("_super", "") + ext
+                if sibling != pretrained_model_path and os.path.exists(sibling):
+                    encoder_path = sibling
+            if encoder_path is not None and os.path.exists(encoder_path):
+                enc_sd = {k: v for k, v in _load_raw_state_dict(encoder_path).items() if k.startswith("encoder.")}
+                if enc_sd:
+                    state_dict = {**enc_sd, **state_dict}
+                    print(f"[TAE] decoder-only 权重：已从 {encoder_path} 借用 {len(enc_sd)} 个 encoder 键以支持 encode。")
+            if not any(k.startswith("encoder.") for k in state_dict):
+                print("[TAE][warn] 未找到 encoder 权重，将以 decoder_only 加载，encode() 不可用。"
+                      "可通过 vae_kwargs.encoder_path=<base taew2_2 权重路径> 指定，"
+                      "或把 base 权重放在与 super 同名（去掉 _super）的路径下。")
 
         if "decoder.0.weight" in state_dict and "decoder.1.weight" not in state_dict:
             arch_variant, first_key, block_key = "super", "decoder.0.weight", "decoder.1.conv.0.weight"

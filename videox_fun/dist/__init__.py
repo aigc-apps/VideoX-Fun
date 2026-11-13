@@ -3,7 +3,7 @@ from .ernie_image_xfuser import ErnieImageMultiGPUsAttnProcessor
 from .flashhead_xfuser import usp_attn_flashhead_forward
 from .flux2_xfuser import Flux2MultiGPUsAttnProcessor2_0
 from .flux_xfuser import FluxMultiGPUsAttnProcessor2_0
-from .fsdp import offload_components_cpu, shard_model
+from .fsdp import offload_components_cpu, shard_model, shard_model_fsdp2
 from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     get_world_group, init_distributed_environment,
@@ -21,10 +21,13 @@ from .longcatvideo_xfuser import (usp_attn_longcatvideo_avatar_forward,
                                   usp_rope_longcatvideo_forward)
 from .ltx2_xfuser import (LTX2MultiGPUsAttnProcessor,
                           LTX2PerturbedMultiGPUsAttnProcessor)
-from .minimax_h3_xfuser import MiniMaxH3MultiGPUsAttnProcessor
+from .minimax_h3_xfuser import (MiniMaxH3MultiGPUsAttnProcessor,
+                                MiniMaxH3MultiGPUsVSAAttnProcessor)
 from .qwen_xfuser import QwenImageMultiGPUsAttnProcessor2_0
 from .qwenimage21_xfuser import QwenImage21MultiGPUsAttnProcessor
-from .wan_xfuser import (usp_attn_forward, usp_attn_s2v_forward,
+from .wan_xfuser import (usp_attn_forward, usp_attn_fastvideo_forward,
+                         usp_attn_s2v_forward,
                          usp_attn_self_forcing_forward,
-                         usp_attn_sparkwan_forward)
+                         usp_attn_sparkwan_forward,
+                         usp_attn_turbowan_forward)
 from .z_image_xfuser import ZMultiGPUsSingleStreamAttnProcessor

@@ -51,8 +51,8 @@ class FakeLocalAttention(nn.Module):
         super().__init__()
         self.local_attn = SparseLinearAttention(head_dim, topk)
 
-    def forward(self, q, k, v):
-        x = self.local_attn(q, k, v)
+    def forward(self, q, k, v, heads_total=None, head_start=0):
+        x = self.local_attn(q, k, v, heads_total=heads_total, head_start=head_start)
         return x
 
 
@@ -310,3 +310,45 @@ class TurboWanTransformer3DModel(WanTransformer3DModel):
 
         if hasattr(self, "img_emb"):
             del self.img_emb
+
+    def enable_multi_gpus_inference(self,):
+        """Bind the SLA-aware USP forward instead of the parent's dense one.
+
+        ``WanTransformer3DModel.enable_multi_gpus_inference`` monkey-patches every
+        ``blocks[i].self_attn.forward`` to ``usp_attn_forward`` (dense full-softmax via
+        ``xFuserLongContextAttention``). That path only touches base-class attributes
+        (``q/k/v/norm_q/norm_k/o/window_size/num_heads/head_dim``), all of which this module's
+        ``WanSelfAttention`` inherits, so the inherited patch used to degrade the SLA student to
+        dense attention SILENTLY -- no AttributeError, no shape error, just ``self.attn_op``
+        (``FakeLocalAttention`` -> ``SparseLinearAttention``) never being reached. Rebind to
+        ``usp_attn_turbowan_forward``: Ulysses head-parallel all-to-all around the SLA kernel,
+        which is head-independent (all reductions over L/D, ``proj_l`` is per-head), so the
+        multi-GPU result matches single-GPU.
+
+        Constraint: the SLA kernel exposes no partial-output/logsumexp interface, so ring
+        attention cannot be wired to it -- pure Ulysses only, ``ring_degree`` must be 1 and
+        ``num_heads`` must divide the SP degree.
+        """
+        from ..dist import (get_sequence_parallel_rank,
+                            get_sequence_parallel_world_size, get_sp_group,
+                            usp_attn_turbowan_forward)
+        self.sp_world_size = get_sequence_parallel_world_size()
+        self.sp_world_rank = get_sequence_parallel_rank()
+        self.all_gather = get_sp_group().all_gather
+
+        # Ulysses head-split needs num_heads divisible by the SP degree.
+        n_heads = self.blocks[0].self_attn.num_heads
+        if self.sp_world_size > 1 and n_heads % self.sp_world_size != 0:
+            raise ValueError(
+                f"SLA multi-GPU (ulysses) needs num_heads ({n_heads}) divisible by the "
+                f"sequence-parallel degree ({self.sp_world_size}); set ulysses_degree "
+                f"accordingly and keep ring_degree=1 (the SLA kernel has no ring path).")
+
+        for block in self.blocks:
+            block.self_attn.forward = types.MethodType(
+                usp_attn_turbowan_forward, block.self_attn)
+
+        if hasattr(self, 'vace_blocks'):
+            for block in self.vace_blocks:
+                block.self_attn.forward = types.MethodType(
+                    usp_attn_turbowan_forward, block.self_attn)

@@ -141,11 +141,14 @@ Table: inference entry selection
 
 ### 2.2 GPU Memory Saving Options
 
-Since Wan2.1 has a very large number of parameters, we need to consider memory optimization strategies to adapt to consumer-grade GPUs. We provide `GPU_memory_mode` for each prediction file, allowing you to choose between `model_cpu_offload`, `model_cpu_offload_and_qfloat8`, and `sequential_cpu_offload`. This solution is also applicable to CogVideoX-Fun generation.
+Since Wan2.1 has a very large number of parameters, we need to consider memory optimization strategies to adapt to consumer-grade GPUs. We provide `GPU_memory_mode` for each prediction file, allowing you to choose between `model_cpu_offload`, `model_cpu_offload_and_qfloat8`, `model_group_offload`, `sequential_cpu_offload`, `text_encoder_offload`, and `model_full_load_and_qfloat8`. This solution is also applicable to CogVideoX-Fun generation.
 
 - `model_cpu_offload`: The entire model is moved to the CPU after use, saving some GPU memory.
 - `model_cpu_offload_and_qfloat8`: The entire model is moved to the CPU after use, and the transformer model is quantized to float8, saving more GPU memory.
 - `sequential_cpu_offload`: Each layer of the model is moved to the CPU after use. It is slower but saves a significant amount of GPU memory.
+- `model_group_offload`: Weights are transferred between the CPU and GPU at the leaf level, with streams used for asynchronous prefetching, balancing speed and GPU memory.
+- `text_encoder_offload`: Only the text encoder is kept on the CPU and streamed to the GPU module by module for a single encoding pass, while the transformer and VAE stay resident on the GPU. Text encoding runs only once at the beginning of each request, so the transfer cost is paid once instead of at every step. An `_and_qfloat8` suffix can be added.
+- `model_full_load_and_qfloat8`: The model stays resident on the GPU and only the transformer is quantized to float8. A good choice when GPU memory is borderline but higher speed is required.
 
 `qfloat8` may slightly reduce model performance but saves more GPU memory. If you have sufficient GPU memory, it is recommended to use `model_cpu_offload`.
 

@@ -186,14 +186,16 @@ LPIPS and DINOv2 weights are loaded separately by the loss implementation.
 
 **Wan2.2 TI2V-5B / Fun-2.2VAE (taew2_2_super) Example**:
 
-The launcher uses a 720x1280 canvas, 25 training frames, 81 validation frames,
-10,000 updates, and EMA. Set the GPU/process count with `accelerate config`;
-four GPUs with batch size 1 and accumulation 1 give an effective batch of 4.
+The launcher uses a 720x1280 canvas, 25 training frames, and EMA, with no
+`--max_train_steps`: training runs for `--num_train_epochs` (100 by default)
+epochs until you kill the processes. Set the GPU/process count with
+`accelerate config`; four GPUs with batch size 1 and accumulation 1 give an
+effective batch of 4.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
-export DATASET_NAME="${DATASET_NAME:-datasets/X-Fun-Videos-Demo}"
-export DATASET_META_NAME="${DATASET_META_NAME:-$DATASET_NAME/metadata_add_width_height.json}"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export TAE_PATH="models/Diffusion_Transformer/taew2_2_super.pth"
 NCCL_DEBUG=INFO
 
@@ -206,18 +208,23 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_strides 1 2 3 \
   --video_sample_n_frames=25 \
-  --validation_n_frames=81 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
-  --max_train_steps=10000 \
   --checkpointing_steps=1000 \
-  --validation_steps=1000 \
-  --validation_max_samples=0 \
   --learning_rate=5e-06 \
   --lr_scheduler="cosine" \
   --lr_warmup_steps=200 \
   --lr_min_ratio=0.2 \
+  --seed=42 \
+  --output_dir="output_dir_taehv_w2.2_super" \
+  --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
+  --adam_weight_decay=1e-2 \
+  --adam_epsilon=1e-08 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=1.0 \
   --l1_loss_weight=0.1 \
   --lpips_loss_weight=0.1 \
   --dino_loss_weight=0.02 \
@@ -227,16 +234,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --use_ema \
   --ema_decay=0.999 \
   --selection_lpips_ratio=1.02 \
-  --selection_grid_ratio=1.05 \
-  --seed=42 \
-  --output_dir="output_dir_taehv_w2.2_super" \
-  --mixed_precision="bf16" \
-  --adam_beta1=0.9 \
-  --adam_beta2=0.99 \
-  --adam_weight_decay=1e-2 \
-  --adam_epsilon=1e-08 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=1.0
+  --selection_grid_ratio=1.05
 ```
 
 These settings are also provided in `scripts/taehv/train_taehv_super.sh`. Edit its
@@ -253,10 +251,9 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_n_frames=25 \
   --video_sample_strides 1 2 3 \
-  --max_train_steps=10000 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super_scratch"
 ```
 
@@ -271,19 +268,20 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_dir="$DATASET_NAME" \
   --train_data_meta="$DATASET_META_NAME" \
   --fix_sample_size 720 1280 --video_sample_n_frames=25 \
-  --video_sample_strides 1 2 3 --max_train_steps=10000 \
+  --video_sample_strides 1 2 3 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super" \
   --resume_from_checkpoint=latest
 ```
 
-Restore with the same settings used to create the checkpoint, including validation
-metadata when supplied. `--max_train_steps` is the total update budget. Keep the
-original schedule horizon. The checkpoint restores optimizer, scheduler, EMA, RNG,
-step and batch cursor; changing workers or sampling settings can change the resumed
-sample sequence. Use a new output directory for a new run.
+Restore with the same settings used to create the checkpoint. Without
+`--max_train_steps`, the schedule horizon derives from `--num_train_epochs`;
+keep the original value when resuming. The checkpoint restores optimizer,
+scheduler, EMA, RNG, step and batch cursor; changing workers or sampling
+settings can change the resumed sample sequence. Use a new output directory
+for a new run.
 
 ### 3.3 Training Parameter Reference
 
@@ -302,7 +300,7 @@ Values below describe the launcher configuration; they are not all Python CLI de
 | `--train_batch_size` / `--gradient_accumulation_steps` | Batch per device / gradient accumulation | 1 / 1 |
 | `--vae_mini_batch` | Official VAE encoding mini-batch size | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
-| `--max_train_steps` | Total optimizer updates; overrides `--num_train_epochs` | 10000 |
+| `--num_train_epochs` | Epoch budget used when `--max_train_steps` is not set | 100 |
 | `--checkpointing_steps` / `--checkpoints_total_limit` | Save interval / checkpoint count limit | 1000 / `None` |
 | `--learning_rate` / `--lr_scheduler` | Peak learning rate / scheduler | `5e-6` / `cosine` |
 | `--lr_warmup_steps` / `--lr_min_ratio` | Warmup updates / final-to-peak ratio for cosine decay | 200 / 0.2 |
@@ -317,8 +315,8 @@ Values below describe the launcher configuration; they are not all Python CLI de
 **Sample Size Configuration Guide**:
 
 - `--fix_sample_size 720 1280` resizes to cover the canvas and center crops while preserving aspect ratio. Without it, `--video_sample_size` selects a square canvas.
-- A 25-frame clip at stride 3 needs at least 73 source frames; 81-frame validation needs at least 81. Short inputs shorten the batch to the shortest 4k+1 clip length, recorded as `frames` in the training log.
-- Training uses random temporal starts. Validation starts at frame 0 with stride 1. Data loading retains the original random replacement/retry behavior on decode failures.
+- A 25-frame clip at stride 3 needs at least 73 source frames. Short inputs shorten the batch to the shortest 4k+1 clip length, recorded as `frames` in the training log.
+- Training uses random temporal starts. Data loading retains the original random replacement/retry behavior on decode failures.
 
 **Loss Configuration Guide**:
 
@@ -328,9 +326,10 @@ Values below describe the launcher configuration; they are not all Python CLI de
 
 ### 3.4 Training Validation
 
-Provide a separate JSON array through `--validation_data_meta` in the training
-command, or add that argument to the launcher. Relative video paths resolve under
-`--train_data_dir`, so use absolute video paths when validation data has another root.
+Validation is optional and disabled in the default launcher. To enable it, add
+`--validation_data_meta` (plus the related validation arguments) to the training
+command. Relative video paths resolve under `--train_data_dir`, so use absolute
+video paths when validation data has another root.
 
 | Parameter | Description | Recommended Value |
 |-----------|-------------|-------------------|
@@ -359,7 +358,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --validation_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --fix_sample_size 64 96 --video_sample_n_frames=5 --validation_n_frames=5 \
-  --video_sample_strides 1 --max_train_steps=2 --lr_warmup_steps=0 \
+  --video_sample_strides 1 --num_train_epochs=1 --lr_warmup_steps=0 \
   --checkpointing_steps=1 --validation_steps=1 --validation_max_samples=1 \
   --dataloader_num_workers=0 --use_ema --ema_decay=0.999 \
   --output_dir="output_dir_taehv_w2.2_super_smoke"
