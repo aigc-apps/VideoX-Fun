@@ -666,7 +666,7 @@ If you use VideoX-Fun in your research or project, please cite it as follows:
 We encourage responsible use and recommend implementing safeguards in production environments.
 
 # VIII. License
-This project is licensed under the [Apache License (Version 2.0)](https://github.com/modelscope/modelscope/blob/master/LICENSE).
+This project is licensed under the [Apache License (Version 2.0)](./LICENSE).
 
 The CogVideoX-2B model (including its corresponding Transformers module and VAE module) is released under the [Apache 2.0 License](LICENSE).
 
