@@ -87,6 +87,7 @@ def shard_model(
     cast_dtype=True,
     ignored_modules=None,
     offload_to_cpu=False,
+    use_orig_params=None,
 ):  
     """
     Wraps the model with FSDP using the specified configuration.
@@ -107,6 +108,10 @@ def shard_model(
         ignored_modules: Modules excluded from FSDP (kept replicated in their own dtype via ignored_states).
             Use for modules a mixed-precision checkpoint pins to float32: casting them into the shard dtype
             makes AdaLN/output-head rounding accumulate coherently over the denoising trajectory (flicker).
+        use_orig_params: Preserve original parameters inside their modules when FSDP shards them.
+            When None, enable this for Qwen2.5-VL and Qwen3-VL models, whose vision towers inspect
+            their own parameters during forward, and keep it disabled for other models. Explicit
+            True/False overrides this.
         offload_to_cpu: When True, wrap with FSDP's native `CPUOffload(offload_params=True)` so each rank keeps
             its parameter shard in CPU RAM and streams it back to the GPU only around the wrapped module's
             forward. This is the offload path that is compatible with sequence-parallel multi-GPU inference
@@ -117,6 +122,18 @@ def shard_model(
     Returns:
         The FSDP-wrapped model.
     """
+    if use_orig_params is None:
+        # Qwen-VL queries visual.dtype before calling its vision tower; FSDP flattening otherwise
+        # removes the parameters that Transformers uses to infer the dtype. Callers wrap either the
+        # inner multimodal model or the conditional-generation wrapper, depending on the pipeline.
+        qwen_vl_classes = {
+            ("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl", "Qwen2_5_VLModel"),
+            ("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl", "Qwen2_5_VLForConditionalGeneration"),
+            ("transformers.models.qwen3_vl.modeling_qwen3_vl", "Qwen3VLModel"),
+            ("transformers.models.qwen3_vl.modeling_qwen3_vl", "Qwen3VLForConditionalGeneration"),
+        }
+        use_orig_params = any((cls.__module__, cls.__name__) in qwen_vl_classes for cls in type(model).__mro__)
+
     if transformer_layer_cls_to_wrap is not None:
         # Create policy based strictly on transformer layer classes
         auto_wrap_policy = create_transformer_auto_wrap_policy(
@@ -172,7 +189,8 @@ def shard_model(
         sync_module_states=sync_module_states,
         cpu_offload=cpu_offload,
         limit_all_gathers=offload_to_cpu,
-        ignored_states=ignored_modules if ignored_modules else None)
+        ignored_states=ignored_modules if ignored_modules else None,
+        use_orig_params=use_orig_params)
 
     return model
 
