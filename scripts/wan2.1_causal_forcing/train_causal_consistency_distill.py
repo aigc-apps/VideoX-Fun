@@ -18,7 +18,6 @@ scripts/wan2.1_self_forcing/train_distill.py and Causal-Forcing
 # See the License for the specific language governing permissions and
 
 import argparse
-import dataclasses
 import gc
 import logging
 import math
@@ -69,7 +68,8 @@ from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                                WanTransformer3DModel,
                                WanTransformer3DModel_SelfForcing)
 from videox_fun.pipeline import WanSelfForcingPipeline
-from videox_fun.utils import (PauseAwareTqdm, build_trainable_optimizer_groups,
+from videox_fun.utils import (add_training_precision_args,
+                              PauseAwareTqdm, build_trainable_optimizer_groups,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision, create_optimizer,
                               initialize_training_seed,
@@ -335,10 +335,6 @@ def parse_args():
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument(
-        "--fsdp_reduce_fp32", action="store_true",
-        help="Reduce gradients in fp32 under FSDP mixed precision; parameter gathering stays in low precision.",
-    )
-    parser.add_argument(
         "--logging_dir",
         type=str,
         default="logs",
@@ -585,10 +581,7 @@ def parse_args():
         default=None,
         help="Optional path to a separate teacher (Stage 1 AR-diffusion) safetensors checkpoint. If unset, the teacher is initialised from the same weights as the generator."
     )
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
@@ -640,9 +633,6 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
-        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
-            fsdp_plugin.mixed_precision_policy = dataclasses.replace(fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32)
-            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:

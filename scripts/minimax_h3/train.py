@@ -81,7 +81,8 @@ from videox_fun.pipeline.pipeline_minimax_h3 import (
     keyframe_condition_noise, normalize_ref2va_references,
     patchify_video_latents, prepare_keyframe_image, ref2va_condition_rows,
     video_latent_num_frames)
-from videox_fun.utils import (FSDPEMA, MiniMaxH3Scheduler, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, MiniMaxH3Scheduler, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision, create_optimizer,
@@ -843,10 +844,7 @@ def parse_args():
         help="Run validation every X epochs.",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

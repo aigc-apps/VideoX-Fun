@@ -72,7 +72,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -806,10 +807,7 @@ def parse_args():
              "term re-noised at tau_CA cleaner than the generator's current step and a Distribution "
              "Matching term re-noised over the full noise range (Decoupled-Hybrid schedule).",
     )
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

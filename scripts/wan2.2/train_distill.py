@@ -77,7 +77,8 @@ from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                WanT5EncoderModel)
 from videox_fun.pipeline import (Wan2_2I2VPipeline, Wan2_2Pipeline,
                                  Wan2_2TI2VPipeline)
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -821,10 +822,7 @@ def parse_args():
         help="Switch on DFD from this global_step onward; earlier steps run plain DMD.",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

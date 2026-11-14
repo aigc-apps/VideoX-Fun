@@ -180,7 +180,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_dmd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -275,7 +275,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 
 ### 5.4 可选 One-Forcing GAN 与精度控制
 
-这些选项复用 `scripts/wan2.1_self_forcing/train_distill.py` 中的 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 机制。GAN/R1/R2 权重默认均为 **0**，两个精度开关在 argparse 中默认均**关闭**。AR diffusion、CCD 和 DMD 的 launcher 均启用 `--fsdp_reduce_fp32`；GAN/R1/R2 仍关闭，DMD 的 launcher 额外启用 `--score_timestep_clamp`。AR diffusion 和 CCD 不添加 GAN 损失。
+这些选项复用 `scripts/wan2.1_self_forcing/train_distill.py` 中的 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 机制。GAN/R1/R2 权重默认均为 **0**，`--gradient_reduce_dtype` 默认是 `auto`，`--score_timestep_clamp` 默认**关闭**。AR diffusion、CCD 和 DMD 的 launcher 均启用 `--gradient_reduce_dtype fp32`；GAN/R1/R2 仍关闭，DMD 的 launcher 额外启用 `--score_timestep_clamp`。AR diffusion 和 CCD 不添加 GAN 损失。
 
 判别器共享 **fake-score backbone**，每个选定特征层对应一个可学习 register token。判别器头由 critic optimizer 更新，不加入 generator optimizer。生成器损失为 `DMD + 加权 GAN`，critic 损失为 `denoising + 加权 GAN + R1 + R2`。
 
@@ -291,7 +291,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_dmd.sh
 | `--r1_sigma` | R1 扰动标准差 | `0.01` |
 | `--r2_weight` | 噪声生成 latent 上的归一化有限差分正则权重 | `0.0` |
 | `--r2_sigma` | R2 扰动标准差 | `0.01` |
-| `--fsdp_reduce_fp32` | FSDP 使用 FP32 梯度归约，参数仍以低精度聚合 | 关闭（launcher 已启用） |
+| `--gradient_reduce_dtype` | 梯度通信精度：`auto` 沿用后端配置，`fp32` 使用 FP32 规约；不改变前向、主权重或梯度累积精度 | `auto`（启动脚本使用 `fp32`） |
 | `--score_timestep_clamp` | 将 DMD、生成器 GAN 和 critic 时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关闭（DMD launcher 已启用） |
 
 设 logits 为 `D_fake` 和 `D_real`，普通 GAN 的生成器损失为 `softplus(-D_fake)`，判别器损失为 `softplus(-D_real) + softplus(D_fake)`。相对论模式分别使用 `softplus(-(D_fake - D_real))` 和 `softplus(-(D_real - D_fake))`。
@@ -304,7 +304,7 @@ R1 保持源实现的 APT 形式：`r1_weight * mean((D_real_perturbed - D_real)
 - 特征层索引必须存在。默认 `21 29` 与 `12` 个头适用于 Wan2.1-T2V-1.3B，其他 backbone 可能需要调整。
 - 仅开启 `gan_g_weight` 不会提供判别器的分类学习目标。须明确选择判别器权重，非零权重不保证质量提升。
 
-可训练 fake-score 与判别器头的 master weights 保持 **FP32**，前向按配置使用 autocast/FSDP 混合精度。Logits、softplus 损失及有限差分归约使用 FP32。`--fsdp_reduce_fp32` 只改变梯度通信精度，不改变前向 dtype 或模型结构。时间步 clamp 只作用于 score 训练，不改变生成器 rollout 或 validation schedule。
+可训练 fake-score 与判别器头的 master weights 保持 **FP32**，前向按配置使用 autocast/FSDP 混合精度。Logits、softplus 损失及有限差分归约使用 FP32。`--gradient_reduce_dtype fp32` 只改变梯度通信精度，不改变前向 dtype 或模型结构。时间步 clamp 只作用于 score 训练，不改变生成器 rollout 或 validation schedule。
 
 恢复 GAN checkpoint 时应使用相同的 GAN/判别器头配置。判别器头随 fake-score 保存，包括 FP32 判别器头张量，并在加载前重建。导出的 generator 不包含该头，推理无需判别器或新增 GAN 参数。
 

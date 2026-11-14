@@ -33,7 +33,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \

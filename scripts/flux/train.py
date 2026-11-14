@@ -76,7 +76,8 @@ from videox_fun.models import (AutoencoderKL, AutoencoderKLWan,
                                Qwen2Tokenizer, QwenImageTransformer2DModel,
                                T5EncoderModel, T5TokenizerFast)
 from videox_fun.pipeline import FluxPipeline
-from videox_fun.utils import (FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision, create_optimizer,
@@ -693,10 +694,7 @@ def parse_args():
         help="the FLUX.1 dev variant is a guidance distilled model",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

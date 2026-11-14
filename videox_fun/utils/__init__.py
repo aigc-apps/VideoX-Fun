@@ -51,7 +51,8 @@ from .perf_metrics import install_training as install_perf_training
 from .perf_metrics import instrument_pipeline
 from .sd3_sde_with_logprob import sde_step_with_logprob
 from .tqdm_bar import PauseAwareTqdm
-from .training_utils import (apply_trainable_module_learning_rates,
+from .training_utils import (add_training_precision_args,
+                             apply_trainable_module_learning_rates,
                              build_trainable_optimizer_groups,
                              configure_gradient_checkpointing_save_on_cpu,
                              configure_training_precision, create_optimizer,

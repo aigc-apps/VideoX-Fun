@@ -82,7 +82,8 @@ from videox_fun.models import (AutoencoderKLQwenImage,
 from videox_fun.pipeline import LingBotVideoI2VPipeline
 from videox_fun.pipeline.pipeline_lingbot_video_i2v import (SPATIAL_MERGE_SIZE,
                                                             smart_resize)
-from videox_fun.utils import (FSDPEMA, DiscreteSampling,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling,
                               FlowUniPCMultistepScheduler, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
@@ -599,10 +600,7 @@ def parse_args():
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

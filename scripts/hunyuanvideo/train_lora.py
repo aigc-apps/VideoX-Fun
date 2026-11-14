@@ -74,7 +74,8 @@ from videox_fun.models import (AutoencoderKLHunyuanVideo, CLIPImageProcessor,
                                LlamaTokenizerFast,
                                LlavaForConditionalGeneration)
 from videox_fun.pipeline import HunyuanVideoPipeline
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision,
                               convert_peft_lora_to_kohya_lora, create_network,
@@ -789,10 +790,7 @@ def parse_args():
         help="the hunyuan variant is a guidance distilled model",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

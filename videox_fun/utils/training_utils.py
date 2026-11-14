@@ -2081,15 +2081,182 @@ def create_optimizer(parameters, args, *, learning_rate=None):
 # Training precision and trainable-state handling.
 
 _full_bf16 = False
+_gradient_reduce_dtype = "auto"
 _fsdp2_precision_lock = threading.RLock()
 
 
+def add_training_precision_args(parser):
+    """Register the shared training and gradient communication precision options."""
+    parser.add_argument(
+        "--full_bf16", action="store_true",
+        help="Train with BF16 model parameters and optimizer state where supported.",
+    )
+    parser.add_argument(
+        "--gradient_reduce_dtype", choices=("auto", "fp32"), default="auto",
+        help="Gradient communication dtype: backend default (auto) or FP32.",
+    )
+
+
 def configure_training_precision(args):
-    """Apply the explicit training precision choice before Accelerator creation."""
-    global _full_bf16
+    """Apply precision choices before Accelerator and distributed model creation."""
+    global _full_bf16, _gradient_reduce_dtype
     _full_bf16 = bool(getattr(args, "full_bf16", False))
+    _gradient_reduce_dtype = getattr(args, "gradient_reduce_dtype", "auto")
+    if _gradient_reduce_dtype not in ("auto", "fp32"):
+        raise ValueError("--gradient_reduce_dtype must be auto or fp32.")
     if _full_bf16:
         args.mixed_precision = "bf16"
+
+
+def configure_gradient_reduction(accelerator):
+    """Configure FSDP or DeepSpeed before they wrap models and optimizers."""
+    if _gradient_reduce_dtype == "auto":
+        return
+    mode = getattr(accelerator.distributed_type, "name", "")
+    if mode == "FSDP":
+        from dataclasses import is_dataclass, replace
+
+        plugin = getattr(accelerator.state, "fsdp_plugin", None)
+        if plugin is None:
+            raise RuntimeError("FP32 gradient communication requires an FSDP plugin.")
+        policy = plugin.mixed_precision_policy
+        if policy is None:
+            if getattr(plugin, "fsdp_version", 1) == 2:
+                try:
+                    from torch.distributed.fsdp import MixedPrecisionPolicy
+                except ImportError as exc:
+                    raise RuntimeError("This PyTorch version cannot configure FSDP2 gradient precision.") from exc
+                policy = MixedPrecisionPolicy(reduce_dtype=torch.float32)
+            else:
+                from torch.distributed.fsdp import MixedPrecision
+                policy = MixedPrecision(reduce_dtype=torch.float32)
+        elif isinstance(policy, dict):
+            policy = dict(policy, reduce_dtype=torch.float32)
+        elif is_dataclass(policy):
+            policy = replace(policy, reduce_dtype=torch.float32)
+        else:
+            raise RuntimeError("Unsupported FSDP mixed precision policy for FP32 gradient communication.")
+        plugin.mixed_precision_policy = policy
+    elif mode == "DEEPSPEED":
+        plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+        config = getattr(plugin, "deepspeed_config", None)
+        if not isinstance(config, dict):
+            raise RuntimeError("FP32 gradient communication requires a mutable DeepSpeed configuration.")
+        zero = config.get("zero_optimization", {})
+        if isinstance(zero, dict) and zero.get("zero_quantized_gradients", False):
+            raise RuntimeError("FP32 gradient communication is incompatible with DeepSpeed quantized gradients.")
+        autocast_config = config.get("torch_autocast", {})
+        if isinstance(autocast_config, dict) and autocast_config.get("enabled", False):
+            raise RuntimeError("FP32 gradient communication is not validated with DeepSpeed torch_autocast.")
+        # DeepSpeed can replace communication_data_type with its sequence-parallel
+        # setting during engine initialization. Override an explicit setting too,
+        # otherwise FP32 would silently stop applying when that mode is enabled.
+        for key in ("communication_data_type", "seq_parallel_communication_data_type"):
+            if key == "seq_parallel_communication_data_type" and key not in config:
+                continue
+            previous = config.get(key)
+            if previous is not None and str(previous).lower() not in ("fp32", "torch.float32"):
+                accelerator.print(f"Overriding DeepSpeed {key}={previous} with fp32.")
+            config[key] = "fp32"
+    elif mode != "NO" and not mode.startswith("MULTI_"):
+        raise RuntimeError(f"FP32 gradient communication is not supported for {mode or 'this backend'}.")
+    if mode != "NO" and not accelerator.__dict__.get("videox_gradient_reduce_reported", False):
+        accelerator.print(f"Gradient communication dtype: fp32 ({mode}).")
+        accelerator.__dict__["videox_gradient_reduce_reported"] = True
+
+
+def validate_deepspeed_gradient_reduction(accelerator, result):
+    """Check the final engine setting after DeepSpeed applies its own overrides."""
+    if _gradient_reduce_dtype != "fp32" or getattr(accelerator.distributed_type, "name", "") != "DEEPSPEED":
+        return
+    from deepspeed import DeepSpeedEngine
+
+    objects = result if isinstance(result, (tuple, list)) else (result,)
+    for obj in objects:
+        engine = getattr(obj, "_orig_mod", obj)
+        if not isinstance(engine, DeepSpeedEngine):
+            continue
+        dtype = getattr(engine, "communication_data_type", None)
+        optimizer_dtype = getattr(engine.optimizer, "communication_data_type", dtype)
+        if dtype != torch.float32 or optimizer_dtype != torch.float32:
+            raise RuntimeError(
+                "DeepSpeed changed FP32 gradient communication during engine initialization "
+                f"(engine={dtype}, optimizer={optimizer_dtype}). Check its parallel configuration."
+            )
+
+
+def validate_fsdp_gradient_reduction(accelerator, result):
+    """Reject FSDP1 child wrappers that override the requested reduce dtype."""
+    if _gradient_reduce_dtype != "fp32" or getattr(accelerator.distributed_type, "name", "") != "FSDP":
+        return
+    plugin = getattr(accelerator.state, "fsdp_plugin", None)
+    if getattr(plugin, "fsdp_version", 1) != 1:
+        return
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    objects = result if isinstance(result, (tuple, list)) else (result,)
+    for obj in objects:
+        if not isinstance(obj, torch.nn.Module):
+            continue
+        for name, module in obj.named_modules():
+            if not isinstance(module, FSDP):
+                continue
+            handle = getattr(module, "_handle", None)
+            flat_param = getattr(handle, "flat_param", None)
+            if flat_param is None or not flat_param.requires_grad:
+                continue
+            policy = module.mixed_precision
+            reduce_dtype = policy.reduce_dtype or policy.param_dtype or flat_param.dtype
+            if reduce_dtype != torch.float32:
+                raise RuntimeError(
+                    f"FSDP module {name or '<root>'} overrides FP32 gradient communication "
+                    f"with {reduce_dtype}. Check the auto-wrap policy and low-precision "
+                    "parameters in modules excluded from mixed precision (such as BatchNorm)."
+                )
+
+
+def configure_ddp_gradient_reduction(accelerator, result):
+    """Use an FP32 all-reduce for low-precision DDP buckets without changing grads."""
+    if _gradient_reduce_dtype != "fp32" or not getattr(accelerator.distributed_type, "name", "").startswith("MULTI_"):
+        return
+    from torch.nn.parallel import DistributedDataParallel
+
+    objects = result if isinstance(result, (tuple, list)) else (result,)
+    for obj in objects:
+        model = getattr(obj, "_orig_mod", obj)
+        if not isinstance(model, DistributedDataParallel):
+            continue
+        if getattr(model, "_videox_fp32_gradient_reduction", False):
+            continue
+        if getattr(model, "mixed_precision", None) is not None:
+            raise RuntimeError("FP32 gradient communication is not validated with DDP native mixed_precision.")
+        hooks = getattr(model, "_comm_hooks", ())
+        logging_data = model._get_ddp_logging_data() if hasattr(model, "_get_ddp_logging_data") else {}
+        if hooks or logging_data.get("comm_hook"):
+            raise RuntimeError("FP32 gradient communication cannot replace an existing DDP communication hook.")
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        if any(p.dtype not in (torch.float16, torch.bfloat16, torch.float32) for p in trainable):
+            raise RuntimeError("FP32 gradient communication does not support non-FP16/BF16/FP32 DDP parameters.")
+        if any(p.dtype in (torch.float16, torch.bfloat16) for p in trainable):
+            group = model.process_group
+
+            def fp32_allreduce(process_group, bucket):
+                tensor = bucket.buffer()
+                reduced = tensor if tensor.dtype == torch.float32 else tensor.float()
+                reduced.div_(dist.get_world_size(process_group))
+                future = dist.all_reduce(reduced, group=process_group, async_op=True).get_future()
+
+                def finish(value):
+                    averaged = value.value()[0]
+                    return averaged if averaged.dtype == tensor.dtype else averaged.to(dtype=tensor.dtype)
+
+                return future.then(finish)
+
+            try:
+                model.register_comm_hook(group, fp32_allreduce)
+            except RuntimeError as exc:
+                raise RuntimeError("Cannot register FP32 DDP communication: another hook may already be installed.") from exc
+        model._videox_fp32_gradient_reduction = True
 
 
 def prepare_full_bf16(accelerator, args):
@@ -2554,6 +2721,7 @@ def install_training_precision():
         configure_fsdp1_optimizer_identity(accelerator, args)
         if not _full_bf16:
             configure_declared_fsdp_precision(accelerator, args)
+        configure_gradient_reduction(accelerator)
         plugin = getattr(accelerator.state, "fsdp_plugin", None)
         fsdp2 = getattr(accelerator.distributed_type, "name", "") == "FSDP" and getattr(plugin, "fsdp_version", 1) == 2
         if _full_bf16 and fsdp2:
@@ -2581,6 +2749,9 @@ def install_training_precision():
                 raise RuntimeError("--full_bf16 could not preserve BF16 model parameters on this runtime.")
         elif enabled:
             promote_fsdp1_flat_parameters(accelerator, result)
+        validate_deepspeed_gradient_reduction(accelerator, result)
+        validate_fsdp_gradient_reduction(accelerator, result)
+        configure_ddp_gradient_reduction(accelerator, result)
         return result
 
     current_save, current_load = Accelerator.save_state, Accelerator.load_state

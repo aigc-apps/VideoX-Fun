@@ -214,7 +214,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -268,7 +268,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--adam_epsilon` | AdamW epsilon 值 | 1e-10 |
 | `--vae_mini_batch` | VAE 编码时的迷你批次大小 | 1 |
 | `--max_grad_norm` | 梯度裁剪阈值 | 10.0 |
-| `--fsdp_reduce_fp32` | 可选：FSDP 混精下梯度以 fp32 做跨卡 reduce（默认 bf16） | - |
+| `--gradient_reduce_dtype` | 梯度通信精度：`auto` 沿用后端配置，`fp32` 使用 FP32 规约；不改变前向、主权重或梯度累积精度 | `auto`（启动脚本使用 `fp32`） |
 | `--enable_bucket` | 启用分桶训练，不裁剪图片/视频，按分辨率分组训练 | - |
 | `--random_hw_adapt` | 自动缩放图片/视频到 `[min_size, max_size]` 范围内的随机尺寸 | - |
 | `--training_with_video_token_length` | 根据 token 长度训练，支持任意分辨率 | - |
@@ -409,7 +409,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -478,7 +478,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -539,7 +539,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -610,7 +610,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \

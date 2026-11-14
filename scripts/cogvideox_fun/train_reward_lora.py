@@ -67,7 +67,8 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
 from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     CogVideoXFunInpaintPipeline, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
-from videox_fun.utils import (PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              PauseAwareTqdm,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision, create_network,
                               create_optimizer, get_image_to_video_latent,
@@ -764,10 +765,7 @@ def parse_args():
         help="The number of steps for backprop. Only used when `backprop_strategy` is tail/uniform/random."
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

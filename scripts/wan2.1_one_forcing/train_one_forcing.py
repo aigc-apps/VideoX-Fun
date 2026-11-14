@@ -17,7 +17,6 @@
 
 import argparse
 import contextlib
-import dataclasses
 import gc
 import json
 import logging
@@ -79,7 +78,8 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                add_wan_gan_discriminator)
 from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
                                  WanSelfForcingPipeline)
-from videox_fun.utils import (FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -537,10 +537,6 @@ def parse_args():
         help="FSDPEMA shadow decay per step (FSDP path); lower values track the live generator faster over a short run.",
     )
     parser.add_argument(
-        "--fsdp_reduce_fp32", action="store_true",
-        help="Reduce gradients in fp32 under FSDP mixed precision; parameter gathering stays in low precision.",
-    )
-    parser.add_argument(
         "--score_timestep_clamp", action="store_true",
         help="Clamp DMD, GAN and critic timesteps to [0.02, 0.98] * num_train_timesteps.",
     )
@@ -943,10 +939,7 @@ def parse_args():
         help="Perturbation standard deviation for the R2 penalty.",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
@@ -1021,9 +1014,6 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
-        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
-            fsdp_plugin.mixed_precision_policy = dataclasses.replace(fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32)
-            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:

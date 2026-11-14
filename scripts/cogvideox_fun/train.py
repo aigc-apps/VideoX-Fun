@@ -71,7 +71,8 @@ from videox_fun.pipeline import (CogVideoXFunControlPipeline,
 from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
-from videox_fun.utils import (FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -701,10 +702,7 @@ def parse_args():
         ),
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

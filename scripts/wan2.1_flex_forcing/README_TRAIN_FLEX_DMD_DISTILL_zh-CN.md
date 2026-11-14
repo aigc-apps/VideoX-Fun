@@ -186,7 +186,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -349,7 +349,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -424,7 +424,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -496,7 +496,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_flex_forcing/train_dis
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -574,7 +574,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -626,7 +626,7 @@ export RANK=1
 
 ### 3.8 可选的 One-Forcing GAN、EMA 与精度开关
 
-这些开关把 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 的机制（因果 forcing 的 DMD trainer 已在用）移植过来。所有 GAN/R1/R2 权重默认是 **0**，launcher 中也保持关闭；`--use_ema`、`--fsdp_reduce_fp32` 与 `--score_timestep_clamp` 在 argparse 中默认**关闭**，但 `train_distill.sh` 把三者都打开了；**3.6.1** 的 DeepSpeed Zero-3 命令则去掉了 Zero-3 不支持的 `--use_ema`。
+这些开关把 [One-Forcing](https://github.com/Aurora-edu/One-Forcing) 的机制（因果 forcing 的 DMD trainer 已在用）移植过来。所有 GAN/R1/R2 权重默认是 **0**，launcher 中也保持关闭；`--use_ema` 和 `--score_timestep_clamp` 默认**关闭**，`--gradient_reduce_dtype` 默认是 `auto`；`train_distill.sh` 打开前两个开关并选择 `fp32`；**3.6.1** 的 DeepSpeed Zero-3 命令则去掉了 Zero-3 不支持的 `--use_ema`。
 
 判别器与 **fake-score 骨干共享**，每个被选中的特征层有一个可学习的 register token。判别器头由 critic 优化器优化，而不是生成器优化器。生成器损失为 `DMD + 加权 GAN`；critic 损失为 `去噪 + 加权 GAN + R1 + R2`。
 
@@ -643,7 +643,7 @@ export RANK=1
 | `--r1_sigma` | R1 扰动标准差 | `0.01` |
 | `--r2_weight` | 对含噪生成 latent 的归一化有限差分惩罚 | `0.0` |
 | `--r2_sigma` | R2 扰动标准差 | `0.01` |
-| `--fsdp_reduce_fp32` | FSDP 梯度归约用 FP32；参数收集保持低精度 | 关（launcher 已启用） |
+| `--gradient_reduce_dtype` | 梯度通信精度：`auto` 沿用后端配置，`fp32` 使用 FP32 规约；不改变前向、主权重或梯度累积精度 | `auto`（启动脚本使用 `fp32`） |
 | `--score_timestep_clamp` | 把 DMD、生成器 GAN 与 critic 的时间步限制到 `[0.02, 0.98] * num_train_timesteps` | 关（launcher 已启用） |
 
 对 logit `D_fake` 与 `D_real`，普通 GAN 损失是生成器 `softplus(-D_fake)`、判别器 `softplus(-D_real) + softplus(D_fake)`；相对论版本改用 `softplus(-(D_fake - D_real))` 与 `softplus(-(D_real - D_fake))`。
@@ -656,7 +656,7 @@ R1 沿用来源的 APT 形式：`r1_weight * mean((D_real_perturbed - D_real)^2)
 - 特征层索引必须对所选 fake-score 模型有效。默认的 `21 29` 层与 `12` head 适配 Wan2.1-T2V-1.3B；换骨干可能需要不同配置。
 - 只开 `gan_g_weight` 不会给判别器提供分类学习目标。请有意识地选择判别器权重；非零值不保证质量提升。
 
-可训练的 fake-score 与判别器头 master 权重保持 **FP32**，前向使用配置的 autocast/FSDP 精度。logit、softplus 损失与有限差分归约都在 FP32 下计算。`--fsdp_reduce_fp32` 只改梯度通信精度，不改前向 dtype 或模型结构。时间步 clamp 只改分数训练的时间步，不改生成器 rollout 或验证调度。
+可训练的 fake-score 与判别器头 master 权重保持 **FP32**，前向使用配置的 autocast/FSDP 精度。logit、softplus 损失与有限差分归约都在 FP32 下计算。`--gradient_reduce_dtype fp32` 只改梯度通信精度，不改前向 dtype 或模型结构。时间步 clamp 只改分数训练的时间步，不改生成器 rollout 或验证调度。
 
 恢复 GAN checkpoint 时请使用相同的 GAN/判别器头配置。判别器头随 fake-score 一起保存（含 FP32 的 head 张量），加载前重建。它不属于导出的生成器，因此推理不需要判别器或新的 GAN 旗标。
 

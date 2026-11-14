@@ -195,7 +195,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_one_forcing_framewise_1step" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.01 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -265,7 +265,7 @@ The GAN branch is validated at startup in `train_one_forcing.py`. It requires:
 - **`--video_sample_stride=1`**: with `stride=2`, an 81-frame source yields ~10 latent frames, which is below `score_num_frames=21` and aborts.
 - **Valid feature-layer indices** for the fake-score backbone. The defaults `21 29` (layers) and `12` (heads) fit Wan2.1-T2V-1.3B; the head count must divide the fake-score hidden dimension.
 
-Trainable fake-score and head master weights stay **FP32**; the forward pass uses the configured autocast/FSDP precision, and logits/softplus/finite-difference reductions are evaluated in FP32. `--fsdp_reduce_fp32` changes gradient-communication precision only.
+Trainable fake-score and head master weights stay **FP32**; the forward pass uses the configured autocast/FSDP precision, and logits/softplus/finite-difference reductions are evaluated in FP32. `--gradient_reduce_dtype fp32` changes gradient-communication precision only.
 
 ### 5.4 Optional Regularizers (Relativistic / R1 / R2)
 

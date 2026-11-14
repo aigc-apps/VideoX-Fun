@@ -186,7 +186,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -338,7 +338,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -419,7 +419,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -487,7 +487,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_flex_forcing/train_dis
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -564,7 +564,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --output_dir="output_dir_wan2.1_flex_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -624,7 +624,7 @@ NCCL_DEBUG=INFO
 
 ### 3.8 Optional One-Forcing GAN, EMA, and Precision Controls
 
-These options port the [One-Forcing](https://github.com/Aurora-edu/One-Forcing) mechanisms already used by the causal-forcing DMD trainer. All GAN/R1/R2 weights default to **0** and stay off in the launcher. `--use_ema`, `--fsdp_reduce_fp32` and `--score_timestep_clamp` default to **off** in argparse, but `train_distill.sh` enables all three; the DeepSpeed Zero-3 command in **3.6.1** drops `--use_ema`, which Zero-3 rejects.
+These options port the [One-Forcing](https://github.com/Aurora-edu/One-Forcing) mechanisms already used by the causal-forcing DMD trainer. All GAN/R1/R2 weights default to **0** and stay off in the launcher. `--use_ema` and `--score_timestep_clamp` default to **off**, while `--gradient_reduce_dtype` defaults to `auto`; `train_distill.sh` enables both flags and selects `fp32`; the DeepSpeed Zero-3 command in **3.6.1** drops `--use_ema`, which Zero-3 rejects.
 
 The discriminator shares the **fake-score backbone**, with one learnable register token per selected feature layer. Its head is optimized by the critic optimizer, not the generator optimizer. Generator loss is `DMD + weighted GAN`; critic loss is `denoising + weighted GAN + R1 + R2`.
 
@@ -641,7 +641,7 @@ The discriminator shares the **fake-score backbone**, with one learnable registe
 | `--r1_sigma` | R1 perturbation standard deviation | `0.01` |
 | `--r2_weight` | Normalized finite-difference penalty on noisy generated latents | `0.0` |
 | `--r2_sigma` | R2 perturbation standard deviation | `0.01` |
-| `--fsdp_reduce_fp32` | FSDP FP32 gradient reduction; parameter gathering stays low precision | off (enabled in `train_distill.sh`) |
+| `--gradient_reduce_dtype` | Gradient communication: `auto` uses the backend default; `fp32` reduces in FP32 without changing forward, master-weight or accumulation dtype | `auto` (launcher uses `fp32`) |
 | `--score_timestep_clamp` | Clamp DMD, generator GAN, and critic timesteps to `[0.02, 0.98] * num_train_timesteps` | off (enabled in `train_distill.sh`) |
 
 For logits `D_fake` and `D_real`, ordinary GAN losses are `softplus(-D_fake)` for the generator and `softplus(-D_real) + softplus(D_fake)` for the discriminator. Relativistic losses instead use `softplus(-(D_fake - D_real))` and `softplus(-(D_real - D_fake))`.
@@ -654,7 +654,7 @@ To enable GAN, pass positive generator/discriminator weights and, optionally, R1
 - Valid feature-layer indices for the selected fake-score model. The default `21 29` layers and `12` heads fit Wan2.1-T2V-1.3B; other backbones may need different settings.
 - Enabling only `gan_g_weight` does not supply a discriminator classification-learning objective. Choose the discriminator weight deliberately; nonzero values are not a guaranteed quality improvement.
 
-Trainable fake-score and head master weights stay **FP32**, while forward uses the configured autocast/FSDP precision. Logits, softplus losses, and finite-difference reductions are evaluated in FP32. `--fsdp_reduce_fp32` changes gradient communication precision, not the forward dtype or model architecture. The clamp changes score-training timesteps, not the generator rollout or validation schedule.
+Trainable fake-score and head master weights stay **FP32**, while forward uses the configured autocast/FSDP precision. Logits, softplus losses, and finite-difference reductions are evaluated in FP32. `--gradient_reduce_dtype fp32` changes gradient communication precision, not the forward dtype or model architecture. The clamp changes score-training timesteps, not the generator rollout or validation schedule.
 
 Resume GAN checkpoints with the same GAN/head configuration. The head is saved with fake-score, including FP32 head tensors, and is recreated before loading. It is not part of the exported generator, so inference needs no discriminator or new GAN flags.
 

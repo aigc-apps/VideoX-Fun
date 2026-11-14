@@ -79,7 +79,8 @@ from videox_fun.pipeline.pipeline_qwenimage_edit import (
     PREFERRED_QWENIMAGE_RESOLUTIONS, calculate_dimensions)
 from videox_fun.pipeline.pipeline_qwenimage_edit_plus import (
     CONDITION_IMAGE_SIZE, VAE_IMAGE_SIZE)
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision,
                               convert_peft_lora_to_kohya_lora, create_network,
@@ -630,10 +631,7 @@ def parse_args():
         help=("The module is trained in loras. "),
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

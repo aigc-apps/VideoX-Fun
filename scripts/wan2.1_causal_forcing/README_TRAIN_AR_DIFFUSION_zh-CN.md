@@ -172,7 +172,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ar_diffusion" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -212,7 +212,7 @@ bash scripts/wan2.1_causal_forcing/train_ar_diffusion.sh
 | `--output_dir` | 输出目录 | `output_dir_wan2.1_causal_forcing_ar_diffusion` |
 | `--gradient_checkpointing` | 启用激活重计算 | - |
 | `--mixed_precision` | `fp16` / `bf16` | `bf16` |
-| `--fsdp_reduce_fp32` | FSDP 混合精度下使用 FP32 梯度归约，前向与参数聚合仍保持低精度。CLI 默认关闭，launcher 已启用 | 启用 |
+| `--gradient_reduce_dtype` | 梯度通信精度：`auto` 沿用后端配置，`fp32` 使用 FP32 规约；不改变前向、主权重或梯度累积精度 | `auto`（启动脚本使用 `fp32`） |
 | `--adam_weight_decay` | AdamW 权重衰减 | 3e-2 |
 | `--adam_epsilon` | AdamW epsilon | 1e-10 |
 | `--max_grad_norm` | 梯度裁剪阈值 | 0.05 |

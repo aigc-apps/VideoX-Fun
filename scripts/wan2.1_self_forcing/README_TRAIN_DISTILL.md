@@ -213,7 +213,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -267,7 +267,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
 | `--adam_epsilon` | AdamW epsilon | 1e-10 |
 | `--vae_mini_batch` | VAE encoding mini-batch size | 1 |
 | `--max_grad_norm` | Gradient clipping threshold | 10.0 |
-| `--fsdp_reduce_fp32` | Optional: reduce gradients in fp32 under FSDP mixed precision (default reduces in bf16) | - |
+| `--gradient_reduce_dtype` | Gradient communication: `auto` uses the backend default; `fp32` reduces in FP32 without changing forward, master-weight or accumulation dtype | `auto` (launcher uses `fp32`) |
 | `--enable_bucket` | Enable bucket training, no cropping, group by resolution | - |
 | `--random_hw_adapt` | Auto-scale images/videos to random sizes in `[min_size, max_size]` range | - |
 | `--training_with_video_token_length` | Train based on token length, supports arbitrary resolutions | - |
@@ -408,7 +408,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -477,7 +477,7 @@ accelerate launch --zero_stage 3 --zero3_save_16bit_model true --zero3_init_flag
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -538,7 +538,7 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.1_self_forcing/train_dis
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -609,7 +609,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --output_dir="output_dir_wan2.1_self_forcing_distill" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \

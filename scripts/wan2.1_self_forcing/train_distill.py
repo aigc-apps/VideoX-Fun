@@ -17,7 +17,6 @@
 
 import argparse
 import contextlib
-import dataclasses
 import gc
 import json
 import logging
@@ -79,7 +78,8 @@ from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                add_wan_gan_discriminator)
 from videox_fun.pipeline import (WanI2VPipeline, WanPipeline,
                                  WanSelfForcingPipeline)
-from videox_fun.utils import (FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -557,9 +557,6 @@ def parse_args():
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-    parser.add_argument(
-        "--fsdp_reduce_fp32", action="store_true", help="Reduce gradients in fp32 under FSDP mixed precision (params are still gathered in low precision)."
-    )
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
@@ -952,10 +949,7 @@ def parse_args():
         help="Perturbation std of the R2 penalty."
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
@@ -1033,9 +1027,6 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
-        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
-            fsdp_plugin.mixed_precision_policy = dataclasses.replace(fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32)
-            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:

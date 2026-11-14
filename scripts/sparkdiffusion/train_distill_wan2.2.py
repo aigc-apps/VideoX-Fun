@@ -75,7 +75,8 @@ from videox_fun.models import (AutoencoderKLWan, SparkWan2_2Transformer3DModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import (Wan2_2I2VPipeline, Wan2_2Pipeline,
                                  WanI2VPipeline, WanPipeline)
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -999,10 +1000,7 @@ def parse_args():
         help="CFG scale for the PCM diversity teacher rollout (official teacher_guidance); "
              "independent of --real_guidance_scale.",
     )
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

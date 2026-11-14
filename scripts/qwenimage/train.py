@@ -73,7 +73,8 @@ from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.pipeline import QwenImagePipeline
-from videox_fun.utils import (FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
                               build_trainable_optimizer_groups,
                               configure_gradient_checkpointing_save_on_cpu,
                               configure_training_precision, create_optimizer,
@@ -608,10 +609,7 @@ def parse_args():
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     configure_training_precision(args)
     configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)

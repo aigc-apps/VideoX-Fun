@@ -194,7 +194,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_one_forcing_framewise_1step" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.01 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -264,7 +264,7 @@ GAN 分支在 `train_one_forcing.py` 启动时会被校验，要求：
 - **`--video_sample_stride=1`**：当 `stride=2` 时，81 帧源仅得到约 10 个 latent 帧，低于 `score_num_frames=21` 而中止。
 - fake-score backbone 上**有效的特征层索引**。默认 `21 29`（层）与 `12`（头）适用于 Wan2.1-T2V-1.3B；头数须整除 fake-score 隐藏维度。
 
-可训练的 fake-score 与判别器头 master weights 保持 **FP32**；前向按配置使用 autocast/FSDP 混合精度，logits/softplus/有限差分归约在 FP32 下计算。`--fsdp_reduce_fp32` 只改变梯度通信精度。
+可训练的 fake-score 与判别器头 master weights 保持 **FP32**；前向按配置使用 autocast/FSDP 混合精度，logits/softplus/有限差分归约在 FP32 下计算。`--gradient_reduce_dtype fp32` 只改变梯度通信精度。
 
 ### 5.4 可选正则（相对论 / R1 / R2）
 

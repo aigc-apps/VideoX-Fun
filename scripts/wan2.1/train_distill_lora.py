@@ -75,7 +75,8 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
 from videox_fun.models import (AutoencoderKLWan, CLIPModel, WanT5EncoderModel,
                                WanTransformer3DModel)
 from videox_fun.pipeline import WanI2VPipeline, WanPipeline
-from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+from videox_fun.utils import (add_training_precision_args,
+                              DiscreteSampling, PauseAwareTqdm,
                               apply_trainable_module_learning_rates,
                               calculate_dimensions,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -837,10 +838,7 @@ def parse_args():
         help=("The module is trained in loras. "),
     )
 
-    parser.add_argument(
-        "--full_bf16", action="store_true",
-        help="Train with BF16 model parameters and optimizer state where supported.",
-    )
+    add_training_precision_args(parser)
     args = parser.parse_args()
     parse_trainable_module_learning_rates(args, parser, preserve_unspecified_modules=True)
     configure_training_precision(args)
