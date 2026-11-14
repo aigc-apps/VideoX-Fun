@@ -553,7 +553,6 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
         self.audio_proj_out = nn.Linear(hidden_size, audio_in_channels, bias=True)
 
         self.gradient_checkpointing = False
-        self.gradient_checkpointing_save_on_cpu = False
         # Optional non-reentrant checkpoint `context_fn` for the main blocks; the streaming KV cache installs one so
         # backward recomputes see the cache view of the original forward.
         self.gradient_checkpointing_context_fn = None
@@ -761,25 +760,24 @@ class MiniMaxH3Transformer3DModel(MiniMaxH3MixedPrecisionLoaderMixin, ModelMixin
         vsa_segments = attention_kwargs.get("vsa_segments") if attention_kwargs else None
         block_kwargs = {"vsa_segments": vsa_segments} if vsa_segments is not None else {}
         for block in self.transformer_blocks:
-            with torch.autograd.graph.save_on_cpu() if self.gradient_checkpointing_save_on_cpu else nullcontext():
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    if self.gradient_checkpointing_context_fn is not None:
-                        ckpt_kwargs["context_fn"] = self.gradient_checkpointing_context_fn
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        block,
-                        hidden_states,
-                        temb,
-                        adaln_indices,
-                        rotary_emb,
-                        attention_mask,
-                        valid_length,
-                        **block_kwargs,
-                        **ckpt_kwargs,
-                    )
-                else:
-                    hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb, attention_mask,
-                                          valid_length, **block_kwargs)
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                if self.gradient_checkpointing_context_fn is not None:
+                    ckpt_kwargs["context_fn"] = self.gradient_checkpointing_context_fn
+                hidden_states = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden_states,
+                    temb,
+                    adaln_indices,
+                    rotary_emb,
+                    attention_mask,
+                    valid_length,
+                    **block_kwargs,
+                    **ckpt_kwargs,
+                )
+            else:
+                hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb, attention_mask,
+                                      valid_length, **block_kwargs)
 
         if self.sp_world_size > 1:
             hidden_states = self.all_gather(hidden_states.contiguous(), dim=1)[:, :sequence_length]

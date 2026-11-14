@@ -13,7 +13,7 @@ from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
-from torch.utils.checkpoint import checkpoint as torch_checkpoint
+import torch.utils.checkpoint
 
 CACHE_T = 2
 
@@ -641,7 +641,7 @@ class AutoencoderKLWan_(nn.Module):
         for i in range(iter_):
             frame = x[:, :, i:i + 1, :, :]
             if use_ckpt:
-                out_, feat_map = torch_checkpoint(
+                out_, feat_map = torch.utils.checkpoint.checkpoint(
                     self._decode_frame, frame, feat_map,
                     use_reentrant=False)
             else:
@@ -677,7 +677,7 @@ class AutoencoderKLWan_(nn.Module):
         for i in range(iter_):
             frame = x[:, :, i:i + 1, :, :]
             if use_ckpt:
-                out_, feat_map = torch_checkpoint(
+                out_, feat_map = torch.utils.checkpoint.checkpoint(
                     self._decode_frame, frame, feat_map,
                     use_reentrant=False)
             else:

@@ -666,8 +666,10 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (decoded,)
         return DecoderOutput(sample=decoded)
 
-    def forward(self, z: torch.Tensor, return_dict: bool = True):
-        # Use forward so decoder training runs through DDP hooks.
+    def forward(self, z: torch.Tensor, return_dict: bool = True, *, return_latents: bool = False):
+        if return_latents:
+            latents = self.encode(z).latent_dist.mode()
+            return latents, self.decode(latents, return_dict=return_dict)
         return self.decode(z, return_dict=return_dict)
 
     @classmethod

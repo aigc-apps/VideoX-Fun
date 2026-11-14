@@ -272,7 +272,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--fix_sample_size` | 固定画布 `[height, width]`，覆盖方形 `--video_sample_size`（等比缩放后中心裁剪） | `None` |
 | `--low_vram` | 将 teacher VAE 放在 CPU，仅在编码时搬上 GPU | - |
 | `--trainable_modules` | 可训练模块（`"."` 表示所有模块） | `"."` |
-| `--trainable_modules_low_learning_rate` | 以 lr/2 训练的模块 | `[]` |
+| `--trainable_modules_low_learning_rate` / `--low_learning_rate` | 低学习率模块及其学习率；未指定时为主学习率的一半 | `[]` / `None` |
 | `--resume_from_checkpoint` | 恢复训练路径，使用 `"latest"` 自动选择最新 checkpoint | `latest` |
 | `--validation_steps` / `--validation_epochs` | 每 N 步 / 每 N 个 epoch 执行一次验证 | 2000 / 5 |
 | `--validation_paths` | 用于重建对比验证的视频路径 | `"asset/inpaint_video.mp4"` |
@@ -314,7 +314,7 @@ export TAE_PATH="taew2_1.safetensors"
 - **Decoder-only 蒸馏**：加上 `--freeze_tae_encoder` 只提升解码质量。
 - **显存**：teacher 完整 VAE 是主要的显存消耗者。使用 `--low_vram` 可以将其放在 CPU、仅在编码时搬上 GPU；也可以降低 `--video_sample_n_frames` / `--video_sample_size`。
 - **串行 TAE**：`--use_taehv_sequential` 以速度换显存，激活显存与视频长度无关（O(1)）。
-- **EMA**：推荐开启 `--use_ema` 作为最终交付物；最终保存的 `taehv` 目录里是 EMA 权重。短训练希望均值更快跟上时，可传 `--ema_decay`（如 `train_taehv.sh` 与 `train_taehv_super.sh` 用的 `0.999`）替代默认的 0.9999。
+- **EMA**：推荐开启 `--use_ema`；`taehv` 是用于续训的原始权重，`taehv_ema` 是 EMA 推理权重。短训练希望均值更快跟上时，可传 `--ema_decay`（如 `train_taehv.sh` 与 `train_taehv_super.sh` 用的 `0.999`）替代默认的 0.9999。
 
 ### 3.6 多机分布式训练
 
@@ -363,6 +363,11 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
 ```
 
 `taehv` 子目录是标准的 diffusers 目录 checkpoint，可以被 `AutoencoderTinyWan.from_pretrained` 直接加载。
+
+FSDP 分片或 DeepSpeed ZeRO-3 的可恢复状态采用 Accelerate 的分片格式；这些模式的
+推理权重另存为 checkpoint 根目录的 `diffusion_pytorch_model.safetensors`，开启 EMA 时可使用
+`taehv_ema/`。从恢复训练应指向 checkpoint 目录，而不是单独的导出文件。
+
 
 ### 4.2 在 Predict 脚本中使用训练好的 TAE
 

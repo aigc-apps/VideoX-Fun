@@ -17,6 +17,7 @@ from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -259,7 +260,7 @@ class HunyuanVideoMidBlock3D(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            hidden_states = self._gradient_checkpointing_func(self.resnets[0], hidden_states)
+            hidden_states = torch.utils.checkpoint.checkpoint(self.resnets[0], hidden_states, use_reentrant=False)
 
             for attn, resnet in zip(self.attentions, self.resnets[1:]):
                 if attn is not None:
@@ -271,7 +272,7 @@ class HunyuanVideoMidBlock3D(nn.Module):
                     hidden_states = attn(hidden_states, attention_mask=attention_mask)
                     hidden_states = hidden_states.unflatten(1, (num_frames, height, width)).permute(0, 4, 1, 2, 3)
 
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, use_reentrant=False)
 
         else:
             hidden_states = self.resnets[0](hidden_states)
@@ -342,7 +343,7 @@ class HunyuanVideoDownBlock3D(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for resnet in self.resnets:
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, use_reentrant=False)
         else:
             for resnet in self.resnets:
                 hidden_states = resnet(hidden_states)
@@ -404,7 +405,7 @@ class HunyuanVideoUpBlock3D(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for resnet in self.resnets:
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, use_reentrant=False)
 
         else:
             for resnet in self.resnets:
@@ -509,9 +510,9 @@ class HunyuanVideoEncoder3D(nn.Module):
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for down_block in self.down_blocks:
-                hidden_states = self._gradient_checkpointing_func(down_block, hidden_states)
+                hidden_states = torch.utils.checkpoint.checkpoint(down_block, hidden_states, use_reentrant=False)
 
-            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states)
+            hidden_states = torch.utils.checkpoint.checkpoint(self.mid_block, hidden_states, use_reentrant=False)
         else:
             for down_block in self.down_blocks:
                 hidden_states = down_block(hidden_states)
@@ -614,10 +615,10 @@ class HunyuanVideoDecoder3D(nn.Module):
         hidden_states = self.conv_in(hidden_states)
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states)
+            hidden_states = torch.utils.checkpoint.checkpoint(self.mid_block, hidden_states, use_reentrant=False)
 
             for up_block in self.up_blocks:
-                hidden_states = self._gradient_checkpointing_func(up_block, hidden_states)
+                hidden_states = torch.utils.checkpoint.checkpoint(up_block, hidden_states, use_reentrant=False)
         else:
             hidden_states = self.mid_block(hidden_states)
 

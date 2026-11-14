@@ -58,7 +58,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import transformers
-from torch.utils.data import DataLoader, Dataset
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
@@ -67,12 +66,21 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils.torch_utils import is_compiled_module
 from packaging import version
+from torch.utils.data import DataLoader, Dataset
 from transformers.utils import ContextManagers
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
+
+from generate_ref2va_request_cache import load_requests, parse_reference
+# The on-the-fly route (without `--enable_preprocess_training`) encodes conditioning with the canonical MiniMax-H3
+# recipes rather than re-deriving them; these modules sit in the same directory, already on `sys.path`.
+# `encode_prompt` builds the `fl2va` / `ref2va` presentation, `encode_reference_latents_for_training` the `ref2va`
+# reference latents, and `load_requests` / `parse_reference` read a `ref2va` request annotation exactly as
+# `generate_ref2va_request_cache.py` does.
+from train_lora import encode_prompt, encode_reference_latents_for_training
 
 from videox_fun.data import (BatchSampler, ImageVideoSafetensorsDataset,
                              RandomSampler, TextDataset)
@@ -84,32 +92,21 @@ from videox_fun.models import (AutoencoderKLMiniMaxH3,
 from videox_fun.models.minimax_h3_pdd import (attach_parallel_decoder,
                                               pdd_teacher_mean_velocity,
                                               set_parallel_plan)
-from videox_fun.utils.lora_utils_pdd import (PDD_EMA_WEIGHTS_NAME,
-                                             PDD_LEGACY_LIVE_WEIGHTS_NAME,
-                                             PDD_WEIGHTS_NAME, PDDLoRALinear,
-                                             PDDParallelHead, add_pdd_lora,
-                                             pdd_sampling_plan,
-                                             pdd_state_dict,
-                                             pdd_teacher_mode,
-                                             pdd_time_grid,
-                                             pdd_training_plan)
 from videox_fun.pipeline import MiniMaxH3Pipeline
 from videox_fun.pipeline.pipeline_minimax_h3 import (
     MINIMAX_H3_KEYFRAME_NOISE_AUG, align_num_frames, audio_latent_num_frames,
     build_packed_sequence, build_ref2va_packed_sequence, build_row_timesteps,
     check_ref2va_references, normalize_ref2va_references,
     patchify_video_latents, video_latent_num_frames)
-from videox_fun.utils import MiniMaxH3Scheduler
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_with_audio_grid
-
-# The on-the-fly route (without `--enable_preprocess_training`) encodes conditioning with the canonical MiniMax-H3
-# recipes rather than re-deriving them; these modules sit in the same directory, already on `sys.path`.
-# `encode_prompt` builds the `fl2va` / `ref2va` presentation, `encode_reference_latents_for_training` the `ref2va`
-# reference latents, and `load_requests` / `parse_reference` read a `ref2va` request annotation exactly as
-# `generate_ref2va_request_cache.py` does.
-from train_lora import encode_prompt, encode_reference_latents_for_training
-from generate_ref2va_request_cache import load_requests, parse_reference
+from videox_fun.utils import (PDD_EMA_WEIGHTS_NAME,
+                              PDD_LEGACY_LIVE_WEIGHTS_NAME, PDD_WEIGHTS_NAME,
+                              MiniMaxH3Scheduler, PauseAwareTqdm,
+                              PDDLoRALinear, PDDParallelHead, add_pdd_lora,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              initialize_training_seed, pdd_sampling_plan,
+                              pdd_state_dict, pdd_teacher_mode, pdd_time_grid,
+                              pdd_training_plan, save_videos_with_audio_grid)
 
 # Silences diffusers' `randn_tensor` notice about CPU generators producing CUDA tensors (the tensor is created
 # on CPU and moved to GPU; harmless, only a marginal speed note).
@@ -532,7 +529,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_checkpointing_save_on_cpu",
         action="store_true",
-        help="Offload the activations saved for backward of the transformer blocks to CPU memory.",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
     )
     parser.add_argument(
         "--learning_rate",
@@ -801,7 +798,13 @@ def parse_args():
     )
     parser.add_argument("--validation_nfe", type=int, default=8)
 
+    parser.add_argument(
+        "--full_bf16", action="store_true",
+        help="Train with BF16 model parameters and optimizer state where supported.",
+    )
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -826,6 +829,7 @@ def gather_full_state_dict(model, accelerator):
     they keep using it. Collective: call on every rank; only rank 0 receives a non-empty dict.
     """
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
     # `accelerator.get_state_dict(..., unwrap=True)` unwraps the FSDP root and reads `.state_dict()` off the *sharded*
     # original-param views, so it silently returns only the root wrap unit's tensors (the token refiner) and drops
     # every separately-wrapped child unit. Detect the FSDP wrapper directly — not via `fsdp_plugin`, which is not
@@ -887,6 +891,22 @@ def save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelera
         torch.save(accelerator.scaler.state_dict(), os.path.join(save_path, "scaler.pt"))
 
 
+def save_custom_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator, args):
+    """Stage the existing PDD training format as part of a checkpoint group."""
+    checkpoint_dir = accelerator.begin_checkpoint_group(save_path)
+
+    def save_state():
+        if accelerator.is_main_process:
+            save_resume_state(checkpoint_dir, student, optimizer, lr_scheduler, ema, accelerator)
+            dump_pdd_config(args, checkpoint_dir)
+
+    try:
+        accelerator.checkpoint.phase(save_state)
+    except BaseException:
+        accelerator.abort_checkpoint_group(save_path)
+        raise
+
+
 def load_resume_state(save_path, student, optimizer, lr_scheduler, ema, trainable_params, accelerator):
     r"""Load the trainer state written by [`save_resume_state`]. Prefers legacy `pdd_live.safetensors` when present."""
     from safetensors.torch import load_file
@@ -946,12 +966,13 @@ def load_resume_state(save_path, student, optimizer, lr_scheduler, ema, trainabl
     if os.path.exists(ema_path):
         try:
             print(f"Loading EMA state from {ema_path}")
-            ema.load_state_dict(torch.load(ema_path, map_location="cpu"))
+            ema.load_state_dict(torch.load(ema_path, map_location=accelerator.device, weights_only=False))
+            ema.to(dtype=torch.float32)
             print("EMA state loaded successfully.")
             return
         except Exception as e:
             print(f"Failed to load EMA state from {ema_path}: {e}")
-    ema.shadow_params = [parameter.detach().clone() for parameter in trainable_params]
+    ema.shadow_params = [parameter.detach().float().clone() for parameter in trainable_params]
     print(f"No ema.pt under {save_path}; EMA is re-seeded from the loaded weights.")
 
 
@@ -999,6 +1020,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -1044,8 +1067,8 @@ def main():
     # Per-rank seeding: the ranks of one global batch have to roll out *different* noise, otherwise the trajectories
     # of a step differ only in their prompt. The conditioning order is drawn by the dataloader's own seeded sampler.
     if args.seed is not None:
-        set_seed(args.seed + accelerator.process_index)
-        print(f"Init seed {args.seed + accelerator.process_index}. Process_index is {accelerator.process_index}")
+        set_seed(args.seed)
+        print(f"Init seed {args.seed}. Process_index is {accelerator.process_index}")
     else:
         print(f"Init without fixed seed. Process_index is {accelerator.process_index}")
 
@@ -1247,24 +1270,7 @@ def main():
     )
 
     # ------------------------------------------------------------------ optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError("Please install bitsandbytes to use 8-bit Adam.")
-        optimizer_cls = bnb.optim.AdamW8bit
-    else:
-        optimizer_cls = torch.optim.AdamW
-    optimizer = optimizer_cls(
-        [
-            {"params": head_params, "lr": args.learning_rate},
-            {"params": lora_params, "lr": args.lora_learning_rate},
-        ],
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
+    optimizer = create_optimizer([{'params': head_params, 'lr': args.learning_rate}, {'params': lora_params, 'lr': args.lora_learning_rate}], args)
 
     # ------------------------------------------------------------------ data
     # Data-free PDD never reads a target video: each rank carries one trajectory and needs only the conditioning —
@@ -1320,10 +1326,11 @@ def main():
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
 
-    transformer.gradient_checkpointing_save_on_cpu = args.gradient_checkpointing_save_on_cpu
     transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, train_dataloader, lr_scheduler
     )
+    # Model initialization is shared; training randomness differs by rank.
+    set_seed(args.seed, device_specific=True)
 
     # Shard the frozen text encoder *after* prepare (mirrors `train_lora.py`): the Qwen3-VL conditioner (~62 GB) is
     # wrapped per decoder layer so the per-step unshard footprint stays small, and a post-prepare shard keeps it out of
@@ -1352,10 +1359,11 @@ def main():
 
     trainable_params = [parameter for parameter in transformer.parameters() if parameter.requires_grad]
     ema = (
-        EMAModel(trainable_params, decay=args.ema_decay, use_ema_warmup=False, foreach=True)
+        EMAModel([p.detach().float() for p in trainable_params], decay=args.ema_decay, use_ema_warmup=False, foreach=True)
         if args.use_ema
         else None
     )
+    ema_checkpoint = accelerator.register_ema_checkpoint(ema) if ema is not None else None
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed. One
     # epoch is one pass through the conditioning set (batch size 1), keeping `--num_train_epochs` / `--max_train_steps`
@@ -1520,6 +1528,8 @@ def main():
     global_step = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1545,16 +1555,20 @@ def main():
                 checkpoint_folder_path = args.resume_from_checkpoint
             else:
                 checkpoint_folder_path = os.path.join(args.output_dir, path)
-            if zero_stage != 3 and not args.use_fsdp:
+            native_checkpoint = (
+                args.use_fsdp or args.use_deepspeed
+                or os.path.isfile(os.path.join(checkpoint_folder_path, "optimizer.bin"))
+                or os.path.isfile(os.path.join(checkpoint_folder_path, "training_trainable_model_0.safetensors"))
+            )
+            if native_checkpoint:
+                accelerator.load_state(checkpoint_folder_path)
+                if ema is not None and not ema_checkpoint["loaded"]:
+                    ema.shadow_params = [parameter.detach().float().clone() for parameter in trainable_params]
+                    accelerator.print("No saved EMA training state; initialized EMA from the restored live weights.")
+            else:
                 load_resume_state(
                     checkpoint_folder_path, student, optimizer, lr_scheduler, ema, trainable_params, accelerator
                 )
-            else:
-                accelerator.load_state(checkpoint_folder_path)
-                accelerator.print("accelerator.load_state() completed for FSDP / ZeRO stage 3.")
-                if ema is not None:
-                    ema.shadow_params = [parameter.detach().clone() for parameter in trainable_params]
-                    print(f"EMA is re-seeded from the loaded FSDP / ZeRO weights under {checkpoint_folder_path}.")
             print(f"Resumed training from {checkpoint_folder_path} at step {global_step}.")
     else:
         initial_global_step = 0
@@ -1684,8 +1698,9 @@ def main():
             step_started = time.time()
 
             if global_step % args.checkpointing_steps == 0:
+                accelerator.videox_checkpoint_grouped = True
                 with progress_bar.paused():
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1698,13 +1713,13 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
                         gc.collect()
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
@@ -1712,27 +1727,41 @@ def main():
                         if args.use_deepspeed or args.use_fsdp or args.save_state:
                             accelerator.save_state(save_path)
                         else:
-                            save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator)
-                            dump_pdd_config(args, save_path)
+                            save_custom_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator, args)
 
                     if ema is not None:
                         ema.store(trainable_params)
                         ema.copy_to(trainable_params)
-                        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        if args.use_deepspeed or args.use_fsdp:
-                            state_dict = gather_full_state_dict(transformer, accelerator)
-                            if accelerator.is_main_process and state_dict is not None:
+                        checkpoint_dir = accelerator.checkpoint_staging_path(
+                            os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        )
+                        state_dict = (gather_full_state_dict(transformer, accelerator)
+                                      if args.use_deepspeed or args.use_fsdp else None)
+
+                        def save_ema_checkpoint():
+                            if not accelerator.is_main_process:
+                                return
+                            if args.use_deepspeed or args.use_fsdp:
+                                if state_dict is not None:
+                                    save_pdd_weights(
+                                        os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                                        pdd_state_dict(unwrap_model(transformer), state_dict),
+                                    )
+                                    dump_pdd_config(args, checkpoint_dir)
+                            else:
                                 save_pdd_weights(
                                     os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
-                                    pdd_state_dict(unwrap_model(transformer), state_dict),
+                                    pdd_state_dict(unwrap_model(transformer)),
                                 )
-                                dump_pdd_config(args, checkpoint_dir)
-                        elif accelerator.is_main_process:
-                            save_pdd_weights(
-                                os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
-                                pdd_state_dict(unwrap_model(transformer)),
-                            )
-                        ema.restore(trainable_params)
+
+                        try:
+                            accelerator.checkpoint.phase(save_ema_checkpoint)
+                        except BaseException:
+                            accelerator.abort_checkpoint_group(save_path)
+                            raise
+                        finally:
+                            ema.restore(trainable_params)
+                    accelerator.finish_checkpoint_removals(os.path.join(args.output_dir, f"checkpoint-{global_step}"))
                     if accelerator.is_main_process:
                         logger.info(f"Saved state to {os.path.join(args.output_dir, f'checkpoint-{global_step}')}")
                     accelerator.wait_for_everyone()
@@ -1762,28 +1791,44 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
         if args.use_deepspeed or args.use_fsdp or args.save_state:
+            accelerator.videox_checkpoint_grouped = True
             accelerator.save_state(save_path)
         else:
-            save_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator)
-            dump_pdd_config(args, save_path)
+            save_custom_resume_state(save_path, student, optimizer, lr_scheduler, ema, accelerator, args)
+        checkpoint_dir = accelerator.checkpoint_staging_path(save_path)
         if ema is not None:
             ema.copy_to(trainable_params)
-            if args.use_deepspeed or args.use_fsdp:
-                state_dict = gather_full_state_dict(transformer, accelerator)
-                if accelerator.is_main_process and state_dict is not None:
+            state_dict = (gather_full_state_dict(transformer, accelerator)
+                          if args.use_deepspeed or args.use_fsdp else None)
+
+            def save_ema_checkpoint():
+                if not accelerator.is_main_process:
+                    return
+                if args.use_deepspeed or args.use_fsdp:
+                    if state_dict is not None:
+                        save_pdd_weights(
+                            os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                            pdd_state_dict(unwrap_model(transformer), state_dict),
+                        )
+                        dump_pdd_config(args, checkpoint_dir)
+                else:
                     save_pdd_weights(
-                        os.path.join(save_path, PDD_EMA_WEIGHTS_NAME),
-                        pdd_state_dict(unwrap_model(transformer), state_dict),
+                        os.path.join(checkpoint_dir, PDD_EMA_WEIGHTS_NAME),
+                        pdd_state_dict(unwrap_model(transformer)),
                     )
-                    dump_pdd_config(args, save_path)
-            elif accelerator.is_main_process:
-                save_pdd_weights(os.path.join(save_path, PDD_EMA_WEIGHTS_NAME), pdd_state_dict(unwrap_model(transformer)))
+
+            try:
+                accelerator.checkpoint.phase(save_ema_checkpoint)
+            except BaseException:
+                accelerator.abort_checkpoint_group(save_path)
+                raise
+        accelerator.finish_checkpoint_removals(save_path)
         if accelerator.is_main_process:
             logger.info(f"Saved state to {save_path}")
     accelerator.end_training()

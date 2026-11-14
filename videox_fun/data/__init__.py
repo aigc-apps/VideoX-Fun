@@ -18,6 +18,7 @@ from .utils import (VIDEO_READER_TIMEOUT, Camera, VideoReader_contextmanager,
                     custom_meshgrid, get_random_mask, get_relative_pose,
                     get_video_reader_batch, padding_image,
                     prepare_lingbot_dit_cond_dict,
+                    prepare_lingbot_batch_dit_cond_dict,
                     prepare_lingbot_dit_cond_dict_from_c2ws, process_pose_file,
                     process_pose_params, ray_condition, resize_frame,
                     resize_image_with_target_area, sample_clip_start)

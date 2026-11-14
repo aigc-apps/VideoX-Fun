@@ -188,8 +188,11 @@ Chosen_AutoencoderKL = {
     "AutoencoderKLWan3_8": AutoencoderKLWan3_8,
     "AutoencoderTinyWan": AutoencoderTinyWan
 }[config['vae_kwargs'].get('vae_type', 'AutoencoderKLWan')]
+# Accept absolute paths, paths relative to the working directory, and paths
+# relative to the base model directory.
+tae_model_path = tae_path if os.path.isabs(tae_path) or os.path.exists(tae_path) else os.path.join(model_name, tae_path)
 vae = Chosen_AutoencoderKL.from_pretrained(
-    os.path.join(model_name, config['vae_kwargs'].get('vae_subpath', 'vae')),
+    tae_model_path,
     additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
 ).to(weight_dtype)
 

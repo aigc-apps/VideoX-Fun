@@ -58,6 +58,7 @@ class LingbotWorldCasualWanAttentionBlock(CasualWanAttentionBlock):
         # Per-token camera hidden states, set per-forward by the parent
         # transformer and broadcast over the batch dimension
         self._cam_hidden = None
+        self._cam_mask = None
 
     def forward(
         self,
@@ -116,6 +117,10 @@ class LingbotWorldCasualWanAttentionBlock(CasualWanAttentionBlock):
             cam_hidden = cam_hidden + cam
             cam_scale = self.cam_scale_layer(cam_hidden)
             cam_shift = self.cam_shift_layer(cam_hidden)
+            if self._cam_mask is not None:
+                mask = self._cam_mask.to(device=x.device, dtype=x.dtype).reshape(-1, 1, 1)
+                cam_scale = cam_scale * mask
+                cam_shift = cam_shift * mask
             x = (1.0 + cam_scale) * x + cam_shift
 
         # Cross-attention and FFN with modulation
@@ -301,7 +306,7 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
         Args:
             dit_cond_dict (`dict`):
                 Condition dict containing "c2ws_plucker_emb", a tensor (or tuple
-                of tensors) with shape [1, C, F, H, W]
+                of tensors) with shape [B, C, F, H, W]
             grid_sizes (Tensor):
                 Shape [B, 3], the second dimension contains (F, H, W) of the
                 current block's patch-embedded latent
@@ -312,7 +317,7 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
 
         Returns:
             Tensor:
-                Camera hidden states with shape [1, L_block, dim], where
+                Camera hidden states with shape [B, L_block, dim], where
                 L_block = f_block * h_grid * w_grid matches current x tokens
         """
         emb = dit_cond_dict["c2ws_plucker_emb"]
@@ -338,7 +343,7 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
                 e = e[:, :, t_start:t_start + f_needed, :, :]
             e = rearrange(
                 e,
-                '1 c (f c1) (h c2) (w c3) -> 1 (f h w) (c c1 c2 c3)',
+                'b c (f c1) (h c2) (w c3) -> b (f h w) (c c1 c2 c3)',
                 c1=p0, c2=p1, c3=p2,
             )
             rearranged.append(e)
@@ -537,8 +542,11 @@ class WanTransformer3DModel_LingbotWorldFast(WanTransformer3DModel_SelfForcing):
         # checkpointing the block forwards are re-run during backward and must
         # still see the same condition. Every forward overwrites the value
         # (with None when no condition is given), so nothing goes stale.
+        cam_mask = dit_cond_dict.get("camera_valid_mask") if dit_cond_dict is not None else None
         for block in self.blocks:
-            unwrap_block_module(block)._cam_hidden = cam_hidden
+            block = unwrap_block_module(block)
+            block._cam_hidden = cam_hidden
+            block._cam_mask = cam_mask
 
         # Arguments
         kwargs = dict(

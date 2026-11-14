@@ -4,7 +4,6 @@
 # are gated by zero-initialised projections, so a freshly initialised model is numerically identical to
 # `MiniMaxH3Transformer3DModel` and only the control parameters need training.
 
-from contextlib import nullcontext
 from typing import Any, Dict, Optional, Tuple, Union
 
 import os
@@ -623,22 +622,21 @@ class MiniMaxH3ControlTransformer3DModel(MiniMaxH3Transformer3DModel):
         c = packed_hidden_states.index_copy(1, local_video_indices, control_embeds.to(text_embeds.dtype))
 
         for layer in self.control_blocks:
-            with torch.autograd.graph.save_on_cpu() if self.gradient_checkpointing_save_on_cpu else nullcontext():
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    c = torch.utils.checkpoint.checkpoint(
-                        layer,
-                        c,
-                        packed_hidden_states,
-                        temb,
-                        adaln_indices,
-                        rotary_emb,
-                        attention_mask,
-                        valid_length,
-                        **ckpt_kwargs,
-                    )
-                else:
-                    c = layer(c, packed_hidden_states, temb, adaln_indices, rotary_emb, attention_mask, valid_length)
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                c = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    c,
+                    packed_hidden_states,
+                    temb,
+                    adaln_indices,
+                    rotary_emb,
+                    attention_mask,
+                    valid_length,
+                    **ckpt_kwargs,
+                )
+            else:
+                c = layer(c, packed_hidden_states, temb, adaln_indices, rotary_emb, attention_mask, valid_length)
 
         # 3. The skips line up row-for-row with the main stack's hidden states (this rank's slice of the sequence
         # under sequence parallelism), so the main blocks add them as they are. Under
@@ -661,26 +659,25 @@ class MiniMaxH3ControlTransformer3DModel(MiniMaxH3Transformer3DModel):
         # 4. Main block stack with the control skips injected at the addressed layers.
         hidden_states = packed_hidden_states
         for block in self.transformer_blocks:
-            with torch.autograd.graph.save_on_cpu() if self.gradient_checkpointing_save_on_cpu else nullcontext():
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        block,
-                        hidden_states,
-                        temb,
-                        adaln_indices,
-                        rotary_emb,
-                        attention_mask,
-                        valid_length,
-                        hints,
-                        control_context_scale,
-                        **ckpt_kwargs,
-                    )
-                else:
-                    hidden_states = block(
-                        hidden_states, temb, adaln_indices, rotary_emb, attention_mask, valid_length,
-                        hints=hints, context_scale=control_context_scale,
-                    )
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                hidden_states = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden_states,
+                    temb,
+                    adaln_indices,
+                    rotary_emb,
+                    attention_mask,
+                    valid_length,
+                    hints,
+                    control_context_scale,
+                    **ckpt_kwargs,
+                )
+            else:
+                hidden_states = block(
+                    hidden_states, temb, adaln_indices, rotary_emb, attention_mask, valid_length,
+                    hints=hints, context_scale=control_context_scale,
+                )
 
         # Sequence parallel: gather the full sequence back, as the base forward does, and drop the padding rows.
         if self.sp_world_size > 1:

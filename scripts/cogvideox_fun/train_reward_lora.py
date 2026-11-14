@@ -38,10 +38,12 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
 from accelerate.utils import ProjectConfiguration, set_seed
+
 try:
     from decord import VideoReader
 except ImportError:
     from videox_fun.data.utils import AVVideoReader as VideoReader
+
 from diffusers import CogVideoXDPMScheduler, DDIMScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
@@ -65,9 +67,12 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
 from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     CogVideoXFunInpaintPipeline, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
-from videox_fun.utils.lora_utils import create_network, merge_lora
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
+from videox_fun.utils import (PauseAwareTqdm,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_network,
+                              create_optimizer, get_image_to_video_latent,
+                              initialize_training_seed, merge_lora,
+                              save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -468,6 +473,11 @@ def parse_args():
         help="Whether or not to use gradient checkpointing (for DiT) to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--vae_gradient_checkpointing",
         action="store_true",
         help="Whether or not to use gradient checkpointing (for VAE) to save memory at the expense of slower backward pass.",
@@ -754,7 +764,13 @@ def parse_args():
         help="The number of steps for backprop. Only used when `backprop_strategy` is tail/uniform/random."
     )
 
+    parser.add_argument(
+        "--full_bf16", action="store_true",
+        help="Train with BF16 model parameters and optimizer state where supported.",
+    )
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -794,6 +810,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     # Sanity check for validation
     do_validation = (args.validation_prompt_path is not None or args.validation_prompts is not None)
@@ -821,7 +839,7 @@ def main():
 
     # If passed along, set the training seed now.
     if args.seed is not None:
-        set_seed(args.seed, device_specific=True)
+        set_seed(args.seed)
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -934,7 +952,7 @@ def main():
         def save_model_hook(models, weights, output_dir):
             if accelerator.is_main_process:
                 safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(models[-1]))
+                accelerator.unwrap_model(models[-1]).save_weights(safetensor_save_path, torch.float32, None)
                 if not args.use_deepspeed:
                     for _ in range(len(weights)):
                         weights.pop()
@@ -963,46 +981,12 @@ def main():
         )
 
     # Initialize the optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "Please install bitsandbytes to use 8-bit Adam. You can do so by running `pip install bitsandbytes`"
-            )
-
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        try:
-            from came_pytorch import CAME
-        except Exception:
-            raise ImportError(
-                "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
-            )
-
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
     logging.info("Add network parameters")
     trainable_params = list(filter(lambda p: p.requires_grad, network.parameters()))
     trainable_params_optim = network.prepare_optimizer_params(args.learning_rate / 2, args.learning_rate, args.learning_rate)
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
     
     # loss function
     reward_fn_kwargs = {}
@@ -1032,9 +1016,22 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    network, optimizer, lr_scheduler = accelerator.prepare(
-        network, optimizer, lr_scheduler
-    )
+    # Reward training samples prompts directly rather than preparing a dataloader.
+    deepspeed_plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if deepspeed_plugin is not None:
+        args.use_deepspeed = True
+        config = deepspeed_plugin.deepspeed_config
+        if config.get("train_micro_batch_size_per_gpu") in (None, "auto"):
+            config["train_micro_batch_size_per_gpu"] = args.train_batch_size
+
+    # Route the real model forward through the LoRA wrapper for distributed gradient synchronization.
+    def forward_with_lora(*inputs, **kwargs):
+        return transformer3d(*inputs, **kwargs)
+
+    network.forward = forward_with_lora
+    network, optimizer, lr_scheduler = accelerator.prepare(network, optimizer, lr_scheduler)
+    # Model initialization is shared; training randomness differs by rank.
+    set_seed(args.seed, device_specific=True)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device, dtype=weight_dtype)
@@ -1081,6 +1078,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1176,7 +1175,7 @@ def main():
                 args.train_sample_width // vae_scale_factor_spatial,
             ]
 
-            with accelerator.accumulate(transformer3d):
+            with accelerator.accumulate(network):
                 with accelerator.autocast():
                     latents = torch.randn(*latent_shape, device=accelerator.device, dtype=weight_dtype)
                     latents = latents * noise_scheduler.init_noise_sigma
@@ -1246,7 +1245,7 @@ def main():
                             latent_model_input = latent_model_input.detach()
 
                         # predict noise model_output
-                        noise_pred = transformer3d(
+                        noise_pred = network(
                             hidden_states=latent_model_input,
                             encoder_hidden_states=prompt_embeds,
                             timestep=timestep,
@@ -1257,9 +1256,7 @@ def main():
                         noise_pred = noise_pred.float()
 
                         # Optimize the denoising results only for the specified steps.
-                        if i in backprop_step_list:
-                            noise_pred = noise_pred
-                        else:
+                        if args.backprop and i not in backprop_step_list:
                             noise_pred = noise_pred.detach()
 
                         # perform guidance
@@ -1343,7 +1340,7 @@ def main():
 
                         if global_step % args.checkpointing_steps == 0:
                             # DeepSpeed requires saving weights on every device; saving weights only on the main process would cause issues.
-                            if args.use_deepspeed or accelerator.is_main_process:
+                            if (args.use_deepspeed or accelerator.is_main_process) or (args.save_state and accelerator.num_processes > 1):
                                 # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                                 if args.checkpoints_total_limit is not None:
                                     checkpoints = os.listdir(args.output_dir)
@@ -1356,13 +1353,13 @@ def main():
                                         removing_checkpoints = checkpoints[0:num_to_remove]
 
                                         logger.info(
-                                            f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                            f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                         )
-                                        logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                        logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                         for removing_checkpoint in removing_checkpoints:
                                             removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                            shutil.rmtree(removing_checkpoint)
+                                            accelerator.defer_checkpoint_removal(removing_checkpoint)
                                 
                                 gc.collect()
                                 torch.cuda.empty_cache()

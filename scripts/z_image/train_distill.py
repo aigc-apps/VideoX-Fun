@@ -61,8 +61,9 @@ for project_root in project_roots:
 
 from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler, ImageVideoSampler,
-                             RandomSampler, TextDataset, get_closest_ratio)
+                             AspectRatioBatchImageVideoSampler,
+                             ImageVideoSampler, RandomSampler, TextDataset,
+                             get_closest_ratio)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                CLIPImageProcessor,
@@ -70,13 +71,19 @@ from videox_fun.models import (AutoencoderKL, AutoProcessor, AutoTokenizer,
                                Qwen3ForCausalLM, QwenImageTransformer2DModel,
                                ZImageTransformer2DModel)
 from videox_fun.pipeline import ZImagePipeline
-from videox_fun.utils import (DiscreteSampling, RectifiedFlow_TrigFlowWrapper,
+from videox_fun.utils import (DiscreteSampling, PauseAwareTqdm,
+                              RectifiedFlow_TrigFlowWrapper,
+                              build_trainable_optimizer_groups,
                               calculate_dimensions,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision,
                               convert_peft_lora_to_kohya_lora, create_network,
-                              get_image_latent, get_image_to_video_latent,
-                              merge_lora, sample_trigflow_timesteps,
-                              save_videos_grid, unmerge_lora)
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
+                              create_optimizer, get_image_latent,
+                              get_image_to_video_latent,
+                              initialize_training_seed, merge_lora,
+                              parse_trainable_module_learning_rates,
+                              sample_trigflow_timesteps, save_videos_grid,
+                              unmerge_lora)
 
 if is_wandb_available():
     import wandb
@@ -363,16 +370,33 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half each model learning rate).",
+    )
+    parser.add_argument(
         "--learning_rate_critic",
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate_critic",
+        type=float,
+        default=None,
+        help="Critic low learning rate; defaults to --low_learning_rate or half the critic learning rate.",
     )
     parser.add_argument(
         "--scale_lr",
@@ -590,7 +614,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate', 
         nargs='+', 
         default=[],
-        help='Enter a list of trainable modules with lower learning rate'
+        help='Trainable module substrings for the low learning rate.'
     )
     parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
@@ -662,7 +686,14 @@ def parse_args():
         help="The denoising step list.",
     )
 
+    parser.add_argument(
+        "--full_bf16", action="store_true",
+        help="Train with BF16 model parameters and optimizer state where supported.",
+    )
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -702,12 +733,15 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
     accelerator_fake_score_transformer3d = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator_fake_score_transformer3d.videox_checkpoint_all_ranks = True
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -983,113 +1017,19 @@ def main():
         )
 
     # Initialize the optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "Please install bitsandbytes to use 8-bit Adam. You can do so by running `pip install bitsandbytes`"
-            )
-
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        try:
-            from came_pytorch import CAME
-        except Exception:
-            raise ImportError(
-                "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
-            )
-
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
     trainable_params = list(filter(lambda p: p.requires_grad, generator_transformer3d.parameters()))
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in generator_transformer3d.named_parameters():
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        generator_transformer3d.named_parameters(), args, accelerator
+    )
 
     fake_trainable_params = list(filter(lambda p: p.requires_grad, fake_score_transformer3d.parameters()))
-    fake_trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate_critic},
-        {'params': [], 'lr': args.learning_rate_critic / 2},
-    ]
-    in_already = []
-    for name, param in fake_score_transformer3d.named_parameters():
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                fake_trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate_critic}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                fake_trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate_critic / 2}")
-                break
+    fake_trainable_params_optim = build_trainable_optimizer_groups(
+        fake_score_transformer3d.named_parameters(), args, accelerator, base='learning_rate_critic'
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            # weight_decay=args.adam_weight_decay,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-        critic_optimizer = optimizer_cls(
-            fake_trainable_params_optim,
-            lr=args.learning_rate_critic,
-            # weight_decay=args.adam_weight_decay,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
-        critic_optimizer = optimizer_cls(
-            fake_trainable_params_optim,
-            lr=args.learning_rate_critic,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
+    critic_optimizer = create_optimizer(fake_trainable_params_optim, args, learning_rate=args.learning_rate_critic)
 
     # Get the training dataset
     if args.fix_sample_size is not None and args.enable_bucket:
@@ -1240,6 +1180,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1909,8 +1851,9 @@ def main():
                 train_denoising_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        accelerator.videox_checkpoint_grouped = True
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
                             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
@@ -1922,13 +1865,13 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -1946,6 +1889,7 @@ def main():
                             gc.collect()
                             torch.cuda.empty_cache()
                             torch.cuda.ipc_collect()
+                        accelerator.finish_checkpoint_removals(save_path)
                         logger.info(f"Saved state to {save_path}")
 
                 if args.validation_prompts is not None and global_step % args.validation_steps == 0:
@@ -1987,12 +1931,15 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.videox_checkpoint_grouped = True
         accelerator.save_state(save_path)
+        accelerator_fake_score_transformer3d.save_state(os.path.join(save_path, "fake_score"))
+        accelerator.finish_checkpoint_removals(save_path)
         logger.info(f"Saved state to {save_path}")
 
     accelerator.end_training()

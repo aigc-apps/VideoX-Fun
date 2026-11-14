@@ -43,6 +43,11 @@ project_roots = [
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
+# Reuse the canonical recipes rather than re-deriving them: `encode_prompt(references=...)` builds the ref2va
+# presentation and `encode_reference_latents_for_training` mirrors `MiniMaxH3Pipeline.encode_reference_latents`
+# without needing a pipeline instance.
+from train_lora import encode_prompt, encode_reference_latents_for_training
+
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
                                MiniMaxH3Transformer3DModel, Qwen2TokenizerFast,
@@ -51,11 +56,6 @@ from videox_fun.models import (AutoencoderKLMiniMaxH3,
 from videox_fun.pipeline.pipeline_minimax_h3 import (
     MiniMaxH3AudioReference, MiniMaxH3ImageReference, MiniMaxH3VideoReference,
     align_num_frames, check_ref2va_references, normalize_ref2va_references)
-
-# Reuse the canonical recipes rather than re-deriving them: `encode_prompt(references=...)` builds the ref2va
-# presentation and `encode_reference_latents_for_training` mirrors `MiniMaxH3Pipeline.encode_reference_latents`
-# without needing a pipeline instance.
-from train_lora import encode_prompt, encode_reference_latents_for_training
 
 _REFERENCE_KIND_IDS = {"image": 0, "video": 1, "audio": 2}
 

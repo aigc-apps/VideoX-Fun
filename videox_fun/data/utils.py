@@ -667,6 +667,46 @@ def prepare_lingbot_dit_cond_dict(
     return dit_cond_dict, frame_num
 
 
+def prepare_lingbot_batch_dit_cond_dict(
+    c2ws_batch, intrinsics_batch, intrinsics_org_hw_batch, *, batch_size,
+    frame_num, height, width, device, dtype, control_type, vae_stride, patch_size,
+):
+    """Build a separate camera condition for each training sample."""
+    if c2ws_batch is None:
+        c2ws_batch = [None] * batch_size
+        intrinsics_batch = [None] * batch_size
+        intrinsics_org_hw_batch = [None] * batch_size
+    if intrinsics_batch is None or intrinsics_org_hw_batch is None:
+        raise ValueError("Camera trajectory, intrinsics and calibration sizes must have matching batches.")
+    entries = list(zip(c2ws_batch, intrinsics_batch, intrinsics_org_hw_batch, strict=True))
+    if not entries or batch_size % len(entries):
+        raise ValueError("Camera condition count does not match the training batch size.")
+    entries *= batch_size // len(entries)  # Match torch.tile of the video batch, if enabled.
+    conditions = []
+    valid = []
+    for c2ws, intrinsics, org_hw in entries:
+        present = c2ws is not None and intrinsics is not None and org_hw is not None
+        valid.append(present)
+        if not present:
+            conditions.append(None)
+            continue
+        cond, actual_frames = prepare_lingbot_dit_cond_dict_from_c2ws(
+            c2ws=c2ws, intrinsics=intrinsics, frame_num=frame_num, height=height, width=width,
+            device=device, dtype=dtype, control_type=control_type, vae_stride=vae_stride,
+            patch_size=patch_size, intrinsics_org_height=org_hw[0], intrinsics_org_width=org_hw[1],
+        )
+        if actual_frames != frame_num:
+            raise ValueError("Camera trajectory is shorter than the sampled training video.")
+        conditions.append(cond["c2ws_plucker_emb"][0])
+    example = next((value for value in conditions if value is not None), None)
+    if example is None:
+        channels = 6 * vae_stride[1] * vae_stride[2]
+        example = torch.zeros((1, channels, (frame_num - 1) // vae_stride[0] + 1,
+                               height // vae_stride[1], width // vae_stride[2]), device=device, dtype=dtype)
+    batch = torch.cat([value if value is not None else torch.zeros_like(example) for value in conditions], dim=0)
+    return {"c2ws_plucker_emb": (batch,), "camera_valid_mask": torch.tensor(valid, device=device)}
+
+
 def prepare_lingbot_dit_cond_dict_from_c2ws(
     c2ws,
     intrinsics,

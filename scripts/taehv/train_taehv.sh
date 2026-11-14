@@ -1,4 +1,4 @@
-export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
+export MODEL_NAME="${MODEL_NAME:-models/Diffusion_Transformer/Wan2.2-TI2V-5B}"
 export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
 export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export TAE_PATH="models/Diffusion_Transformer/taew2_2.safetensors"

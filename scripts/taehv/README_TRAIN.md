@@ -272,7 +272,7 @@ export TAE_PATH="taew2_1.safetensors"
 | `--fix_sample_size` | Fixed `[height, width]` canvas overriding the square `--video_sample_size` (aspect-preserving cover crop) | `None` |
 | `--low_vram` | Keep the teacher VAE on CPU and move it to GPU only when encoding | - |
 | `--trainable_modules` | Trainable modules (`"."` means all modules) | `"."` |
-| `--trainable_modules_low_learning_rate` | Trainable modules with lr/2 | `[]` |
+| `--trainable_modules_low_learning_rate` / `--low_learning_rate` | Low-rate modules and their rate; defaults to half the main learning rate | `[]` / `None` |
 | `--resume_from_checkpoint` | Resume training from checkpoint, use `"latest"` to auto-select | `latest` |
 | `--validation_steps` / `--validation_epochs` | Run validation every N steps / epochs | 2000 / 5 |
 | `--validation_paths` | Video paths for validation reconstruction comparison | `"asset/inpaint_video.mp4"` |
@@ -314,7 +314,7 @@ You can configure validation parameters to periodically reconstruct test videos 
 - **Decoder-only distillation**: Add `--freeze_tae_encoder` to only improve decoding quality.
 - **Memory**: The teacher full VAE is the main memory consumer. Use `--low_vram` to keep it on CPU between encoding steps, or reduce `--video_sample_n_frames` / `--video_sample_size`.
 - **Sequential TAE**: `--use_taehv_sequential` trades speed for O(1) activation memory w.r.t. video length.
-- **EMA**: `--use_ema` is recommended for the final deliverable; the final saved `taehv` directory contains the EMA weights. Pass `--ema_decay` (e.g. `0.999`, as both `train_taehv.sh` and `train_taehv_super.sh` do) when short runs need the average to catch up faster than the 0.9999 default.
+- **EMA**: `--use_ema` is recommended; `taehv` contains the raw weights for training resume and `taehv_ema` contains EMA inference weights. Pass `--ema_decay` (e.g. `0.999`, as both `train_taehv.sh` and `train_taehv_super.sh` do) when short runs need the average to catch up faster than the 0.9999 default.
 
 ### 3.6 Multi-Node Distributed Training
 
@@ -363,6 +363,9 @@ Each checkpoint is written as `output_dir/checkpoint-{step}/`, containing:
 ```
 
 The `taehv` subdirectory is a standard diffusers directory checkpoint and can be loaded directly by `AutoencoderTinyWan.from_pretrained`.
+
+FSDP sharding and DeepSpeed ZeRO-3 use Accelerate's sharded state for resume. Their inference export is `diffusion_pytorch_model.safetensors` in the checkpoint root; with EMA enabled, `taehv_ema/` is also available. Resume from the checkpoint directory, not an individual export file.
+
 
 ### 4.2 Use the Trained TAE in Predict Scripts
 

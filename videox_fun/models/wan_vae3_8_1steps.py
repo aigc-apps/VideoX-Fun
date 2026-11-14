@@ -14,7 +14,7 @@ from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
-from torch.utils.checkpoint import checkpoint as torch_checkpoint
+import torch.utils.checkpoint
 
 CACHE_T = 2
 
@@ -597,7 +597,7 @@ class Decoder3d(nn.Module):
         # activations stay alive at a time (vs. the whole upsampled video).
         def _run(module, t):
             if self.gradient_checkpointing and torch.is_grad_enabled():
-                return torch_checkpoint(module, t, use_reentrant=False)
+                return torch.utils.checkpoint.checkpoint(module, t, use_reentrant=False)
             return module(t)
 
         x = self.conv1(x)

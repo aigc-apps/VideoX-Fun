@@ -40,12 +40,13 @@ project_roots = [
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.models import Qwen2TokenizerFast, Qwen3VLForConditionalGeneration
-
 # Reuse the canonical MiniMax-H3 conditioner recipe rather than re-deriving it: `train_lora.encode_prompt` builds the
 # presentation and reads `hidden_states[MINIMAX_H3_TEXT_ENCODER_LAYER]` exactly as the pipeline does. For a text-only
 # `fl2va` request it never touches `processor`, so `None` is passed.
 from train_lora import encode_prompt
+
+from videox_fun.models import (Qwen2TokenizerFast,
+                               Qwen3VLForConditionalGeneration)
 
 
 def load_prompts(path):
