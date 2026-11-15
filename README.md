@@ -6,7 +6,7 @@ CogVideoX-Fun:
 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/alibaba-pai/CogVideoX-Fun-5b)
 
 Wan-Fun:
-[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/alibaba-pai/Wan2.1-Fun-1.3B-InP)
+[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/alibaba-pai/Wan2.1-Fun-1.3B-InP) [![Run on swm cloud](https://img.shields.io/badge/swm%20cloud-Wan%20Fun%20ComfyUI-0F766E)](https://cloud.swmgpu.com/w/samofvaani/wan-video-restyle-control)
 
 English | [简体中文](./README_zh-CN.md) | [日本語](./README_ja-JP.md)
 
