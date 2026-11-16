@@ -306,6 +306,7 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 | `--l1_loss_weight` / `--lpips_loss_weight` | 像素 L1 / LPIPS 损失权重 | 0.1 / 0.1 |
 | `--dino_loss_weight` / `--grid_loss_weight` | DINO / 周期格纹损失权重 | 0.02 / 1.0 |
 | `--feature_batch_size` / `--feature_checkpointing` | 感知网络帧 batch / 激活 checkpointing | 13 / 关闭 |
+| `--gradient_checkpointing` / `--gradient_checkpointing_save_on_cpu` | TAE 记忆块梯度重算 / 将重算输入保存在 CPU | 关闭 / 关闭 |
 | `--use_ema` / `--ema_decay` | 维护用于验证和选模的 decoder EMA | 开启 / 0.999 |
 | `--seed` / `--mixed_precision` | 随机种子 / 混合精度 | 42 / `bf16` |
 | `--output_dir` | 输出目录 | `output_dir_taehv_w2.2_super` |

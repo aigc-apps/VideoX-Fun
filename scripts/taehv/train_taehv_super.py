@@ -391,7 +391,6 @@ def log_validation(vae, tae, args, accelerator, weight_dtype, global_step,
         ))
     accelerator.wait_for_everyone()
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Training script for the Wan2.2 Super decoder.")
     parser.add_argument(
@@ -677,6 +676,11 @@ def parse_args():
         help="Checkpoint perceptual feature computation.",
     )
     parser.add_argument(
+        "--gradient_checkpointing",
+        action="store_true",
+        help="Recompute TAE memory blocks during backward to reduce activation memory.",
+    )
+    parser.add_argument(
         "--gradient_checkpointing_save_on_cpu",
         action="store_true",
         help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
@@ -883,6 +887,8 @@ def main():
                 param.requires_grad = True
                 break
     tae.train()
+    if args.gradient_checkpointing:
+        tae.enable_gradient_checkpointing()
 
     trainable_params = list(filter(lambda p: p.requires_grad, tae.parameters()))
     total_params = sum(p.numel() for p in tae.parameters())

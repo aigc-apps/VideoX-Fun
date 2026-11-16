@@ -3,6 +3,7 @@
 from typing import Tuple, Union
 
 import torch
+import torch.utils.checkpoint
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
@@ -345,12 +346,21 @@ class Decoder3d(nn.Module):
         self.head = nn.Sequential(
             RMS_norm(out_dim, images=False), nn.SiLU(),
             CausalConv3d(out_dim, 3, 3, padding=1))
+        self.gradient_checkpointing = False
 
     def forward(self, x):
+        def run(module, hidden_states):
+            if self.gradient_checkpointing and torch.is_grad_enabled():
+                return torch.utils.checkpoint.checkpoint(module, hidden_states, use_reentrant=False)
+            return module(hidden_states)
+
         x = self.conv1(x)
-        x = self.middle(x)
-        x = self.upsamples(x)
-        x = self.head(x)
+        for module in self.middle:
+            x = run(module, x)
+        for module in self.upsamples:
+            x = run(module, x)
+        for module in self.head:
+            x = run(module, x)
         return x
 
 
@@ -1286,6 +1296,7 @@ class AutoencoderKLWan_1Steps(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             self.gradient_checkpointing = kwargs["enable"]
         else:
             raise ValueError("Invalid set gradient checkpointing")
+        self.model.decoder.gradient_checkpointing = self.gradient_checkpointing
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         x = [

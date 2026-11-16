@@ -318,6 +318,7 @@ Values below describe the launcher configuration; they are not all Python CLI de
 | `--l1_loss_weight` / `--lpips_loss_weight` | Pixel L1 / LPIPS loss weights | 0.1 / 0.1 |
 | `--dino_loss_weight` / `--grid_loss_weight` | DINO / periodic grid loss weights | 0.02 / 1.0 |
 | `--feature_batch_size` / `--feature_checkpointing` | Perceptual frame batch / activation checkpointing | 13 / off |
+| `--gradient_checkpointing` / `--gradient_checkpointing_save_on_cpu` | TAE memory-block recomputation / save checkpoint inputs on CPU | off / off |
 | `--use_ema` / `--ema_decay` | Maintain decoder EMA for validation and selection | enabled / 0.999 |
 | `--seed` / `--mixed_precision` | Random seed / mixed precision | 42 / `bf16` |
 | `--output_dir` | Output directory | `output_dir_taehv_w2.2_super` |

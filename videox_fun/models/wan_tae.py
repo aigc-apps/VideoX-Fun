@@ -8,6 +8,7 @@ from typing import Tuple, Union
 import os
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import namedtuple
@@ -110,7 +111,13 @@ class TGrow(nn.Module):
         return x.reshape(-1, C, H, W)
 
 
-def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
+def _run_memblock(block, x, memory, gradient_checkpointing):
+    if gradient_checkpointing and torch.is_grad_enabled():
+        return torch.utils.checkpoint.checkpoint(block, x, memory, use_reentrant=False)
+    return block(x, memory)
+
+
+def apply_model_with_memblocks_parallel(model, x, show_progress_bar, gradient_checkpointing=False):
     """Apply a sequential model with memblocks over the time axis in parallel.
 
     Args:
@@ -132,7 +139,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
             _x = x.reshape(N, T, C, H, W)
             # pad with zeros along time axis (i.e. empty memory), slice
             block_memory = F.pad(_x, (0, 0, 0, 0, 0, 0, 1, 0), value=0)[:, :T].reshape(x.shape)
-            x = b(x, block_memory)
+            x = _run_memblock(b, x, block_memory, gradient_checkpointing)
         else:
             x = b(x)
     NT, C, H, W = x.shape
@@ -140,7 +147,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
     return x.view(N, T, C, H, W)
 
 
-def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None):
+def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None, gradient_checkpointing=False):
     """Process the work queue (a graph traversal over blocks and timesteps)
     until an output frame is produced or the queue is empty.
     Mutates memory and work_queue in place.
@@ -156,10 +163,8 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
         b = model[i]
         if isinstance(b, (MemBlock, SuperMemBlock)):
             # mem blocks are simple since we're visiting the graph in causal order
-            if memory[i] is None:
-                xt_new = b(xt, xt * 0)
-            else:
-                xt_new = b(xt, memory[i])
+            past = xt * 0 if memory[i] is None else memory[i]
+            xt_new = _run_memblock(b, xt, past, gradient_checkpointing)
             memory[i] = xt
             work_queue.insert(0, TWorkItem(xt_new, i + 1))
         elif isinstance(b, TPool):
@@ -185,7 +190,7 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
     return None
 
 
-def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
+def apply_model_with_memblocks_sequential(model, x, show_progress_bar, gradient_checkpointing=False):
     """Apply a sequential model with memblocks, iterating over timesteps as
     well as blocks (slow but uses O(1) memory w.r.t. sequence length).
 
@@ -202,14 +207,16 @@ def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
     progress_bar = tqdm(range(len(work_queue)), disable=not show_progress_bar)
     out = []
     while work_queue:
-        xt = apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar)
+        xt = apply_model_with_memblocks_sequential_single_step(
+            model, memory, work_queue, progress_bar, gradient_checkpointing
+        )
         if xt is not None:
             out.append(xt)
     progress_bar.close()
     return torch.cat(out, 1)
 
 
-def apply_model_with_memblocks(model, x, parallel, show_progress_bar):
+def apply_model_with_memblocks(model, x, parallel, show_progress_bar, gradient_checkpointing=False):
     """Apply a sequential model with memblocks to the given input.
 
     Args:
@@ -222,9 +229,9 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar):
     Returns NTCHW tensor of output data.
     """
     if parallel:
-        return apply_model_with_memblocks_parallel(model, x, show_progress_bar)
+        return apply_model_with_memblocks_parallel(model, x, show_progress_bar, gradient_checkpointing)
     else:
-        return apply_model_with_memblocks_sequential(model, x, show_progress_bar)
+        return apply_model_with_memblocks_sequential(model, x, show_progress_bar, gradient_checkpointing)
 
 
 class TAEWan(nn.Module):
@@ -366,7 +373,7 @@ class TAEWan(nn.Module):
             x = F.pixel_shuffle(x, self.patch_size)
         return x.clamp_(0, 1)
 
-    def encode_video(self, x, parallel=True, show_progress_bar=False):
+    def encode_video(self, x, parallel=True, show_progress_bar=False, gradient_checkpointing=False):
         """Encode a sequence of frames.
 
         Args:
@@ -384,9 +391,9 @@ class TAEWan(nn.Module):
             n_pad = self.t_downscale - x.shape[1] % self.t_downscale
             padding = x[:, -1:].repeat_interleave(n_pad, dim=1)
             x = torch.cat([x, padding], 1)
-        return apply_model_with_memblocks(self.encoder, x, parallel, show_progress_bar)
+        return apply_model_with_memblocks(self.encoder, x, parallel, show_progress_bar, gradient_checkpointing)
 
-    def decode_video(self, x, parallel=True, show_progress_bar=False):
+    def decode_video(self, x, parallel=True, show_progress_bar=False, gradient_checkpointing=False):
         """Decode a sequence of frames.
 
         Args:
@@ -396,7 +403,7 @@ class TAEWan(nn.Module):
               if False, frames will be processed sequentially.
         Returns NTCHW RGB tensor with ~[0, 1] values.
         """
-        x = apply_model_with_memblocks(self.decoder, x, parallel, show_progress_bar)
+        x = apply_model_with_memblocks(self.decoder, x, parallel, show_progress_bar, gradient_checkpointing)
         x = self.postprocess_output_frames(x)
         return x[:, self.frames_to_trim :]
 
@@ -414,9 +421,6 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     - taew2_2*.pth / .safetensors: Wan 2.2 5B (48ch latent, patch_size=2)
     """
 
-    # The TAE has no checkpointed block path, but the flag is declared so that
-    # `enable_gradient_checkpointing()` (a shared training-script call) is a
-    # no-op instead of raising, mirroring AutoencoderKLWan.
     _supports_gradient_checkpointing = True
 
     # per-channel statistics of the full-size Wan VAE latent spaces
@@ -608,7 +612,6 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.gradient_checkpointing = False
 
     def _set_gradient_checkpointing(self, *args, **kwargs):
-        # TAE has no gradient checkpointing path; accept the flag for API parity.
         if "value" in kwargs:
             self.gradient_checkpointing = kwargs["value"]
         elif "enable" in kwargs:
@@ -627,7 +630,10 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         x = x.permute(0, 2, 1, 3, 4)  # BCTHW -> NTCHW
         zs = []
         for u in x:
-            z = self.model.encode_video(u.unsqueeze(0), parallel=self.parallel).squeeze(0)
+            z = self.model.encode_video(
+                u.unsqueeze(0), parallel=self.parallel,
+                gradient_checkpointing=self.gradient_checkpointing,
+            ).squeeze(0)
             zs.append(z.permute(1, 0, 2, 3))  # TCHW -> CTHW
         return torch.stack(zs)
 
@@ -652,7 +658,10 @@ class AutoencoderTinyWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         zs = zs.permute(0, 2, 1, 3, 4)  # BCTHW -> NTCHW
         dec = []
         for u in zs:
-            d = self.model.decode_video(u.unsqueeze(0), parallel=self.parallel).squeeze(0)
+            d = self.model.decode_video(
+                u.unsqueeze(0), parallel=self.parallel,
+                gradient_checkpointing=self.gradient_checkpointing,
+            ).squeeze(0)
             d = d.mul_(2).sub_(1).clamp_(-1, 1)  # [0, 1] -> [-1, 1]
             dec.append(d)
         dec = torch.stack(dec).permute(0, 2, 1, 3, 4)  # NTCHW -> BCTHW

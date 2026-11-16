@@ -54,10 +54,13 @@ from .tqdm_bar import PauseAwareTqdm
 from .training_utils import (add_training_precision_args,
                              apply_trainable_module_learning_rates,
                              build_trainable_optimizer_groups,
+                             checkpoint_phase,
                              configure_gradient_checkpointing_save_on_cpu,
                              configure_training_precision, create_optimizer,
                              initialize_training_seed,
-                             parse_trainable_module_learning_rates)
+                             load_diffusers_checkpoint,
+                             parse_trainable_module_learning_rates,
+                             prune_lora_exports, save_lora_weights)
 from .trigflow_sampler import (RectifiedFlow_TrigFlowWrapper,
                                sample_trigflow_timesteps)
 from .utils import (SegmentVideoSaver, StreamVideoSaver, calculate_dimensions,

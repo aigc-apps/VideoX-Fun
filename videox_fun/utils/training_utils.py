@@ -1927,7 +1927,20 @@ def configure_gradient_checkpointing_save_on_cpu(enabled):
         checkpoint_with_cpu_offload.videox_cpu_checkpoint_policy = _checkpoint_cpu_policy
         return checkpoint_with_cpu_offload
 
-    checkpoint_module.checkpoint = wrap(checkpoint_module.checkpoint)
+    original_checkpoint = checkpoint_module.checkpoint
+    checkpoint_module.checkpoint = wrap(original_checkpoint)
+
+    # Training dependencies can import this function before arguments are
+    # parsed. Update only cached aliases of that exact function; unrelated
+    # checkpoint implementations retain their own behavior.
+    import sys
+    for name, module in list(sys.modules.items()):
+        if not name.startswith(("paifuser.", "turbox.", "transformers.", "diffusers.")) or module is None:
+            continue
+        namespace = vars(module)
+        for key, value in list(namespace.items()):
+            if value is original_checkpoint:
+                namespace[key] = checkpoint_module.checkpoint
     try:
         fsdp_checkpoint = importlib.import_module(
             "torch.distributed.algorithms._checkpoint.checkpoint_wrapper"
@@ -2076,6 +2089,45 @@ def create_optimizer(parameters, args, *, learning_rate=None):
         optimizer_cls = AdamW
     return optimizer_cls(parameters, lr=lr, betas=(args.adam_beta1, args.adam_beta2),
                          weight_decay=args.adam_weight_decay, eps=args.adam_epsilon)
+
+
+def save_lora_weights(path, state_dict, *, metadata=None):
+    """Atomically publish a standalone safetensors LoRA export."""
+    from safetensors.torch import save_file
+
+    path = os.fspath(path)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    os.close(fd)
+    try:
+        save_file(state_dict, temporary, metadata=metadata)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def prune_lora_exports(output_dir, limit, current_path):
+    """Remove older standalone exports after the current export was published."""
+    if limit is None:
+        return
+    checkpoints = []
+    for name in os.listdir(output_dir):
+        match = re.fullmatch(r"checkpoint-([0-9]+)[.]safetensors", name)
+        path = os.path.join(output_dir, name)
+        if match and os.path.isfile(path):
+            checkpoints.append((int(match.group(1)), path))
+    checkpoints.sort()
+    keep = max(1, int(limit))
+    current = os.path.abspath(os.fspath(current_path))
+    for step, path in checkpoints[:-keep]:
+        if os.path.abspath(path) == current:
+            continue
+        os.unlink(path)
+        compatible = os.path.join(output_dir, f"checkpoint-{step}-compatible_with_comfyui.safetensors")
+        if os.path.isfile(compatible):
+            os.unlink(compatible)
 
 
 # Training precision and trainable-state handling.
@@ -2278,6 +2330,490 @@ def configure_ddp_gradient_reduction(accelerator, result):
                 warn_gradient_reduction(accelerator, f"Cannot install the FP32 DDP communication hook: {exc}")
                 continue
         model._videox_fp32_gradient_reduction = True
+
+
+# ZeRO-3 backport of DeepSpeed frozen-parameter activation checkpoint support
+# (upstream DeepSpeed PR 8148). Keep the state on the coordinator, not the model,
+# so repeated prepare calls and different models do not share parameter state.
+_zero3_recompute_install_lock = threading.RLock()
+_zero3_recompute_states_lock = threading.RLock()
+_zero3_recompute_states = WeakKeyDictionary()
+_zero3_recompute_warned = False
+
+
+class _Zero3RecomputeState:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.active = {}
+        self.parameters = {}
+        self.leaf_events = {}
+
+
+def _zero3_recompute_state(coordinator):
+    with _zero3_recompute_states_lock:
+        state = _zero3_recompute_states.get(coordinator)
+        if state is None:
+            state = _Zero3RecomputeState()
+            _zero3_recompute_states[coordinator] = state
+        return state
+
+
+def configure_zero3_recompute(accelerator):
+    """Install the frozen-parameter fix on validated ZeRO-3 runtimes.
+
+    The upstream fix is present from DeepSpeed 0.19.3. Older supported versions
+    use the same parameter ownership and cleanup approach. Unsupported runtimes
+    retain their native behavior and the existing model-specific fallback.
+    """
+    if getattr(accelerator.distributed_type, "name", "") != "DEEPSPEED":
+        return False
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if getattr(plugin, "zero_stage", None) != 3:
+        return False
+
+    try:
+        import deepspeed
+        from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
+        from deepspeed.runtime.zero.partitioned_param_coordinator import (
+            PartitionedParameterCoordinator, iter_params)
+        from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3
+        from deepspeed.utils import z3_leaf_module
+        from deepspeed.accelerator import get_accelerator
+        from packaging.version import Version
+        version = Version(deepspeed.__version__.split("+")[0])
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+    coordinator_type = PartitionedParameterCoordinator
+    offload_type = DeepSpeedZeRoOffload
+    optimizer_type = DeepSpeedZeroOptimizer_Stage3
+    with _zero3_recompute_install_lock:
+        # Detect the upstream implementation by capability, including vendors
+        # that backported it without changing the DeepSpeed version.
+        if callable(getattr(coordinator_type, "release_backward_leftovers", None)):
+            return True
+        if not (Version("0.15.4") <= version < Version("0.19.3")):
+            return False
+        required = ((coordinator_type, "fetch_sub_module"),
+                    (coordinator_type, "_PartitionedParameterCoordinator__release_param"),
+                    (offload_type, "post_sub_module_backward_function"),
+                    (offload_type, "get_param_coordinator"))
+        if not callable(getattr(torch._C, "_current_graph_task_id", None)) or not all(
+                callable(getattr(owner, name, None)) for owner, name in required):
+            return False
+        cleanup_name = "backward_epilogue" if "backward_epilogue" in optimizer_type.__dict__ else "backward"
+        original_cleanup = getattr(optimizer_type, cleanup_name, None)
+        if not callable(original_cleanup):
+            return False
+        if getattr(coordinator_type.fetch_sub_module, "videox_zero3_frozen_recompute", False):
+            return True
+
+        original_fetch = coordinator_type.fetch_sub_module
+        original_post = offload_type.post_sub_module_backward_function
+
+        @functools.wraps(original_fetch)
+        def fetch(coordinator, module, forward):
+            state = _zero3_recompute_state(coordinator)
+            module_id = getattr(module, "ds_id", None)
+            if module_id is None:
+                module_id = module.id
+            ticket = None
+            is_fetcher = False
+            if not forward and z3_leaf_module(module):
+                with state.lock:
+                    ticket = state.leaf_events.get(module_id)
+                    if ticket is None:
+                        ticket = {"event": threading.Event(), "error": None}
+                        state.leaf_events[module_id] = ticket
+                        is_fetcher = True
+                if not is_fetcher:
+                    ticket["event"].wait()
+                    if ticket["error"] is not None:
+                        raise RuntimeError("ZeRO-3 leaf parameter fetch failed") from ticket["error"]
+                    return
+            try:
+                with state.lock:
+                    if not forward:
+                        state.active[module_id] = module
+                    elif torch._C._current_graph_task_id() != -1 and state.active:
+                        owner = next(reversed(state.active.values()))
+                        owner_id = getattr(owner, "ds_id", None)
+                        if owner_id is None:
+                            owner_id = owner.id
+                        params = state.parameters.setdefault(owner_id, set())
+                        for param in iter_params(module, recurse=z3_leaf_module(module)):
+                            if not param.requires_grad:
+                                params.add(param)
+                                param.ds_active_sub_modules.add(owner_id)
+                return original_fetch(coordinator, module, forward)
+            except BaseException as exc:
+                if is_fetcher:
+                    ticket["error"] = exc
+                raise
+            finally:
+                if is_fetcher:
+                    with state.lock:
+                        state.leaf_events.pop(module_id, None)
+                        ticket["event"].set()
+
+        @torch.no_grad()
+        def release_frozen(coordinator, state, module, include_module=False):
+            module_id = getattr(module, "ds_id", None)
+            if module_id is None:
+                module_id = module.id
+            params = state.parameters.pop(module_id, set())
+            if include_module:
+                params.update(iter_params(module, recurse=z3_leaf_module(module)))
+            fast_leaf = (not include_module and z3_leaf_module(module)
+                         and getattr(coordinator, "fast_sharding_for_leaf_module", False))
+            empty = (torch.empty(1, device=get_accelerator().current_device_name())
+                     if fast_leaf else None)
+            for param in params:
+                param.ds_active_sub_modules.discard(module_id)
+                if not param.ds_persist and not param.is_external_param:
+                    if fast_leaf:
+                        coordinator._PartitionedParameterCoordinator__release_param(param, False)
+                        param.data = empty
+                    else:
+                        coordinator._PartitionedParameterCoordinator__release_param(param)
+
+        @functools.wraps(original_post)
+        def post(offload, module):
+            result = original_post(offload, module)
+            coordinator = offload.get_param_coordinator()
+            state = _zero3_recompute_state(coordinator)
+            with state.lock:
+                release_frozen(coordinator, state, module)
+                module_id = getattr(module, "ds_id", None)
+                state.active.pop(module.id if module_id is None else module_id, None)
+            return result
+
+        @functools.wraps(original_cleanup)
+        def cleanup(optimizer, *args, **kwargs):
+            result = original_cleanup(optimizer, *args, **kwargs)
+            coordinator = optimizer.parameter_offload.get_param_coordinator()
+            state = _zero3_recompute_state(coordinator)
+            with state.lock:
+                while state.active:
+                    _, module = state.active.popitem()
+                    release_frozen(coordinator, state, module, include_module=True)
+            return result
+
+        fetch.videox_zero3_frozen_recompute = True
+        coordinator_type.fetch_sub_module = fetch
+        offload_type.post_sub_module_backward_function = post
+        setattr(optimizer_type, cleanup_name, cleanup)
+        return True
+
+
+def warn_unsupported_zero3_recompute(accelerator, args):
+    """Make an unsupported frozen-model checkpoint runtime visible once."""
+    global _zero3_recompute_warned
+    if _zero3_recompute_warned or getattr(accelerator.distributed_type, "name", "") != "DEEPSPEED":
+        return
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if getattr(plugin, "zero_stage", None) != 3:
+        return
+    for model in args:
+        if (isinstance(model, torch.nn.Module)
+                and any(getattr(module, "gradient_checkpointing", False) for module in model.modules())
+                and any(not parameter.requires_grad for parameter in model.parameters())):
+            _zero3_recompute_warned = True
+            if accelerator.is_main_process:
+                from .. import _checkpoint_warning
+                _checkpoint_warning("DeepSpeed ZeRO-3 frozen-parameter recomputation is not validated "
+                                    "for this runtime; the existing model-specific fallback remains active.")
+            return
+
+
+def configure_zero3_checkpoint_hooks(accelerator, result):
+    """Balance ZeRO-3 module stacks when PyTorch stops recomputation early."""
+    if getattr(accelerator.distributed_type, "name", "") != "DEEPSPEED":
+        return
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if getattr(plugin, "zero_stage", None) != 3:
+        return
+    import sys
+    import torch.utils.checkpoint as checkpoint
+    from deepspeed.runtime.engine import DeepSpeedEngine
+    from deepspeed.runtime.zero import parameter_offload
+
+    stop_error = getattr(checkpoint, "_StopRecomputationError", None)
+    if not isinstance(stop_error, type):
+        return
+
+    def is_zero_post_hook(hook):
+        candidates = [hook]
+        for cell in getattr(hook, "__closure__", None) or ():
+            try:
+                candidates.append(cell.cell_contents)
+            except ValueError:
+                pass
+        return any(getattr(value, "__name__", "") == "_post_forward_module_hook"
+                   and getattr(value, "__module__", "") == parameter_offload.__name__
+                   for value in candidates)
+
+    def wrap(hook):
+        @functools.wraps(hook)
+        def post_forward(module, inputs, output):
+            if isinstance(sys.exc_info()[1], stop_error):
+                stack = parameter_offload.FWD_MODULE_STACK
+                if stack and stack[-1] is module:
+                    stack.pop()
+                return output
+            return hook(module, inputs, output)
+        post_forward.videox_zero3_checkpoint_hook = True
+        return post_forward
+
+    objects = result if isinstance(result, (tuple, list)) else (result,)
+    for engine in objects:
+        engine = getattr(engine, "_orig_mod", engine)
+        if not isinstance(engine, DeepSpeedEngine):
+            continue
+        for module in engine.module.modules():
+            always_called = getattr(module, "_forward_hooks_always_called", None)
+            if not isinstance(always_called, dict):
+                continue
+            for key, hook in list(module._forward_hooks.items()):
+                if not getattr(hook, "videox_zero3_checkpoint_hook", False) and is_zero_post_hook(hook):
+                    module._forward_hooks[key] = wrap(hook)
+                    always_called[key] = True
+
+
+def configure_minimax_zero3_lora_checkpointing(accelerator, args):
+    """Keep ZeRO-3 parameter lifetimes valid during MiniMax LoRA recomputation."""
+    if getattr(accelerator.distributed_type, "name", "") != "DEEPSPEED":
+        return
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if getattr(plugin, "zero_stage", None) != 3:
+        return
+    for model in args:
+        if not isinstance(model, torch.nn.Module) or not getattr(model, "gradient_checkpointing", False):
+            continue
+        if getattr(model, "_videox_zero3_lora_checkpointing", False):
+            continue
+        if not any(p.requires_grad and ("lora_" in name or ".lora_adapter." in name)
+                   for name, p in model.named_parameters()):
+            continue
+        # Detect the actual MiniMax block types, including subclasses, without
+        # importing the model package for unrelated DeepSpeed training.
+        blocks = {type(module) for module in model.modules()
+                  if any(cls.__name__ in ("MiniMaxH3TransformerBlock", "MiniMaxH3TokenRefinerBlock")
+                         and cls.__module__.endswith("minimax_h3_transformer3d")
+                         for cls in type(module).__mro__)}
+        if not blocks:
+            continue
+        try:
+            from deepspeed.utils import set_z3_leaf_modules
+        except ImportError:
+            import warnings
+            warnings.warn("This DeepSpeed version lacks ZeRO-3 leaf modules; MiniMax LoRA gradient checkpointing may fail.")
+            continue
+        set_z3_leaf_modules(model, list(blocks))
+
+        def require_checkpoint_input_grad(module, inputs, output):
+            if (torch.is_grad_enabled() and isinstance(output, torch.Tensor)
+                    and output.is_floating_point() and not output.requires_grad):
+                output.requires_grad_(True)
+            return output
+
+        for name in ("proj_in", "context_embedder"):
+            module = getattr(model, name, None)
+            if isinstance(module, torch.nn.Module):
+                module.register_forward_hook(require_checkpoint_input_grad)
+        model._videox_zero3_lora_checkpointing = True
+
+
+def get_lora_state_dict(accelerator, model):
+    """Gather LoRA weights, using ZeRO optimizer FP32 masters when available.
+
+    ZeRO's normal model export can require a full-model gather and may contain
+    rounded BF16 parameters. All ranks must participate in this method.
+    """
+    mode = getattr(accelerator.distributed_type, "name", "")
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    if mode == "DEEPSPEED" and getattr(plugin, "zero_stage", None) in (2, 3):
+        try:
+            from deepspeed.utils import safe_get_full_fp32_param
+        except ImportError:
+            # Preserve native behavior on older DeepSpeed, but do not imply
+            # that its model export retains the optimizer's FP32 precision.
+            import warnings
+            warnings.warn("DeepSpeed cannot expose FP32 master weights; the LoRA export uses native model weights and may have reduced precision.")
+            return accelerator.get_state_dict(model, unwrap=True)
+        import sys
+        unwrapped = accelerator.unwrap_model(model)
+        state = {}
+        for name, param in unwrapped.named_parameters():
+            if not param.requires_grad:
+                continue
+            full = safe_get_full_fp32_param(param)
+            def capture():
+                if full is None:
+                    raise RuntimeError(f"No FP32 optimizer master parameter for {name}")
+                if accelerator.is_main_process:
+                    state[name] = full.detach().cpu().clone()
+            checkpoint_phase(capture)
+            del full
+        lora_module = sys.modules.get(f"{__package__}.lora_utils")
+        lora_type = getattr(lora_module, "LoRAModule", None)
+        if lora_type is not None and accelerator.is_main_process:
+            for prefix, module in unwrapped.named_modules():
+                if isinstance(module, lora_type):
+                    for key, value in module.named_buffers(recurse=False):
+                        if key not in module._non_persistent_buffers_set:
+                            state[f"{prefix}.{key}" if prefix else key] = value.detach().cpu().clone()
+        return state
+    if mode == "FSDP" and getattr(accelerator, "is_fsdp2", False):
+        from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+        return get_model_state_dict(model, options=StateDictOptions(full_state_dict=True, cpu_offload=True))
+    return accelerator.get_state_dict(model, unwrap=True)
+
+
+_fsdp2_optimizer_restore_lock = threading.RLock()
+
+
+@contextmanager
+def allow_missing_fsdp2_optimizer_states(accelerator):
+    """Use native FSDP2 restore when some parameters have never had a state."""
+    plugin = getattr(accelerator.state, "fsdp_plugin", None)
+    if (getattr(accelerator.distributed_type, "name", "") != "FSDP"
+            or getattr(plugin, "fsdp_version", 1) != 2):
+        yield
+        return
+    try:
+        import dataclasses
+        import torch.distributed.checkpoint as dcp
+        import torch.distributed.checkpoint.state_dict as state_dict_api
+        state_dict_api.set_optimizer_state_dict
+        dcp.load
+    except (ImportError, AttributeError):
+        yield
+        return
+
+    # Accelerate imports these PyTorch APIs inside its native restore function.
+    # Scope the changes to this thread and restore both APIs on every exit.
+    with _fsdp2_optimizer_restore_lock:
+        original_set = state_dict_api.set_optimizer_state_dict
+        original_load = dcp.load
+        owner_thread = threading.get_ident()
+
+        @functools.wraps(original_load)
+        def load(*args, **kwargs):
+            state = args[0] if args else kwargs.get("state_dict")
+            optimizer_state = state.get("optimizer") if isinstance(state, dict) else None
+            targets = optimizer_state.get("state") if isinstance(optimizer_state, dict) else None
+            reader = kwargs.get("storage_reader")
+            if (threading.get_ident() == owner_thread and isinstance(targets, dict)
+                    and reader is not None and hasattr(reader, "read_metadata")):
+                try:
+                    metadata = checkpoint_phase(reader.read_metadata)
+                except Exception:
+                    # Keep the native loader's error handling for unreadable metadata.
+                    return original_load(*args, **kwargs)
+                paths = getattr(metadata, "planner_data", None)
+                if isinstance(paths, dict) and any(
+                    len(path) >= 2 and path[:2] == ("optimizer", "param_groups")
+                    for path in paths.values() if isinstance(path, tuple)
+                ):
+                    present = {path[2] for path in paths.values()
+                               if isinstance(path, tuple) and len(path) >= 4
+                               and path[:2] == ("optimizer", "state")}
+                    # Skip only whole states that do not exist. Missing fields of
+                    # an existing state still go through the native strict planner.
+                    for name in list(targets):
+                        if name not in present:
+                            del targets[name]
+            return original_load(*args, **kwargs)
+
+        @functools.wraps(original_set)
+        def set_optimizer_state_dict(*args, **kwargs):
+            options = kwargs.get("options")
+            if (threading.get_ident() != owner_thread or options is None
+                    or not dataclasses.is_dataclass(options) or not hasattr(options, "strict")):
+                return original_set(*args, **kwargs)
+            kwargs = dict(kwargs, options=dataclasses.replace(options, strict=False))
+            model = args[0] if len(args) > 0 else kwargs.get("model")
+            optimizers = args[1] if len(args) > 1 else kwargs.get("optimizers")
+            saved = args[2] if len(args) > 2 else kwargs.get("optim_state_dict")
+            states = saved.get("state") if isinstance(saved, dict) else None
+            names = set(states) if isinstance(states, dict) and all(isinstance(k, str) for k in states) else None
+            if getattr(options, "broadcast_from_rank0", False) and dist.is_initialized():
+                payload = [names if dist.get_rank() == 0 else None]
+                dist.broadcast_object_list(payload, src=0)
+                names = payload[0]
+            result = original_set(*args, **kwargs)
+            if model is None or optimizers is None or names is None:
+                return result
+
+            # PyTorch may create dummy Adam states on a fresh optimizer before
+            # loading. Remove only states for parameters absent from the saved
+            # state so their first future update starts at the correct step.
+            try:
+                parameters = list(model.named_parameters(remove_duplicate=False))
+            except TypeError:
+                parameters = list(model.named_parameters())
+            by_param = {}
+            for name, param in parameters:
+                by_param.setdefault(id(param), set()).add(name)
+            if not names.issubset({name for name, _ in parameters}):
+                return result
+            optimizers = optimizers if isinstance(optimizers, (tuple, list)) else (optimizers,)
+            for optimizer in optimizers:
+                optimizer = getattr(optimizer, "optimizer", optimizer)
+                for group in optimizer.param_groups:
+                    for param in group["params"]:
+                        aliases = by_param.get(id(param))
+                        if aliases and aliases.isdisjoint(names):
+                            optimizer.state.pop(param, None)
+            return result
+
+        dcp.load = load
+        state_dict_api.set_optimizer_state_dict = set_optimizer_state_dict
+        try:
+            yield
+        finally:
+            if state_dict_api.set_optimizer_state_dict is set_optimizer_state_dict:
+                state_dict_api.set_optimizer_state_dict = original_set
+            if dcp.load is load:
+                dcp.load = original_load
+
+
+@contextmanager
+def preserve_fsdp2_lora_alpha(accelerator, args):
+    """Keep Kohya alpha buffers through Accelerate's meta-device FSDP2 load."""
+    plugin = getattr(accelerator.state, "fsdp_plugin", None)
+    use_meta_load = (
+        getattr(accelerator.distributed_type, "name", "") == "FSDP"
+        and getattr(plugin, "fsdp_version", 1) == 2
+        and getattr(plugin, "cpu_ram_efficient_loading", False)
+    )
+    changed = []
+    if use_meta_load:
+        import sys
+
+        # A model containing this class must already have loaded its module;
+        # do not import optional LoRA dependencies for unrelated FSDP models.
+        lora_module = sys.modules.get(f"{__package__}.lora_utils")
+        lora_type = getattr(lora_module, "LoRAModule", None)
+        seen = set()
+        for model in args if lora_type is not None else ():
+            if not isinstance(model, torch.nn.Module):
+                continue
+            for module in model.modules():
+                if (isinstance(module, lora_type) and id(module) not in seen
+                        and module._buffers.get("alpha") is not None
+                        and "alpha" not in module._non_persistent_buffers_set):
+                    seen.add(id(module))
+                    module._non_persistent_buffers_set.add("alpha")
+                    changed.append(module)
+    try:
+        yield
+    finally:
+        # Accelerate rematerializes non-persistent buffers after meta loading.
+        # Alpha is part of the Kohya checkpoint format, so restore persistence.
+        for module in changed:
+            module._non_persistent_buffers_set.discard("alpha")
 
 
 def prepare_full_bf16(accelerator, args):
@@ -2739,28 +3275,33 @@ def install_training_precision():
             prepare_full_bf16(accelerator, args)
         elif enabled:
             promote_optimizer_parameters(accelerator, args)
+        if not configure_zero3_recompute(accelerator):
+            configure_minimax_zero3_lora_checkpointing(accelerator, args)
+            warn_unsupported_zero3_recompute(accelerator, args)
         configure_fsdp1_optimizer_identity(accelerator, args)
         if not _full_bf16:
             configure_declared_fsdp_precision(accelerator, args)
         configure_gradient_reduction(accelerator)
         plugin = getattr(accelerator.state, "fsdp_plugin", None)
         fsdp2 = getattr(accelerator.distributed_type, "name", "") == "FSDP" and getattr(plugin, "fsdp_version", 1) == 2
-        if _full_bf16 and fsdp2:
-            # Accelerate's FSDP2 wrapper otherwise upcasts trainable parameters
-            # before sharding. The already configured FSDP BF16 policy remains
-            # active; restore the state even when prepare raises.
-            with _fsdp2_precision_lock:
-                state = accelerator.state
-                if not hasattr(state, "_mixed_precision"):
-                    raise RuntimeError("Unsupported Accelerate FSDP2 precision runtime.")
-                previous_precision = state._mixed_precision
-                state._mixed_precision = "no"
-                try:
-                    result = current_prepare(accelerator, *args, **kwargs)
-                finally:
-                    state._mixed_precision = previous_precision
-        else:
-            result = current_prepare(accelerator, *args, **kwargs)
+        with preserve_fsdp2_lora_alpha(accelerator, args):
+            if _full_bf16 and fsdp2:
+                # Accelerate's FSDP2 wrapper otherwise upcasts trainable parameters
+                # before sharding. The already configured FSDP BF16 policy remains
+                # active; restore the state even when prepare raises.
+                with _fsdp2_precision_lock:
+                    state = accelerator.state
+                    if not hasattr(state, "_mixed_precision"):
+                        raise RuntimeError("Unsupported Accelerate FSDP2 precision runtime.")
+                    previous_precision = state._mixed_precision
+                    state._mixed_precision = "no"
+                    try:
+                        result = current_prepare(accelerator, *args, **kwargs)
+                    finally:
+                        state._mixed_precision = previous_precision
+            else:
+                result = current_prepare(accelerator, *args, **kwargs)
+        configure_zero3_checkpoint_hooks(accelerator, result)
         if _full_bf16:
             cast_fsdp1_flat_parameters_to_bf16(accelerator, result)
             import torch
@@ -2799,7 +3340,15 @@ def install_training_precision():
     @functools.wraps(current_load)
     def load_state(accelerator, *args, **kwargs):
         from .. import _accelerate_patch_requested
-        if not _accelerate_patch_requested() or getattr(accelerator.distributed_type, "name", "") not in ("NO", "MULTI_GPU", "MULTI_CPU"):
+        if not _accelerate_patch_requested():
+            return current_load(accelerator, *args, **kwargs)
+        if getattr(accelerator.distributed_type, "name", "") == "FSDP":
+            from .. import _accelerate_patch_disabled_owners
+            if accelerator not in _accelerate_patch_disabled_owners:
+                with allow_missing_fsdp2_optimizer_states(accelerator):
+                    return current_load(accelerator, *args, **kwargs)
+            return current_load(accelerator, *args, **kwargs)
+        if getattr(accelerator.distributed_type, "name", "") not in ("NO", "MULTI_GPU", "MULTI_CPU"):
             return current_load(accelerator, *args, **kwargs)
         handle = accelerator.register_load_state_pre_hook(
             functools.partial(load_trainable_lora_state, accelerator)
@@ -2813,6 +3362,7 @@ def install_training_precision():
     def accelerator_checkpoint_staging_path(accelerator, path):
         return checkpoint_staging_path(accelerator, path)
 
+    Accelerator.get_lora_state_dict = get_lora_state_dict
     Accelerator.checkpoint_staging_path = accelerator_checkpoint_staging_path
     Accelerator.begin_checkpoint_group = begin_checkpoint_group
     Accelerator.abort_checkpoint_group = abort_checkpoint_group

@@ -38,7 +38,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.state import AcceleratorState
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (EMAModel,
@@ -702,6 +702,8 @@ def main():
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        # The last text branch does not contribute to the image output.
+        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
     )
     accelerator.videox_checkpoint_all_ranks = True
     initialize_training_seed(args, accelerator)
