@@ -13,7 +13,7 @@ This document provides a complete workflow for training the Wan Latent Upsampler
 > loss = MSE(z_pred, z_hr)                     # latent-space MSE (default)
 > ```
 >
-> The VAE is **frozen**; only the upsampler is trained. The low/high-resolution pairs are created on-the-fly from ordinary videos, so no pre-paired data is needed. Optional switches add degradation, flow-matching noise, or a pixel-space loss (see [3.5](#35-advanced-training-options)).
+> The VAE is **frozen**; only the upsampler is trained. The low/high-resolution pairs are created on-the-fly from ordinary videos, so no pre-paired data is needed. Optional switches add flow-matching noise or a pixel-space loss (see [3.5](#35-advanced-training-options)).
 
 The upsampler targets the Wan2.2 2.2VAE latent space (48 channels, `16x` spatial compression). The `--config_path` must contain a `latent_upsampler_kwargs` block, which fixes the upsampler architecture and spatial scale:
 
@@ -277,15 +277,6 @@ You can configure validation parameters to periodically run **encode low-res -> 
 ### 3.5 Advanced Training Options
 
 These switches are off by default; the plain latent-MSE regression in **3.2** is the recommended starting point.
-
-**Degradation (restoration + super-resolution)**:
-
-Apply random degradation to the high-res frames **before** the spatial downsample, so the upsampler learns to restore as well as upsample.
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--enable_degradation` | Enable random degradation of the high-res frames | off |
-| `--degradation_ops_range MIN MAX` | Range of degradation operation count per clip | `1 4` |
 
 **Noisy training (match inference denoising steps)**:
 

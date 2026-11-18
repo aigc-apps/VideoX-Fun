@@ -249,7 +249,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--video_sample_size` | 训练的最大视频分辨率 | 960 |
 | `--token_sample_size` | token 长度采样尺寸 | 960 |
 | `--video_sample_stride` | 抽帧步长（MiniMax-H3 为 24 fps） | 1 |
-| `--video_sample_n_frames` | 采样帧数，须满足视频 VAE 的 `17*n+5` 形式（时长保持在 5 到 15 秒之间） | 124 |
+| `--video_sample_n_frames` | 采样帧数，须满足视频 VAE 的 `17*n+5` 形式（时长保持在 0 到 16 秒之间） | 124 |
 | `--video_repeat` | 每个 epoch 中每个视频重复的次数 | 1 |
 | `--gradient_accumulation_steps` | 梯度累积步数（等效更大的 batch） | 1 |
 | `--dataloader_num_workers` | DataLoader 子进程数 | 4 |
@@ -280,6 +280,23 @@ accelerate launch --mixed_precision="bf16" --use_fsdp --fsdp_auto_wrap_policy TR
 | `--validation_epochs` | 每 N 个 epoch 执行一次验证 | 5 |
 | `--validation_prompts` | 验证时使用的 prompt | `"A man in a blue blazer..."` |
 
+
+### 为部分模块指定低学习率
+
+`--trainable_modules_low_learning_rate` 根据参数名称中的子串选择模块，`--low_learning_rate` 指定这些模块的学习率：
+
+```bash
+--learning_rate 1e-5 \
+--trainable_modules "." \
+--trainable_modules_low_learning_rate "audio_proj" "video_proj" \
+--low_learning_rate 2e-6
+```
+
+模块名称仅为示例，请以实际模型参数名为准。指定 `--low_learning_rate` 时，匹配的模块优先使用该学习率；没有匹配到可训练参数时会提示。未指定该参数时，低学习率默认为主学习率的一半；低学习率模块优先于普通模块规则。
+
+启用 `--scale_lr` 时，生成器的低学习率也按梯度累积步数、每卡 batch size 和进程数放大。蒸馏训练的 critic 沿用原有行为，不对其学习率应用 `--scale_lr`。学习率可设为 0，但这不会关闭梯度计算。
+
+恢复 checkpoint 时，应沿用保存时的模块选择和分组；改变模块选择可能导致优化器状态不兼容。恢复状态也可能重新设置学习率和调度器状态。
 
 ### 3.4 训练验证
 
@@ -489,6 +506,18 @@ NCCL_DEBUG=INFO
 
 - **数据同步**：所有机器必须能访问相同的数据路径（NFS/共享存储）
 
+### 3.8 混合精度和断点续训
+
+导入 `videox_fun` 时会自动安装训练精度处理：在 BF16/FP16 混合精度下，普通分布式训练和 FSDP2 使用 FP32 的可训练主参数；FSDP1 和 DeepSpeed 使用各自的主参数机制。前向计算仍按混合精度执行，优化器状态通常为 FP32。FSDP1 的具体行为取决于 Accelerate/PyTorch 版本，应检查启动日志和优化器参数类型。该方案不会自动启用 CPU offload，但 FP32 主参数和优化器状态会增加显存占用。
+
+MiniMax-H3 预训练权重中本来为 FP32 的层会保留该精度。旧 BF16 checkpoint 可以恢复并转成 FP32 继续训练，但之前量化时丢失的低位无法找回。validation 不应将正在训练的模型整体转换为 BF16/FP16；冻结编码器和独立的推理模型可以按各自需要转换。
+
+通常使用 `--resume_from_checkpoint checkpoint-N` 恢复训练。LoRA 导出会以 FP32 保存浮点权重；如果导出文件能够无损表示全部可训练参数和持久缓冲区，恢复训练直接使用该文件，否则额外保存 `training_trainable_model_0.safetensors`。旧 LoRA/PDD checkpoint 如果没有这个文件，仅在导出键名能明确对应所有可训练参数时自动恢复；旧导出中的低精度值无法还原成原始 FP32 数值。
+
+FSDP1 分片优化器恢复兼容补丁按运行时接口能力启用，接口不满足时退回 Accelerate 原生恢复。已在 PyTorch 2.13.0 环境测试 Accelerate 0.25.0、0.34.2、1.3.0、1.7.0 和 1.15.0；CPU offload 使用单独的兼容性判断。
+
+单进程、FSDP 和 DeepSpeed 默认先将 Accelerate 原生训练状态保存到同级临时目录，保存成功并检查可识别的分片后才发布；多组件 checkpoint 会在所有组件完成后整体发布。覆盖现有 checkpoint 时保留可恢复的临时备份，恢复时无需额外清单。`save_on_each_node` 和普通多卡 DDP 目前保留 Accelerate 原生保存行为。启用 `--checkpoints_total_limit` 时，使用 `save_state` 的训练脚本会在新 checkpoint 保存成功后清理旧 checkpoint。
+
 ## 四、推理测试
 
 ### 4.1 推理参数
@@ -508,7 +537,7 @@ NCCL_DEBUG=INFO
 | `vae_path` | 训练好的 VAE 权重路径 | `None` |
 | `lora_path` | LoRA 权重路径 | `None` |
 | `sample_size` | 生成视频分辨率 `[height, width]`；宽高必须是 32 的倍数。设为 `None` 时使用 MiniMax-H3 自带的 16:9 画布（768x1344） | `[704, 1280]` |
-| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 5 到 15 秒之间） | 124 |
+| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 0 到 16 秒之间） | 124 |
 | `fps` | 每秒帧数（MiniMax-H3 固定以 24 fps 生成） | 24 |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的 GPU 请使用 `torch.float16` | `torch.bfloat16` |
 | `prompt` | 描述生成内容的正向提示词 | `"A red fox trotting..."` |

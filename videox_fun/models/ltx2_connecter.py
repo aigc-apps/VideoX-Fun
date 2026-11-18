@@ -2,6 +2,7 @@
 import math
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -321,7 +322,7 @@ class LTX2ConnectorTransformer1d(nn.Module):
         # 3. Run 1D transformer blocks
         for block in self.transformer_blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(block, hidden_states, attention_mask, rotary_emb)
+                hidden_states = torch.utils.checkpoint.checkpoint(block, hidden_states, attention_mask, rotary_emb, use_reentrant=False)
             else:
                 hidden_states = block(hidden_states, attention_mask=attention_mask, rotary_emb=rotary_emb)
 

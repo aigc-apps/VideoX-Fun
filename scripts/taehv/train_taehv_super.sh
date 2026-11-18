@@ -8,6 +8,12 @@ export TAE_PATH="models/Diffusion_Transformer/taew2_2_super.pth"
 # export NCCL_P2P_DISABLE=1
 NCCL_DEBUG=INFO
 
+# Validation remains optional; point this to a held-out metadata JSON to enable it.
+validation_args=()
+if [[ -n "${VALIDATION_DATA_META:-}" ]]; then
+  validation_args+=(--validation_data_meta "$VALIDATION_DATA_META")
+fi
+
 accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --config_path="config/wan2.2/wan_civitai_5b.yaml" \
   --pretrained_model_name_or_path="$MODEL_NAME" \
@@ -47,4 +53,5 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --adam_weight_decay=1e-2 \
   --adam_epsilon=1e-08 \
   --vae_mini_batch=1 \
-  --max_grad_norm=1.0
+  --max_grad_norm=1.0 \
+  "${validation_args[@]}"

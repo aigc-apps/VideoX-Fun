@@ -63,14 +63,18 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, VideoDataset,
-                             get_closest_ratio, get_random_mask,
-                             random_degradation_video)
+                             RandomSampler, VideoDataset, get_closest_ratio,
+                             get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                WanLatentUpsamplerModel)
-from videox_fun.utils.fsdp_ema import FSDPEMA
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, PauseAwareTqdm,
+                              build_trainable_optimizer_groups,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              save_videos_grid)
 
 # Will error if the minimal version of diffusers is not installed.
 check_min_version("0.18.0.dev0")
@@ -312,10 +316,21 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -481,7 +496,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate',
         nargs='+',
         default=[],
-        help='Enter a list of trainable modules with lower learning rate',
+        help='Trainable module substrings for the low learning rate.',
     )
     parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
@@ -509,16 +524,6 @@ def parse_args():
     )
     parser.add_argument(
         "--save_state", action="store_true", help="Whether to save accelerator state."
-    )
-    parser.add_argument(
-        "--enable_degradation", action="store_true",
-        help="Apply random degradation to HR frames before spatial downsample, "
-             "so the upsampler learns restoration + super-resolution.",
-    )
-    parser.add_argument(
-        "--degradation_ops_range", type=int, nargs=2, default=[1, 4],
-        metavar=("MIN_OPS", "MAX_OPS"),
-        help="Range of degradation operations count per frame.",
     )
     # ==================== Noisy Training Args ====================
     parser.add_argument(
@@ -567,7 +572,11 @@ def parse_args():
     )
 
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -595,6 +604,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -791,7 +802,7 @@ def main():
             # every local shard of the copy pairs 1:1 with the live shard.
             ema_upsampler = FSDPEMA(ema_module, source=latent_upsampler, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
         else:
-            ema_module = ema_module.to(weight_dtype)
+            ema_module = ema_module.to(torch.float32)
             if args.latent_upsampler_path is not None:
                 ema_module.load_state_dict(latent_upsampler.state_dict())
             ema_upsampler = EMAModel(ema_module.parameters(), model_cls=WanLatentUpsamplerModel, model_config=ema_module.config)
@@ -873,55 +884,12 @@ def main():
         )
 
     # ==================== Optimizer ====================
-    if args.use_8bit_adam:
-        import bitsandbytes as bnb
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        from came_pytorch import CAME
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in latent_upsampler.named_parameters():
-        if not param.requires_grad:
-            continue
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr: {args.learning_rate}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr: {args.learning_rate / 2}")
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        latent_upsampler.named_parameters(), args, accelerator, only_trainable=True
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim, lr=args.learning_rate,
-            betas=(0.9, 0.999, 0.9999), eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim, lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay, eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # ==================== Dataset ====================
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
@@ -1002,24 +970,7 @@ def main():
                 pixel_values_hr = transform_hr(pixel_values)[:batch_video_length]
                 new_examples["pixel_values"].append(pixel_values_hr)
 
-                # --- Optional degradation before spatial downsample ---
-                # Follow ImageVideoTileDataset pattern: one n_ops per clip for
-                # temporal consistency, applied on the normalized tensor.
-                if args.enable_degradation:
-                    n_ops = random.randint(*args.degradation_ops_range)
-                    # Denormalize [-1,1] -> uint8 [0,255] for degradation ops
-                    frames_uint8 = ((pixel_values_hr * 0.5 + 0.5) * 255).clamp(0, 255)
-                    # Convert to list of [H, W, C] numpy uint8 frames
-                    frame_list = [frames_uint8[i].permute(1, 2, 0).byte().numpy()
-                                  for i in range(frames_uint8.shape[0])]
-                    # Video-level degradation: same ops + params for all frames
-                    degraded_stack = random_degradation_video(frame_list, n_operations=n_ops)
-                    pixel_values_hr = (
-                        torch.from_numpy(degraded_stack).permute(0, 3, 1, 2).float() / 255.0
-                    )
-                    pixel_values_hr = (pixel_values_hr - 0.5) / 0.5  # re-normalize to [-1, 1]
-
-                # Low-res: spatially downsample (degraded) HR frames
+                # Low-res: spatially downsample the HR frames.
                 pixel_values_low = F.interpolate(
                     pixel_values_hr, size=(low_h, low_w), mode='bilinear', align_corners=False
                 )
@@ -1104,6 +1055,8 @@ def main():
     first_epoch = 0
 
     # Resume from checkpoint
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1154,10 +1107,30 @@ def main():
             #         save_videos_grid(pixel_value[None, ...], f"{args.output_dir}/sanity_check/rank_{accelerator.process_index}_sample_{idx}_low.mp4", rescale=True)
 
             with accelerator.accumulate(latent_upsampler):
-                pixel_values = batch["pixel_values"].to(weight_dtype)  # [B, F, C, H, W]
-                pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                pixel_values_low = batch["pixel_values_low"].to(weight_dtype)  # [B, F, C, H_low, W_low]
-                pixel_values_low = rearrange(pixel_values_low, "b f c h w -> b c f h w")
+                pixel_values = batch["pixel_values"]  # [B, F, C, H, W]
+                if "pixel_values_low" in batch:
+                    pixel_values_low = batch["pixel_values_low"]
+                else:
+                    # Non-bucket datasets return only HR frames. Match the bucket
+                    # path's alignment and downsampling before encoding both pairs.
+                    spatial_ratio = int(vae.config.spatial_compression_ratio)
+                    align_to = math.lcm(spatial_ratio, int(spatial_ratio * spatial_scale))
+                    height, width = pixel_values.shape[-2:]
+                    aligned_h = height // align_to * align_to
+                    aligned_w = width // align_to * align_to
+                    if not aligned_h or not aligned_w:
+                        raise ValueError(f"Video size {height}x{width} is too small for alignment {align_to}.")
+                    top, left = (height - aligned_h) // 2, (width - aligned_w) // 2
+                    pixel_values = pixel_values[..., top:top + aligned_h, left:left + aligned_w]
+                    low_h = int(aligned_h / spatial_scale / spatial_ratio) * spatial_ratio
+                    low_w = int(aligned_w / spatial_scale / spatial_ratio) * spatial_ratio
+                    b, f, c = pixel_values.shape[:3]
+                    pixel_values_low = F.interpolate(
+                        pixel_values.reshape(b * f, c, aligned_h, aligned_w),
+                        size=(low_h, low_w), mode='bilinear', align_corners=False,
+                    ).reshape(b, f, c, low_h, low_w)
+                pixel_values = rearrange(pixel_values.to(weight_dtype), "b f c h w -> b c f h w")
+                pixel_values_low = rearrange(pixel_values_low.to(weight_dtype), "b f c h w -> b c f h w")
                 bsz = pixel_values.shape[0]
 
                 if args.low_vram:
@@ -1278,7 +1251,7 @@ def main():
 
                 # Checkpointing
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
                             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
@@ -1288,7 +1261,7 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
                                 logger.info(f"Removing {len(removing_checkpoints)} checkpoints")
                                 for removing_checkpoint in removing_checkpoints:
-                                    shutil.rmtree(os.path.join(args.output_dir, removing_checkpoint))
+                                    accelerator.defer_checkpoint_removal(os.path.join(args.output_dir, removing_checkpoint))
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -1347,7 +1320,7 @@ def main():
         if args.use_ema and not args.use_fsdp:
             ema_upsampler.copy_to(latent_upsampler_unwrapped.parameters())
 
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")

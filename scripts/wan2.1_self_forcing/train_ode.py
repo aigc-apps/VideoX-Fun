@@ -15,7 +15,6 @@
 # See the License for the specific language governing permissions and
 
 import argparse
-import dataclasses
 import gc
 import logging
 import math
@@ -59,11 +58,17 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.data import ImageVideoSafetensorsDataset, RandomSampler
-from videox_fun.models import (AutoencoderKLWan, WanTransformer3DModel,
-                               WanTransformer3DModel_SelfForcing, WanT5EncoderModel)
+from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
+                               WanTransformer3DModel,
+                               WanTransformer3DModel_SelfForcing)
 from videox_fun.pipeline import WanSelfForcingPipeline
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils import (add_training_precision_args,
+                              PauseAwareTqdm, build_trainable_optimizer_groups,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              save_videos_grid)
 
 check_min_version("0.18.0.dev0")
 
@@ -321,10 +326,21 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=2e-6,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -363,10 +379,6 @@ def parse_args():
     parser.add_argument("--adam_weight_decay", type=float, default=3e-2, help="Weight decay to use.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-10, help="Epsilon value for the Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-    parser.add_argument(
-        "--fsdp_reduce_fp32", action="store_true",
-        help="Reduce gradients in fp32 under FSDP mixed precision (params are still gathered in low precision).",
-    )
     parser.add_argument(
         "--mixed_precision",
         type=str,
@@ -509,7 +521,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate',
         nargs='+',
         default=[],
-        help='Enter a list of trainable modules with lower learning rate.',
+        help='Trainable module substrings for the low learning rate.',
     )
     parser.add_argument(
         "--save_state", action="store_true", help="Whether to save full accelerator state on checkpoint."
@@ -541,7 +553,11 @@ def parse_args():
         ),
     )
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -562,6 +578,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -586,11 +604,6 @@ def main():
         else:
             fsdp_stage = 0
         print(f"Using FSDP stage: {fsdp_stage}")
-        if args.fsdp_reduce_fp32 and fsdp_plugin.mixed_precision_policy is not None:
-            fsdp_plugin.mixed_precision_policy = dataclasses.replace(
-                fsdp_plugin.mixed_precision_policy, reduce_dtype=torch.float32
-            )
-            print(f"FSDP mixed precision policy: {fsdp_plugin.mixed_precision_policy}")
 
         args.use_fsdp = True
         if fsdp_stage == 3:
@@ -765,69 +778,13 @@ def main():
         )
 
     # Initialize the optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "Please install bitsandbytes to use 8-bit Adam. You can do so by running `pip install bitsandbytes`"
-            )
-
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        try:
-            from came_pytorch import CAME
-        except Exception:
-            raise ImportError(
-                "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
-            )
-
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
     trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in transformer3d.named_parameters():
-        if not param.requires_grad:
-            continue
-        if name in in_already:
-            continue
-        high_lr = False
-        for m in args.trainable_modules:
-            if m in name:
-                in_already.append(name)
-                high_lr = True
-                trainable_params_optim[0]['params'].append(param)
-                break
-        if high_lr:
-            continue
-        for m in args.trainable_modules_low_learning_rate:
-            if m in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        transformer3d.named_parameters(), args, accelerator, only_trainable=True
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            # weight_decay=args.adam_weight_decay,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # Get the training dataset
     train_dataset = ImageVideoSafetensorsDataset(
@@ -975,6 +932,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1280,7 +1239,7 @@ def main():
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3:
+                    if (accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1293,13 +1252,13 @@ def main():
                                 removing_checkpoints = checkpoints[:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -1346,7 +1305,7 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3:
+    if (accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

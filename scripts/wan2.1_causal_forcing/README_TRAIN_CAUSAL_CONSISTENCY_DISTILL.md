@@ -183,7 +183,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ccd" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
-  --fsdp_reduce_fp32 \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=0.0 \
   --adam_beta1=0.0 \
   --adam_beta2=0.999 \
@@ -229,7 +229,7 @@ bash scripts/wan2.1_causal_forcing/train_causal_consistency_distill.sh
 | `--output_dir` | Output directory | `output_dir_wan2.1_causal_forcing_ccd` |
 | `--gradient_checkpointing` | Enable activation checkpointing | - |
 | `--mixed_precision` | `fp16` / `bf16` | `bf16` |
-| `--fsdp_reduce_fp32` | FP32 gradient reduction under FSDP mixed precision; forward and parameter gathering stay low precision. CLI default is off; enabled in the launcher | enabled |
+| `--gradient_reduce_dtype` | Gradient communication: `auto` uses the backend default; `fp32` reduces in FP32 without changing forward, master-weight or accumulation dtype | `auto` (launcher uses `fp32`) |
 | `--adam_weight_decay` | AdamW weight decay | 0.0 |
 | `--adam_beta1` | AdamW beta1 (CCD uses 0.0) | 0.0 |
 | `--adam_beta2` | AdamW beta2 | 0.999 |

@@ -155,6 +155,7 @@ cd VideoX-Fun
 - model_group_offload：以leaf层级在cpu与gpu之间搬运权重，并借助stream异步预取，兼顾速度与显存。
 - model_cpu_offload_and_qfloat8：整个模型在使用后会进入cpu，并且对transformer模型进行了float8的量化，可以节省更多的显存。
 - model_cpu_offload：整个模型在使用后会进入cpu，可以节省部分显存。
+- text_encoder_offload：只把文本编码器留在cpu，按模块流式搬上gpu做唯一一次编码，transformer与vae常驻gpu；文本编码在每个请求开头只执行一次，因此搬运只付一次而不是每步一次。可加`_and_qfloat8`后缀。
 - model_full_load_and_qfloat8：模型常驻gpu，仅对transformer做float8量化，显存临界且对速度要求较高时可选。
 - 默认（传入model_full_load或其他取值）：模型全部进入gpu，速度最快，显存需求最高。
 

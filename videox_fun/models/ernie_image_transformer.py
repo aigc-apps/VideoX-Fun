@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -468,12 +469,13 @@ class ErnieImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         for layer in self.layers:
             temb = [shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp]
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                x = self._gradient_checkpointing_func(
+                x = torch.utils.checkpoint.checkpoint(
                     layer,
                     x,
                     rotary_pos_emb,
                     temb,
                     attention_mask,
+                    use_reentrant=False,
                 )
             else:
                 x = layer(x, rotary_pos_emb, temb, attention_mask)

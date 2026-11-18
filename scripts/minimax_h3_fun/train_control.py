@@ -38,7 +38,6 @@ import sys
 import warnings
 
 import accelerate
-import datasets
 import diffusers
 import numpy as np
 import torch
@@ -61,14 +60,18 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from transformers.utils import ContextManagers
 
+import datasets
+
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
 for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
-from videox_fun.data import (ASPECT_RATIO_512,
+from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
+                             ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
-                             ImageVideoSampler, VideoSpeechControlDataset,
+                             ImageVideoDataset, ImageVideoSampler,
+                             RandomSampler, VideoSpeechControlDataset,
                              get_closest_ratio, get_random_mask)
 from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                AutoencoderKLMiniMaxH3Audio,
@@ -76,24 +79,22 @@ from videox_fun.models import (AutoencoderKLMiniMaxH3,
                                Qwen2TokenizerFast,
                                Qwen3VLForConditionalGeneration,
                                Qwen3VLProcessor)
-from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
-                             ASPECT_RATIO_RANDOM_CROP_PROB,
-                             AspectRatioBatchImageVideoSampler,
-                             ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, get_closest_ratio)
+from videox_fun.pipeline import MiniMaxH3ControlPipeline
 from videox_fun.pipeline.pipeline_minimax_h3 import (
     MINIMAX_H3_FPS, MINIMAX_H3_PIXEL_MEAN, MINIMAX_H3_PIXEL_STD,
     MINIMAX_H3_TEXT_ENCODER_LAYER, MINIMAX_H3_TEXT_TAG, _offload_scope,
     align_num_frames, audio_latent_num_frames, build_packed_sequence,
     build_row_timesteps, patchify_video_latents, unpatchify_video_tokens,
     video_latent_num_frames)
-from videox_fun.pipeline import MiniMaxH3ControlPipeline
-from videox_fun.utils import MiniMaxH3Scheduler
-from videox_fun.utils.fsdp_ema import FSDPEMA
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import (get_video_to_video_latent,
-                                    save_videos_grid,
-                                    save_videos_with_audio_grid)
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, MiniMaxH3Scheduler, PauseAwareTqdm,
+                              build_trainable_optimizer_groups,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              get_video_to_video_latent,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              save_videos_grid, save_videos_with_audio_grid)
 
 # Silences diffusers' `randn_tensor` notice about CPU generators producing CUDA tensors (the tensor is created
 # on CPU and moved to GPU; harmless, only a marginal speed note).
@@ -447,13 +448,19 @@ def parse_args():
     parser.add_argument(
         "--gradient_checkpointing_save_on_cpu",
         action="store_true",
-        help="Offload the activations saved for backward of the transformer blocks to CPU memory.",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
     )
     parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -507,7 +514,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate',
         nargs='+',
         default=[],
-        help='Enter a list of trainable modules with lower learning rate'
+        help='Trainable module substrings for the low learning rate.'
     )
     parser.add_argument(
         "--abnormal_norm_clip_start",
@@ -696,7 +703,11 @@ def parse_args():
         help="Number of denoising steps of the validation sampling loop.",
     )
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -727,6 +738,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -934,7 +947,7 @@ def main():
             # every local shard of the copy pairs 1:1 with the live shard.
             ema_transformer = FSDPEMA(ema_module, source=transformer, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
         else:
-            ema_module = ema_module.to(weight_dtype)
+            ema_module = ema_module.to(torch.float32)
             ema_transformer = EMAModel(ema_module.parameters(), model_cls=MiniMaxH3ControlTransformer3DModel, model_config=ema_module.config)
 
     # ------------------------------------------------------------------ save / load hooks
@@ -947,7 +960,8 @@ def main():
                 if getattr(accelerator, "is_fsdp2", False):
                     # `accelerator.get_state_dict` gathers the FSDP2 full state dict on the GPU, which OOMs on a
                     # model this large at steady-state occupancy; offload the gather straight to CPU instead.
-                    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+                    from torch.distributed.checkpoint.state_dict import (
+                        StateDictOptions, get_model_state_dict)
                     accelerate_state_dict = get_model_state_dict(
                         models[-1], options=StateDictOptions(full_state_dict=True, cpu_offload=True)
                     )
@@ -1062,51 +1076,14 @@ def main():
         param for name, param in transformer.named_parameters()
         if any(trainable_module_name in name for trainable_module_name in trainable_module_names)
     ]
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in transformer.named_parameters():
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        transformer.named_parameters(), args, accelerator
+    )
     num_trainable = sum(p.numel() for p in trainable_params)
     logger.info(f"Trainable: {len(trainable_params)} tensors, {num_trainable / 1e6:.2f} M parameters.")
 
     # ------------------------------------------------------------------ optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError("Please install bitsandbytes to use 8-bit Adam.")
-        optimizer_cls = bnb.optim.AdamW8bit
-    else:
-        optimizer_cls = torch.optim.AdamW
-    optimizer = optimizer_cls(
-        trainable_params_optim,
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # ------------------------------------------------------------------ data
     # MiniMax-H3 control training keeps the paired waveform of `scripts/minimax_h3/train.py`, so the dataset must
@@ -1458,10 +1435,7 @@ def main():
         num_training_steps=args.max_train_steps * accelerator.num_processes,
     )
 
-    # Cast to `weight_dtype` *before* prepare so FSDP flattens a uniform-dtype parameter set (the conversion mixin
-    # pins a few modules in float32 for inference precision).
-    transformer.gradient_checkpointing_save_on_cpu = args.gradient_checkpointing_save_on_cpu
-    transformer = transformer.to(weight_dtype)
+    # Preserve pretrained FP32 modules; Accelerator handles FSDP mixed dtypes.
 
     transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, train_dataloader, lr_scheduler
@@ -1486,7 +1460,7 @@ def main():
     # encode/decode call site), so they are moved without a dtype cast.
     vae.to(device if not args.low_vram else "cpu")
     audio_vae.to(device if not args.low_vram else "cpu")
-    transformer.to(device, dtype=weight_dtype)
+    transformer.to(device)
     text_encoder.to(device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1541,6 +1515,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1991,7 +1967,7 @@ def main():
                 train_audio_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -2004,13 +1980,13 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -2083,7 +2059,7 @@ def main():
         if args.use_ema and not args.use_fsdp:
             ema_transformer.copy_to(transformer.parameters())
 
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

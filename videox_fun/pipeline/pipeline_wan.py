@@ -1,5 +1,6 @@
 import inspect
 import math
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -19,6 +20,17 @@ from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def stochastic_sampling_timesteps(num_inference_steps, shift, device, num_timesteps=1000):
+    """Official FlashHead timestep schedule with shift transform."""
+    if num_inference_steps == 4:
+        timesteps = [1000, 750, 500, 250]
+    else:
+        timesteps = np.linspace(num_timesteps, 1, num_inference_steps, dtype=np.float32).tolist()
+    timesteps = torch.tensor(timesteps + [0.0], dtype=torch.float32, device=device)
+    t = timesteps / num_timesteps
+    return shift * t / (1 + (shift - 1) * t) * num_timesteps
 
 
 EXAMPLE_DOC_STRING = """
@@ -409,6 +421,7 @@ class WanPipeline(DiffusionPipeline):
         max_sequence_length: int = 512,
         comfyui_progressbar: bool = False,
         shift: int = 5,
+        stochastic_sampling: bool = False,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -471,7 +484,9 @@ class WanPipeline(DiffusionPipeline):
             in_prompt_embeds = prompt_embeds
 
         # 4. Prepare timesteps
-        if isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+        if stochastic_sampling:
+            timesteps = stochastic_sampling_timesteps(num_inference_steps, shift, device)
+        elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps, mu=1)
         elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
             self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
@@ -513,8 +528,9 @@ class WanPipeline(DiffusionPipeline):
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self.transformer.num_inference_steps = num_inference_steps
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
+        denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
+        with self.progress_bar(total=len(denoise_timesteps)) as progress_bar:
+            for i, t in enumerate(denoise_timesteps):
                 self.transformer.current_steps = i
 
                 if self.interrupt:
@@ -528,6 +544,8 @@ class WanPipeline(DiffusionPipeline):
                 timestep = t.expand(latent_model_input.shape[0])
                 
                 # predict noise model_output
+                torch.cuda.synchronize()
+                forward_start_time = time.time()
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
                     noise_pred = self.transformer(
                         x=latent_model_input,
@@ -535,6 +553,9 @@ class WanPipeline(DiffusionPipeline):
                         t=timestep,
                         seq_len=seq_len,
                     )
+                torch.cuda.synchronize()
+                forward_time = time.time() - forward_start_time
+                print(f"Step {i}/{len(timesteps)} - Transformer forward time: {forward_time:.4f}s")
 
                 # perform guidance
                 if do_classifier_free_guidance:
@@ -542,7 +563,15 @@ class WanPipeline(DiffusionPipeline):
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+                if stochastic_sampling:
+                    t_i = (timesteps[i] / 1000).to(weight_dtype)
+                    t_i_1 = (timesteps[i + 1] / 1000).to(weight_dtype)
+                    x_0 = latents - noise_pred * t_i
+                    latents = (1 - t_i_1) * x_0 + t_i_1 * torch.randn(
+                        latents.shape, dtype=latents.dtype, device=device, generator=generator
+                    )
+                else:
+                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -554,7 +583,7 @@ class WanPipeline(DiffusionPipeline):
                     prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
                     negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
 
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                if i == len(denoise_timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
                 if comfyui_progressbar:
                     pbar.update(1)

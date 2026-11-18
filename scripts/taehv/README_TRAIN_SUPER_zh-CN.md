@@ -46,6 +46,7 @@
   - [3.4 训练验证](#34-训练验证)
   - [3.5 训练技巧](#35-训练技巧)
   - [3.6 后续调优方向](#36-后续调优方向)
+  - [3.7 分布式后端（FSDP / DeepSpeed）](#37-分布式后端fsdp--deepspeed)
 - [四、推理测试](#四推理测试)
   - [4.1 Checkpoint 目录结构](#41-checkpoint-目录结构)
   - [4.2 在 Predict 脚本中使用训练好的 TAE](#42-在-predict-脚本中使用训练好的-tae)
@@ -76,7 +77,9 @@ pip install lpips torchvision av modelscope opencv-python
 LPIPS 的 AlexNet 主干和 DINOv2 在缺少缓存时自动下载，后续复用 PyTorch 缓存；
 LPIPS 校准权重随安装包提供。离线加载 DINOv2 时，可使用 `--dino_repo` 和 `--dino_weights`。
 
-> 脚本通过 Accelerate 支持单设备与普通 DDP。官方 Wan VAE 和冻结的 LPIPS/DINOv2
+> 脚本通过 Accelerate 支持单设备、普通 DDP、FSDP 与 DeepSpeed（ZeRO-2/3）。后端完全
+> 由 `accelerate config`（或对应的 `accelerate launch` 旗标）选择——训练脚本本身不接收
+> 后端旗标，而是从生效的 plugin 派生分片模式。官方 Wan VAE 和冻结的 LPIPS/DINOv2
 > 特征网络均保留在 GPU 上。
 
 ---
@@ -179,13 +182,14 @@ LPIPS 与 DINOv2 权重由损失实现单独加载。
 
 **Wan2.2 TI2V-5B / Fun-2.2VAE（taew2_2_super）训练示例**：
 
-启动器采用 720x1280 画布、训练 25 帧、验证 81 帧、10,000 步和 EMA。
+启动器采用 720x1280 画布、训练 25 帧和 EMA，并设置 `--max_train_steps=10000`。
+如果不指定最大步数，则按 `--num_train_epochs`（默认 100）计算训练步数。
 使用 `accelerate config` 配置 GPU/进程数；四卡、每卡 batch=1、累积=1 时有效 batch 为 4。
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
-export DATASET_NAME="${DATASET_NAME:-datasets/X-Fun-Videos-Demo}"
-export DATASET_META_NAME="${DATASET_META_NAME:-$DATASET_NAME/metadata_add_width_height.json}"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export TAE_PATH="models/Diffusion_Transformer/taew2_2_super.pth"
 NCCL_DEBUG=INFO
 
@@ -198,18 +202,24 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_strides 1 2 3 \
   --video_sample_n_frames=25 \
-  --validation_n_frames=81 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --max_train_steps=10000 \
   --checkpointing_steps=1000 \
-  --validation_steps=1000 \
-  --validation_max_samples=0 \
   --learning_rate=5e-06 \
   --lr_scheduler="cosine" \
   --lr_warmup_steps=200 \
   --lr_min_ratio=0.2 \
+  --seed=42 \
+  --output_dir="output_dir_taehv_w2.2_super" \
+  --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
+  --adam_weight_decay=1e-2 \
+  --adam_epsilon=1e-08 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=1.0 \
   --l1_loss_weight=0.1 \
   --lpips_loss_weight=0.1 \
   --dino_loss_weight=0.02 \
@@ -219,16 +229,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --use_ema \
   --ema_decay=0.999 \
   --selection_lpips_ratio=1.02 \
-  --selection_grid_ratio=1.05 \
-  --seed=42 \
-  --output_dir="output_dir_taehv_w2.2_super" \
-  --mixed_precision="bf16" \
-  --adam_beta1=0.9 \
-  --adam_beta2=0.99 \
-  --adam_weight_decay=1e-2 \
-  --adam_epsilon=1e-08 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=1.0
+  --selection_grid_ratio=1.05
 ```
 
 相同参数已写入 `scripts/taehv/train_taehv_super.sh`，也可修改其中的训练参数后，
@@ -245,10 +246,9 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_n_frames=25 \
   --video_sample_strides 1 2 3 \
-  --max_train_steps=10000 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super_scratch"
 ```
 
@@ -263,16 +263,17 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_dir="$DATASET_NAME" \
   --train_data_meta="$DATASET_META_NAME" \
   --fix_sample_size 720 1280 --video_sample_n_frames=25 \
-  --video_sample_strides 1 2 3 --max_train_steps=10000 \
+  --video_sample_strides 1 2 3 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
+  --max_train_steps=10000 \
   --output_dir="output_dir_taehv_w2.2_super" \
   --resume_from_checkpoint=latest
 ```
 
-恢复时保持创建 checkpoint 时的配置，使用过的验证索引也需继续提供。
-`--max_train_steps` 表示总更新预算，应保留原 schedule 预算。Checkpoint 恢复
+恢复时保持创建 checkpoint 时的配置。未设置 `--max_train_steps` 时，schedule
+预算由 `--num_train_epochs` 决定，恢复时应保留原值。Checkpoint 恢复
 optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或采样设置可能改变
 恢复后的样本顺序。新训练应使用新的输出目录。
 
@@ -287,19 +288,25 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 | `--tae_path` | Super 权重文件或 Diffusers 目录；不传则随机初始化 | `models/Diffusion_Transformer/taew2_2_super.pth` |
 | `--from_scratch` | 随机初始化 Super decoder；不能与加载权重或恢复组合 | - |
 | `--train_data_dir` / `--train_data_meta` | 视频根目录与 JSON 元数据数组 | `datasets/X-Fun-Videos-Demo` |
+| `--max_train_samples` | 限制训练样本数量，便于调试；默认使用全部样本 | `None` |
 | `--fix_sample_size` | 固定 `[高, 宽]`，覆盖正方形 `--video_sample_size` | `720 1280` |
+| `--enable_bucket` | 按宽高比将片段分组成变形状 batch，替代固定画布（默认关闭） | 关闭 |
 | `--video_sample_strides` | 每个训练片段随机选择一个采样 stride | `1 2 3` |
 | `--video_sample_n_frames` | 训练片段帧数，必须为 4k+1 | 25 |
 | `--train_batch_size` / `--gradient_accumulation_steps` | 每卡 batch / 梯度累积 | 1 / 1 |
 | `--vae_mini_batch` | 官方 VAE 编码 mini-batch | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
-| `--max_train_steps` | 总优化器更新次数，覆盖 `--num_train_epochs` | 10000 |
+| `--num_train_epochs` | 未设置 `--max_train_steps` 时的 epoch 预算 | 100 |
 | `--checkpointing_steps` / `--checkpoints_total_limit` | 保存间隔 / checkpoint 数量上限 | 1000 / `None` |
 | `--learning_rate` / `--lr_scheduler` | 峰值学习率 / 调度器 | `5e-6` / `cosine` |
+| `--scale_lr` | 按设备数、梯度累积步数和每卡 batch 缩放学习率；默认关闭 | 关闭 |
+| `--trainable_modules_low_learning_rate` / `--low_learning_rate` | 选择低学习率模块并设置其学习率；未指定数值时为主学习率的一半 | `[]` / `None` |
 | `--lr_warmup_steps` / `--lr_min_ratio` | 预热步数 / cosine 终点与峰值之比 | 200 / 0.2 |
+| `--use_8bit_adam` / `--use_came` | 将 AdamW 切换为 bitsandbytes 8-bit Adam 或 CAME（默认关闭） | 关闭 |
 | `--l1_loss_weight` / `--lpips_loss_weight` | 像素 L1 / LPIPS 损失权重 | 0.1 / 0.1 |
 | `--dino_loss_weight` / `--grid_loss_weight` | DINO / 周期格纹损失权重 | 0.02 / 1.0 |
 | `--feature_batch_size` / `--feature_checkpointing` | 感知网络帧 batch / 激活 checkpointing | 13 / 关闭 |
+| `--gradient_checkpointing` / `--gradient_checkpointing_save_on_cpu` | TAE 记忆块梯度重算 / 将重算输入保存在 CPU | 关闭 / 关闭 |
 | `--use_ema` / `--ema_decay` | 维护用于验证和选模的 decoder EMA | 开启 / 0.999 |
 | `--seed` / `--mixed_precision` | 随机种子 / 混合精度 | 42 / `bf16` |
 | `--output_dir` | 输出目录 | `output_dir_taehv_w2.2_super` |
@@ -308,8 +315,9 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 **Sample Size 配置指南**：
 
 - `--fix_sample_size 720 1280` 等比例缩放覆盖画布后中心裁剪；未指定时，`--video_sample_size` 控制正方形画布。
-- 25 帧、stride=3 至少需要 73 个源视频帧；81 帧验证至少需要 81 帧。短视频会使 batch 按最短视频截为 4k+1 帧，实际长度记录在训练日志的 `frames` 字段。
-- 训练随机选择时间起点，验证固定从第 0 帧开始、stride=1。解码失败时沿用原有随机换视频重试逻辑。
+- `--enable_bucket` 将训练 batch 切换为宽高比分桶：每个 batch 缩放到由 `--video_sample_size` 放大的最近分桶画布，此时 `--fix_sample_size` 不决定训练裁剪。验证始终使用固定画布 collate，以保证各 step 指标可比。
+- 25 帧、stride=3 至少需要 73 个源视频帧。短视频会使 batch 按最短视频截为 4k+1 帧，实际长度记录在训练日志的 `frames` 字段。
+- 训练随机选择时间起点。解码失败时沿用原有随机换视频重试逻辑。
 
 **损失配置指南**：
 
@@ -319,8 +327,11 @@ optimizer、scheduler、EMA、RNG、step 和 batch 游标；改变 workers 或�
 
 ### 3.4 训练验证
 
-在训练命令中通过 `--validation_data_meta` 提供独立 JSON 数组，或将该参数加入启动器。
-相对视频路径基于 `--train_data_dir` 解析；验证数据位于其他根目录时，可使用绝对视频路径。
+验证为可选功能，默认启动器中未开启。需要时在训练命令中通过 `--validation_data_meta`
+（及相关验证参数）启用。相对视频路径基于 `--train_data_dir` 解析；验证数据位于其他
+根目录时，可使用绝对视频路径。
+
+启动脚本也支持通过 `VALIDATION_DATA_META=/path/to/validation.json` 指定验证集。
 
 | 参数 | 说明 | 推荐值 |
 |------|------|--------|
@@ -347,7 +358,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --validation_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --fix_sample_size 64 96 --video_sample_n_frames=5 --validation_n_frames=5 \
-  --video_sample_strides 1 --max_train_steps=2 --lr_warmup_steps=0 \
+  --video_sample_strides 1 --num_train_epochs=1 --lr_warmup_steps=0 \
   --checkpointing_steps=1 --validation_steps=1 --validation_max_samples=1 \
   --dataloader_num_workers=0 --use_ema --ema_decay=0.999 \
   --output_dir="output_dir_taehv_w2.2_super_smoke"
@@ -362,7 +373,8 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
 - **损失平衡**：先使用启动器中的四项损失配置，同时检查重建指标和原生分辨率裁剪。
 - **显存**：按需降低训练帧数、画布尺寸或特征 batch，或开启 `--feature_checkpointing`。感知网络虽然冻结，预测分支仍需要激活显存。
 - **EMA**：启动器默认开启 EMA。`best/taehv` 为选出的推理权重，`checkpoint-N/taehv` 为恢复训练使用的 raw 权重。
-- **分布式训练**：使用 Accelerate 单设备或普通 DDP 配置。有效 batch 为设备数、每卡 batch 和梯度累积的乘积。
+- **分布式训练**：单设备与普通 DDP 为默认；FSDP 与 DeepSpeed（ZeRO-2/3）通过 `accelerate config` 选用（见 [3.7](#37-分布式后端fsdp--deepspeed)）。有效 batch 为设备数、每卡 batch 和梯度累积的乘积。
+- **优化器**：`--use_8bit_adam`（bitsandbytes）与 `--use_came` 是相对普通 AdamW 的可选替代；三者都只对 decoder 维护单一 param group。
 
 ### 3.6 后续调优方向
 
@@ -371,6 +383,28 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
 - 通过受控对照调整 LPIPS/grid 权重，结合细纹理、文字和局部格纹检查平均指标。
 
 以上为可探索的扩展方向，当前训练入口使用前述四项损失配置。
+
+### 3.7 分布式后端（FSDP / DeepSpeed）
+
+后端由 Accelerate 而非脚本选择：运行 `accelerate config`（或在 `accelerate launch`
+旗标中启用 FSDP/DeepSpeed），训练器会从生效的 plugin 派生分片模式。单设备与 DDP 为
+默认，行为不变。
+
+- **DDP / 单设备（默认）**：decoder 全复制；只优化约 19M decoder 参数，验证在主进程
+  运行，EMA 使用 decoder-only 的 `EMAModel`。
+- **FSDP**（任意分片策略，含 `NO_SHARD`）：模型被分片，decoder 前向、EMA 布局和每次
+  权重导出都成为集合操作。EMA 切换为全模型 `FSDPEMA`（在 `prepare()` 之前构建），验证
+  在每个 rank 运行，`clip_grad_norm_` 接收 `prepare()` 之后的参数以免裁剪被静默跳过。
+  EMA 当前仅支持 FSDP1；FSDP2 配合 `--use_ema` 会在训练前报错。
+- **DeepSpeed ZeRO-2**：EMA 与验证行为同 DDP；`save_state` 是集合操作，每个 rank 都
+  参与保存。
+- **DeepSpeed ZeRO-3**：权重像 FSDP 一样分片。ZeRO-3 与 `--use_ema` 组合会抛出
+  `NotImplementedError`；需要 EMA 时请改用 ZeRO-2 或 FSDP1。导出 checkpoint 还需在
+  Accelerate 配置中设置 `zero3_save_16bit_model: true`，或在 DeepSpeed 配置中设置
+  `stage3_gather_16bit_weights_on_model_save: true`。
+
+由于可训练 decoder 仅约 19M 参数，FSDP/ZeRO-3 分片在此几乎不省显存；提供这些后端是为
+与 [train_taehv.py](train_taehv.py) 对齐，并服务大 batch 或共享集群场景，并非必需。
 
 ---
 
@@ -389,7 +423,8 @@ output_dir_taehv_w2.2_super/
   checkpoint-1000/
     taehv/                 # raw Super 权重与 config.json
     optimizer.bin
-    custom_checkpoint_*.pkl # scheduler 和可选 EMA 状态
+    scheduler.bin          # LR 调度器状态（由 accelerate prepare 保存）
+    custom_checkpoint_0.pkl # EMA 状态（仅 DDP/ZeRO-2 且开启 --use_ema）
     random_states_*.pkl
     trainer_state.json
   sample/                  # 验证视频
@@ -399,6 +434,15 @@ output_dir_taehv_w2.2_super/
 `taehv` 目录使用 Diffusers `save_pretrained` 格式，可由
 `AutoencoderTinyWan.from_pretrained` 加载。`args-step-N.yaml` 记录本次调用参数，
 训练参数直接在 shell 启动器中配置。
+
+FSDP/ZeRO-3 下 save hook 会 all-gather 分片权重，因此每个 checkpoint 还包含 `taehv/`
+导出，开启 `--use_ema` 时另有由 `FSDPEMA.save_pretrained` 写入的 `taehv_ema/` 目录；
+该模式下 EMA 不写入 `custom_checkpoint_*.pkl`。
+
+> **Resume 约定**：`--resume_from_checkpoint` 严格按上述布局恢复 —— Accelerate 从
+> `scheduler.bin` 重新载入 LR 调度器，开启 `--use_ema` 时从 `custom_checkpoint_0.pkl`
+> 恢复 EMA 状态。checkpoint 只能被保存相同布局的脚本正确 resume；布局不同时请使用
+> 新的输出目录。
 
 ### 4.2 在 Predict 脚本中使用训练好的 TAE
 
@@ -415,5 +459,7 @@ output_dir_taehv_w2.2_super/
 tae_path = "output_dir_taehv_w2.2_super/best/taehv"
 ```
 
-训练好的 decoder 接收官方 Wan2.2 5B latent。从头训练的 checkpoint 没有训练好的
-小 encoder；此类 checkpoint 用于图像/视频条件生成时，应保留官方 Wan encoder。
+训练好的 decoder 接收官方 Wan2.2 5B latent。从头训练或 decoder-only 权重可能没有可用的小 encoder。
+当前 TAE 推理示例会用同一个 VAE 执行 encode 和 decode，因此此类 checkpoint 只能直接用于不需要
+编码输入图像或视频的场景；图像/视频条件生成须先提供可用的编码器或调整 pipeline 使用官方 encoder。
+未配置验证集时不会生成 `best/taehv`，可使用对应 checkpoint 中的 `taehv` 导出。

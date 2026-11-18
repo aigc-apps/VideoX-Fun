@@ -40,14 +40,15 @@ from videox_fun.utils import (MiniMaxH3Scheduler, apply_gpu_memory_mode,
 # GPU at full load, so keep an offloading mode here.
 GPU_memory_mode     = "model_group_offload"
 # Multi GPUs config
-# NOTE: the VSA sparse kernel has no sequence-parallel path, so a FastVideo-H3 student runs
-# single-GPU only; keep ulysses_degree = ring_degree = 1 (enable_multi_gpus_inference() raises
-# otherwise, rather than silently falling back to the dense multi-GPU processor).
+# The FastVideo-H3 VSA student supports sequence-parallel inference through ulysses head-parallel
+# only (the VSA kernel has no ring-attention path): put every GPU into ulysses_degree, keep
+# ring_degree = 1, and ulysses_degree must divide the 56 attention heads (2 / 4 / 7 / 8 / ...).
+# The defaults stay single-GPU because the ~19B stack still needs an offloading mode below.
 ulysses_degree      = 1
 ring_degree         = 1
 # Use FSDP to save more GPU memory in multi gpus. Unused at ulysses_degree = ring_degree = 1.
-fsdp_dit            = False
-fsdp_text_encoder   = False
+fsdp_dit            = True
+fsdp_text_encoder   = True
 # Compile will give a speedup in fixed resolution and need a little GPU memory. 
 # The compile_dit is not compatible with sequential_cpu_offload.
 compile_dit         = False
@@ -76,7 +77,7 @@ pdd_lora_path       = None
 
 # Other params
 # MiniMax-H3 generates at a fixed 24 fps, only accepts multiples of 32 as height / width, and snaps video_length up
-# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 5 and 15 seconds).
+# to the next 17 * n + 5 the video VAE can decode (the duration has to stay between 0 and 16 seconds).
 # Leave sample_size as None to use MiniMax-H3's own 16:9 canvas (768x1344).
 sample_size         = [704, 1280]
 video_length        = 124
@@ -247,8 +248,14 @@ if use_qfloat8:
 wants_offload = GPU_memory_mode in ("model_cpu_offload", "model_group_offload", "sequential_cpu_offload")
 
 if ulysses_degree > 1 or ring_degree > 1:
+    # The VSA sparse kernel only supports ulysses head-parallel (no ring-attention path); a VSA
+    # student under ring_degree>1 would silently fold ring into a larger ulysses degree and give
+    # none of ring's per-rank memory saving, so reject it instead of mis-attending.
+    if ring_degree > 1:
+        raise ValueError(
+            "FastVideo-H3 VSA multi-GPU requires ring_degree=1; put every GPU into ulysses_degree "
+            "instead (ulysses_degree must divide the 56 attention heads).")
     from functools import partial
-    # NOTE: raises for the VSA student (no sequence-parallel path); keep ulysses_degree=ring_degree=1.
     transformer.enable_multi_gpus_inference()
     if fsdp_dit:
         fp32_modules = [m for m in transformer.modules()

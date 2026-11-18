@@ -49,6 +49,7 @@ The script supports the Wan2.2 5B Super model:
   - [3.4 Training Validation](#34-training-validation)
   - [3.5 Training Tips](#35-training-tips)
   - [3.6 Further Tuning](#36-further-tuning)
+  - [3.7 Distributed Backends (FSDP / DeepSpeed)](#37-distributed-backends-fsdp--deepspeed)
 - [4. Inference Testing](#4-inference-testing)
   - [4.1 Checkpoint Layout](#41-checkpoint-layout)
   - [4.2 Use the Trained TAE in Predict Scripts](#42-use-the-trained-tae-in-predict-scripts)
@@ -81,8 +82,11 @@ LPIPS's AlexNet backbone and DINOv2 download automatically when missing and reus
 the PyTorch cache. LPIPS's calibration weights ship with the package. For offline
 DINOv2 loading, use `--dino_repo` and `--dino_weights`.
 
-> The script supports a single device and ordinary DDP through Accelerate. The
-> official Wan VAE and the frozen LPIPS/DINOv2 feature networks remain on the GPU.
+> The script runs on a single device, ordinary DDP, FSDP, or DeepSpeed (ZeRO-2/3)
+> through Accelerate. The backend is chosen entirely by `accelerate config` (or the
+> matching `accelerate launch` flags) — the training script takes no backend flag and
+> derives its sharding mode from the active plugin. The official Wan VAE and the
+> frozen LPIPS/DINOv2 feature networks remain on the GPU.
 
 ---
 
@@ -186,14 +190,16 @@ LPIPS and DINOv2 weights are loaded separately by the loss implementation.
 
 **Wan2.2 TI2V-5B / Fun-2.2VAE (taew2_2_super) Example**:
 
-The launcher uses a 720x1280 canvas, 25 training frames, 81 validation frames,
-10,000 updates, and EMA. Set the GPU/process count with `accelerate config`;
-four GPUs with batch size 1 and accumulation 1 give an effective batch of 4.
+The launcher uses a 720x1280 canvas, 25 training frames, EMA, and
+`--max_train_steps=10000`. Without a maximum step count, training runs for
+`--num_train_epochs` (100 by default) epochs. Set the GPU/process count with
+`accelerate config`; four GPUs with batch size 1 and accumulation 1 give an
+effective batch of 4.
 
 ```bash
 export MODEL_NAME="models/Diffusion_Transformer/Wan2.2-TI2V-5B"
-export DATASET_NAME="${DATASET_NAME:-datasets/X-Fun-Videos-Demo}"
-export DATASET_META_NAME="${DATASET_META_NAME:-$DATASET_NAME/metadata_add_width_height.json}"
+export DATASET_NAME="datasets/X-Fun-Videos-Demo/"
+export DATASET_META_NAME="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json"
 export TAE_PATH="models/Diffusion_Transformer/taew2_2_super.pth"
 NCCL_DEBUG=INFO
 
@@ -206,18 +212,24 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_strides 1 2 3 \
   --video_sample_n_frames=25 \
-  --validation_n_frames=81 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=1 \
   --dataloader_num_workers=8 \
   --max_train_steps=10000 \
   --checkpointing_steps=1000 \
-  --validation_steps=1000 \
-  --validation_max_samples=0 \
   --learning_rate=5e-06 \
   --lr_scheduler="cosine" \
   --lr_warmup_steps=200 \
   --lr_min_ratio=0.2 \
+  --seed=42 \
+  --output_dir="output_dir_taehv_w2.2_super" \
+  --mixed_precision="bf16" \
+  --adam_beta1=0.9 \
+  --adam_beta2=0.99 \
+  --adam_weight_decay=1e-2 \
+  --adam_epsilon=1e-08 \
+  --vae_mini_batch=1 \
+  --max_grad_norm=1.0 \
   --l1_loss_weight=0.1 \
   --lpips_loss_weight=0.1 \
   --dino_loss_weight=0.02 \
@@ -227,16 +239,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --use_ema \
   --ema_decay=0.999 \
   --selection_lpips_ratio=1.02 \
-  --selection_grid_ratio=1.05 \
-  --seed=42 \
-  --output_dir="output_dir_taehv_w2.2_super" \
-  --mixed_precision="bf16" \
-  --adam_beta1=0.9 \
-  --adam_beta2=0.99 \
-  --adam_weight_decay=1e-2 \
-  --adam_epsilon=1e-08 \
-  --vae_mini_batch=1 \
-  --max_grad_norm=1.0
+  --selection_grid_ratio=1.05
 ```
 
 These settings are also provided in `scripts/taehv/train_taehv_super.sh`. Edit its
@@ -253,10 +256,9 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --fix_sample_size 720 1280 \
   --video_sample_n_frames=25 \
   --video_sample_strides 1 2 3 \
-  --max_train_steps=10000 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
   --output_dir="output_dir_taehv_w2.2_super_scratch"
 ```
 
@@ -271,19 +273,21 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_dir="$DATASET_NAME" \
   --train_data_meta="$DATASET_META_NAME" \
   --fix_sample_size 720 1280 --video_sample_n_frames=25 \
-  --video_sample_strides 1 2 3 --max_train_steps=10000 \
+  --video_sample_strides 1 2 3 \
   --learning_rate=5e-6 --lr_warmup_steps=200 --lr_min_ratio=0.2 \
   --use_ema --ema_decay=0.999 \
-  --dataloader_num_workers=8 --checkpointing_steps=1000 --validation_steps=1000 \
+  --dataloader_num_workers=8 --checkpointing_steps=1000 \
+  --max_train_steps=10000 \
   --output_dir="output_dir_taehv_w2.2_super" \
   --resume_from_checkpoint=latest
 ```
 
-Restore with the same settings used to create the checkpoint, including validation
-metadata when supplied. `--max_train_steps` is the total update budget. Keep the
-original schedule horizon. The checkpoint restores optimizer, scheduler, EMA, RNG,
-step and batch cursor; changing workers or sampling settings can change the resumed
-sample sequence. Use a new output directory for a new run.
+Restore with the same settings used to create the checkpoint. Without
+`--max_train_steps`, the schedule horizon derives from `--num_train_epochs`;
+keep the original value when resuming. The checkpoint restores optimizer,
+scheduler, EMA, RNG, step and batch cursor; changing workers or sampling
+settings can change the resumed sample sequence. Use a new output directory
+for a new run.
 
 ### 3.3 Training Parameter Reference
 
@@ -296,19 +300,25 @@ Values below describe the launcher configuration; they are not all Python CLI de
 | `--tae_path` | Super weights, file or Diffusers directory; omit to initialize randomly | `models/Diffusion_Transformer/taew2_2_super.pth` |
 | `--from_scratch` | Randomly initialize the Super decoder; excludes weight initialization and resume | - |
 | `--train_data_dir` / `--train_data_meta` | Video root and JSON metadata array | `datasets/X-Fun-Videos-Demo` |
+| `--max_train_samples` | Limit the number of training examples; use all examples by default | `None` |
 | `--fix_sample_size` | Fixed `[height, width]`, overriding square `--video_sample_size` | `720 1280` |
+| `--enable_bucket` | Group clips by aspect ratio into variable-shape batches instead of the fixed canvas (off by default) | off |
 | `--video_sample_strides` | Choose one sampling stride per training clip | `1 2 3` |
 | `--video_sample_n_frames` | Training clip length, must be 4k+1 | 25 |
 | `--train_batch_size` / `--gradient_accumulation_steps` | Batch per device / gradient accumulation | 1 / 1 |
 | `--vae_mini_batch` | Official VAE encoding mini-batch size | 1 |
 | `--dataloader_num_workers` | DataLoader workers | 8 |
-| `--max_train_steps` | Total optimizer updates; overrides `--num_train_epochs` | 10000 |
+| `--num_train_epochs` | Epoch budget used when `--max_train_steps` is not set | 100 |
 | `--checkpointing_steps` / `--checkpoints_total_limit` | Save interval / checkpoint count limit | 1000 / `None` |
 | `--learning_rate` / `--lr_scheduler` | Peak learning rate / scheduler | `5e-6` / `cosine` |
+| `--scale_lr` | Scale the learning rate by device count, accumulation steps, and per-device batch size | off |
+| `--trainable_modules_low_learning_rate` / `--low_learning_rate` | Select low-rate modules and set their learning rate; defaults to half the main rate | `[]` / `None` |
 | `--lr_warmup_steps` / `--lr_min_ratio` | Warmup updates / final-to-peak ratio for cosine decay | 200 / 0.2 |
+| `--use_8bit_adam` / `--use_came` | Switch AdamW to bitsandbytes 8-bit Adam or CAME (off by default) | off |
 | `--l1_loss_weight` / `--lpips_loss_weight` | Pixel L1 / LPIPS loss weights | 0.1 / 0.1 |
 | `--dino_loss_weight` / `--grid_loss_weight` | DINO / periodic grid loss weights | 0.02 / 1.0 |
 | `--feature_batch_size` / `--feature_checkpointing` | Perceptual frame batch / activation checkpointing | 13 / off |
+| `--gradient_checkpointing` / `--gradient_checkpointing_save_on_cpu` | TAE memory-block recomputation / save checkpoint inputs on CPU | off / off |
 | `--use_ema` / `--ema_decay` | Maintain decoder EMA for validation and selection | enabled / 0.999 |
 | `--seed` / `--mixed_precision` | Random seed / mixed precision | 42 / `bf16` |
 | `--output_dir` | Output directory | `output_dir_taehv_w2.2_super` |
@@ -317,8 +327,9 @@ Values below describe the launcher configuration; they are not all Python CLI de
 **Sample Size Configuration Guide**:
 
 - `--fix_sample_size 720 1280` resizes to cover the canvas and center crops while preserving aspect ratio. Without it, `--video_sample_size` selects a square canvas.
-- A 25-frame clip at stride 3 needs at least 73 source frames; 81-frame validation needs at least 81. Short inputs shorten the batch to the shortest 4k+1 clip length, recorded as `frames` in the training log.
-- Training uses random temporal starts. Validation starts at frame 0 with stride 1. Data loading retains the original random replacement/retry behavior on decode failures.
+- `--enable_bucket` switches training batches to aspect-ratio buckets: each batch is resized/cropped to the closest bucket canvas scaled by `--video_sample_size`, so `--fix_sample_size` does not drive the training crop. Validation always uses the fixed-canvas collate, so metrics stay comparable across steps.
+- A 25-frame clip at stride 3 needs at least 73 source frames. Short inputs shorten the batch to the shortest 4k+1 clip length, recorded as `frames` in the training log.
+- Training uses random temporal starts. Data loading retains the original random replacement/retry behavior on decode failures.
 
 **Loss Configuration Guide**:
 
@@ -328,9 +339,12 @@ Values below describe the launcher configuration; they are not all Python CLI de
 
 ### 3.4 Training Validation
 
-Provide a separate JSON array through `--validation_data_meta` in the training
-command, or add that argument to the launcher. Relative video paths resolve under
-`--train_data_dir`, so use absolute video paths when validation data has another root.
+Validation is optional and disabled in the default launcher. To enable it, add
+`--validation_data_meta` (plus the related validation arguments) to the training
+command. Relative video paths resolve under `--train_data_dir`, so use absolute
+video paths when validation data has another root.
+
+The shell launcher also accepts `VALIDATION_DATA_META=/path/to/validation.json`.
 
 | Parameter | Description | Recommended Value |
 |-----------|-------------|-------------------|
@@ -359,7 +373,7 @@ accelerate launch --mixed_precision="bf16" scripts/taehv/train_taehv_super.py \
   --train_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --validation_data_meta="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json" \
   --fix_sample_size 64 96 --video_sample_n_frames=5 --validation_n_frames=5 \
-  --video_sample_strides 1 --max_train_steps=2 --lr_warmup_steps=0 \
+  --video_sample_strides 1 --num_train_epochs=1 --lr_warmup_steps=0 \
   --checkpointing_steps=1 --validation_steps=1 --validation_max_samples=1 \
   --dataloader_num_workers=0 --use_ema --ema_decay=0.999 \
   --output_dir="output_dir_taehv_w2.2_super_smoke"
@@ -375,7 +389,8 @@ video sources for actual experiments, and use native-resolution data to assess
 - **Loss balance**: Start with the four-loss settings in the launcher and inspect both reconstruction metrics and native-resolution crops.
 - **Memory**: Lower the training frame count, canvas size or feature batch size, or enable `--feature_checkpointing` if needed. Perceptual networks are frozen but their prediction branches still need activation memory.
 - **EMA**: The launcher enables EMA. `best/taehv` holds selected inference weights; `checkpoint-N/taehv` holds raw weights for training recovery.
-- **Distributed training**: Use Accelerate's single-device or ordinary DDP configuration. Global batch equals device count times per-device batch times accumulation.
+- **Distributed training**: Single device and ordinary DDP are the default; FSDP and DeepSpeed (ZeRO-2/3) are opt-in through `accelerate config` (see [3.7](#37-distributed-backends-fsdp--deepspeed)). Global batch equals device count times per-device batch times accumulation.
+- **Optimizers**: `--use_8bit_adam` (bitsandbytes) and `--use_came` are opt-in alternatives to plain AdamW; all three keep a single parameter group over the decoder.
 
 ### 3.6 Further Tuning
 
@@ -384,6 +399,34 @@ video sources for actual experiments, and use native-resolution data to assess
 - Adjust LPIPS/grid weights with controlled comparisons, checking fine textures, text and local grid artifacts alongside average metrics.
 
 These are possible extensions; the current training entry uses the four-loss recipe above.
+
+### 3.7 Distributed Backends (FSDP / DeepSpeed)
+
+The backend is selected by Accelerate, not by the script: run `accelerate config`
+(or enable FSDP/DeepSpeed in the `accelerate launch` flags) and the trainer derives
+its sharding mode from the active plugin. Single-device and DDP runs are the default
+and are unchanged.
+
+- **DDP / single device (default)**: the decoder is replicated; only the ~19M decoder
+  params are optimized, validation runs on the main process, and EMA uses a
+  decoder-only `EMAModel`.
+- **FSDP** (any sharding strategy, including `NO_SHARD`): the model is sharded, so the
+  decoder forward, the EMA layout and every weight export become collective
+  operations. EMA switches to the full-model `FSDPEMA` (built before `prepare()`),
+  validation runs on every rank, and `clip_grad_norm_` receives the post-`prepare`
+  parameters so clipping is not silently skipped. EMA currently requires FSDP1;
+  FSDP2 with `--use_ema` is rejected before training.
+- **DeepSpeed ZeRO-2**: behaves like DDP for EMA and validation; `save_state` is
+  collective, so every rank joins the save.
+- **DeepSpeed ZeRO-3**: weights are sharded like FSDP. Combining ZeRO-3 with
+  `--use_ema` raises `NotImplementedError`; use ZeRO-2 or FSDP1 when you need EMA.
+  Checkpoint export also requires `zero3_save_16bit_model: true` in the Accelerate
+  configuration (or `stage3_gather_16bit_weights_on_model_save: true` in DeepSpeed).
+
+Because the trainable decoder is only ~19M parameters, FSDP/ZeRO-3 sharding saves
+little memory here; these backends are provided for parity with
+[train_taehv.py](train_taehv.py) and for large-batch or shared-cluster setups, not as
+a requirement.
 
 ---
 
@@ -402,7 +445,8 @@ output_dir_taehv_w2.2_super/
   checkpoint-1000/
     taehv/                 # raw Super weights and config.json
     optimizer.bin
-    custom_checkpoint_*.pkl # scheduler and optional EMA state
+    scheduler.bin          # LR scheduler state (saved by accelerate prepare)
+    custom_checkpoint_0.pkl # EMA state (DDP/ZeRO-2 with --use_ema only)
     random_states_*.pkl
     trainer_state.json
   sample/                  # validation videos
@@ -412,6 +456,17 @@ output_dir_taehv_w2.2_super/
 The `taehv` directories use Diffusers `save_pretrained` format and load through
 `AutoencoderTinyWan.from_pretrained`. `args-step-N.yaml` records the invocation;
 training arguments are configured directly in the shell launcher.
+
+Under FSDP/ZeRO-3 the save hook all-gathers the sharded weights, so each checkpoint
+also holds the `taehv/` export plus, with `--use_ema`, a `taehv_ema/` directory
+written by `FSDPEMA.save_pretrained`; the EMA is not stored in a
+`custom_checkpoint_*.pkl` in that mode.
+
+> **Resume contract**: `--resume_from_checkpoint` restores exactly the layout above —
+> Accelerate reloads the LR scheduler from `scheduler.bin` and, with `--use_ema`, the EMA
+> state from `custom_checkpoint_0.pkl`. A checkpoint resumes correctly only against a
+> script that saves this same layout; when the layout differs, start from a fresh output
+> directory.
 
 ### 4.2 Use the Trained TAE in Predict Scripts
 
@@ -429,6 +484,4 @@ Point `tae_path` in a compatible Wan2.2 5B TAE predict script to the selected
 tae_path = "output_dir_taehv_w2.2_super/best/taehv"
 ```
 
-The trained decoder consumes official Wan2.2 5B latents. A scratch-trained
-checkpoint has no trained tiny encoder; retain the official Wan encoder for
-image/video conditioning when using such a checkpoint.
+The trained decoder receives official Wan2.2 5B latents. Scratch-trained or decoder-only checkpoints may not have a usable tiny encoder. The current TAE examples use the same VAE for encoding and decoding, so such checkpoints can only be used directly when input encoding is not required. Image/video-conditioned generation needs a usable encoder or a pipeline that retains the official encoder. Without a validation set, `best/taehv` is not produced; use the `taehv` export from a checkpoint instead.

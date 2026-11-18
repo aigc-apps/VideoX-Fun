@@ -13,7 +13,7 @@
 > loss = MSE(z_pred, z_hr)                     # latent 空间 MSE（默认）
 > ```
 >
-> VAE 是**冻结**的；只训练 upsampler。低/高分辨率数据对由普通视频即时构造，因此不需要预先配对的数据。可选开关可加入退化、flow-matching 噪声或像素空间 loss（见 [3.5](#35-高级训练选项)）。
+> VAE 是**冻结**的；只训练 upsampler。低/高分辨率数据对由普通视频即时构造，因此不需要预先配对的数据。可选开关可加入 flow-matching 噪声或像素空间 loss（见 [3.5](#35-高级训练选项)）。
 
 upsampler 面向 Wan2.2 2.2VAE latent 空间（48 通道，`16x` 空间压缩）。`--config_path` 必须包含 `latent_upsampler_kwargs` 块，它决定了 upsampler 架构与空间 scale：
 
@@ -277,15 +277,6 @@ accelerate launch --mixed_precision="bf16" scripts/wan2.2_fun/train_upsampler.py
 ### 3.5 高级训练选项
 
 这些开关默认关闭；**3.2** 中的纯 latent-MSE 回归是推荐的起点。
-
-**退化（修复 + 超分辨率）**：
-
-在空间下采样**之前**对高分辨率帧施加随机退化，使 upsampler 在学习上采样的同时学习修复。
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--enable_degradation` | 启用对高分辨率帧的随机退化 | 关闭 |
-| `--degradation_ops_range MIN MAX` | 每个片段退化操作数量的范围 | `1 4` |
 
 **加噪训练（对齐推理去噪步）**：
 
