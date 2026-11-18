@@ -1202,7 +1202,7 @@ class MiniMaxH3StreamingKVCacheAttnProcessor:
                     query[:, text_rows].transpose(1, 2),
                     key[:, text_rows].transpose(1, 2),
                     value[:, text_rows].transpose(1, 2),
-                ).transpose(1, 2)
+                ).transpose(1, 2).to(output.dtype)
             if bool(media_rows.any()):
                 # [text KV; persistent clean history; current chunk KV], mirroring the
                 # official live document.
@@ -1224,7 +1224,7 @@ class MiniMaxH3StreamingKVCacheAttnProcessor:
                     query[:, media_rows].transpose(1, 2),
                     keys.transpose(1, 2),
                     values.transpose(1, 2),
-                ).transpose(1, 2)
+                ).transpose(1, 2).to(output.dtype)
 
         if cache.mode == "commit" and cache.commit_attend_history:
             # The history-conditioned commit pass output is still discarded; only the staged K/V

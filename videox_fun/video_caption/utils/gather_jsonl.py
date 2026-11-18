@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 from natsort import index_natsorted
 
-from .get_meta_file import parallel_rglob
 from .logger import logger
 
 
@@ -37,7 +36,7 @@ def main():
         raise ValueError(f"The meta_folder {args.meta_folder} does not exist.")
     meta_folder = Path(args.meta_folder)
     if args.recursive:
-        jsonl_files = [str(file) for file in parallel_rglob(meta_folder, f"*.jsonl", max_workers=args.n_jobs)]
+        jsonl_files = [str(file) for file in meta_folder.rglob("*.jsonl")]
     else:
         jsonl_files = [str(file) for file in meta_folder.glob(f"*.jsonl")]
 

@@ -64,7 +64,7 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
                              RandomSampler, VideoDataset, get_closest_ratio,
-                             get_random_mask, random_degradation_video)
+                             get_random_mask)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                WanLatentUpsamplerModel)
 from videox_fun.utils import (add_training_precision_args,
@@ -525,16 +525,6 @@ def parse_args():
     parser.add_argument(
         "--save_state", action="store_true", help="Whether to save accelerator state."
     )
-    parser.add_argument(
-        "--enable_degradation", action="store_true",
-        help="Apply random degradation to HR frames before spatial downsample, "
-             "so the upsampler learns restoration + super-resolution.",
-    )
-    parser.add_argument(
-        "--degradation_ops_range", type=int, nargs=2, default=[1, 4],
-        metavar=("MIN_OPS", "MAX_OPS"),
-        help="Range of degradation operations count per frame.",
-    )
     # ==================== Noisy Training Args ====================
     parser.add_argument(
         "--enable_noisy_training", action="store_true",
@@ -980,24 +970,7 @@ def main():
                 pixel_values_hr = transform_hr(pixel_values)[:batch_video_length]
                 new_examples["pixel_values"].append(pixel_values_hr)
 
-                # --- Optional degradation before spatial downsample ---
-                # Follow ImageVideoTileDataset pattern: one n_ops per clip for
-                # temporal consistency, applied on the normalized tensor.
-                if args.enable_degradation:
-                    n_ops = random.randint(*args.degradation_ops_range)
-                    # Denormalize [-1,1] -> uint8 [0,255] for degradation ops
-                    frames_uint8 = ((pixel_values_hr * 0.5 + 0.5) * 255).clamp(0, 255)
-                    # Convert to list of [H, W, C] numpy uint8 frames
-                    frame_list = [frames_uint8[i].permute(1, 2, 0).byte().numpy()
-                                  for i in range(frames_uint8.shape[0])]
-                    # Video-level degradation: same ops + params for all frames
-                    degraded_stack = random_degradation_video(frame_list, n_operations=n_ops)
-                    pixel_values_hr = (
-                        torch.from_numpy(degraded_stack).permute(0, 3, 1, 2).float() / 255.0
-                    )
-                    pixel_values_hr = (pixel_values_hr - 0.5) / 0.5  # re-normalize to [-1, 1]
-
-                # Low-res: spatially downsample (degraded) HR frames
+                # Low-res: spatially downsample the HR frames.
                 pixel_values_low = F.interpolate(
                     pixel_values_hr, size=(low_h, low_w), mode='bilinear', align_corners=False
                 )
@@ -1134,10 +1107,30 @@ def main():
             #         save_videos_grid(pixel_value[None, ...], f"{args.output_dir}/sanity_check/rank_{accelerator.process_index}_sample_{idx}_low.mp4", rescale=True)
 
             with accelerator.accumulate(latent_upsampler):
-                pixel_values = batch["pixel_values"].to(weight_dtype)  # [B, F, C, H, W]
-                pixel_values = rearrange(pixel_values, "b f c h w -> b c f h w")
-                pixel_values_low = batch["pixel_values_low"].to(weight_dtype)  # [B, F, C, H_low, W_low]
-                pixel_values_low = rearrange(pixel_values_low, "b f c h w -> b c f h w")
+                pixel_values = batch["pixel_values"]  # [B, F, C, H, W]
+                if "pixel_values_low" in batch:
+                    pixel_values_low = batch["pixel_values_low"]
+                else:
+                    # Non-bucket datasets return only HR frames. Match the bucket
+                    # path's alignment and downsampling before encoding both pairs.
+                    spatial_ratio = int(vae.config.spatial_compression_ratio)
+                    align_to = math.lcm(spatial_ratio, int(spatial_ratio * spatial_scale))
+                    height, width = pixel_values.shape[-2:]
+                    aligned_h = height // align_to * align_to
+                    aligned_w = width // align_to * align_to
+                    if not aligned_h or not aligned_w:
+                        raise ValueError(f"Video size {height}x{width} is too small for alignment {align_to}.")
+                    top, left = (height - aligned_h) // 2, (width - aligned_w) // 2
+                    pixel_values = pixel_values[..., top:top + aligned_h, left:left + aligned_w]
+                    low_h = int(aligned_h / spatial_scale / spatial_ratio) * spatial_ratio
+                    low_w = int(aligned_w / spatial_scale / spatial_ratio) * spatial_ratio
+                    b, f, c = pixel_values.shape[:3]
+                    pixel_values_low = F.interpolate(
+                        pixel_values.reshape(b * f, c, aligned_h, aligned_w),
+                        size=(low_h, low_w), mode='bilinear', align_corners=False,
+                    ).reshape(b, f, c, low_h, low_w)
+                pixel_values = rearrange(pixel_values.to(weight_dtype), "b f c h w -> b c f h w")
+                pixel_values_low = rearrange(pixel_values_low.to(weight_dtype), "b f c h w -> b c f h w")
                 bsz = pixel_values.shape[0]
 
                 if args.low_vram:
