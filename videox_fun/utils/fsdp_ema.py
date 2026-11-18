@@ -9,12 +9,11 @@ __all__ = ["FSDPEMA", "LORAFSDPEMA"]
 
 class FSDPEMA:
     r"""
-    FSDP1-compatible drop-in replacement for `diffusers.training_utils.EMAModel`.
+    FSDP1/FSDP2-compatible drop-in replacement for `diffusers.training_utils.EMAModel`.
 
     The EMA copy is a second instance of the same module, wrapped with the same
-    FSDP kwargs that `accelerator.prepare()` applies to the live model (the
-    FSDP1 branch of `Accelerator.prepare_model`). Both copies therefore flatten
-    and shard their parameters identically, which means every *local* shard of
+    FSDP layout that `accelerator.prepare()` applies to the live model. Both
+    copies therefore shard their parameters identically, which means every *local* shard of
     the EMA pairs 1:1 with the matching local shard of the live model. The
     polyak update runs purely on those local shards -- no communication, so the
     per-step cost is the same as the single-GPU case.
@@ -55,6 +54,13 @@ class FSDPEMA:
         module.requires_grad_(False)
         with torch.no_grad():
             module.load_state_dict(source.state_dict(), strict=True)
+
+        self.fsdp2 = getattr(fsdp_plugin, "fsdp_version", 1) == 2
+        if self.fsdp2:
+            from .fsdp_utils import prepare_fsdp2_shadow
+            self.module = prepare_fsdp2_shadow(module, accelerator)
+            self.module.eval()
+            return
 
         fsdp_plugin.set_auto_wrap_policy(module)
         self.module = FSDP(
@@ -157,12 +163,17 @@ class FSDPEMA:
 
         # Every rank has to join the all-gather; only rank 0 receives the full
         # state dict (`rank0_only=True`) offloaded to CPU.
-        with FSDP.state_dict_type(
-            self.module,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        ):
-            state_dict = self.module.state_dict()
+        if self.fsdp2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+            state_dict = get_model_state_dict(
+                self.module, options=StateDictOptions(full_state_dict=True, cpu_offload=True))
+        else:
+            with FSDP.state_dict_type(
+                self.module,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+            ):
+                state_dict = self.module.state_dict()
         if self.accelerator.is_main_process:
             os.makedirs(save_directory, exist_ok=True)
             # Keep fp32 on disk: the EMA target must not round-trip through
@@ -173,7 +184,7 @@ class FSDPEMA:
                 os.path.join(save_directory, "diffusion_pytorch_model.safetensors"),
                 metadata={"format": "pt"},
             )
-            self.module.module.save_config(save_directory)
+            (self.module if self.fsdp2 else self.module.module).save_config(save_directory)
             print(f"Saved EMA weights to {save_directory}.")
         del state_dict
 
@@ -202,12 +213,17 @@ class FSDPEMA:
             return
         # Every rank feeds the full state dict; under the FULL_STATE_DICT
         # context FSDP scatters it into that rank's local shards.
-        with FSDP.state_dict_type(
-            self.module,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
-        ):
-            self.module.load_state_dict(state_dict, strict=True)
+        if self.fsdp2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+            set_model_state_dict(self.module, state_dict,
+                                 options=StateDictOptions(full_state_dict=True, strict=True))
+        else:
+            with FSDP.state_dict_type(
+                self.module,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+            ):
+                self.module.load_state_dict(state_dict, strict=True)
         del state_dict
         if self.accelerator.is_main_process:
             print(f"Loaded EMA weights from {load_directory}.")

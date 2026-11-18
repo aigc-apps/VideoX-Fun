@@ -1,4 +1,4 @@
-"""Blockwise replay and opt-in CPU-offload memory management for FSDP1."""
+"""FSDP mixed precision, blockwise replay and CPU-offload helpers."""
 
 import gc
 from contextlib import contextmanager, nullcontext
@@ -372,8 +372,16 @@ def configure_fsdp_precision(model, accelerator, *, keep_in_fp32_modules=(), buf
     from torch.distributed.fsdp.wrap import CustomPolicy
 
     plugin = accelerator.state.fsdp_plugin
+    if getattr(plugin, "fsdp_version", 1) == 2:
+        model._videox_fsdp2_fp32_modules = tuple(
+            module for name, module in model.named_modules()
+            if name in keep_in_fp32_modules and any(True for _ in module.parameters())
+        )
+        if not hasattr(plugin, "_videox_fsdp2_base_wrap_policy"):
+            plugin._videox_fsdp2_base_wrap_policy = plugin.auto_wrap_policy
+        return
     if getattr(plugin, "fsdp_version", 1) != 1:
-        raise ValueError("Per-module FSDP precision configuration requires FSDP1")
+        raise ValueError("Unsupported FSDP version for per-module precision")
     if getattr(plugin.cpu_offload, "offload_params", False):
         release_offloaded_fsdp_gradients(model)
     plugin.use_orig_params = True
@@ -407,3 +415,66 @@ def configure_fsdp_precision(model, accelerator, *, keep_in_fp32_modules=(), buf
         plugin.auto_wrap_policy = PrecisionPolicy(policy)
     else:
         plugin.auto_wrap_policy = CustomPolicy(policy)
+
+
+@contextmanager
+def preserve_fsdp2_module_precision(accelerator, models):
+    """Wrap declared FP32 modules with their own FSDP2 mixed-precision policy.
+
+    Accelerate 1.7 exposes only one global policy. Scope the two substitutions
+    to its wrapping call so parameter remapping, loading and checkpointing stay
+    under Accelerate's control. Module identities survive meta initialization.
+    """
+    plugin = getattr(accelerator.state, "fsdp_plugin", None)
+    if getattr(plugin, "fsdp_version", 1) != 2:
+        yield
+        return
+    configured = [model for model in models if isinstance(model, torch.nn.Module)
+                  and hasattr(model, "_videox_fsdp2_fp32_modules")]
+    if not configured:
+        yield
+        return
+    selected = {module for model in configured for module in model._videox_fsdp2_fp32_modules}
+    from torch.distributed import fsdp as fsdp_api
+    from accelerate.utils import fsdp_utils as accelerate_fsdp
+
+    # RLock permits nested calls while serializing the temporary module patches.
+    with _fsdp2_module_precision_lock:
+        original_policy = accelerate_fsdp.fsdp2_prepare_auto_wrap_policy
+        original_shard = fsdp_api.fully_shard
+        previous_wrap = plugin.auto_wrap_policy
+        plugin.auto_wrap_policy = getattr(plugin, "_videox_fsdp2_base_wrap_policy", previous_wrap)
+
+        def choose_policy(current_plugin, policy_type, model):
+            base = original_policy(current_plugin, policy_type, model)
+            pinned = set(getattr(model, "_videox_fsdp2_fp32_modules", ()))
+            return lambda module: module in pinned or (base is not None and base(module))
+
+        def shard(module, *args, **kwargs):
+            if module in selected:
+                kwargs["mp_policy"] = fsdp_api.MixedPrecisionPolicy(
+                    param_dtype=torch.float32, reduce_dtype=torch.float32, cast_forward_inputs=True)
+            return original_shard(module, *args, **kwargs)
+
+        try:
+            accelerate_fsdp.fsdp2_prepare_auto_wrap_policy = choose_policy
+            fsdp_api.fully_shard = shard
+            yield
+        finally:
+            accelerate_fsdp.fsdp2_prepare_auto_wrap_policy = original_policy
+            fsdp_api.fully_shard = original_shard
+            plugin.auto_wrap_policy = previous_wrap
+
+
+import threading as _threading
+_fsdp2_module_precision_lock = _threading.RLock()
+
+
+def prepare_fsdp2_shadow(model, accelerator):
+    """Shard a frozen shadow with the same FSDP2 policy as the trainable model."""
+    from accelerate.utils.fsdp_utils import fsdp2_prepare_model
+
+    configure_fsdp_precision(model, accelerator,
+                             keep_in_fp32_modules=getattr(model, "_keep_in_fp32_modules", ()))
+    with preserve_fsdp2_module_precision(accelerator, (model,)):
+        return fsdp2_prepare_model(accelerator, model)

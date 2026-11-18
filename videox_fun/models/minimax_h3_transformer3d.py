@@ -57,7 +57,7 @@ class MiniMaxH3TransformerOutput(BaseOutput):
     """
 
     sample: torch.Tensor
-    audio_sample: torch.Tensor
+    audio_sample: Optional[torch.Tensor] = None
 
 
 def apply_minimax_h3_rotary_emb(hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:

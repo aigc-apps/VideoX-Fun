@@ -974,6 +974,38 @@ def load_resume_state(save_path, student, optimizer, lr_scheduler, ema, trainabl
     print(f"No ema.pt under {save_path}; EMA is re-seeded from the loaded weights.")
 
 
+def configure_pdd_fsdp1_wrap(model, plugin):
+    """Shard BF16 bases separately from their FP32 PDD adapters and output heads."""
+    from torch.distributed.fsdp.wrap import CustomPolicy
+
+    plugin.set_auto_wrap_policy(model)
+    base_policy = plugin.auto_wrap_policy
+    adapters = {module for module in model.modules() if isinstance(module, PDDLoRALinear)}
+    adapter_bases = {module.base for module in adapters}
+
+    def policy(module):
+        if module in adapters or module in adapter_bases or isinstance(module, PDDParallelHead):
+            return True
+        if callable(base_policy):
+            return bool(base_policy(module=module, recurse=False,
+                                    nonwrapped_numel=sum(p.numel() for p in module.parameters())))
+        return False
+
+    if base_policy is not None and not callable(base_policy):
+        class CombinedPolicy(CustomPolicy):
+            def _run_policy(self, root_module, ignored_modules, root_kwargs):
+                result = base_policy._run_policy(root_module, ignored_modules, root_kwargs)
+                for module, kwargs in super()._run_policy(root_module, ignored_modules, root_kwargs).items():
+                    result.setdefault(module, kwargs)
+                return result
+        plugin.auto_wrap_policy = CombinedPolicy(policy)
+    else:
+        plugin.auto_wrap_policy = CustomPolicy(policy)
+    # The dedicated policy already separates mixed dtypes, including CPU offload.
+    # Do not let the generic FSDP1 fallback recast the full frozen backbone.
+    model._videox_fsdp_precision_configured = True
+
+
 def main():
     args = parse_args()
 
@@ -1155,16 +1187,9 @@ def main():
     num_adapters = add_pdd_lora(transformer, args.target_name.split(","), args.rank, args.network_alpha)
     attach_parallel_decoder(transformer, args.pdd_num_steps)
     transformer.train()
-    # FSDP flattens one dtype per wrap unit. DDP keeps float32 LoRA master weights; under FSDP the adapters match
-    # the Linear they wrap (bf16) so each `MiniMaxH3TransformerBlock` is uniform. The parallel heads stay float32
-    # and are wrapped as their own units. Frozen `_keep_in_fp32_modules` embeddings are ignored so they are not
-    # mixed into the bf16 root flatten (`--mixed_precision=no` does not install an FSDP MixedPrecision policy).
+    # FSDP1 requires a uniform dtype within each flat parameter. Keep adapters
+    # in separate FP32 units from their frozen BF16 base layers.
     if fsdp_plugin is not None:
-        for module in transformer.modules():
-            if isinstance(module, PDDLoRALinear):
-                dtype = module.base.weight.dtype
-                module.lora_down.data = module.lora_down.data.to(dtype)
-                module.lora_up.data = module.lora_up.data.to(dtype)
         wrap_names = list(fsdp_plugin.transformer_cls_names_to_wrap or [])
         if "PDDParallelHead" not in wrap_names:
             wrap_names.append("PDDParallelHead")
@@ -1178,8 +1203,10 @@ def main():
                 module.to(accelerator.device)
                 ignored.append(module)
         fsdp_plugin.ignored_modules = ignored
+        if getattr(fsdp_plugin, "fsdp_version", 1) == 1 and not args.full_bf16:
+            configure_pdd_fsdp1_wrap(transformer, fsdp_plugin)
         logger.info(
-            "FSDP: LoRA adapters cast to the backbone dtype; wrap %s; ignored_modules=%s.",
+            "FSDP: wrap %s; ignored_modules=%s.",
             wrap_names,
             [module.__class__.__name__ for module in ignored],
         )

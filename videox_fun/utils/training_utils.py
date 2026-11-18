@@ -3020,7 +3020,8 @@ def configure_declared_fsdp_precision(accelerator, args):
     if getattr(plugin, "fsdp_version", 1) != 1:
         return
     models = [arg for arg in args if isinstance(arg, torch.nn.Module)
-              and getattr(arg, "_keep_in_fp32_modules", None)]
+              and getattr(arg, "_keep_in_fp32_modules", None)
+              and not getattr(arg, "_videox_fsdp_precision_configured", False)]
     mixed = []
     for model in models:
         dtypes = {p.dtype for p in model.parameters() if p.is_floating_point()}
@@ -3284,7 +3285,8 @@ def install_training_precision():
         configure_gradient_reduction(accelerator)
         plugin = getattr(accelerator.state, "fsdp_plugin", None)
         fsdp2 = getattr(accelerator.distributed_type, "name", "") == "FSDP" and getattr(plugin, "fsdp_version", 1) == 2
-        with preserve_fsdp2_lora_alpha(accelerator, args):
+        from .fsdp_utils import preserve_fsdp2_module_precision
+        with preserve_fsdp2_lora_alpha(accelerator, args), preserve_fsdp2_module_precision(accelerator, args):
             if _full_bf16 and fsdp2:
                 # Accelerate's FSDP2 wrapper otherwise upcasts trainable parameters
                 # before sharding. The already configured FSDP BF16 policy remains

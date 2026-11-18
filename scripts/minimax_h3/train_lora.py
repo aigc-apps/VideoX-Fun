@@ -79,6 +79,7 @@ from videox_fun.pipeline.pipeline_minimax_h3 import (
     keyframe_condition_noise, normalize_ref2va_references,
     patchify_video_latents, prepare_keyframe_image, ref2va_condition_rows,
     video_latent_num_frames)
+from videox_fun.utils.training_utils import save_lora_weights
 from videox_fun.utils import (add_training_precision_args,
                               MiniMaxH3Scheduler, PauseAwareTqdm,
                               configure_gradient_checkpointing_save_on_cpu,
@@ -1055,6 +1056,25 @@ def main():
         print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
         assert len(u) == 0
 
+    def gather_model_state(model):
+        return accelerator.get_lora_state_dict(model)
+
+    def gather_lora_state_dict(model, state_dict=None):
+        """Collect FP32 adapter weights with the native PEFT or Kohya names."""
+        model = accelerator.unwrap_model(model)
+        if args.use_peft_lora:
+            network_state_dict = get_peft_model_state_dict(model, state_dict)
+        else:
+            state_dict = model.state_dict() if state_dict is None else state_dict
+            network_state_dict = {}
+            for new_prefix, lora_name in lora_save_keys:
+                prefix = new_prefix + "."
+                for key, value in state_dict.items():
+                    if key.startswith(prefix):
+                        network_state_dict[f"{lora_name}.{key[len(prefix):]}"] = value
+        return {key: value.float() if value.is_floating_point() else value
+                for key, value in network_state_dict.items()}
+
     # ------------------------------------------------------------------ save / load hooks
     # `accelerate` 0.16.0+ supports custom saving hooks. peft weights are exported in both the native and the
     # kohya (`lora_unet_*`) spellings so the predict scripts and ComfyUI load them with zero changes.
@@ -1062,7 +1082,7 @@ def main():
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         if fsdp_stage != 0 or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                accelerate_state_dict = gather_model_state(models[-1])
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
@@ -1097,7 +1117,7 @@ def main():
         else:
             # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
             def save_model_hook(models, weights, output_dir):
-                accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
+                accelerate_state_dict = gather_model_state(models[-1])
                 if accelerator.is_main_process:
                     from safetensors.torch import save_file
                     safetensor_save_path = os.path.join(output_dir, f"lora_diffusion_pytorch_model.safetensors")
@@ -1600,15 +1620,33 @@ def main():
     else:
         initial_global_step = 0
 
-    # function for saving/removing
-    def save_model(ckpt_file, unwrapped_nw):
+    def save_model(ckpt_file, state_dict):
         os.makedirs(args.output_dir, exist_ok=True)
-        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
-        if isinstance(unwrapped_nw, dict):
-            from safetensors.torch import save_file
-            save_file(unwrapped_nw, ckpt_file, metadata={"format": "pt", "peft_lora_alpha": str(args.network_alpha)})
-            return ckpt_file
-        unwrapped_nw.save_weights(ckpt_file, weight_dtype, None)
+        metadata = {"format": "pt"}
+        if args.use_peft_lora:
+            metadata["peft_lora_alpha"] = str(args.network_alpha)
+        save_lora_weights(ckpt_file, state_dict, metadata=metadata)
+        return ckpt_file
+
+    def export_lora_checkpoint(step):
+        # FSDP / ZeRO gathering is collective. Only rank zero writes the export.
+        state_dict = gather_model_state(transformer)
+
+        def write_export():
+            network_state_dict = gather_lora_state_dict(transformer, state_dict)
+            if not network_state_dict:
+                raise ValueError("No LoRA weights found for export.")
+            path = os.path.join(args.output_dir, f"checkpoint-{step}.safetensors")
+            save_model(path, network_state_dict)
+            if args.use_peft_lora:
+                compatible = convert_peft_lora_to_kohya_lora(network_state_dict, alpha=args.network_alpha)
+                save_model(os.path.join(args.output_dir, f"checkpoint-{step}-compatible_with_comfyui.safetensors"), compatible)
+            logger.info(f"Saved safetensor to {path}")
+
+        if args.use_fsdp or args.use_deepspeed:
+            accelerator.checkpoint.phase(lambda: write_export() if accelerator.is_main_process else None)
+        elif accelerator.is_main_process:
+            write_export()
 
     progress_bar = PauseAwareTqdm(
         range(0, args.max_train_steps),
@@ -2028,19 +2066,7 @@ def main():
                         # cache flushes run inside the same window.
                         with progress_bar.paused():
                             if not args.save_state:
-                                if args.use_peft_lora:
-                                    safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                    network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer))
-                                    save_model(safetensor_save_path, network_state_dict)
-
-                                    safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                                    network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict, alpha=args.network_alpha)
-                                    save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                                    logger.info(f"Saved safetensor to {safetensor_save_path}")
-                                else:
-                                    safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                                    save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                                    logger.info(f"Saved safetensor to {safetensor_save_path}")
+                                export_lora_checkpoint(global_step)
                             else:
                                 accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                                 accelerator.save_state(accelerator_save_path)
@@ -2084,19 +2110,7 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         if not args.save_state:
-            if args.use_peft_lora:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                network_state_dict = get_peft_model_state_dict(accelerator.unwrap_model(transformer))
-                save_model(safetensor_save_path, network_state_dict)
-
-                safetensor_kohya_format_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-compatible_with_comfyui.safetensors")
-                network_state_dict_kohya = convert_peft_lora_to_kohya_lora(network_state_dict, alpha=args.network_alpha)
-                save_model(safetensor_kohya_format_save_path, network_state_dict_kohya)
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
-            else:
-                safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-                save_model(safetensor_save_path, accelerator.unwrap_model(network))
-                logger.info(f"Saved safetensor to {safetensor_save_path}")
+            export_lora_checkpoint(global_step)
         else:
             accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)
