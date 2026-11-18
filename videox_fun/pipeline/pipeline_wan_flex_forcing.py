@@ -3,8 +3,7 @@
 import math
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import (Any, Callable, Dict, List, Optional, Sequence, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
@@ -13,14 +12,13 @@ from diffusers.utils import BaseOutput, logging, replace_example_docstring
 
 from ..models import (AutoencoderKLWan, AutoTokenizer, WanT5EncoderModel,
                       WanTransformer3DModel_FlexForcing)
+from ..utils.flex_chunking import (build_full_then_blocks_partitions,
+                                   build_pyramid_partitions, chunk_boundaries,
+                                   normalize_chunk_spec, uniform_chunks,
+                                   validate_nested_partitions)
 from ..utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                 get_sampling_sigmas)
 from ..utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from ..utils.flex_chunking import (build_full_then_blocks_partitions,
-                                   build_pyramid_partitions,
-                                   chunk_boundaries, normalize_chunk_spec,
-                                   uniform_chunks,
-                                   validate_nested_partitions)
 from .pipeline_wan_self_forcing import (WanSelfForcingPipeline,
                                         WanSelfForcingPipelineOutput,
                                         retrieve_timesteps,
@@ -168,6 +166,11 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                 (``[1] * F``), ``"bidir"`` (``[F]``) or an int for uniform
                 chunks. ``None`` keeps the inherited ``num_frame_per_block`` /
                 ``independent_first_frame`` schedule untouched.
+                The uniform forms (``None``, an int, ``"uniform[:N]"``) honour
+                ``independent_first_frame`` - which defaults to ``True`` here -
+                so ``"uniform:3"`` yields ``[1, 3, 3, ...]``, matching the layout
+                an IFF-trained checkpoint expects. Explicit size lists are taken
+                verbatim: write the leading ``1`` yourself if you want it.
             denoise_mode: Does the frame partition change with the noise level?
                 ``"fixed"`` (default) holds one partition across every denoising
                 step, i.e. the block-major Self-Forcing / 3.1 schedule.
@@ -302,7 +305,8 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                 "generates and currently require T2V mode "
                 "(`initial_latent=None`).")
 
-        base = normalize_chunk_spec(chunk_spec, latent_frames) \
+        base = normalize_chunk_spec(chunk_spec, latent_frames,
+                                    independent_first_frame=independent_first_frame) \
             if chunk_spec is not None else None
         if depth > 1:
             if ladder_mode in FULL_THEN_BLOCKS_MODES:
@@ -310,6 +314,22 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                 # two-level ladder whose fine level is the uniform
                 # `num_frame_per_block` partition rather than a binary split, so
                 # it does not go through `build_pyramid_partitions`.
+                # [NOTE] This ladder is fully determined by `num_frame_per_block`:
+                # it ignores both `chunk_spec` (level 0 is always the whole clip)
+                # and `min_num_frame_per_block` (the fine level is the uniform
+                # grid, not a binary split), so say so instead of dropping the
+                # caller's explicit arguments silently.
+                if chunk_spec is not None:
+                    logger.warning(
+                        "`denoise_mode=%r` ignores `chunk_spec=%r`: its level 0 is "
+                        "always one chunk over the whole clip and its fine level "
+                        "is the uniform `num_frame_per_block` partition.",
+                        ladder_mode, chunk_spec)
+                if min_num_frame_per_block != 1:
+                    logger.warning(
+                        "`denoise_mode=%r` ignores `min_num_frame_per_block=%r`: "
+                        "the finest level is fixed by `num_frame_per_block`.",
+                        ladder_mode, min_num_frame_per_block)
                 partitions = build_full_then_blocks_partitions(
                     latent_frames, num_frame_per_block,
                     independent_first_frame=independent_first_frame)
@@ -324,25 +344,71 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
             chunk_sizes = partitions[0]
         else:
             # `chunk_spec` cannot be None here: that case returned above.
-            chunk_sizes = normalize_chunk_spec(chunk_spec, latent_frames)
+            chunk_sizes = normalize_chunk_spec(
+                chunk_spec, latent_frames,
+                independent_first_frame=independent_first_frame)
             partitions = None
 
+        local_attn_size = getattr(self.transformer.config, 'local_attn_size', -1)
         if partitions is not None:
-            # The pyramid re-noises between levels, which only the stochastic
-            # schedule defines, and it moves `current_start` backwards whenever
-            # a chunk splits. Both are safe against a full KV cache and neither
-            # is against a rolling one.
-            if not stochastic_sampling:
+            # A level change hands the next level a buffer that sits exactly at
+            # `timesteps[step_idx + 1]`, and the finer level restarts at frame
+            # 0, so `current_start` moves backwards. Both are safe against a
+            # full KV cache and neither is against a rolling one, which evicts
+            # by `current_start` deltas.
+            #
+            # The handoff itself is not tied to `stochastic_sampling`. The
+            # re-noising branch defines the buffer as
+            # `(1 - t_i_1) * x0 + t_i_1 * eps`; the deterministic branch
+            # defines it as the Euler increment
+            # `x + (sigma_next - sigma_t) * flow_pred`, which lands on the
+            # very same sigma because `sigma_next` is read off the grid at
+            # `global_idx + 1` rather than off a scheduler counter. That
+            # increment is what `--flow_euler_rollout` trains, and the
+            # trainer's own KV-cache walk pops the same `(span, step_idx,
+            # commit)` stack, so a ladder under a deterministic schedule is
+            # legitimate - and is the rollout that actually matches a
+            # checkpoint distilled with `--flow_euler_rollout`.
+            if local_attn_size != -1:
                 raise ValueError(
-                    "Pyramid timestep chunking (`denoise_mode='pyramid'`) requires "
-                    "`stochastic_sampling=True`: the buffered step between two "
-                    "levels is the schedule's own re-noising.")
-            if getattr(self.transformer.config, 'local_attn_size', -1) != -1:
+                    "A per-step partition ladder (`denoise_mode='pyramid'` or "
+                    "'full_then_blocks') requires `local_attn_size=-1` (full KV "
+                    "cache). A rolling window evicts by `current_start` deltas, "
+                    "which a level change moves backwards.")
+            # Forcing-KV (arXiv 2605.09681) rewrites the cache by grouping heads
+            # into static/dynamic histories on a *clean* pass, and it anchors its
+            # `ar_step` on a fixed block size. A ladder breaks both premises: the
+            # partition changes between steps, so neither the per-block clean
+            # commit nor a fixed stride survives it.
+            if self._forcing_kv_enabled():
                 raise ValueError(
-                    "Pyramid timestep chunking (`denoise_mode='pyramid'`) requires "
-                    "`local_attn_size=-1` (full KV cache). A rolling window "
-                    "evicts by `current_start` deltas, which a splitting chunk "
-                    "moves backwards.")
+                    "A per-step partition ladder (`denoise_mode='pyramid'` or "
+                    "'full_then_blocks') cannot be combined with Forcing-KV head "
+                    "compression: compression commits a clean pass per block and "
+                    "derives its step from a fixed block size, neither of which "
+                    "survives a partition that changes between steps.")
+        # Applies to every mode, not just the pyramid. The partition defines one
+        # bidirectional chunk, so a frame must see the whole of its own chunk. A
+        # rolling window is anchored at the chunk *end* (`window_start =
+        # local_end_index - local_attn_size * frame_seqlen`), so once a chunk is
+        # wider than the window its earliest frames cannot attend to its latest
+        # ones and the chunk silently degrades to partial causality. `sink_size`
+        # does not rescue this: it pins the clip start, not the neighbourhood of
+        # the chunk being denoised.
+        # `partitions` is the ladder (a list of levels, each a partition) when
+        # one is on; otherwise the single `chunk_sizes` partition is the only
+        # level. Widest chunk over every level a rollout can reach.
+        levels = partitions if partitions is not None else [chunk_sizes]
+        widest = max(max(level) for level in levels)
+        if local_attn_size != -1 and widest > local_attn_size:
+            raise ValueError(
+                f"Partition breaks the local attention window: the widest chunk "
+                f"is {widest} latent frames but `local_attn_size="
+                f"{local_attn_size}`, so a chunk's first frames cannot attend to "
+                f"its last ones and the intra-chunk bidirectionality that "
+                f"Flex-Forcing 3.1 relies on is lost. Either use "
+                f"`local_attn_size=-1`, or keep every chunk at or below "
+                f"`local_attn_size` frames.")
 
         # Below is the Flex-Forcing rollout proper. It performs the same setup
         # the inherited `__call__` does - prompt encoding, timesteps, latents,
@@ -490,6 +556,11 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
         # copy of the initial noise in which every frame sits at its current
         # noise level, and which the walk both reads from and writes back into.
         state = noise.clone()
+        # The stochastic grid carries a trailing element that the re-noising
+        # reads as `timesteps[global_idx + 1]`, so it is not a step and gets
+        # sliced off. The deterministic grid needs no tail of its own: its
+        # transfer reads `scheduler.sigmas`, which `set_timesteps` already
+        # terminates with a 0.
         denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
         last_step = len(denoise_timesteps) - 1
         block_idx = 0
@@ -531,8 +602,10 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
             # A splitting span takes a single buffered step; a leaf runs
             # whatever is left of the schedule to completion. `step_idx` is
             # where the slice starts inside `timesteps`, which is what lets the
-            # re-noising below read the right (t_i, t_i+1) pair when the walk
-            # resumes a span mid-schedule.
+            # transfer below pick up the right (t_i, t_i+1) pair when the walk
+            # resumes a span mid-schedule - indexed into `timesteps` directly
+            # under a stochastic rollout, resolved by the scheduler from the `t`
+            # it is handed under a deterministic one.
             schedule = (denoise_timesteps[step_idx:step_idx + 1] if splits
                         else denoise_timesteps[step_idx:])
 
@@ -650,6 +723,26 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                         # Delegate to the scheduler's own step() so each sampler
                         # (Flow Euler, UniPC, DPM++) applies its multi-step
                         # formula, exactly as the inherited rollout does.
+                        #
+                        # This holds under a ladder as well, which is not
+                        # obvious: the walk revisits the schedule out of order,
+                        # but the per-span `_step_index = None` reset above
+                        # makes step() re-derive its position by looking the
+                        # handed-over `t` up in `scheduler.timesteps` instead of
+                        # counting calls, and inside one span the counter then
+                        # advances in step with `schedule`. `sigmas` carries the
+                        # trailing 0 `set_timesteps` appends, so the leaf's last
+                        # step lands exactly on x0.
+                        #
+                        # Known and accepted: this grid is
+                        # `set_timesteps(num_inference_steps)`, which at shift=5
+                        # gives [1000, 909.7, 717.3, 24.4], whereas the trainer
+                        # distils on [1000, 937.5, 833.3, 625] - the grid
+                        # `stochastic_sampling_timesteps` reproduces entry for
+                        # entry. A deterministic ladder therefore samples noise
+                        # levels this checkpoint was not distilled at. Use
+                        # `stochastic_sampling=True` when the samples have to
+                        # sit on the trained trajectory.
                         noisy_input = self.scheduler.step(
                             flow_pred, t, noisy_input, return_dict=False)[0]
                         denoised_pred = noisy_input
@@ -787,6 +880,7 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
         edit_steps: int = 1,
         shift: float = 5.0,
         context_noise: int = 0,
+        stochastic_sampling: bool = True,
         num_frame_per_block: Optional[int] = None,
         max_sequence_length: int = 512,
         generator: Optional[torch.Generator] = None,
@@ -818,6 +912,12 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
             edit_steps: How many *trailing* steps of that schedule to run. Keep
                 it small - editing at a planning timestep would restructure the
                 clip instead of refining it.
+            stochastic_sampling: Which rollout the refinement runs on - the same
+                knob :meth:`__call__` takes. ``True`` re-noises between steps on
+                the hardcoded ``stochastic_sampling_timesteps`` grid. ``False``
+                delegates each step to ``self.scheduler`` (Flow Euler, UniPC,
+                DPM++), which is what a checkpoint distilled with
+                ``--flow_euler_rollout`` was trained on.
             num_frame_per_block: Granularity of the clean-context commit - the
                 same uniform block size the inherited rollout uses, doing the
                 same job. ``None`` commits the whole clip in one bidirectional
@@ -875,8 +975,28 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                             * (latents.shape[4] // patch_size[2]))
         seq_len = frame_seq_length * num_latent_frames
 
-        timesteps = stochastic_sampling_timesteps(
-            num_inference_steps, shift, device)
+        # The same schedule dispatch `__call__` makes: the stochastic grid is
+        # the hardcoded few-step one, the deterministic grid comes from the
+        # scheduler so that whichever sampler is configured supplies its own
+        # multi-step formula. `num_inference_steps` may be rewritten by
+        # `retrieve_timesteps` and `step_offset` below is derived from it, so
+        # this has to run first.
+        if stochastic_sampling:
+            timesteps = stochastic_sampling_timesteps(
+                num_inference_steps, shift, device)
+        elif isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler):
+            timesteps, num_inference_steps = retrieve_timesteps(
+                self.scheduler, num_inference_steps, device, None)
+        elif isinstance(self.scheduler, FlowUniPCMultistepScheduler):
+            self.scheduler.set_timesteps(num_inference_steps, device=device, shift=shift)
+            timesteps = self.scheduler.timesteps
+        elif isinstance(self.scheduler, FlowDPMSolverMultistepScheduler):
+            sampling_sigmas = get_sampling_sigmas(num_inference_steps, shift)
+            timesteps, _ = retrieve_timesteps(
+                self.scheduler, device=device, sigmas=sampling_sigmas)
+        else:
+            timesteps, num_inference_steps = retrieve_timesteps(
+                self.scheduler, num_inference_steps, device, None)
         self._num_timesteps = len(timesteps)
 
         self._initialize_kv_cache(
@@ -957,18 +1077,27 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
         # 3. Denoise the span at the refinement levels only, with the whole clip
         #    visible so it conditions on past *and* future clean tokens - the
         #    any-order half of 4.2, which is what `flex_state` opens here and
-        #    step 1 deliberately left closed. This call is always stochastic, so
-        #    the schedule is the trailing `edit_steps` of `timesteps[:-1]` and
-        #    the step is the schedule's own re-noising. `self.scheduler` takes no
-        #    part in this method at all - `timesteps` above comes from
-        #    `stochastic_sampling_timesteps`, and neither loop calls
-        #    `scheduler.step()` - so there is no scheduler state to reset here.
+        #    step 1 deliberately left closed. Either rollout runs the trailing
+        #    `edit_steps` of the schedule; they differ in whether the grid
+        #    carries a tail. The stochastic one does - the re-noising below reads
+        #    it as `timesteps[global_idx + 1]` - so it is sliced off here. The
+        #    deterministic one needs no tail of its own, because its transfer
+        #    reads `scheduler.sigmas`, which `set_timesteps` already terminates
+        #    with a 0.
         flex_state = {"attn_window": (0, seq_len)}
-        schedule = timesteps[:-1][step_offset:]
+        denoise_timesteps = timesteps[:-1] if stochastic_sampling else timesteps
+        schedule = denoise_timesteps[step_offset:]
         span_frames = edit_end - edit_start
         current_start = edit_start * frame_seq_length
         noisy_input = noisy_span
         edited = noisy_span
+        # Only the deterministic branch touches `self.scheduler`, but that one
+        # keeps its own position there and, for the multi-step samplers, a
+        # history of model outputs. Start both fresh, the way `__call__` does at
+        # the head of every span.
+        self.scheduler._step_index = None
+        if hasattr(self.scheduler, "model_outputs"):
+            self.scheduler.model_outputs = []
         with self.progress_bar(total=len(schedule)) as progress_bar:
             for local_idx, t in enumerate(schedule):
                 timestep = torch.ones([batch_size, span_frames], device=device,
@@ -1042,13 +1171,24 @@ class WanFlexForcingPipeline(WanSelfForcingPipeline):
                             f"Unexpected flow_pred dim: {flow_pred.dim()}, "
                             f"shape: {flow_pred.shape}")
 
-                global_idx = step_offset + local_idx
-                t_i = (timesteps[global_idx] / 1000).to(weight_dtype)
-                t_i_1 = (timesteps[global_idx + 1] / 1000).to(weight_dtype)
-                edited = noisy_input - flow_pred * t_i
-                noisy_input = (1 - t_i_1) * edited + t_i_1 * torch.randn(
-                    edited.shape, dtype=edited.dtype, device=device,
-                    generator=generator)
+                if stochastic_sampling:
+                    global_idx = step_offset + local_idx
+                    t_i = (timesteps[global_idx] / 1000).to(weight_dtype)
+                    t_i_1 = (timesteps[global_idx + 1] / 1000).to(weight_dtype)
+                    edited = noisy_input - flow_pred * t_i
+                    noisy_input = (1 - t_i_1) * edited + t_i_1 * torch.randn(
+                        edited.shape, dtype=edited.dtype, device=device,
+                        generator=generator)
+                else:
+                    # Delegate to the scheduler's own step(), exactly as
+                    # `__call__` does. This refinement is a single linear span
+                    # rather than a walk, so the position `step()` re-derives
+                    # from the `t` it is handed is the one the schedule is at,
+                    # and the trailing sigma of 0 lands the last step on x0 -
+                    # which is what `output` below writes back into the clip.
+                    noisy_input = self.scheduler.step(
+                        flow_pred, t, noisy_input, return_dict=False)[0]
+                    edited = noisy_input
                 progress_bar.update()
 
         output = latents.clone()

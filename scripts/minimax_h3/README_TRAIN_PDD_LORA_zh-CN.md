@@ -322,7 +322,7 @@ accelerate launch --mixed_precision="no" --use_fsdp \
 | `--train_batch_size` | 必须为 1：每个 rank 只携带一条轨迹 | 1 |
 | `--num_train_epochs` | 未指定 `--max_train_steps` 时的训练轮数。一轮对应条件集走一遍 | 100 |
 | `--max_train_steps` | 总优化步数。若设置则覆盖 `--num_train_epochs` | 3000 |
-| `--video_sample_n_frames` | 采样帧数，须符合视频 VAE 的 `17*n+5`（时长保持在 5 到 15 秒） | 124 |
+| `--video_sample_n_frames` | 采样帧数，须符合视频 VAE 的 `17*n+5`（时长保持在 0 到 16 秒） | 124 |
 | `--video_sample_size` | 正方形画布尺寸（高 = 宽）；必须是 32 的倍数 | 1280 |
 | `--fix_sample_size` | 固定的 `[高, 宽]`，用于非正方形画布并覆盖 `--video_sample_size`；都必须是 32 的倍数 | 768 1344 |
 | `--gradient_accumulation_steps` | 梯度累积步数 | 1 |
@@ -485,7 +485,7 @@ PDD 推理从 `pdd_ema.safetensors` 挂上 parallel head 和 LoRA（没有 EMA �
 | `pdd_lora_path` | PDD checkpoint 目录（优先加载 `pdd_ema.safetensors`，否则 `pdd.safetensors`，外加 `pdd_config.json`）或 `.safetensors` 文件 | `output_dir_minimax_h3_pdd_lora/checkpoint-3000` |
 | `lora_path` | Turbo/PEFT LoRA；**不能**与 `pdd_lora_path` 同时使用 | `None` |
 | `sample_size` | 生成视频分辨率 `[height, width]`；宽高必须是 32 的倍数。设为 `None` 时使用 MiniMax-H3 自带的 16:9 画布（768x1344） | `[768, 1344]` |
-| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 5 到 15 秒） | 124 |
+| `video_length` | 生成帧数，会向上取整到视频 VAE 可解码的下一个 `17*n+5`（时长保持在 0 到 16 秒） | 124 |
 | `fps` | 每秒帧数（MiniMax-H3 固定以 24 fps 生成） | 24 |
 | `weight_dtype` | 模型权重精度，不支持 bf16 的 GPU 请使用 `torch.float16` | `torch.bfloat16` |
 | `prompt` | 描述生成内容的正向提示词 | `"A red fox trotting..."` |

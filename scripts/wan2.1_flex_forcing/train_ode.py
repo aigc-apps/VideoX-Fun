@@ -63,13 +63,14 @@ from videox_fun.models import (AutoencoderKLWan, WanT5EncoderModel,
                                WanTransformer3DModel_FlexForcing,
                                WanTransformer3DModel_SelfForcing)
 from videox_fun.pipeline import WanFlexForcingPipeline, WanSelfForcingPipeline
-from videox_fun.utils.flex_chunking import (UNIFORM_BLOCK_PROB,
-                                            broadcast_chunk_sizes,
-                                            chunk_boundaries,
-                                            sample_flexible_chunks,
-                                            uniform_chunks)
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils import (add_training_precision_args,
+                              PauseAwareTqdm, build_trainable_optimizer_groups,
+                              chunk_boundaries,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              sample_flex_level0, save_videos_grid)
 
 check_min_version("0.18.0.dev0")
 
@@ -234,12 +235,27 @@ def get_timestep_for_ode(
 
 
 def get_timestep_for_ode_flexible(min_timestep, max_timestep, batch_size,
-                                  chunk_sizes, device, generator=None):
+                                  chunk_sizes, device, generator=None,
+                                  clean_index=None):
     """`get_timestep_for_ode` for a Flex-Forcing partition (arXiv 2607.03509 3.1).
 
     Same contract - every frame of a chunk shares one timestep index - but the
     chunk widths come from the partition instead of a single scalar, so the
     reshape trick of the uniform version does not apply.
+
+    ``clean_index`` is the index whose entry in ``train_denoising_step_list`` is
+    t=0, or ``None`` when the schedule has no clean entry. When given, each
+    sample is guaranteed at least one chunk that did *not* draw it. An all-clean
+    draw makes the loss mask ``(timestep != 0)`` empty, and the caller's
+    fallback ``mse(pred_x0, target)`` is then *exactly* zero rather than merely
+    small: those frames gather the clean endpoint itself and sigma is pinned to
+    0, so ``pred_x0 == target`` bitwise. The iteration contributes no gradient
+    at all. The probability is ``len(train_denoising_step_list) ** -K`` in the
+    number of chunks K, so it is dominated by the coarsest layouts: the
+    whole-clip ``[F]`` partition is a single chunk and on its own carries
+    ``1 / len(train_denoising_step_list)`` of iterations. A single chunk also
+    has no later block to serve as clean context *for*, which is the only reason
+    the clean index exists, so redrawing it loses nothing.
     """
     num_frames = sum(int(c) for c in chunk_sizes)
     per_chunk = torch.randint(
@@ -248,6 +264,21 @@ def get_timestep_for_ode_flexible(min_timestep, max_timestep, batch_size,
         device=device, dtype=torch.long,
         generator=generator,
     )
+    if clean_index is not None and per_chunk.shape[1] > 0 \
+            and max_timestep - min_timestep > 1:
+        all_clean = (per_chunk == clean_index).all(dim=1)
+        if bool(all_clean.any()):
+            rows = all_clean.nonzero(as_tuple=True)[0]
+            # One chunk per affected sample, redrawn uniformly over every index
+            # *except* the clean one: draw from the shrunken range, then shift
+            # past the hole. Works for any clean_index, not just the last one.
+            pick = torch.randint(
+                0, per_chunk.shape[1], [rows.numel()],
+                device=device, dtype=torch.long, generator=generator)
+            redraw = torch.randint(
+                min_timestep, max_timestep - 1, [rows.numel()],
+                device=device, dtype=torch.long, generator=generator)
+            per_chunk[rows, pick] = redraw + (redraw >= clean_index).long()
     timestep = torch.empty(
         batch_size, num_frames, device=device, dtype=per_chunk.dtype)
     for chunk_idx, (start_frame, end_frame) in enumerate(chunk_boundaries(chunk_sizes)):
@@ -256,38 +287,48 @@ def get_timestep_for_ode_flexible(min_timestep, max_timestep, batch_size,
 
 
 def sample_flex_partition(args, num_frames, torch_rng, device):
-    """Draw this iteration's Flex-Forcing partition (3.1/3.3).
+    """Draw this iteration's Flex-Forcing partition (§3.1 / §3.3).
 
     Returns ``None`` when Flex-Forcing is off, so every caller keeps using the
-    uniform ``num_frame_per_block`` layout. 3.2's pyramid is a *multi-step*
-    schedule and the ODE stage regresses x0 in a single forward per block, so
-    there is nothing to ladder over here.
+    uniform ``num_frame_per_block`` layout.
 
-    ``UNIFORM_BLOCK_PROB`` of iterations pin the launcher's own uniform
-    ``num_frame_per_block`` layout instead of drawing a random one. Random draws
-    would almost never produce it - the uniform ``[3] * 7`` at 21 latent frames
-    has probability 1/183708, i.e. 0.11 expected hits in 20000 iterations - yet
-    `log_validation` renders exactly that partition, so without this band stage
-    1's samples would come from a layout it never regressed.
+    The draw is :func:`videox_fun.utils.flex_chunking.sample_flex_level0` - the
+    *same* four-arm mixture stage 2 uses for its level 0, random arm at
+    ``FLEX_RANDOM_PROB`` (10%) and the three deterministic arms at 30% each.
+    Sharing it is the whole point: this stage's checkpoint is stage 2's
+    ``--ode_transformer_path`` initialisation, so every layout stage 2 spends
+    iterations on has to be one stage 1 actually regressed. The two-band sampler
+    this replaced drew 10% uniform / 90% random - coincidentally the mirror image
+    of today's split, and beside the point, since what made it unusable was its
+    chunk support being exactly ``{--flex_chunk_min .. --flex_chunk_max}``: the
+    whole-clip ``[F]`` layout that 60% of stage 2's level-0 iterations start from
+    (at ``--flex_pyramid_levels=4``) had probability *zero* there (``max_chunk``
+    below the frame count makes it unreachable, and at most 1/19 of random draws
+    even with ``max_chunk`` raised to it), and so did every 1-frame chunk -
+    ``[1] * F`` is ``1/F!`` under a random draw, i.e. unreachable at any setting
+    of these two knobs.
+
+    §3.2's pyramid is a *multi-step* schedule and this stage regresses x0 in a
+    single forward per chunk, so there is no ladder to build here and only
+    level 0 is used. ``--flex_pyramid_levels`` is still read, and must match
+    stage 2's, because it decides whether the coarse arm exists and therefore
+    how the other arms split the 90% the random one leaves behind.
+
+    ``sample_flex_level0`` broadcasts rank 0's draw, so every rank regresses the
+    same layout; otherwise the FlexAttention mask and the per-chunk timesteps
+    would disagree across the group.
     """
     if not args.flex_forcing:
         return None
-    if torch.rand(
-            (), generator=torch_rng, device=device).item() < UNIFORM_BLOCK_PROB:
-        # `uniform_chunks` rather than `normalize_chunk_spec`: the latter takes no
-        # `independent_first_frame` argument (it encodes that as a leading 1), so
-        # it would silently drop the leading 1 the random branch below adds.
-        sizes = uniform_chunks(
-            num_frames, args.num_frame_per_block,
-            independent_first_frame=args.independent_first_frame)
-    else:
-        sizes = sample_flexible_chunks(
-            num_frames, min_chunk=args.flex_chunk_min, max_chunk=args.flex_chunk_max,
-            generator=torch_rng, device=device,
-            independent_first_frame=args.independent_first_frame)
-    # Every rank must regress the same layout, otherwise the FlexAttention mask
-    # and the per-chunk timesteps disagree across the group.
-    return broadcast_chunk_sizes(sizes, device=device)
+    return sample_flex_level0(
+        num_frames,
+        num_frame_per_block=args.num_frame_per_block,
+        chunk_min=args.flex_chunk_min,
+        chunk_max=args.flex_chunk_max,
+        pyramid=args.flex_pyramid_levels > 1,
+        generator=torch_rng,
+        device=device,
+        independent_first_frame=args.independent_first_frame)["sizes"]
 
 
 def initialize_kv_cache_for_training(batch_size, num_frames, frame_seq_length,
@@ -389,10 +430,21 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=2e-6,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -566,20 +618,39 @@ def parse_args():
         "--flex_chunk_min",
         type=int,
         default=2,
-        help="Smallest chunk drawn when sampling a partition (paper 3.1 uses 2). "
-             "1 is allowed but adds no coverage: refining a 2-frame chunk already "
-             "yields 1-frame leaves."
+        help="Smallest chunk drawn by the *random* arm of the level-0 mixture "
+             "(paper §5 uses 2). Unlike stage 2, nothing here refines a coarse "
+             "chunk down to 1-frame leaves, so 1 is a real setting: it lets the "
+             "random arm emit single-frame chunks itself. The fully causal "
+             "[1] * F layout is a separate arm and is drawn either way."
     )
     parser.add_argument(
         "--flex_chunk_max",
         type=int,
         default=10,
-        help="Largest chunk drawn when sampling a partition (paper 3.1 uses 10; "
-             "setting it equal to --flex_chunk_min pins one fixed layout). Unlike "
-             "stage 2 there is no coarse mixture here, so raising this to the "
-             "latent frame count is the *only* way stage 1 ever sees the whole "
-             "clip as one fully bidirectional chunk - about 5% of draws at 21 "
-             "latent frames. Below the frame count that layout is never drawn."
+        help="Largest chunk drawn by the *random* arm of the level-0 mixture "
+             "(paper §5 uses 10; setting it equal to --flex_chunk_min pins that "
+             "arm to one fixed layout). The whole-clip layout is a separate arm, "
+             "so this knob does not decide whether stage 1 ever regresses the "
+             "clip as one fully bidirectional chunk. Raising it to the latent "
+             "frame count only spends random-arm draws on a layout the coarse arm "
+             "already covers - at 21 latent frames it makes [21] 1/19 of that arm "
+             "and thins every other one, cutting P([3]*7) from 1/183708 to "
+             "1/1106560."
+    )
+    parser.add_argument(
+        "--flex_pyramid_levels",
+        type=int,
+        default=1,
+        help="Must match stage 2's --flex_pyramid_levels. Stage 1 builds no ladder "
+             "(it regresses x0 in one forward per chunk, so only level 0 is used), "
+             "but the level-0 mixture is shared with stage 2 and this flag decides "
+             "whether its coarse arm exists: >1 gives 30%% whole-clip / 30%% "
+             "uniform / 30%% full_then_blocks / 10%% random, while =1 divides the "
+             "coarse arm's share between the two survivors - random stays at 10%% - "
+             "for 45/45/10. Leaving it at 1 while stage 2 "
+             "runs 4 would under-train exactly the [F] layout stage 2 starts most "
+             "of its iterations from."
     )
     parser.add_argument(
         "--independent_first_frame",
@@ -602,7 +673,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate',
         nargs='+',
         default=[],
-        help='Enter a list of trainable modules with lower learning rate.',
+        help='Trainable module substrings for the low learning rate.',
     )
     parser.add_argument(
         "--save_state", action="store_true", help="Whether to save full accelerator state on checkpoint."
@@ -634,7 +705,11 @@ def parse_args():
         ),
     )
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -661,6 +736,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -886,72 +963,13 @@ def main():
         )
 
     # Initialize the optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "Please install bitsandbytes to use 8-bit Adam. You can do so by running `pip install bitsandbytes`"
-            )
-
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        try:
-            from came_pytorch import CAME
-        except Exception:
-            raise ImportError(
-                "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
-            )
-
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
     trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in transformer3d.named_parameters():
-        if not param.requires_grad:
-            continue
-        if name in in_already:
-            continue
-        # 3.3's K-Projection is grouped like every other layer: the default
-        # --trainable_modules ['.'] matches `flex_kproj.*`, so Pi trains at
-        # --learning_rate together with the rest of the generator.
-        high_lr = False
-        for m in args.trainable_modules:
-            if m in name:
-                in_already.append(name)
-                high_lr = True
-                trainable_params_optim[0]['params'].append(param)
-                break
-        if high_lr:
-            continue
-        for m in args.trainable_modules_low_learning_rate:
-            if m in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        transformer3d.named_parameters(), args, accelerator, only_trainable=True
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            # weight_decay=args.adam_weight_decay,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # Get the training dataset
     train_dataset = ImageVideoSafetensorsDataset(
@@ -1044,14 +1062,13 @@ def main():
 
     # Compute denoising_step_list from the scheduler's own grid.
     # Deliberately *not* calling `set_timesteps(...)`: it rebuilds the grid with
-    # a different `sigma_min`, so indexing it lands up to 5.4 away from the t the
-    # pipeline actually denoises at (measured 5.44 at shift=8.0, 3.71 at 5.0).
-    # The `__init__` grid maps index k to exactly t = 1 - k / num_train_timesteps,
-    # which is what `stochastic_sampling_timesteps` hardcodes, so training,
-    # validation and inference read the same numbers - |diff| = 0.0 at both
-    # shifts. `train_distill.py` relies on the same grid. The explicit `.to()`
-    # keeps these on the accelerator, which `set_timesteps(device=...)` used to
-    # do for us and which the per-frame `timestep` below requires.
+    # a different `sigma_min`, so indexing it lands away from the t the pipeline
+    # actually denoises at. The `__init__` grid maps index k to exactly
+    # t = 1 - k / num_train_timesteps, which is what
+    # `stochastic_sampling_timesteps` hardcodes, so training, validation and
+    # inference read the same numbers. `train_distill.py` relies on the same
+    # grid. The explicit `.to()` keeps these on the accelerator, which the
+    # per-frame `timestep` below requires.
     denoising_step_list = noise_scheduler.timesteps.to(accelerator.device)[
         args.train_sampling_steps - torch.tensor(args.denoising_step_indices_list)
     ]
@@ -1064,6 +1081,13 @@ def main():
             denoising_step_list, torch.tensor([0], device=denoising_step_list.device)
         ])
     num_denoising_steps = len(train_denoising_step_list)
+    # Index of the clean (t=0) entry, derived from the list itself rather than
+    # assumed to be the last one. Passed to `get_timestep_for_ode_flexible`,
+    # which keeps every iteration from drawing it for *all* chunks - an
+    # all-clean draw zeroes the loss mask and makes the fallback MSE exactly 0,
+    # i.e. a zero-gradient iteration. See that function for the probability.
+    _clean_hits = (train_denoising_step_list == 0).nonzero(as_tuple=True)[0]
+    clean_step_index = int(_clean_hits[-1]) if _clean_hits.numel() > 0 else None
     if accelerator.is_main_process:
         print(f"Denoising step list (inference): {denoising_step_list.tolist()}")
         print(f"Denoising step list (training):  {train_denoising_step_list.tolist()}")
@@ -1107,6 +1131,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1221,6 +1247,7 @@ def main():
                                 0, num_denoising_steps, bsz, all_num_frames,
                                 accelerator.device,
                                 generator=torch_rng,
+                                clean_index=clean_step_index,
                             )  # [B, F]
                         else:
                             index = get_timestep_for_ode(
@@ -1350,6 +1377,7 @@ def main():
                                 0, num_denoising_steps, bsz, flex_partition,
                                 accelerator.device,
                                 generator=torch_rng,
+                                clean_index=clean_step_index,
                             )  # [B, F]
                         else:
                             index = get_timestep_for_ode(
@@ -1443,7 +1471,7 @@ def main():
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3:
+                    if (accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1456,13 +1484,13 @@ def main():
                                 removing_checkpoints = checkpoints[:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -1508,7 +1536,7 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3:
+    if (accelerator.is_main_process or fsdp_stage == 3 or zero_stage == 3) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

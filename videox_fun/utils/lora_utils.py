@@ -193,7 +193,7 @@ class LoRANetwork(torch.nn.Module):
         "LongCatVideoTransformer3DModel", "LongCatVideoAvatarTransformer3DModel", "TurboWanTransformer3DModel", \
         "LTX2VideoTransformer3DModel", "InfiniteTalkTransformer3DModel", "WanAudioTransformer3DModel", \
         "MOVADualTowerConditionalBridge",  "FlashHeadTransformer3DModel", "LensTransformer2DModel", \
-        "MiniMaxH3Transformer3DModel"
+        "MiniMaxH3Transformer3DModel", "MiniMaxH3ImageTransformer2DModel"
     ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
@@ -417,7 +417,7 @@ def create_network(
     )
     return network
 
-def convert_peft_lora_to_kohya_lora(state_dict):
+def convert_peft_lora_to_kohya_lora(state_dict, alpha=None):
     new_state_dict = {}
     for key, value in state_dict.items():
         if "diffusion_model." in key:
@@ -434,7 +434,27 @@ def convert_peft_lora_to_kohya_lora(state_dict):
         if key.endswith("_lora_down_weight"):
             key = key[:-17] + ".lora_down.weight"
         new_state_dict[key] = value
+    if alpha is not None:
+        for key in tuple(new_state_dict):
+            if key.endswith(".lora_down.weight"):
+                new_state_dict.setdefault(key[:-len(".lora_down.weight")] + ".alpha", torch.tensor(alpha, dtype=torch.float32))
     return new_state_dict
+
+
+def load_lora_safetensors(path):
+    """Load a LoRA file and restore PEFT scaling metadata for merging."""
+    from safetensors import safe_open
+
+    state = load_file(path)
+    with safe_open(path, framework="pt", device="cpu") as file:
+        metadata = file.metadata() or {}
+    alpha = metadata.get("peft_lora_alpha")
+    if alpha is not None:
+        for key in tuple(state):
+            if ".lora_A." in key:
+                name = key.split(".lora_A.", 1)[0] + ".alpha"
+                state.setdefault(name, torch.tensor(float(alpha), dtype=torch.float32))
+    return state
 
 # ---------------------------------------------------------------------------
 # Official TaoMate-H3 adapter support
@@ -708,7 +728,7 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
             state_dict = official_to_kohya_lora_state_dict(loaded)
         elif lora_path.endswith("safetensors"):
             print(f"[LoRA Merge] Loading safetensors file...")
-            state_dict = load_file(lora_path)
+            state_dict = load_lora_safetensors(lora_path)
         else:
             print(f"[LoRA Merge] Loading pytorch file...")
             state_dict = torch.load(lora_path, map_location="cpu")
@@ -914,7 +934,7 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
         state_dict = official_to_kohya_lora_state_dict(loaded)
     elif lora_path.endswith("safetensors"):
         print(f"[LoRA Unmerge] Loading safetensors file...")
-        state_dict = load_file(lora_path)
+        state_dict = load_lora_safetensors(lora_path)
     else:
         print(f"[LoRA Unmerge] Loading pytorch file...")
         state_dict = torch.load(lora_path, map_location="cpu")

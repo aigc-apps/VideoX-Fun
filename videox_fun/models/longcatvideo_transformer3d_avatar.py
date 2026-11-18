@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+import torch.utils.checkpoint
 import torch.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1000,14 +1001,6 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         else:
             raise ValueError("Invalid set gradient checkpointing")
 
-        def _gradient_checkpointing_func(module, *args):
-            ckpt_kwargs = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-            return torch.utils.checkpoint.checkpoint(
-                module.__call__,
-                *args,
-                **ckpt_kwargs,
-            )
-        self._gradient_checkpointing_func = _gradient_checkpointing_func
 
     def enable_multi_gpus_inference(self,):
         self.sp_world_size = get_sequence_parallel_world_size()
@@ -1150,9 +1143,9 @@ class LongCatVideoAvatarTransformer3DModel(ModelMixin, ConfigMixin, FromOriginal
         kv_cache_dict_ret = {}
         for i, block in enumerate(self.blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                block_outputs = self._gradient_checkpointing_func(
+                block_outputs = torch.utils.checkpoint.checkpoint(
                     block, hidden_states, encoder_hidden_states, t, y_seqlens,
-                    (N_t, N_h, N_w), num_cond_latents, return_kv, kv_cache_dict.get(i, None), skip_crs_attn, num_ref_latents, audio_hidden_states, ref_img_index, mask_frame_range, token_ref_target_masks, human_num
+                    (N_t, N_h, N_w), num_cond_latents, return_kv, kv_cache_dict.get(i, None), skip_crs_attn, num_ref_latents, audio_hidden_states, ref_img_index, mask_frame_range, token_ref_target_masks, human_num, use_reentrant=False
                 )
             else:
                 block_outputs = block(

@@ -71,6 +71,11 @@ class MiniMaxH3MixedPrecisionLoaderMixin:
         # has to branch on the format itself.
         if pretrained_model_name_or_path is not None:
             if is_raw_minimax_h3_format(pretrained_model_name_or_path):
+                if not hasattr(cls, "from_pretrained_original"):
+                    raise ValueError(
+                        f"{cls.__name__} has no loader for the original MiniMax-H3 layout found in "
+                        f"{pretrained_model_name_or_path}; only a diffusers-layout partition can be read into it."
+                    )
                 torch_dtype = kwargs.pop("torch_dtype", kwargs.pop("dtype", None))
                 # diffusers-only kwargs that the original-format loader does not use.
                 kwargs.pop("subfolder", None)
@@ -111,10 +116,13 @@ class MiniMaxH3MixedPrecisionLoaderMixin:
             kwargs["device_map"] = device_map
         if max_memory is not None:
             kwargs["max_memory"] = max_memory
-        model = super().from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype, **kwargs)
+        result = super().from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype, **kwargs)
+        # ModelMixin returns (model, loading_info) when output_loading_info=True.
+        # Restore precision on the model while preserving that return contract.
+        model = result[0] if isinstance(result, tuple) else result
         if torch_dtype not in (None, torch.float32) and cls._keep_in_fp32_modules:
             restore_fp32_modules(model, pretrained_model_name_or_path, kwargs.get("subfolder", None))
-        return model
+        return result
 
     @classmethod
     def _from_pretrained_with_missing_keys(cls, pretrained_model_name_or_path, torch_dtype, **kwargs):
@@ -634,8 +642,10 @@ def is_raw_minimax_h3_format(path):
     Tell whether `path` points at an *original* MiniMax-H3 checkpoint (the released layout) rather than at the
     diffusers layout `videox_fun` loads.
 
-    The original root `model_index.json` carries a `_minimax_h3` block (the schedule constants) instead of component
-    specs; as a fallback the first transformer shard header is sniffed for an original key.
+    The original root `model_index.json` carries the schedule constants of the original recipe under
+    `_minimax_h3.sigma_shift_scales`; as a fallback the first transformer shard header is sniffed for an original key.
+    Only that block counts as a marker: the released image partition ships an `_minimax_h3` block of its own (task
+    list, partition name) next to weights that are already in the diffusers layout, and must not be converted.
     """
     if not os.path.isdir(path):
         return False
@@ -643,7 +653,7 @@ def is_raw_minimax_h3_format(path):
     if os.path.isfile(index_path):
         try:
             with open(index_path) as f:
-                if "_minimax_h3" in json.load(f):
+                if "sigma_shift_scales" in json.load(f).get("_minimax_h3", {}):
                     return True
         except (OSError, json.JSONDecodeError):
             pass

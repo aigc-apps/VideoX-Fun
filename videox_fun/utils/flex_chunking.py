@@ -26,7 +26,7 @@ Conventions used across this module:
 * ``num_frames`` always denotes **latent** frames (post-VAE), matching
   ``target_shape[1]`` in the trainers and ``num_latent_frames`` in the pipeline.
 """
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 
@@ -45,6 +45,8 @@ __all__ = [
     "chunk_ends_tensor",
     "broadcast_chunk_sizes",
     "chunk_sizes_to_block_kwargs",
+    "FLEX_RANDOM_PROB",
+    "sample_flex_level0",
 ]
 
 
@@ -89,7 +91,8 @@ def uniform_chunks(num_frames: int,
 
 def normalize_chunk_spec(spec: Union[None, int, str, Sequence[int]],
                          num_frames: int,
-                         chunk_size: Optional[int] = None) -> ChunkSizes:
+                         chunk_size: Optional[int] = None,
+                         independent_first_frame: bool = False) -> ChunkSizes:
     """Parse a user-facing chunk specification into a validated partition.
 
     Accepted forms (``num_frames`` = latent frames the partition must cover):
@@ -102,18 +105,26 @@ def normalize_chunk_spec(spec: Union[None, int, str, Sequence[int]],
     * ``"ar"``                 -> fully autoregressive ``[1] * num_frames``
     * ``"bidir"`` / ``"full"`` -> fully bidirectional ``[num_frames]``
 
-    ``independent_first_frame`` needs no separate flag: it is exactly the
-    partition whose first chunk has size 1 (read it back with
-    ``sizes[0] == 1``).
+    ``independent_first_frame`` is applied to the *uniform* forms only (``None``,
+    ``int``, ``"uniform[:N]"``), where it inserts the leading size-1 chunk that
+    makes the layout ``[1, N, N, ...]``. Without it those forms produce a
+    partition the ``independent_first_frame`` trainer never trained on. The
+    keyword forms leave it alone on purpose: ``"ar"`` is already one frame per
+    chunk, and prefixing ``"bidir"`` would break the single bidirectional chunk.
+    An explicit size list also leaves it alone - a leading 1 there is written by
+    the caller, and is read back with ``sizes[0] == 1``.
     """
     if spec is None:
-        sizes = uniform_chunks(num_frames, chunk_size if chunk_size is not None else 1)
+        sizes = uniform_chunks(num_frames, chunk_size if chunk_size is not None else 1,
+                               independent_first_frame=independent_first_frame)
     elif isinstance(spec, bool):
         raise TypeError(f"chunk spec must not be a bool, got {spec!r}")
     elif isinstance(spec, int):
-        sizes = uniform_chunks(num_frames, spec)
+        sizes = uniform_chunks(num_frames, spec,
+                               independent_first_frame=independent_first_frame)
     elif isinstance(spec, str):
-        sizes = _parse_chunk_string(spec, num_frames)
+        sizes = _parse_chunk_string(spec, num_frames,
+                                    independent_first_frame=independent_first_frame)
     elif isinstance(spec, (list, tuple)):
         sizes = [int(s) for s in spec]
     else:
@@ -124,7 +135,8 @@ def normalize_chunk_spec(spec: Union[None, int, str, Sequence[int]],
     return _validate_sizes(sizes, num_frames, spec)
 
 
-def _parse_chunk_string(spec: str, num_frames: int) -> ChunkSizes:
+def _parse_chunk_string(spec: str, num_frames: int,
+                        independent_first_frame: bool = False) -> ChunkSizes:
     text = spec.strip()
     lowered = text.lower()
     if lowered in ("ar", "autoregressive", "causal"):
@@ -132,9 +144,11 @@ def _parse_chunk_string(spec: str, num_frames: int) -> ChunkSizes:
     if lowered in ("bidir", "bidirectional", "full"):
         return [int(num_frames)]
     if lowered.startswith("uniform:"):
-        return uniform_chunks(num_frames, int(lowered.split(":", 1)[1]))
+        return uniform_chunks(num_frames, int(lowered.split(":", 1)[1]),
+                              independent_first_frame=independent_first_frame)
     if lowered.startswith("uniform"):
-        return uniform_chunks(num_frames, 1)
+        return uniform_chunks(num_frames, 1,
+                              independent_first_frame=independent_first_frame)
     body = text.strip("[]() ")
     sep = "," if "," in body else ("-" if "-" in body else None)
     if sep is None:
@@ -159,18 +173,41 @@ def _validate_sizes(sizes: ChunkSizes, num_frames: int, spec) -> ChunkSizes:
     return [int(s) for s in sizes]
 
 
-# Share of iterations that pin the launcher's own uniform ``num_frame_per_block``
-# layout instead of drawing a random partition. ``sample_flexible_chunks`` can
-# reach every partition whose chunks are individually legal, but it reaches any
-# *particular* one only by chance: the uniform ``[3] * 7`` at 21 latent frames
-# has probability 1/183708, i.e. 0.11 expected hits in 20000 iterations. Without
-# this band ``--num_frame_per_block`` would name a layout the model never trains
-# on, and the validation pass - which pins exactly that layout - would render
-# out of distribution. Raising the sampler's randomness makes this *worse*, not
-# better: more reachable partitions means each one is drawn less often.
-# Deliberately not a CLI flag, and shared by both trainers so the two stages
-# cannot drift apart.
-UNIFORM_BLOCK_PROB = 0.1
+# Share of iterations the level-0 mixture's *random* arm takes; the other arms
+# split the remainder equally, so with a pyramid this is 30% coarse / 30%
+# uniform / 30% full_then_blocks / 10% random. ``sample_flex_level0`` below is
+# the single source of truth for the coarsest layout that **both** trainers
+# draw: stage 2 (``train_distill.py``) nests it into the §3.2 ladder, stage 1
+# (``train_ode.py``) regresses against it directly because it predicts x0 in one
+# forward per chunk and has no ladder to build. Sharing the draw is what keeps
+# the two stages on the same layout distribution - stage 1's checkpoint is stage
+# 2's initialisation (``--ode_transformer_path``), so a layout stage 2 spends
+# most of its iterations on must not be one stage 1 never regressed.
+#
+# The layouts ``--num_frame_per_block`` names are arms, not something the random
+# draw is expected to stumble onto: ``sample_flexible_chunks`` reaches every
+# individually legal partition but any *particular* one only by chance. At 21
+# latent frames the uniform ``[3] * 7`` has probability 1/183708, and the fully
+# causal ``[1] * 21`` is 1/21! - unreachable in practice at any ``max_chunk``,
+# which is why no ``--flex_chunk_min/max`` setting can substitute for these arms.
+# Pinning them is what makes ``--num_frame_per_block`` name a layout the model
+# genuinely trains on, and keeps ``log_validation`` - which pins exactly that
+# layout - in distribution. Deliberately not a CLI flag.
+#
+# Deliberate deviation from the paper, and the reason this constant exists at
+# all: arXiv 2607.03509 §5 says "we randomly pick the chunk size in training
+# from 2 to 10" and pins no arm of its own, so its level 0 is drawn entirely
+# from that random family. That family spans thousands of distinct layouts, so
+# the random arm buys exactly what §3.3 asks of it - coverage of "attention
+# configurations that range from strictly causal to fully non-causal" - but it
+# cannot train any *particular* layout, and the layouts inference actually
+# selects (``PAPER_CHUNK_CONFIGS``, plus the one ``log_validation`` pins) are
+# the deterministic ones. Holding it to a minority share is what leaves those
+# arms enough iterations to be trained at all. Setting this to 1.0 reproduces
+# the paper's mixture exactly: every threshold below collapses to 0, so the
+# three deterministic arms become unreachable and the uniform draw always lands
+# in the random one.
+FLEX_RANDOM_PROB = 0.10
 
 
 def sample_flexible_chunks(num_frames: int,
@@ -205,21 +242,13 @@ def sample_flexible_chunks(num_frames: int,
         # Two legal moves, offered everywhere along the clip including the tail:
         # take the whole remainder, or leave at least min_chunk frames behind.
         # Anything in between would strand a sub-min_chunk sliver mid-video.
-        #
-        # The tail used to be closed unconditionally (`if remaining <=
-        # max_chunk: append(remaining); break`), which silently removed most of
-        # the sampler's randomness: at 21 frames with 2..10 a run of 3s stopped
-        # at `[3, 3, 3, 3, 9]` after four draws, so the uniform `[3] * 7` was
-        # unreachable outright - exhaustive enumeration found 679 partitions and
-        # none of them was it. Uniform layouts also bias short: the old rule
-        # topped out at 7 chunks with 65% of draws at just 3.
         upper = min(max_chunk, remaining - min_chunk)
         choices = list(range(min_chunk, upper + 1)) if upper >= min_chunk else []
         if remaining <= max_chunk:
             choices.append(remaining)
         if not choices:
             # Degenerate only: min_chunk == max_chunk and the remainder is
-            # strictly between them, so nothing legal fits. Same as before.
+            # strictly between them, so nothing legal fits.
             sizes.append(remaining)
             break
         step = choices[int(torch.randint(
@@ -413,4 +442,173 @@ def chunk_sizes_to_block_kwargs(chunk_sizes: Sequence[int]) -> dict:
     return {
         "num_frame_per_block": max(sizes) if sizes else 1,
         "independent_first_frame": bool(sizes and sizes[0] == 1),
+    }
+
+
+def sample_flex_level0(num_frames: int,
+                       num_frame_per_block: int,
+                       chunk_min: int,
+                       chunk_max: int,
+                       pyramid: bool,
+                       generator: Optional[torch.Generator] = None,
+                       device: Union[str, torch.device] = "cpu",
+                       independent_first_frame: bool = False) -> Dict[str, Any]:
+    """Draw one iteration's coarsest Flex-Forcing layout (the four-arm mixture).
+
+    Single source of truth for the level-0 partition **both** trainers draw:
+    ``train_distill.py`` nests the result into the §3.2 ladder, ``train_ode.py``
+    regresses against it directly. Keeping the draw here is what stops the two
+    stages from drifting apart - stage 1's checkpoint is stage 2's
+    initialisation, so every layout stage 2 spends iterations on has to be one
+    stage 1 actually regressed.
+
+    Four arms, decided by a single uniform draw. ``"random"`` takes
+    :data:`FLEX_RANDOM_PROB` (10%) and the other three split what is left
+    equally, i.e. 30% each:
+
+    * ``"coarse"`` - one chunk over the whole clip (inference's planning step),
+      i.e. fully bidirectional. Only drawn when ``pyramid`` is on: without a
+      ladder a ``[F]`` level 0 would be a degenerate single-chunk rollout, so
+      the two surviving arms widen to 45% each and ``"random"`` stays at 10%.
+    * ``"uniform"`` - a pure Self-Forcing grid (no binary refinement) in one of
+      three sub-layouts drawn from ``num_frame_per_block`` and fully causal:
+      ``[1]*F`` alone, ``[nfpb]*k`` alone, or ``[nfpb]*k`` planning followed by
+      ``[1]*F`` for every remaining step - the coarse-block -> per-frame descent
+      the pyramid never samples, because it halves through ``[2, 1x14]`` first.
+      The three are equiprobable *within* the arm, so 10% of iterations each.
+    * ``"full_then_blocks"`` - ``denoise_mode="full_then_blocks"``: a whole-clip
+      planning chunk, then block-major refinement at a width drawn from
+      ``{1, num_frame_per_block}``.
+    * ``"random"`` - the §3.3 / §5 spectrum via :func:`sample_flexible_chunks`.
+
+    Distributed contract: the arm selector is drawn once and broadcast from
+    rank 0, then **every** arm issues exactly one :func:`broadcast_chunk_sizes`.
+    All ranks therefore end up with a byte-identical layout *and* the same
+    collective count. A per-rank arm draw would leave ranks in different arms
+    with different walk forward counts -> FSDP all-gather desync (NCCL hang).
+
+    Args:
+        pyramid: whether the caller ladders at all, i.e.
+            ``args.flex_pyramid_levels > 1``. Stage 1 has no ladder but must
+            still pass stage 2's setting, because this flag decides whether the
+            coarse arm exists and therefore what the other three arms weigh.
+
+    Returns:
+        ``"sizes"`` - the level-0 partition, already rank-reconciled.
+        ``"arm"`` - ``"coarse"`` / ``"uniform_causal"`` / ``"uniform_blocks"`` /
+        ``"uniform_plan_then_causal"`` / ``"full_then_blocks"`` / ``"random"``.
+        The uniform arm is resolved to its sub-layout here so the caller can
+        rebuild the ladder depth without re-deriving the band arithmetic.
+        ``"arm_text"`` - human-readable description for the layout log.
+        ``"causal"`` - ``[1]*F``, present on ``"uniform_plan_then_causal"``.
+        ``"block_level"`` - the block-major level, present on
+        ``"full_then_blocks"``.
+    """
+    num_frames = int(num_frames)
+    nfpb = max(1, int(num_frame_per_block))
+    # The arm selector must be IDENTICAL on every rank, not just its broadcast
+    # count: the arms build their ladder from different tensors, so a per-rank
+    # `u` would desync the group. Broadcast rank 0's draw; the arm's own single
+    # broadcast then reconciles its within-arm randomness (the random base, the
+    # block width) to rank 0.
+    u = torch.rand((), generator=generator, device=device)
+    try:
+        import torch.distributed as dist
+    except ImportError:  # pragma: no cover - torch always ships distributed
+        dist = None
+    if dist is not None and dist.is_available() and dist.is_initialized():
+        dist.broadcast(u.reshape(1), src=0)
+    u = u.item()
+
+    # `random` holds a fixed slice and the deterministic arms divide the rest,
+    # so switching the coarse arm off widens the two survivors instead of
+    # silently fattening `random`. `ftb_hi` is both the end of the last
+    # deterministic arm and the start of the random one, and it is the final
+    # threshold tested, so no rounding remainder can fall through unhandled.
+    det_arms = 3 if pyramid else 2
+    det_w = (1.0 - FLEX_RANDOM_PROB) / det_arms
+    coarse_hi = det_w if pyramid else 0.0
+    uniform_hi = coarse_hi + det_w
+    ftb_hi = uniform_hi + det_w
+
+    if u < coarse_hi:
+        # Coarse end of §3.1: reuse the ladder builder's own level-0 rule so the
+        # `independent_first_frame` handling cannot drift from inference's.
+        sizes = build_pyramid_partitions(
+            num_frames, num_levels=1, base_chunks=None,
+            independent_first_frame=independent_first_frame)[0]
+        return {
+            "sizes": broadcast_chunk_sizes(sizes, device=device),
+            "arm": "coarse",
+            "arm_text": "whole clip, the 3.2 coarse planning layout",
+        }
+
+    if u < uniform_hi:
+        # The three sub-layouts change the ladder DEPTH (hence stage 2's walk
+        # forward count), so the choice must be rank-consistent. It is free here:
+        # `u` was already broadcast, so slicing its position within the uniform
+        # band gives every rank the same sub-arm with no extra collective. Like
+        # every arm this issues EXACTLY ONE broadcast. `uniform_chunks` is called
+        # directly rather than through `normalize_chunk_spec`, which only applies
+        # `independent_first_frame` to its uniform forms via a keyword - the
+        # direct call keeps this arm visibly identical to the bands around it.
+        band = (u - coarse_hi) / det_w                 # [0, 1) in the uniform arm
+        sub = min(int(band * 3), 2)                     # 0 / 1 / 2, equiprobable
+        causal = uniform_chunks(num_frames, 1,
+                                independent_first_frame=independent_first_frame)
+        if sub == 0:
+            return {
+                "sizes": broadcast_chunk_sizes(causal, device=device),
+                "arm": "uniform_causal",
+                "arm_text": "uniform 1-frame blocks, single level (fully causal)",
+            }
+        sizes = broadcast_chunk_sizes(
+            uniform_chunks(num_frames, nfpb,
+                           independent_first_frame=independent_first_frame),
+            device=device)
+        if sub == 1:
+            return {"sizes": sizes, "arm": "uniform_blocks",
+                    "arm_text": f"uniform {nfpb}-frame blocks, single level"}
+        return {
+            "sizes": sizes, "arm": "uniform_plan_then_causal",
+            "causal": list(causal),
+            "arm_text": (f"uniform {nfpb}-frame plan -> fully causal [1x"
+                         f"{num_frames}] for the remaining steps"),
+        }
+
+    if u < ftb_hi:
+        # "First step full, every later step block-major": a fixed two-level
+        # ladder that does NOT go through the binary pyramid refinement, so the
+        # block-major level is reached at high noise (the 2nd step) instead of as
+        # a deep refinement - the one trajectory the pyramid arms never sample.
+        # The block width is drawn between fully causal (1 frame / block) and the
+        # launcher's `num_frame_per_block`, so both the tight-AR and the
+        # coarse-block refinement of the whole-clip plan get trained. Level 0 is
+        # just `[F]`, identical on every rank and needing no sync, so the ONE
+        # broadcast this arm issues covers the block-major level; rank 0's draw
+        # wins and every rank rebuilds the same two-level ladder locally.
+        block_choices = sorted({1, nfpb})
+        pick = int(torch.rand((), generator=generator, device=device).item()
+                   * len(block_choices))
+        block = block_choices[min(pick, len(block_choices) - 1)]
+        block = min(block, num_frames)
+        ftb = build_full_then_blocks_partitions(
+            num_frames, block, independent_first_frame=independent_first_frame)
+        ftb[1] = broadcast_chunk_sizes(ftb[1], device=device)
+        return {
+            "sizes": list(ftb[0]), "arm": "full_then_blocks",
+            "block_level": list(ftb[1]),
+            "arm_text": (f"full clip -> uniform {max(ftb[1])}-frame blocks, "
+                         "the full_then_blocks ladder"),
+        }
+
+    sizes = sample_flexible_chunks(
+        num_frames, min_chunk=chunk_min, max_chunk=chunk_max,
+        generator=generator, device=device,
+        independent_first_frame=independent_first_frame)
+    return {
+        "sizes": broadcast_chunk_sizes(sizes, device=device),
+        "arm": "random",
+        "arm_text": (f"random {chunk_min}..{chunk_max}-frame blocks, "
+                     "the 3.3 stochastic-chunk spectrum"),
     }

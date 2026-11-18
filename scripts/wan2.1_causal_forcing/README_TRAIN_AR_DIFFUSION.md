@@ -172,6 +172,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ar_diffusion" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \
@@ -211,6 +212,7 @@ bash scripts/wan2.1_causal_forcing/train_ar_diffusion.sh
 | `--output_dir` | Output directory | `output_dir_wan2.1_causal_forcing_ar_diffusion` |
 | `--gradient_checkpointing` | Enable activation checkpointing | - |
 | `--mixed_precision` | `fp16` / `bf16` | `bf16` |
+| `--gradient_reduce_dtype` | Gradient communication: `auto` uses the backend default; `fp32` reduces in FP32 without changing forward, master-weight or accumulation dtype | `auto` (launcher uses `fp32`) |
 | `--adam_weight_decay` | AdamW weight decay | 3e-2 |
 | `--adam_epsilon` | AdamW epsilon | 1e-10 |
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |

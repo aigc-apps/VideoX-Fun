@@ -67,19 +67,23 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
-                             LingbotImageVideoDataset,
-                             RandomSampler, get_closest_ratio, get_random_mask,
-                             prepare_lingbot_dit_cond_dict_from_c2ws)
+                             LingbotImageVideoDataset, RandomSampler,
+                             get_closest_ratio, get_random_mask,
+                             prepare_lingbot_batch_dit_cond_dict)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                Wan2_2Transformer3DModel, WanT5EncoderModel,
                                WanTransformer3DModel_LingbotWorld)
 from videox_fun.pipeline import Wan2_2I2VPipeline, Wan2_2Pipeline
-from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.fsdp_ema import FSDPEMA
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import (calculate_dimensions, get_image_latent,
-                                    get_image_to_video_latent,
-                                    save_videos_grid)
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, DiscreteSampling, PauseAwareTqdm,
+                              build_trainable_optimizer_groups,
+                              calculate_dimensions,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              get_image_latent, get_image_to_video_latent,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              save_videos_grid)
 
 if is_wandb_available():
     import wandb
@@ -429,10 +433,21 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -696,7 +711,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate', 
         nargs='+', 
         default=[],
-        help='Enter a list of trainable modules with lower learning rate'
+        help='Trainable module substrings for the low learning rate.'
     )
     parser.add_argument(
         '--tokenizer_max_length', 
@@ -796,7 +811,11 @@ def parse_args():
         help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
     )
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -837,6 +856,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -1041,7 +1062,7 @@ def main():
             # every local shard of the copy pairs 1:1 with the live shard.
             ema_transformer3d = FSDPEMA(ema_module, source=transformer3d, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
         else:
-            ema_module = ema_module.to(weight_dtype)
+            ema_module = ema_module.to(torch.float32)
             ema_transformer3d = EMAModel(ema_module.parameters(), model_cls=TransformerCls, model_config=ema_module.config)
 
     # `accelerate` 0.16.0 will have better support for customized saving
@@ -1140,71 +1161,13 @@ def main():
         )
 
     # Initialize the optimizer
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "Please install bitsandbytes to use 8-bit Adam. You can do so by running `pip install bitsandbytes`"
-            )
-
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        try:
-            from came_pytorch import CAME
-        except Exception:
-            raise ImportError(
-                "Please install came_pytorch to use CAME. You can do so by running `pip install came_pytorch`"
-            )
-
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
     trainable_params = list(filter(lambda p: p.requires_grad, transformer3d.parameters()))
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in transformer3d.named_parameters():
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr : {args.learning_rate / 2}")
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        transformer3d.named_parameters(), args, accelerator
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            # weight_decay=args.adam_weight_decay,
-            betas=(0.9, 0.999, 0.9999), 
-            eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim,
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # Get the training dataset
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
@@ -1533,6 +1496,8 @@ def main():
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -1877,36 +1842,18 @@ def main():
                     # the branch degenerates to the plain Wan2.2 forward.
                     lingbot_kwargs = {}
                     if args.enable_camera_control:
-                        action_c2ws_batch = batch.get("action_c2ws", None)
-                        action_intrinsics_batch = batch.get("action_intrinsics", None)
-                        action_intrinsics_org_hw_batch = batch.get("action_intrinsics_org_hw", None)
-                        sample_c2ws = action_c2ws_batch[0] if action_c2ws_batch else None
-                        sample_intrinsics = action_intrinsics_batch[0] if action_intrinsics_batch else None
-                        # The calibration resolution is guaranteed by the dataset
-                        # (samples missing it are filtered out during loading), so
-                        # a present trajectory always comes with a valid value.
-                        sample_intrinsics_org_hw = action_intrinsics_org_hw_batch[0] if action_intrinsics_org_hw_batch else None
-                        if sample_c2ws is not None and sample_intrinsics is not None and sample_intrinsics_org_hw is not None:
-                            cur_intrinsics_org_height, cur_intrinsics_org_width = sample_intrinsics_org_hw
-                            _, _, cur_num_frames, cur_h_lat, cur_w_lat = latents.size()
-                            cur_h = cur_h_lat * vae.config.spatial_compression_ratio
-                            cur_w = cur_w_lat * vae.config.spatial_compression_ratio
-                            cur_frame_num = (cur_num_frames - 1) * vae.config.temporal_compression_ratio + 1
-                            dit_cond_dict, _ = prepare_lingbot_dit_cond_dict_from_c2ws(
-                                c2ws=sample_c2ws,
-                                intrinsics=sample_intrinsics,
-                                frame_num=cur_frame_num,
-                                height=cur_h,
-                                width=cur_w,
-                                device=accelerator.device,
-                                dtype=weight_dtype,
-                                control_type=args.control_type,
-                                vae_stride=(vae.config.temporal_compression_ratio, vae.config.spatial_compression_ratio, vae.config.spatial_compression_ratio),
-                                patch_size=accelerator.unwrap_model(transformer3d).config.patch_size,
-                                intrinsics_org_height=cur_intrinsics_org_height,
-                                intrinsics_org_width=cur_intrinsics_org_width,
-                            )
-                            lingbot_kwargs["dit_cond_dict"] = dit_cond_dict
+                        batch_size, _, cur_num_frames, cur_h_lat, cur_w_lat = latents.size()
+                        cur_h = cur_h_lat * vae.config.spatial_compression_ratio
+                        cur_w = cur_w_lat * vae.config.spatial_compression_ratio
+                        cur_frame_num = (cur_num_frames - 1) * vae.config.temporal_compression_ratio + 1
+                        lingbot_kwargs["dit_cond_dict"] = prepare_lingbot_batch_dit_cond_dict(
+                            batch.get("action_c2ws"), batch.get("action_intrinsics"), batch.get("action_intrinsics_org_hw"),
+                            batch_size=batch_size, frame_num=cur_frame_num, height=cur_h, width=cur_w,
+                            device=accelerator.device, dtype=weight_dtype, control_type=args.control_type,
+                            vae_stride=(vae.config.temporal_compression_ratio, vae.config.spatial_compression_ratio,
+                                        vae.config.spatial_compression_ratio),
+                            patch_size=accelerator.unwrap_model(transformer3d).config.patch_size,
+                        )
                     noise_pred = transformer3d(
                         x=noisy_latents,
                         context=prompt_embeds,
@@ -1981,7 +1928,7 @@ def main():
                 train_loss = 0.0
 
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1994,13 +1941,13 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoints)} checkpoints already exist, scheduling {len(removing_checkpoints)} for cleanup after save"
                                 )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(f"scheduling checkpoint cleanup: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    accelerator.defer_checkpoint_removal(removing_checkpoint)
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -2083,7 +2030,7 @@ def main():
         if args.use_ema and not args.use_fsdp:
             ema_transformer3d.copy_to(transformer3d.parameters())
 
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

@@ -7,7 +7,7 @@
 > ODE 回归是 Flex-Forcing 两阶段流程的 **预训练阶段**，整体流程分两步：
 >
 > 1. **第一步 — 生成 ODE 对**（`generate_ode_pairs.py`）：使用 **双向教师模型** Wan2.1-T2V-1.3B，对一组文本提示词执行完整的多步 CFG 去噪，将 ODE 轨迹上的中间 latent 与编码后的 prompt embedding 一起保存为 `.safetensors` 文件。
-> 2. **第二步 — ODE 回归训练**（`train_ode.py`）：加载第一步生成的 ODE 对，训练一个 **灵活分块生成器**，在轨迹上随机抽样多个噪声等级，预测干净的终点 `x0`；每次迭代都会抽取一个帧划分（九成是全新一轮的随机划分，一成钉成 `--num_frame_per_block` 的均匀块）。训练得到的权重作为 **阶段 2 DMD 蒸馏**（`train_distill.py`，参见 [README_TRAIN_FLEX_DMD_DISTILL_zh-CN.md](./README_TRAIN_FLEX_DMD_DISTILL_zh-CN.md)）的少步初始化。
+> 2. **第二步 — ODE 回归训练**（`train_ode.py`）：加载第一步生成的 ODE 对，训练一个 **灵活分块生成器**，在轨迹上随机抽样多个噪声等级，预测干净的终点 `x0`；每次迭代都会抽取一个帧划分，用的是**阶段 2 取 level 0 时的同一套四档混合**，因此阶段 2 要蒸馏的布局没有一种是本阶段没回归过的。训练得到的权重作为 **阶段 2 DMD 蒸馏**（`train_distill.py`，参见 [README_TRAIN_FLEX_DMD_DISTILL_zh-CN.md](./README_TRAIN_FLEX_DMD_DISTILL_zh-CN.md)）的少步初始化。
 >
 > Flex-Forcing 本身把 Self-Forcing 的标量 `num_frame_per_block` 换成**帧轴上的一个划分** `a = (a_0, ..., a_K)`：chunk（分块）内部是双向注意力，chunk 之间是自回归。`[1] * F` 退化为纯自回归，`[F]` 退化为纯双向注意力，中间的一切形态都由同一个模型覆盖。随机分块正是在本阶段首次引入的。
 
@@ -208,8 +208,21 @@ accelerate launch --multi_gpu --num_processes=8 --mixed_precision="bf16" \
 
 每个训练样本上，训练脚本会：
 1. 从一个 `.safetensors` 文件中加载稀疏的 5 点轨迹与 prompt embedding；
-2. 抽取帧划分，并给**每个 chunk 配一个统一的时间步**（`get_timestep_for_ode_flexible`）——这正是"chunk 内部双向"的来源；其中 90% 的迭代抽取一个**全新的随机划分**（chunk 大小在 `--flex_chunk_min`..`--flex_chunk_max` 之间），另外 `UNIFORM_BLOCK_PROB = 0.1` 钉成 `--num_frame_per_block` 的均匀划分——21 个 latent 帧下随机抽取碰到 `[3]*7` 的概率只有 `1/183708`，而 `log_validation` 渲染的正是它；
+2. 抽取帧划分，并给**每个 chunk 配一个统一的时间步**（`get_timestep_for_ode_flexible`）——这正是"chunk 内部双向"的来源；
 3. 将带噪 latent 与逐帧时间步送入生成器，把输出的 flow 转换为 `x0` 预测，与轨迹的**干净终点**计算 MSE 损失。
+
+第 2 步的划分来自 `videox_fun/utils/flex_chunking.py` 的 `sample_flex_level0`，与阶段 2 取 level 0 时用的是**同一套四档混合**（以 21 帧、`--num_frame_per_block=3` 为例）：
+
+| 档 | 抽出的划分 | 阶段 2 占比 |
+| --- | --- | --- |
+| coarse | `[21]` —— 整段一个 chunk，完全双向 | 30% |
+| uniform | 均匀网格，内部再三等分：`[3]*7` / `[1]*21` / `[3]*7` 规划后接 `[1]*21` | 30% |
+| full_then_blocks | `[21]`（阶梯的 level 0） | 30% |
+| random | 全新随机划分，chunk 大小在 `--flex_chunk_min`..`--flex_chunk_max` 之间 | 10% |
+
+**为什么共用这次抽取**：本阶段的 checkpoint 就是阶段 2 的 `--ode_transformer_path` 初始化，所以阶段 2 会花迭代去跑的每一种布局，都必须是阶段 1 真正回归过的。
+
+阶段 1 只取 level-0 那一层，两个搭阶梯的档因此都塌到 `[21]` 上：`--flex_pyramid_levels>1` 时 `[21]` 60% / `[3]*7` 20% / `[1]*21` 10% / 随机 10%；`=1` 时没有 coarse 档，其余两档各 45%，即 `[21]` 45% / `[3]*7` 30% / `[1]*21` 15% / 随机 10%。`log_validation` 固定用 `[3]*7`，均匀档给了它 20% 的迭代，而纯随机抽取只有 `1/183708`。
 
 ### 4.1 快速开始
 
@@ -257,6 +270,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 
@@ -268,7 +282,9 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 
 > 💡 因为 ODE 轨迹与 prompt embedding 已在第一步预先计算完毕，**ODE 训练阶段不会再调用 VAE / 文本编码器**，训练速度快、显存占用低。当 `outputs.json` 中已经使用绝对路径时，`train_data_dir` 可以留空。
 
-> 阶段 1 带 `--flex_forcing` 与 `--flex_chunk_min/max`，但**不带** `--flex_pyramid_levels`：金字塔是**多步**调度，而 ODE 阶段对每个 block 只做一次前向来回归 `x0`，没有可以逐级细化的调度。金字塔时间步在阶段 2 才出现。
+> 阶段 1 带 `--flex_forcing`、`--flex_chunk_min/max` **和** `--flex_pyramid_levels`，但**不搭阶梯**：每个 chunk 只做一次前向来回归 `x0`，所以共用抽取里只有 level 0 被用到。`--flex_pyramid_levels` 仍必须**与阶段 2 一致**，因为它决定 coarse（整段）档是否存在、也就决定了其余三档各占多少 —— 阶段 2 跑 `4` 而这里留默认 `1`，会把 `[F]` 布局在阶段 1 的占比从 60% 砍到 45%，而 `[F]` 恰恰是阶段 2 大多数迭代起步的布局，于是被训得不足。阶梯的*时间步排布*本身要到阶段 2 才出现。
+>
+> 阶段 1 也**不传** `--use_kv_cache_training`，因此走的是 one-shot block-mask 路径。该次前向既不给 `kv_cache` 也不给 `clean_x`，而这两者正是启用 K-Projection（§3.3）的条件，所以 `flex_kproj.*` 在整个阶段 1 **梯度恒为 0**，交到阶段 2 时仍停在恒等初始化。这是文档写明的冷启动而非缺陷 —— 但确实意味着阶段 1 这些步数对 Π 毫无贡献。若希望 Π 也在本阶段被训起来，加上该 flag 即可：阶段 1 的 KV 分支已经是划分感知的，且按 block 传单一时间步，正好符合 `_first_frame_timestep` 的假设。
 
 输出目录：`output_dir_wan2.1_flex_forcing_ode_regression/`。
 
@@ -304,9 +320,9 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 | 参数 | 说明 | 示例值 |
 |------|------|-------|
 | `--train_sampling_steps` | `denoising_step_indices_list` 所索引的调度器网格大小 | 1000 |
-| `--denoising_step_indices_list` | ODE 回归使用的离散时间步索引（与第一步抽样的 5 个稀疏轨迹点对应）。直接读调度器自带的网格，而不是 `set_timesteps()` 重建的那张，所以 `shift=8.0` 下映射为 t = `[1000, 960, 888.89, 727.27]` —— 与 `stochastic_sampling_timesteps` 喂给校验和推理的值逐位一致。重建的那张最多偏 `5.44`，因为它的网格末端 `sigma_min` 不同。 | `1000 750 500 250` |
+| `--denoising_step_indices_list` | ODE 回归使用的离散时间步索引（与第一步抽样的 5 个稀疏轨迹点对应）。直接读调度器自带的网格，而不是 `set_timesteps()` 重建的那张，所以 `shift=8.0` 下映射为 t = `[1000, 960, 888.89, 727.27]` —— 与 `stochastic_sampling_timesteps` 喂给校验和推理的值逐位一致。重建的那张网格末端 `sigma_min` 不同，索引它会落在 pipeline 实际去噪的 t 之外。 | `1000 750 500 250` |
 | `--shift` | `FlowMatchEulerDiscreteScheduler` 的 shift —— **必须与第一步生成时使用的 `--shift` 一致** | 8.0 |
-| `--num_frame_per_block` | 继承路径的均匀 fallback；`UNIFORM_BLOCK_PROB = 0.1` 的迭代会把划分钉成它，使该布局是真正被训练而不只是理论上可达；也是 `log_validation` 采样验证时用的固定划分，保证 checkpoint 之间可比较 | 3 |
+| `--num_frame_per_block` | 继承路径的均匀 fallback；共用 level-0 混合里均匀档所钉的块宽（`[3]*7`，`--flex_pyramid_levels>1` 时均匀档给它 20% 的迭代，使该布局是真正被训练而不只是理论上可达）；`full_then_blocks` 档抽块宽时的 `{1, nfpb}` 取值集合；也是 `log_validation` 采样验证时用的固定划分，保证 checkpoint 之间可比较 | 3 |
 | `--independent_first_frame` | 第一帧是否独立（`[1, N, N, ...]` 块模式） | - |
 | `--context_noise` | 上下文噪声等级（与下游蒸馏配置匹配） | 0 |
 
@@ -315,8 +331,9 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 | 参数 | 论文 | 说明 | 默认值 |
 |-----------|-------|-------------|---------|
 | `--flex_forcing` | §3.1 | 实例化 `WanTransformer3DModel_FlexForcing` 并用 `WanFlexForcingPipeline` 校验。关闭 = 走继承的原路径，行为不变。 | 关 |
-| `--flex_chunk_min` | §3.1 | 每次迭代抽取的最小 chunk 大小。`1` 合法，会让单帧（严格因果）chunk 出现在片段中间；`2` 是论文取值，也能避免采样器把尾部退化成 1 帧的碎块。 | 2 |
-| `--flex_chunk_max` | §3.1 | 每次迭代抽取的最大 chunk 大小。设为与 `--flex_chunk_min` 相等即固定一种布局。与阶段 2 不同，这里没有粗粒度混合机制，所以把这个值抬到 latent 帧数是阶段 1 **唯一**能把“整段作为一个完全双向 chunk”回归出来的途径（21 个 latent 帧时约占 5% 的抽取）；低于帧数则该布局永远不会被抽到。 | 10 |
+| `--flex_chunk_min` | §5 | **随机档**（占 10% 迭代）抽取的最小 chunk 大小。`1` 合法，会让单帧（严格因果）chunk 出现在片段中间；`2` 是论文取值，也能避免采样器把尾部退化成 1 帧的碎块。与阶段 2 不同，这里没有任何东西会把粗 chunk 细化成 1 帧叶子，所以 `1` 确实能增加覆盖——不过完全因果的 `[1]*F` 布局本身是独立一档，无论怎么设都会被抽到。 | 2 |
+| `--flex_chunk_max` | §5 | **随机档**抽取的最大 chunk 大小。设为与 `--flex_chunk_min` 相等即把该档固定成一种布局。整段布局本身就是独立的一档，所以这个旋钮并不决定阶段 1 能否把“整段作为一个完全双向 chunk”回归出来；把它抬到 latent 帧数只是让随机档把抽取花在 coarse 档已经覆盖的布局上——21 个 latent 帧时它会让 `[21]` 占该档的 1/19，并把 `P([3]*7)` 从 `1/183708` 摊薄到 `1/1106560`。 | 10 |
+| `--flex_pyramid_levels` | §3.2 | **必须与阶段 2 一致。**阶段 1 不搭阶梯，但 level-0 混合是共用的，而这个 flag 决定 coarse 档是否存在：`>1` 时为 30% 整段 / 30% 均匀 / 30% `full_then_blocks` / 10% 随机（随机档占固定的 `FLEX_RANDOM_PROB`，其余三档平分剩下的 90%）；`=1` 时 coarse 档的那份由两个幸存档平分——随机档恒为 10%——变成 45 / 45 / 10。 | 1 |
 
 **验证参数（可选）**：
 
@@ -368,6 +385,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 
@@ -419,6 +437,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 

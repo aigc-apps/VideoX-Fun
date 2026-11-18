@@ -37,6 +37,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --output_dir="output_dir_wan2.1_causal_forcing_ar_diffusion" \
   --gradient_checkpointing \
   --mixed_precision="bf16" \
+  --gradient_reduce_dtype fp32 \
   --adam_weight_decay=3e-2 \
   --adam_epsilon=1e-10 \
   --vae_mini_batch=1 \

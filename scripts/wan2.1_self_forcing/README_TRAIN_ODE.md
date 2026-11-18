@@ -277,6 +277,9 @@ bash scripts/wan2.1_self_forcing/train_ode.sh
 | `--max_grad_norm` | Gradient clipping threshold | 0.05 |
 | `--trainable_modules` | Trainable modules (`"."` = all) | `"."` |
 | `--resume_from_checkpoint` | Resume path or `"latest"` | `latest` |
+| `--save_state` | Save the full accelerator state on checkpoint (required to resume training) | - |
+| `--use_kv_cache_training` | Run block-by-block KV cache training that matches `pipeline_wan_self_forcing` inference; otherwise fall back to one-shot causal-mask ODE regression (baseline) | - |
+| `--prob_full_zero_start` | Per-sample probability of forcing all frames in all blocks to timestep index `0` (pure-noise start) to bridge the train-inference gap; `0.0` disables | 0.0 |
 
 **ODE-specific parameters** (must match Step 1 unless you understand the consequences):
 

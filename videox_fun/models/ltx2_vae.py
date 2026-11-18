@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.activations import get_activation
@@ -448,7 +449,7 @@ class LTX2VideoDownBlock3D(nn.Module):
 
         for i, resnet in enumerate(self.resnets):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states, temb, generator, causal)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, temb, generator, causal, use_reentrant=False)
             else:
                 hidden_states = resnet(hidden_states, temb, generator, causal=causal)
 
@@ -538,7 +539,7 @@ class LTX2VideoMidBlock3d(nn.Module):
 
         for i, resnet in enumerate(self.resnets):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states, temb, generator, causal)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, temb, generator, causal, use_reentrant=False)
             else:
                 hidden_states = resnet(hidden_states, temb, generator, causal=causal)
 
@@ -674,7 +675,7 @@ class LTX2VideoUpBlock3d(nn.Module):
 
         for i, resnet in enumerate(self.resnets):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states, temb, generator, causal)
+                hidden_states = torch.utils.checkpoint.checkpoint(resnet, hidden_states, temb, generator, causal, use_reentrant=False)
             else:
                 hidden_states = resnet(hidden_states, temb, generator, causal=causal)
 
@@ -818,9 +819,9 @@ class LTX2VideoEncoder3d(nn.Module):
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             for down_block in self.down_blocks:
-                hidden_states = self._gradient_checkpointing_func(down_block, hidden_states, None, None, causal)
+                hidden_states = torch.utils.checkpoint.checkpoint(down_block, hidden_states, None, None, causal, use_reentrant=False)
 
-            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states, None, None, causal)
+            hidden_states = torch.utils.checkpoint.checkpoint(self.mid_block, hidden_states, None, None, causal, use_reentrant=False)
         else:
             for down_block in self.down_blocks:
                 hidden_states = down_block(hidden_states, causal=causal)
@@ -983,10 +984,10 @@ class LTX2VideoDecoder3d(nn.Module):
             temb = temb * self.timestep_scale_multiplier
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states, temb, None, causal)
+            hidden_states = torch.utils.checkpoint.checkpoint(self.mid_block, hidden_states, temb, None, causal, use_reentrant=False)
 
             for up_block in self.up_blocks:
-                hidden_states = self._gradient_checkpointing_func(up_block, hidden_states, temb, None, causal)
+                hidden_states = torch.utils.checkpoint.checkpoint(up_block, hidden_states, temb, None, causal, use_reentrant=False)
         else:
             hidden_states = self.mid_block(hidden_states, temb, causal=causal)
 

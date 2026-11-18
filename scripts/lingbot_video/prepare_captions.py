@@ -33,7 +33,8 @@ current_file_path = os.path.abspath(__file__)
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))
 sys.path.insert(0, project_root)
 
-from videox_fun.models.lingbot_video_rewriter import is_valid_caption, LingBotVideoRewriter
+from videox_fun.models.lingbot_video_rewriter import (LingBotVideoRewriter,
+                                                      is_valid_caption)
 
 
 def load_metadata(path):

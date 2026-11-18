@@ -141,11 +141,14 @@ mkdir models/Personalized_Model
 
 ### 2.2 顕存節約方案
 
-Wan2.1のパラメータが非常に大きいため、GPUメモリを節約し、コンシューマー向けGPUに適応させる必要があります。各予測ファイルには`GPU_memory_mode`を提供しており、`model_cpu_offload`、`model_cpu_offload_and_qfloat8`、`sequential_cpu_offload`の中から選択できます。この方法はCogVideoX-Funの生成にも適用されます。
+Wan2.1のパラメータが非常に大きいため、GPUメモリを節約し、コンシューマー向けGPUに適応させる必要があります。各予測ファイルには`GPU_memory_mode`を提供しており、`model_cpu_offload`、`model_cpu_offload_and_qfloat8`、`model_group_offload`、`sequential_cpu_offload`、`text_encoder_offload`、`model_full_load_and_qfloat8`の中から選択できます。この方法はCogVideoX-Funの生成にも適用されます。
 
 - `model_cpu_offload`: モデル全体が使用後にCPUに移動し、一部のGPUメモリを節約します。
 - `model_cpu_offload_and_qfloat8`: モデル全体が使用後にCPUに移動し、Transformerモデルに対してfloat8の量子化を行い、より多くのGPUメモリを節約します。
 - `sequential_cpu_offload`: モデルの各層が使用後にCPUに移動します。速度は遅くなりますが、大量のGPUメモリを節約します。
+- `model_group_offload`: 重みをleaf単位でCPUとGPUの間で転送し、streamによる非同期プリフェッチを利用して、速度とGPUメモリのバランスを取ります。
+- `text_encoder_offload`: テキストエンコーダーのみをCPUに保持し、モジュール単位でGPUにストリーミングして一度だけエンコードを行い、TransformerとVAEはGPUに常駐します。テキストエンコードは各リクエストの先頭で一度だけ実行されるため、転送コストは毎ステップではなく一度だけ発生します。`_and_qfloat8`サフィックスを追加できます。
+- `model_full_load_and_qfloat8`: モデルはGPUに常駐し、Transformerのみをfloat8に量子化します。GPUメモリがぎりぎりで、かつ高い速度が求められる場合に適した選択肢です。
 
 `qfloat8`はモデルの性能を部分的に低下させる可能性がありますが、より多くのGPUメモリを節約できます。十分なGPUメモリがある場合は、`model_cpu_offload`の使用をお勧めします。
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 
 from .qwenimage_transformer2d import (USE_PEFT_BACKEND, ConfigMixin,
@@ -201,13 +202,14 @@ class QwenImageInstantXControlNetModel(
         block_samples = ()
         for index_block, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     block,
                     hidden_states,
                     encoder_hidden_states,
                     encoder_hidden_states_mask,
                     temb,
                     image_rotary_emb,
+                    use_reentrant=False,
                 )
 
             else:

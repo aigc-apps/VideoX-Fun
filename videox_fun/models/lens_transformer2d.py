@@ -11,6 +11,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -531,13 +532,19 @@ class LensTransformer2DModel(
         image_rotary_emb = (img_freqs, txt_freqs)
 
         for block in self.transformer_blocks:
-            encoder_hidden_states, hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                temb=temb,
-                image_rotary_emb=image_rotary_emb,
-                attention_mask=attention_mask_for_blocks,
-            )
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                    block, hidden_states, encoder_hidden_states, temb, image_rotary_emb,
+                    attention_mask_for_blocks, use_reentrant=False,
+                )
+            else:
+                encoder_hidden_states, hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_mask=attention_mask_for_blocks,
+                )
 
         if self.sp_world_size > 1:
             hidden_states = self.all_gather(hidden_states, dim=1)

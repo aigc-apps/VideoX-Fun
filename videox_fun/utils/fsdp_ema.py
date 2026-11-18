@@ -9,12 +9,11 @@ __all__ = ["FSDPEMA", "LORAFSDPEMA"]
 
 class FSDPEMA:
     r"""
-    FSDP1-compatible drop-in replacement for `diffusers.training_utils.EMAModel`.
+    FSDP1/FSDP2-compatible drop-in replacement for `diffusers.training_utils.EMAModel`.
 
     The EMA copy is a second instance of the same module, wrapped with the same
-    FSDP kwargs that `accelerator.prepare()` applies to the live model (the
-    FSDP1 branch of `Accelerator.prepare_model`). Both copies therefore flatten
-    and shard their parameters identically, which means every *local* shard of
+    FSDP layout that `accelerator.prepare()` applies to the live model. Both
+    copies therefore shard their parameters identically, which means every *local* shard of
     the EMA pairs 1:1 with the matching local shard of the live model. The
     polyak update runs purely on those local shards -- no communication, so the
     per-step cost is the same as the single-GPU case.
@@ -37,7 +36,7 @@ class FSDPEMA:
     at the cost of one full fp32 copy in host RAM per rank).
     """
 
-    def __init__(self, module, source, accelerator, fsdp_plugin, decay=0.9999):
+    def __init__(self, module, source, accelerator, fsdp_plugin, decay=0.99):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
         self.accelerator = accelerator
@@ -56,18 +55,20 @@ class FSDPEMA:
         with torch.no_grad():
             module.load_state_dict(source.state_dict(), strict=True)
 
-        # Wrap with the same kwargs as the live model goes through in
-        # `accelerator.prepare_model`, minus the mixed-precision policy: the
-        # EMA never runs forward/backward, and a `param_dtype` cast would
-        # quantize the shadow copy away from fp32 (see the note in the class
-        # docstring), so no casting is wanted here.
+        self.fsdp2 = getattr(fsdp_plugin, "fsdp_version", 1) == 2
+        if self.fsdp2:
+            from .fsdp_utils import prepare_fsdp2_shadow
+            self.module = prepare_fsdp2_shadow(module, accelerator)
+            self.module.eval()
+            return
+
         fsdp_plugin.set_auto_wrap_policy(module)
         self.module = FSDP(
             module,
             sharding_strategy=fsdp_plugin.sharding_strategy or fsdp_plugin.reshard_after_forward,
             cpu_offload=fsdp_plugin.cpu_offload,
             auto_wrap_policy=fsdp_plugin.auto_wrap_policy,
-            mixed_precision=None,
+            mixed_precision=fsdp_plugin.mixed_precision_policy,
             sync_module_states=fsdp_plugin.sync_module_states,
             backward_prefetch=fsdp_plugin.backward_prefetch,
             forward_prefetch=fsdp_plugin.forward_prefetch,
@@ -115,6 +116,22 @@ class FSDPEMA:
         self.optimization_step += 1
 
     @torch.no_grad()
+    def reinit_from(self, parameters):
+        r"""Reset the shadow to the current live weights.
+
+        Official One-Forcing builds its EMA at ``ema_start_step`` from the live weights of
+        that step; this reproduces that lazy creation for a shadow instantiated at step 0,
+        dropping whatever warm-start mass it had accumulated before the start step.
+        """
+        source_params, shadow_params = self._paired_params(parameters)
+        for p_shadow, p_source in zip(shadow_params, source_params):
+            if p_shadow.numel() == 0:
+                continue
+            p_shadow.copy_(p_source.detach().to(device=p_shadow.device, dtype=p_shadow.dtype))
+        for b_shadow, b_source in zip(self.module.buffers(), self._source_module.buffers()):
+            b_shadow.copy_(b_source.to(device=b_shadow.device, dtype=b_shadow.dtype))
+
+    @torch.no_grad()
     def store(self, parameters):
         # Snapshots the live local shards so `copy_to` can be undone with
         # `restore` (used to swap the EMA weights in for validation).
@@ -146,12 +163,17 @@ class FSDPEMA:
 
         # Every rank has to join the all-gather; only rank 0 receives the full
         # state dict (`rank0_only=True`) offloaded to CPU.
-        with FSDP.state_dict_type(
-            self.module,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        ):
-            state_dict = self.module.state_dict()
+        if self.fsdp2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+            state_dict = get_model_state_dict(
+                self.module, options=StateDictOptions(full_state_dict=True, cpu_offload=True))
+        else:
+            with FSDP.state_dict_type(
+                self.module,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+            ):
+                state_dict = self.module.state_dict()
         if self.accelerator.is_main_process:
             os.makedirs(save_directory, exist_ok=True)
             # Keep fp32 on disk: the EMA target must not round-trip through
@@ -162,7 +184,7 @@ class FSDPEMA:
                 os.path.join(save_directory, "diffusion_pytorch_model.safetensors"),
                 metadata={"format": "pt"},
             )
-            self.module.module.save_config(save_directory)
+            (self.module if self.fsdp2 else self.module.module).save_config(save_directory)
             print(f"Saved EMA weights to {save_directory}.")
         del state_dict
 
@@ -173,17 +195,35 @@ class FSDPEMA:
         from torch.distributed.fsdp import StateDictType
 
         ema_path = os.path.join(load_directory, "diffusion_pytorch_model.safetensors")
-        if not os.path.exists(ema_path):
+        def read_ema():
+            return load_file(ema_path) if os.path.exists(ema_path) else None
+
+        # Do not let one rank enter FSDP collectives while another rank fails
+        # or skips the optional EMA file.
+        state_dict = self.accelerator.checkpoint.phase(read_ema)
+        available = [state_dict is not None]
+        if torch.distributed.is_initialized():
+            available = [None] * torch.distributed.get_world_size()
+            torch.distributed.all_gather_object(available, state_dict is not None)
+        if not all(available):
+            if self.accelerator.is_main_process:
+                from .. import _checkpoint_warning
+                _checkpoint_warning("EMA checkpoint is unavailable on one or more ranks; "
+                                    "keeping the current EMA state, so continuation is not exact")
             return
         # Every rank feeds the full state dict; under the FULL_STATE_DICT
         # context FSDP scatters it into that rank's local shards.
-        state_dict = load_file(ema_path)
-        with FSDP.state_dict_type(
-            self.module,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
-        ):
-            self.module.load_state_dict(state_dict, strict=True)
+        if self.fsdp2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+            set_model_state_dict(self.module, state_dict,
+                                 options=StateDictOptions(full_state_dict=True, strict=True))
+        else:
+            with FSDP.state_dict_type(
+                self.module,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+            ):
+                self.module.load_state_dict(state_dict, strict=True)
         del state_dict
         if self.accelerator.is_main_process:
             print(f"Loaded EMA weights from {load_directory}.")

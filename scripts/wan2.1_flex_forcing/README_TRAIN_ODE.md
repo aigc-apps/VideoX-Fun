@@ -7,9 +7,9 @@ This document provides the complete workflow for **Flex-Forcing Stage 1 — ODE 
 > ODE regression is the **pre-training stage** of the two-stage Flex-Forcing pipeline. The pipeline is:
 >
 > 1. **Step 1 — Generate ODE pairs** (`generate_ode_pairs.py`): Use the **bidirectional teacher** (Wan2.1-T2V-1.3B) to perform full multi-step CFG denoising on a list of text prompts. Save the intermediate latents along the ODE trajectory together with the encoded prompt embeddings as `.safetensors` files.
-> 2. **Step 2 — Train ODE regression** (`train_ode.py`): Load the generated ODE pairs and train a **flexible-chunking generator** to predict the clean endpoint `x0` at multiple sampled trajectory points, drawing a fresh random frame partition every iteration. The output checkpoint serves as the few-step initialization for the subsequent **Stage 2 DMD distillation** (`train_distill.py`, see [README_TRAIN_FLEX_DMD_DISTILL.md](./README_TRAIN_FLEX_DMD_DISTILL.md)).
+> 2. **Step 2 — Train ODE regression** (`train_ode.py`): Load the generated ODE pairs and train a **flexible-chunking generator** to predict the clean endpoint `x0` at multiple sampled trajectory points, drawing a fresh frame partition every iteration from the **same four-arm mixture Stage 2 takes its level 0 from**, so that no layout Stage 2 distills on is one this stage never regressed. The output checkpoint serves as the few-step initialization for the subsequent **Stage 2 DMD distillation** (`train_distill.py`, see [README_TRAIN_FLEX_DMD_DISTILL.md](./README_TRAIN_FLEX_DMD_DISTILL.md)).
 >
-> Flex-Forcing itself replaces Self-Forcing's scalar `num_frame_per_block` with a **partition of the frame axis** `a = (a_0, ..., a_K)`: attention is bidirectional *inside* a chunk and autoregressive *across* chunks. `[1] * F` recovers pure autoregression, `[F]` recovers pure bidirectional attention, and everything in between is covered by one model. The random partitions are first seen in this stage.
+> Flex-Forcing itself replaces Self-Forcing's scalar `num_frame_per_block` with a **partition of the frame axis** `a = (a_0, ..., a_K)`: attention is bidirectional *inside* a chunk and autoregressive *across* chunks. `[1] * F` recovers pure autoregression, `[F]` recovers pure bidirectional attention, and everything in between is covered by one model. Both extremes are drawn here by explicit arms rather than left to chance: a random draw reaches `[F]` at best `1/19` of the time (and never at all while `--flex_chunk_max` sits below the frame count), and `[1] * F` with probability `1/F!`.
 
 ---
 
@@ -208,8 +208,21 @@ After Step 1 completes and `datasets/ode_pairs_output/outputs.json` is generated
 
 For each training sample the script:
 1. Loads the saved sparse trajectory (5 points) and prompt embedding from one `.safetensors` file.
-2. Draws the frame-axis partition and gives **one timestep per chunk** (`get_timestep_for_ode_flexible`) — this is what makes a chunk internally bidirectional. 90% of iterations draw a **fresh random partition** (chunk sizes `--flex_chunk_min`..`--flex_chunk_max`); the other `UNIFORM_BLOCK_PROB = 0.1` pin it to the uniform `--num_frame_per_block` layout, which a random draw would reach with probability `1/183708` at 21 latent frames and which is exactly what `log_validation` renders.
+2. Draws the frame-axis partition and gives **one timestep per chunk** (`get_timestep_for_ode_flexible`) — this is what makes a chunk internally bidirectional.
 3. Feeds the noisy latent and the per-frame timestep through the generator, converts the predicted flow into an `x0` prediction, and computes MSE loss against the **clean endpoint** of the trajectory.
+
+Step 2's partition comes from `sample_flex_level0` in `videox_fun/utils/flex_chunking.py` — the **same four-arm mixture Stage 2 takes its level 0 from** (shown for 21 frames with `--num_frame_per_block=3`):
+
+| Arm | Partition drawn | Stage 2 share |
+| --- | --- | --- |
+| coarse | `[21]` — one chunk over the whole clip, fully bidirectional | 30% |
+| uniform | The uniform grid, itself three equiprobable sub-layouts: `[3]*7` / `[1]*21` / `[3]*7` planning followed by `[1]*21` | 30% |
+| full_then_blocks | `[21]` (the ladder's level 0) | 30% |
+| random | A fresh random partition, chunk sizes `--flex_chunk_min`..`--flex_chunk_max` | 10% |
+
+**Why the draw is shared**: this stage's checkpoint is Stage 2's `--ode_transformer_path` initialisation, so every layout Stage 2 spends iterations on has to be one Stage 1 actually regressed.
+
+Stage 1 keeps only the level-0 partition, so the two ladder-building arms collapse onto `[21]`: at `--flex_pyramid_levels>1` that is `[21]` 60% / `[3]*7` 20% / `[1]*21` 10% / random 10%; at `=1` there is no coarse arm and the other two take 45% each, i.e. `[21]` 45% / `[3]*7` 30% / `[1]*21` 15% / random 10%. `log_validation` pins `[3]*7`, which the uniform arm covers at 20% of iterations instead of the `1/183708` a purely random draw would give it.
 
 ### 4.1 Quick Start
 
@@ -257,6 +270,7 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 
@@ -268,7 +282,9 @@ bash scripts/wan2.1_flex_forcing/train_ode.sh
 
 > 💡 Because the ODE trajectory and prompt embeddings are pre-computed in Step 1, **no VAE / text encoder is invoked during ODE training** — training is fast, memory-efficient, and `train_data_dir` can be left empty when `outputs.json` already contains absolute paths.
 
-> Stage 1 carries `--flex_forcing` and `--flex_chunk_min/max`, but **no** `--flex_pyramid_levels`: it regresses `x0` in a single forward per block, so there is no multi-step schedule to ladder over. The pyramid timestep schedule arrives in Stage 2.
+> Stage 1 carries `--flex_forcing`, `--flex_chunk_min/max` **and** `--flex_pyramid_levels`, but builds no ladder: it regresses `x0` in a single forward per chunk, so only level 0 of the shared draw is used. `--flex_pyramid_levels` must still **match Stage 2's**, because it decides whether the coarse (whole-clip) arm exists and therefore what the other three arms weigh — leaving it at the default `1` while Stage 2 runs `4` would cut the `[F]` layout's share of Stage 1 from 60% to 45%, under-training exactly the layout Stage 2 starts most of its iterations from. The pyramid *timestep schedule* itself arrives in Stage 2.
+>
+> Stage 1 also does **not** pass `--use_kv_cache_training`, so it runs the one-shot block-mask path. That forward supplies neither `kv_cache` nor `clean_x`, which is what arms the K-Projection (§3.3), so `flex_kproj.*` receives **zero gradient** for the whole of Stage 1 and reaches Stage 2 at its identity initialisation. That is the documented cold start rather than a defect — but it does mean Stage 1's steps buy Π nothing. Add the flag if you want Π trained here too; Stage 1's KV branch is already partition-aware and passes one timestep per block, which is what `_first_frame_timestep` assumes.
 
 Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 
@@ -304,9 +320,9 @@ Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 | Parameter | Description | Example Value |
 |-----------|-------------|---------------|
 | `--train_sampling_steps` | Size of the scheduler grid that `denoising_step_indices_list` indexes into | 1000 |
-| `--denoising_step_indices_list` | Discrete timestep indices used during ODE regression (corresponds to the 5 sparse points sampled in Step 1). Read off the scheduler's own grid rather than a `set_timesteps()` rebuild, so at `shift=8.0` they map to t = `[1000, 960, 888.89, 727.27]` - bit-identical to what `stochastic_sampling_timesteps` feeds validation and inference. The rebuild was off by up to `5.44`, because it ends its grid at a different `sigma_min`. | `1000 750 500 250` |
+| `--denoising_step_indices_list` | Discrete timestep indices used during ODE regression (corresponds to the 5 sparse points sampled in Step 1). Read off the scheduler's own grid rather than a `set_timesteps()` rebuild, so at `shift=8.0` they map to t = `[1000, 960, 888.89, 727.27]` - bit-identical to what `stochastic_sampling_timesteps` feeds validation and inference. The rebuild ends its grid at a different `sigma_min`, so indexing it would land away from the t the pipeline actually denoises at. | `1000 750 500 250` |
 | `--shift` | Shift for `FlowMatchEulerDiscreteScheduler` — **must match `--shift` used in Step 1** | 8.0 |
-| `--num_frame_per_block` | The uniform fallback for the inherited path; the partition `UNIFORM_BLOCK_PROB = 0.1` of iterations pin, so that layout is genuinely trained rather than merely reachable; and the *fixed* partition `log_validation` samples with so checkpoints stay comparable | 3 |
+| `--num_frame_per_block` | The uniform fallback for the inherited path; the width the uniform arm of the shared level-0 mixture pins (`[3]*7`, which the uniform arm gives 20% of iterations at `--flex_pyramid_levels>1`, so that layout is genuinely trained rather than merely reachable); the `{1, nfpb}` set the `full_then_blocks` arm draws its block width from; and the *fixed* partition `log_validation` samples with so checkpoints stay comparable | 3 |
 | `--independent_first_frame` | First frame is independent (`[1, N, N, ...]` block pattern) | - |
 | `--context_noise` | Context noise level (matches downstream distillation config) | 0 |
 
@@ -315,8 +331,9 @@ Output: `output_dir_wan2.1_flex_forcing_ode_regression/`.
 | Parameter | Paper | Description | Default |
 |-----------|-------|-------------|---------|
 | `--flex_forcing` | §3.1 | Instantiate `WanTransformer3DModel_FlexForcing` and validate with `WanFlexForcingPipeline`. Off = the inherited path, unchanged. | off |
-| `--flex_chunk_min` | §3.1 | Smallest chunk drawn per iteration. `1` is legal and lets single-frame (strictly causal) chunks appear mid-clip; `2` is the paper's and keeps the sampler's tail from degenerating into a sliver. | 2 |
-| `--flex_chunk_max` | §3.1 | Largest chunk drawn per iteration. Set equal to `--flex_chunk_min` to pin one fixed layout. Unlike stage 2 there is no coarse mixture here, so raising this to the latent frame count is the **only** way stage 1 ever regresses the whole clip as one fully bidirectional chunk (about 5% of draws at 21 latent frames); below the frame count that layout is never drawn. | 10 |
+| `--flex_chunk_min` | §5 | Smallest chunk drawn by the *random* arm (10% of iterations). `1` is legal and lets single-frame (strictly causal) chunks appear mid-clip; `2` is the paper's and keeps the sampler's tail from degenerating into a sliver. Unlike Stage 2, nothing here refines a coarse chunk down to 1-frame leaves, so `1` really does add coverage — though the fully causal `[1]*F` layout is a separate arm and is drawn either way. | 2 |
+| `--flex_chunk_max` | §5 | Largest chunk drawn by the *random* arm. Set equal to `--flex_chunk_min` to pin that arm to one fixed layout. The whole-clip layout is its own arm, so this knob does not decide whether Stage 1 ever regresses the clip as one fully bidirectional chunk; raising it to the latent frame count only spends random-arm draws on a layout the coarse arm already covers — at 21 latent frames it makes `[21]` 1/19 of that arm and cuts `P([3]*7)` from `1/183708` to `1/1106560`. | 10 |
+| `--flex_pyramid_levels` | §3.2 | **Must match Stage 2's.** Stage 1 builds no ladder, but the level-0 mixture is shared and this flag decides whether its coarse arm exists: `>1` gives 30% whole-clip / 30% uniform / 30% `full_then_blocks` / 10% random (the random arm holds a fixed `FLEX_RANDOM_PROB` and the other three split the rest equally), while `=1` divides the coarse arm's share between the two survivors - random stays at 10% - for 45 / 45 / 10. | 1 |
 
 **Validation Parameters (Optional)**:
 
@@ -368,6 +385,7 @@ accelerate launch --use_deepspeed --deepspeed_config_file config/zero_stage2_con
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 
@@ -419,6 +437,7 @@ accelerate launch --mixed_precision="bf16" --main_process_ip=$MASTER_ADDR --main
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3
 ```
 

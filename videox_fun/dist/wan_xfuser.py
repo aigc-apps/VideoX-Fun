@@ -6,7 +6,7 @@ import torch.cuda.amp as amp
 from .fuser import (get_sequence_parallel_rank,
                     get_sequence_parallel_world_size, get_sp_group,
                     init_distributed_environment, initialize_model_parallel,
-                    xFuserLongContextAttention)
+                    ulysses_all_to_all, xFuserLongContextAttention)
 
 
 def pad_freqs(original_tensor, target_len):
@@ -161,6 +161,248 @@ def usp_attn_forward(self,
     x = x.flatten(2)
     x = self.o(x)
     return x
+
+def usp_attn_sparkwan_forward(self,
+                     x,
+                     seq_lens,
+                     grid_sizes,
+                     freqs,
+                     dtype=torch.bfloat16,
+                     t=0):
+    """Sequence-parallel self-attention that KEEPS the RoLa sparse kernel (``self.attn_op``).
+
+    The stock ``usp_attn_forward`` binds ``xFuserLongContextAttention``'s dense full-softmax
+    and never reaches ``self.attn_op``, so using it on a ``SparkWanSelfAttention`` would
+    silently drop the trained RoLa params (``attn_op.{proj_q,proj_k,gate_proj,gate_bias}``)
+    and shift the numbers. This variant uses Ulysses head-parallelism instead: an all-to-all
+    turns each rank's sequence shard ``[B, S/P, H, D]`` into a head shard ``[B, S, H/P, D]``,
+    the RoLa branches (block-sparse exact softmax + rank-truncated low-rank linear + token
+    gate) run over the FULL sequence on a subset of heads -- every branch is head-independent
+    and topk is a per-query key-block ratio, so this reproduces the single-GPU result --
+    then a second all-to-all returns to the sequence-shard layout.
+
+    Two RoLa-specific points under head-parallelism:
+      * ``gate_bias`` is per-head ``[1, H, 1, 1]``; each rank holds the contiguous head block
+        ``[sp_rank * H/P, (sp_rank + 1) * H/P)`` produced by the ulysses all-to-all, so the
+        gate slices ``gate_bias`` to that range.
+      * the low-rank branch's rank RoPE runs on the FULL (post-all-to-all) sequence with the
+        non-SP ``rope_apply_lowrank``, so positions are complete and need no sharding.
+
+    Requires a pure-Ulysses split: ``num_heads`` must divide the SP degree and ``ring_degree``
+    should be 1 (the SLA kernel has no ring-attention path). ``topk >= 1.0`` (the dense
+    fallback) defers to ``usp_attn_forward``.
+    """
+    # Dense student (topk >= 1.0) or a plain Wan self-attention: keep the stock SP path.
+    if getattr(self, "topk", 1.0) >= 1.0 or not hasattr(self, "attn_op"):
+        return usp_attn_forward(self, x, seq_lens, grid_sizes, freqs, dtype=dtype, t=t)
+
+    b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+    half_dtypes = (torch.float16, torch.bfloat16)
+
+    def half(t_):
+        return t_ if t_.dtype in half_dtypes else t_.to(dtype)
+
+    # query, key, value function
+    def qkv_fn(x):
+        q = self.norm_q(self.q(x)).view(b, s, n, d)
+        k = self.norm_k(self.k(x)).view(b, s, n, d)
+        v = self.v(x).view(b, s, n, d)
+        return q, k, v
+
+    q, k, v = qkv_fn(x)
+    # PRE-RoPE qk-normed q/k feed the RoLa low-rank branch (RoPE is applied on the low-rank
+    # bottleneck, outside the non-linear feature map). rope_apply_qk returns new tensors, so
+    # q_pre/k_pre stay valid after the rebind below.
+    q_pre, k_pre = q, k
+    q, k = rope_apply_qk(q, k, grid_sizes, freqs)
+
+    sp_size = get_sequence_parallel_world_size()
+    sp_rank = get_sequence_parallel_rank()
+
+    # PureSLA ablation: fused block-sparse + feature-map linear (proj_l), BSHD in/out.
+    if getattr(self, "attn_variant", "rola") == "pure_sla":
+        q = ulysses_all_to_all(half(q), scatter_dim=2, gather_dim=1)
+        k = ulysses_all_to_all(half(k), scatter_dim=2, gather_dim=1)
+        v = ulysses_all_to_all(half(v), scatter_dim=2, gather_dim=1)
+        # heads_total/head_start keep the SLA linear branch's fp32 normalizer sum bitwise-equal to
+        # the single-GPU result despite this rank holding only the H/P head block.
+        h_per = n // sp_size
+        x = self.attn_op(q, k, v, heads_total=n, head_start=sp_rank * h_per)
+        x = ulysses_all_to_all(x, scatter_dim=1, gather_dim=2)
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+    # ---- RoLa: seq-shard -> head-shard all-to-all for every branch input ----
+    # post-RoPE q/k (sparse branch), pre-RoPE q/k (low-rank branch), v, and the raw hidden
+    # states x (token gate) are all gathered to [B, S_full, H/P, D].
+    q = ulysses_all_to_all(half(q), scatter_dim=2, gather_dim=1)
+    k = ulysses_all_to_all(half(k), scatter_dim=2, gather_dim=1)
+    v = ulysses_all_to_all(half(v), scatter_dim=2, gather_dim=1)
+    q_pre = ulysses_all_to_all(half(q_pre), scatter_dim=2, gather_dim=1)
+    k_pre = ulysses_all_to_all(half(k_pre), scatter_dim=2, gather_dim=1)
+    x_full = ulysses_all_to_all(half(x).view(b, s, n, d), scatter_dim=2, gather_dim=1)
+
+    # BSHD -> BHLD over the head shard.
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v_bhld = v.transpose(1, 2)
+    q_pre = q_pre.transpose(1, 2)
+    k_pre = k_pre.transpose(1, 2)
+    x_bhld = x_full.transpose(1, 2)
+
+    o_s = self.attn_op.sparse(q, k, v_bhld)
+    o_l = self.attn_op.lowrank(q_pre, k_pre, v_bhld, grid_sizes, freqs)
+    # gate_bias is per-head; slice to this rank's contiguous head block from the all-to-all.
+    h_per = n // sp_size
+    head_slice = slice(sp_rank * h_per, (sp_rank + 1) * h_per)
+    gate = self.attn_op.gate(x_bhld, head_slice=head_slice)
+    if o_s is not None:
+        scale = (o_s.pow(2).mean(dim=-1, keepdim=True) + 1e-5).sqrt()
+        out = ((o_s.float() / scale.float() + gate * o_l.float()) * scale.float()).to(o_l.dtype)
+    else:
+        out = gate * o_l
+
+    # BHLD -> BSHD, head-shard -> seq-shard, back to this rank's sequence chunk.
+    out = out.transpose(1, 2)
+    out = ulysses_all_to_all(out, scatter_dim=1, gather_dim=2)
+    out = out.flatten(2)
+    out = self.o(out)
+    return out
+
+def usp_attn_turbowan_forward(self,
+                     x,
+                     seq_lens,
+                     grid_sizes,
+                     freqs,
+                     dtype=torch.bfloat16,
+                     t=0):
+    """Sequence-parallel self-attention for the TurboDiffusion SLA student.
+
+    ``TurboWanTransformer3DModel`` swaps ``WanSelfAttention`` for a local variant whose kernel
+    is ``self.attn_op`` (``FakeLocalAttention`` -> ``SparseLinearAttention``, block-sparse exact
+    softmax + a ``proj_l`` feature-map linear branch). The stock ``usp_attn_forward`` binds
+    ``xFuserLongContextAttention``'s dense full-softmax and only touches the base-class
+    ``q/k/v/norm_q/norm_k/o`` attributes, so patching it onto this model would silently drop the
+    SLA kernel -- every needed attribute is inherited, hence no AttributeError, no shape error,
+    just dense numbers. This variant keeps ``self.attn_op`` live under Ulysses head-parallelism.
+
+    Equivalence: ``SparseLinearAttention.forward`` takes and returns ``[B, L, H, D]``, transposes
+    to BHLD internally and does every reduction over L/D only (``get_block_map`` pooling and
+    top-k, the sparse kernel, the ``k^T v`` linear branch), and ``proj_l`` is a per-head
+    ``head_dim -> head_dim`` projection -- no cross-head mixing and no head-indexed parameter,
+    so an all-to-all from the sequence shard ``[B, S/P, H, D]`` to the head shard
+    ``[B, S, H/P, D]`` reproduces the single-GPU result exactly (top-k is a per-query key-block
+    ratio). RoPE is applied BEFORE the all-to-all because ``rope_apply`` slices the frequency
+    table by sequence-parallel rank.
+
+    Requires a pure-Ulysses split (``ring_degree`` must be 1: the SLA kernel exposes no partial
+    output / logsumexp interface, so ring's online rescale-concat cannot be wired to it) and
+    ``num_heads`` divisible by the SP degree.
+    """
+    # No sparse kernel on this instance: keep the stock dense SP path.
+    if not hasattr(self, "attn_op"):
+        return usp_attn_forward(self, x, seq_lens, grid_sizes, freqs, dtype=dtype, t=t)
+
+    b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+    half_dtypes = (torch.float16, torch.bfloat16)
+
+    def half(t_):
+        return t_ if t_.dtype in half_dtypes else t_.to(dtype)
+
+    # query, key, value function
+    def qkv_fn(x):
+        q = self.norm_q(self.q(x.to(dtype))).view(b, s, n, d)
+        k = self.norm_k(self.k(x.to(dtype))).view(b, s, n, d)
+        v = self.v(x.to(dtype)).view(b, s, n, d)
+        return q, k, v
+
+    q, k, v = qkv_fn(x)
+    q, k = rope_apply_qk(q, k, grid_sizes, freqs)
+
+    # seq-shard -> head-shard, SLA over the FULL sequence on a subset of heads, then back.
+    q = ulysses_all_to_all(half(q), scatter_dim=2, gather_dim=1)
+    k = ulysses_all_to_all(half(k), scatter_dim=2, gather_dim=1)
+    v = ulysses_all_to_all(half(v), scatter_dim=2, gather_dim=1)
+    # heads_total/head_start keep the SLA linear branch's fp32 normalizer sum bitwise-equal to the
+    # single-GPU result despite this rank holding only the H/P head block.
+    sp_size = get_sequence_parallel_world_size()
+    sp_rank = get_sequence_parallel_rank()
+    h_per = n // sp_size
+    x = self.attn_op(q, k, v, heads_total=n, head_start=sp_rank * h_per)
+    x = ulysses_all_to_all(x.to(dtype), scatter_dim=1, gather_dim=2)
+
+    # output
+    x = x.flatten(2)
+    x = self.o(x)
+    return x
+
+def usp_attn_fastvideo_forward(self,
+                     x,
+                     seq_lens,
+                     grid_sizes,
+                     freqs,
+                     dtype=torch.bfloat16,
+                     t=0):
+    """Sequence-parallel self-attention for the FastVideo VSA student.
+
+    Same Ulysses head-parallel scheme as ``usp_attn_sparkwan_forward``, with one VSA-specific
+    wrinkle: ``VSASparseAttention.to_gate_compress`` is a ``Linear(dim, num_heads*head_dim)``
+    that MIXES heads, so it cannot run inside the head-shard layout the way the rest of the VSA
+    kernel can (``sparse`` / ``compressed`` only reduce over L/D and are head-independent).
+    It is, however, strictly per-token -- and sequence parallelism shards the sequence while
+    leaving the hidden dim intact, so every rank still holds the full ``C`` for its own tokens.
+    The gate is therefore evaluated here on the SEQUENCE shard (yielding all ``H`` heads), then
+    all-to-all'd alongside q/k/v, which is element-wise identical to computing it on the full
+    sequence and slicing heads -- and lands on exactly the contiguous head block
+    ``[sp_rank*H/P, (sp_rank+1)*H/P)`` the all-to-all hands this rank.
+
+    The gathered sequence is ``s * sp_size``, which the parent forward pads to a multiple of the
+    SP degree, so it can exceed ``grid_sizes.prod()``; ``_vsa_dispatch`` routes that case to its
+    per-sample branch (attend over the valid grid tokens, pad the output back), keeping the tile
+    geometry built from the true grid.
+
+    Requires a pure-Ulysses split (``ring_degree`` must be 1) and ``num_heads`` divisible by the
+    SP degree. ``topk >= 1.0`` (the dense fallback) defers to ``usp_attn_forward``.
+    """
+    # Dense student (topk >= 1.0) or a plain Wan self-attention: keep the stock SP path.
+    if getattr(self, "topk", 1.0) >= 1.0 or not hasattr(self, "attn_op"):
+        return usp_attn_forward(self, x, seq_lens, grid_sizes, freqs, dtype=dtype, t=t)
+
+    b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+    half_dtypes = (torch.float16, torch.bfloat16)
+
+    def half(t_):
+        return t_ if t_.dtype in half_dtypes else t_.to(dtype)
+
+    # query, key, value function
+    def qkv_fn(x):
+        q = self.norm_q(self.q(x.to(dtype))).view(b, s, n, d)
+        k = self.norm_k(self.k(x.to(dtype))).view(b, s, n, d)
+        v = self.v(x.to(dtype)).view(b, s, n, d)
+        return q, k, v
+
+    q, k, v = qkv_fn(x)
+    q, k = rope_apply_qk(q, k, grid_sizes, freqs)
+
+    # Cross-head compress gate, evaluated on this rank's sequence shard where the full hidden
+    # dim is available: [B, S/P, C] -> [B, S/P, H, D] (all heads).
+    gate = self.attn_op.to_gate_compress(x.to(dtype)).view(b, s, n, d)
+
+    # seq-shard -> head-shard for q/k/v and the gate alike.
+    q = ulysses_all_to_all(half(q), scatter_dim=2, gather_dim=1)
+    k = ulysses_all_to_all(half(k), scatter_dim=2, gather_dim=1)
+    v = ulysses_all_to_all(half(v), scatter_dim=2, gather_dim=1)
+    gate = ulysses_all_to_all(half(gate), scatter_dim=2, gather_dim=1)
+
+    # VSA over the FULL sequence on a head shard; x is unused once gate is supplied.
+    out = self._vsa_dispatch(q, k, v, None, seq_lens, grid_sizes, gate=gate)
+
+    # head-shard -> seq-shard, back to this rank's sequence chunk.
+    out = ulysses_all_to_all(out.to(dtype), scatter_dim=1, gather_dim=2)
+    out = out.flatten(2)
+    out = self.o(out)
+    return out
 
 @amp.autocast(enabled=False)
 @torch.compiler.disable()

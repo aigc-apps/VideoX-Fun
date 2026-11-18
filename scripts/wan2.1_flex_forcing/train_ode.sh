@@ -39,4 +39,5 @@ accelerate launch --mixed_precision="bf16" --use_fsdp \
   --flex_forcing \
   --flex_chunk_min=2 \
   --flex_chunk_max=10 \
+  --flex_pyramid_levels=4 \
   --num_frame_per_block=3

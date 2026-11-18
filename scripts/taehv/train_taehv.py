@@ -17,6 +17,10 @@ The teacher VAE family is selected by --config_path:
     config/wan2.1/wan_civitai.yaml                -> AutoencoderKLWan    (16ch, taew2_1)
     config/wan2.2/wan_civitai_5b.yaml             -> AutoencoderKLWan3_8 (48ch, taew2_2)
 (any wan2.2 *_2.2vae.yaml also works, they share the same vae_kwargs)
+
+The training loop mirrors scripts/wan2.1_fun/train.py (derived from
+https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image.py):
+same shared argument surface, dataset/sampler, EMA and checkpoint hooks.
 """
 #!/usr/bin/env python
 # coding=utf-8
@@ -34,8 +38,8 @@ The teacher VAE family is selected by --config_path:
 # See the License for the specific language governing permissions and
 
 import argparse
+import copy
 import gc
-import inspect
 import logging
 import math
 import os
@@ -61,7 +65,6 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from packaging import version
 from PIL import Image
-from torch.utils.data import RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from transformers.utils import ContextManagers
@@ -77,25 +80,22 @@ from videox_fun.data import (ASPECT_RATIO_512, ASPECT_RATIO_RANDOM_CROP_512,
                              ASPECT_RATIO_RANDOM_CROP_PROB,
                              AspectRatioBatchImageVideoSampler,
                              ImageVideoDataset, ImageVideoSampler,
-                             RandomSampler, VideoDataset,
-                             get_closest_ratio)
+                             RandomSampler, VideoDataset, get_closest_ratio)
 from videox_fun.models import (AutoencoderKLWan, AutoencoderKLWan3_8,
                                AutoencoderTinyWan)
-from videox_fun.utils.fsdp_ema import FSDPEMA
-from videox_fun.utils.tqdm_bar import PauseAwareTqdm
-from videox_fun.utils.utils import save_videos_grid
+from videox_fun.utils import (add_training_precision_args,
+                              FSDPEMA, PauseAwareTqdm,
+                              build_trainable_optimizer_groups,
+                              configure_gradient_checkpointing_save_on_cpu,
+                              configure_training_precision, create_optimizer,
+                              initialize_training_seed,
+                              parse_trainable_module_learning_rates,
+                              save_videos_grid)
 
 # Will error if the minimal version of diffusers is not installed.
 check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
-
-
-def filter_kwargs(cls, kwargs):
-    """Filter kwargs to only include parameters accepted by the class __init__."""
-    sig = inspect.signature(cls.__init__)
-    valid_keys = set(sig.parameters.keys()) - {"self"}
-    return {k: v for k, v in kwargs.items() if k in valid_keys}
 
 
 def linear_decay(initial_value, final_value, total_steps, current_step):
@@ -109,81 +109,108 @@ def linear_decay(initial_value, final_value, total_steps, current_step):
 
 def log_validation(vae, tae, args, accelerator, weight_dtype, global_step):
     """Validation: encode video -> decode with TAE / full VAE, save comparison videos."""
+    plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+    sharded = args.use_fsdp or (plugin is not None and int(plugin.zero_stage) == 3)
+    accelerator.wait_for_everyone()
     try:
-        with torch.no_grad(), torch.cuda.amp.autocast(dtype=weight_dtype):
-            logger.info("Running validation...")
+        if not sharded and not accelerator.is_main_process:
+            return
+        # The guard sits *inside* the contexts on purpose: `Accelerator.autocast` enters and
+        # exits AMP without a try/finally, so an exception escaping the block strands autocast
+        # enabled and leaves its cast-weight cache holding tensors built under no_grad. The
+        # next training step would then produce a graph-free loss and `accelerator.backward`
+        # would die with "element 0 of tensors does not require grad".
+        with torch.no_grad(), accelerator.autocast():
+            teacher_on_gpu = False
+            try:
+                logger.info("Running validation...")
 
-            if args.validation_paths is None or len(args.validation_paths) == 0:
-                logger.info("No validation_paths provided, skipping validation.")
-                return
+                if args.validation_paths is None or len(args.validation_paths) == 0:
+                    logger.info("No validation_paths provided, skipping validation.")
+                    return
 
-            from decord import VideoReader
+                from decord import VideoReader
 
-            unwrapped_tae = accelerator.unwrap_model(tae)
+                unwrapped_tae = None if sharded else accelerator.unwrap_model(tae)
+                # Under --low_vram the teacher VAE waits on CPU between encoding steps.
+                teacher_on_gpu = bool(args.low_vram)
+                if teacher_on_gpu:
+                    vae.to(accelerator.device, dtype=weight_dtype)
 
-            for i, video_path in enumerate(args.validation_paths):
-                if not os.path.exists(video_path):
-                    logger.warning(f"Validation video not found: {video_path}")
-                    continue
+                for i, video_path in enumerate(args.validation_paths):
+                    if not os.path.exists(video_path):
+                        logger.warning(f"Validation video not found: {video_path}")
+                        continue
 
-                # Load video frames
-                vr = VideoReader(video_path)
-                num_frames = min(len(vr), args.video_sample_n_frames)
-                # Align to temporal compression ratio (4k+1)
-                temporal_ratio = vae.config.temporal_compression_ratio
-                num_frames = (num_frames - 1) // temporal_ratio * temporal_ratio + 1
-                if num_frames <= 0:
-                    num_frames = 1
+                    # Load video frames
+                    vr = VideoReader(video_path)
+                    num_frames = min(len(vr), args.validation_n_frames)
+                    # Align to temporal compression ratio (4k+1)
+                    temporal_ratio = vae.config.temporal_compression_ratio
+                    num_frames = (num_frames - 1) // temporal_ratio * temporal_ratio + 1
+                    if num_frames <= 0:
+                        num_frames = 1
 
-                indices = list(range(num_frames))
-                frames = vr.get_batch(indices).asnumpy()  # [F, H, W, C]
+                    indices = list(range(num_frames))
+                    frames = vr.get_batch(indices).asnumpy()  # [F, H, W, C]
 
-                # Preprocess to tensor [1, C, F, H, W] in [-1, 1]
-                pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
-                pixel_values = pixel_values * 2.0 - 1.0
+                    # Preprocess to tensor [1, C, F, H, W] in [-1, 1]
+                    pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
+                    pixel_values = pixel_values * 2.0 - 1.0
 
-                # Resize to target size aligned to the spatial compression ratio
-                spatial_ratio = int(vae.config.spatial_compression_ratio)
-                h_target = int(args.video_sample_size / spatial_ratio) * spatial_ratio
-                w_target = h_target  # square for simplicity in validation
-                pixel_values = F.interpolate(
-                    pixel_values, size=(h_target, w_target), mode='bilinear', align_corners=False
-                )
-                pixel_values = pixel_values.unsqueeze(0).permute(0, 2, 1, 3, 4)  # [1, C, F, H, W]
-                pixel_values = pixel_values.to(device=accelerator.device, dtype=weight_dtype)
+                    # Resize to target size aligned to the spatial compression ratio
+                    spatial_ratio = int(vae.config.spatial_compression_ratio)
+                    h_target = int(args.video_sample_height / spatial_ratio) * spatial_ratio
+                    w_target = int(args.video_sample_width / spatial_ratio) * spatial_ratio
+                    pixel_values = F.interpolate(
+                        pixel_values, size=(h_target, w_target), mode='bilinear', align_corners=False
+                    )
+                    pixel_values = pixel_values.unsqueeze(0).permute(0, 2, 1, 3, 4)  # [1, C, F, H, W]
+                    pixel_values = pixel_values.to(device=accelerator.device, dtype=weight_dtype)
 
-                # TAE reconstruction
-                z_tae = unwrapped_tae.encode(pixel_values).latent_dist.mode()
-                decoded_tae = unwrapped_tae.decode(z_tae).sample
-                decoded_tae = decoded_tae[:, :, :pixel_values.shape[2]]
+                    # Sharded models must run through the wrapper on every rank.
+                    if sharded:
+                        _, reconstruction = tae(pixel_values, return_latents=True)
+                        decoded_tae = reconstruction.sample
+                    else:
+                        z_tae = unwrapped_tae.encode(pixel_values).latent_dist.mode()
+                        decoded_tae = unwrapped_tae.decode(z_tae).sample
+                    decoded_tae = decoded_tae[:, :, :pixel_values.shape[2]]
 
-                # Full VAE reconstruction for comparison
-                z_full = vae.encode(pixel_values).latent_dist.mode()
-                decoded_full = vae.decode(z_full, return_dict=False)[0]
+                    # Full VAE reconstruction for comparison
+                    z_full = vae.encode(pixel_values).latent_dist.mode()
+                    decoded_full = vae.decode(z_full, return_dict=False)[0]
 
-                # Save videos
-                os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
-                save_videos_grid(
-                    pixel_values,
-                    os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_input.mp4"),
-                    rescale=True, fps=24
-                )
-                save_videos_grid(
-                    decoded_tae,
-                    os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_taehv.mp4"),
-                    rescale=True, fps=24
-                )
-                save_videos_grid(
-                    decoded_full,
-                    os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_fullvae.mp4"),
-                    rescale=True, fps=24
-                )
-                logger.info(f"Saved validation video {i} at step {global_step}")
+                    if accelerator.is_main_process:
+                        # Save videos; save_videos_grid goes through numpy, which has no bf16.
+                        os.makedirs(os.path.join(args.output_dir, "sample"), exist_ok=True)
+                        save_videos_grid(
+                            pixel_values.float(),
+                            os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_input.mp4"),
+                            rescale=True, fps=24
+                        )
+                        save_videos_grid(
+                            decoded_tae.float(),
+                            os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_taehv.mp4"),
+                            rescale=True, fps=24
+                        )
+                        save_videos_grid(
+                            decoded_full.float(),
+                            os.path.join(args.output_dir, f"sample/step{global_step}_val{i}_fullvae.mp4"),
+                            rescale=True, fps=24
+                        )
+                        logger.info(f"Saved validation video {i} at step {global_step}")
 
-    except Exception as e:
-        gc.collect()
-        torch.cuda.empty_cache()
-        print(f"Eval error on rank {accelerator.process_index} with info {e}")
+            except Exception as e:
+                gc.collect()
+                torch.cuda.empty_cache()
+                print(f"Eval error on rank {accelerator.process_index} with info {e}")
+            finally:
+                if teacher_on_gpu:
+                    vae.to("cpu")
+                    torch.cuda.empty_cache()
+    finally:
+        accelerator.wait_for_everyone()
 
 
 def parse_args():
@@ -218,14 +245,14 @@ def parse_args():
     parser.add_argument(
         "--train_data_dir",
         type=str,
-        default=None,
+        default="datasets/X-Fun-Videos-Demo",
         help=("A folder containing the training data."),
     )
     parser.add_argument(
         "--train_data_meta",
         type=str,
-        default=None,
-        help=("A json/csv containing the training data meta."),
+        default="datasets/X-Fun-Videos-Demo/metadata_add_width_height.json",
+        help=("A JSON array containing the training video metadata."),
     )
     parser.add_argument(
         "--max_train_samples",
@@ -255,7 +282,9 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    # The default must be a concrete int: the batch-sampler generators and `worker_init_fn`
+    # below call `manual_seed(args.seed)` / `args.seed + process_index` without a None guard.
+    parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
@@ -281,10 +310,21 @@ def parse_args():
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
+        "--gradient_checkpointing_save_on_cpu",
+        action="store_true",
+        help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--low_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for selected modules (default: half the main learning rate).",
     )
     parser.add_argument(
         "--scale_lr",
@@ -318,6 +358,12 @@ def parse_args():
         ),
     )
     parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
+    parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=None,
+        help="EMA decay for the tracked parameters. Defaults to the EMAModel default (0.9999).",
+    )
     parser.add_argument(
         "--non_ema_revision",
         type=str,
@@ -390,6 +436,12 @@ def parse_args():
         help="Run validation every X steps.",
     )
     parser.add_argument(
+        "--validation_n_frames",
+        type=int,
+        default=None,
+        help="Validation clip length, 4k+1. Defaults to `--video_sample_n_frames`.",
+    )
+    parser.add_argument(
         "--tracker_project_name",
         type=str,
         default="taehv-train",
@@ -399,16 +451,19 @@ def parse_args():
         "--enable_bucket", action="store_true", help="Whether enable bucket sample in datasets."
     )
     parser.add_argument(
-        "--random_ratio_crop", action="store_true", help="Whether enable random ratio crop sample in datasets."
-    )
-    parser.add_argument(
-        "--random_hw_adapt", action="store_true", help="Whether enable random adapt height and width in datasets."
-    )
-    parser.add_argument(
         "--video_sample_size",
         type=int,
         default=512,
         help="Training video sample size.",
+    )
+    parser.add_argument(
+        "--fix_sample_size",
+        nargs=2,
+        type=int,
+        default=None,
+        help="Fix Sample size [height, width] to override `--video_sample_size` with a fixed "
+             "non-square shape. Under `--enable_bucket` the scalar `--video_sample_size` is bumped to "
+             "at least max(fix_sample_size), so the bucket ratios still cover the canvas.",
     )
     parser.add_argument(
         "--video_sample_stride",
@@ -417,16 +472,17 @@ def parse_args():
         help="Sample stride of the video.",
     )
     parser.add_argument(
+        "--video_sample_strides",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Optional per-video random sampling strides; one is drawn for every clip.",
+    )
+    parser.add_argument(
         "--video_sample_n_frames",
         type=int,
         default=33,
         help="Num frame of video. Must be 4k+1 to match the causal temporal compression.",
-    )
-    parser.add_argument(
-        "--video_repeat",
-        type=int,
-        default=0,
-        help="Num of repeat video.",
     )
     parser.add_argument(
         "--tae_path",
@@ -474,7 +530,7 @@ def parse_args():
         '--trainable_modules_low_learning_rate',
         nargs='+',
         default=[],
-        help='Enter a list of trainable modules with lower learning rate',
+        help='Trainable module substrings for the low learning rate.',
     )
     parser.add_argument(
         "--use_deepspeed", action="store_true", help="Whether or not to use deepspeed."
@@ -504,7 +560,11 @@ def parse_args():
         "--save_state", action="store_true", help="Whether to save accelerator state."
     )
 
+    add_training_precision_args(parser)
     args = parser.parse_args()
+    configure_training_precision(args)
+    configure_gradient_checkpointing_save_on_cpu(args.gradient_checkpointing_save_on_cpu)
+    parse_trainable_module_learning_rates(args, parser)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -512,10 +572,47 @@ def parse_args():
     if args.non_ema_revision is None:
         args.non_ema_revision = args.revision
 
+    # Derive the effective canvas once, so every downstream use agrees.
+    if args.fix_sample_size is not None:
+        args.video_sample_height, args.video_sample_width = args.fix_sample_size
+        # The bucket sampler groups by the scalar sample size; keep it >= the fixed canvas.
+        if args.enable_bucket:
+            args.video_sample_size = max(max(args.fix_sample_size), args.video_sample_size)
+    else:
+        args.video_sample_height = args.video_sample_width = args.video_sample_size
+    if any(size < 32 or size % 16 for size in (args.video_sample_height, args.video_sample_width)):
+        parser.error("Video dimensions must be >=32 and divisible by 16")
+
+    if args.validation_n_frames is None:
+        args.validation_n_frames = args.video_sample_n_frames
     # Both the full VAE and the TAE are causal 4x temporal compressors, so the
     # clip length must be 4k+1 for the decode output to match the input.
-    assert (args.video_sample_n_frames - 1) % 4 == 0, \
-        f"video_sample_n_frames must be 4k+1, got {args.video_sample_n_frames}"
+    if any(frames < 1 or (frames - 1) % 4 for frames in (args.video_sample_n_frames, args.validation_n_frames)):
+        parser.error("Video frame counts must be 4k+1")
+    if args.max_train_steps is not None and args.max_train_steps < 1:
+        parser.error("max_train_steps must be positive")
+    if min(args.num_train_epochs, args.train_batch_size, args.vae_mini_batch,
+           args.gradient_accumulation_steps, args.checkpointing_steps, args.video_sample_stride) < 1:
+        parser.error("Epochs, batch sizes, checkpoint interval and stride must be positive")
+    if min(args.dataloader_num_workers, args.validation_steps, args.validation_epochs, args.lr_warmup_steps) < 0:
+        parser.error("Workers, validation intervals and warmup cannot be negative")
+    if args.video_sample_strides is not None and (not args.video_sample_strides or min(args.video_sample_strides) < 1):
+        parser.error("video_sample_strides must be positive")
+    if args.max_train_samples is not None and args.max_train_samples < 1:
+        parser.error("max_train_samples must be positive")
+    if args.checkpoints_total_limit is not None and args.checkpoints_total_limit < 1:
+        parser.error("checkpoints_total_limit must be positive")
+    if args.ema_decay is not None and not 0 <= args.ema_decay < 1:
+        parser.error("ema_decay must be in [0, 1)")
+    if not 0 <= args.adam_beta1 < 1 or not 0 <= args.adam_beta2 < 1:
+        parser.error("Invalid Adam betas")
+    if args.adam_weight_decay < 0:
+        parser.error("Adam weight decay cannot be negative")
+    if any(not math.isfinite(value) or value <= 0 for value in
+           (args.learning_rate, args.adam_epsilon, args.max_grad_norm)):
+        parser.error("Learning rate, epsilon and gradient norm must be finite and positive")
+    if args.latent_loss_weight < 0:
+        parser.error("latent_loss_weight cannot be negative")
 
     return args
 
@@ -537,6 +634,8 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+    accelerator.videox_checkpoint_all_ranks = True
+    initialize_training_seed(args, accelerator)
 
     deepspeed_plugin = accelerator.state.deepspeed_plugin if hasattr(accelerator.state, "deepspeed_plugin") else None
     fsdp_plugin = accelerator.state.fsdp_plugin if hasattr(accelerator.state, "fsdp_plugin") else None
@@ -652,9 +751,9 @@ def main():
             arch_variant=args.tae_arch_variant,
         )
     tae.parallel = not args.use_taehv_sequential
-    # The TAE is tiny (~20MB); keep it fully in weight_dtype so forward works
-    # regardless of whether autocast is active.
-    tae.to(weight_dtype)
+    # Trainable parameters (and the Adam moments built below) stay in FP32 like the
+    # other training scripts; mixed precision comes from `accelerator.autocast()`.
+    tae.float()
 
     # Set trainable parameters
     tae.requires_grad_(False)
@@ -681,20 +780,31 @@ def main():
         from diffusers.training_utils import EMAModel
         if zero_stage == 3:
             raise NotImplementedError("DeepSpeed Zero-3 does not support EMA.")
-        ema_module = AutoencoderTinyWan(**dict(tae.config))
+        ema_module = AutoencoderTinyWan.from_config(tae.config)
         if args.use_fsdp:
-            # The EMA copy gets the same FSDP wrap as the live model so that
-            # every local shard of the copy pairs 1:1 with the live shard.
-            ema_tae = FSDPEMA(ema_module, source=tae, accelerator=accelerator, fsdp_plugin=fsdp_plugin)
+            if getattr(fsdp_plugin, "fsdp_version", 1) != 1:
+                raise NotImplementedError("TAeHV FSDP EMA currently supports FSDP1 only.")
+            # The live and EMA models must use the same original-parameter layout.
+            fsdp_plugin.use_orig_params = True
+            ema_tae = FSDPEMA(
+                ema_module, source=tae, accelerator=accelerator, fsdp_plugin=fsdp_plugin,
+                decay=args.ema_decay if args.ema_decay is not None else 0.9999,
+            )
         else:
-            ema_module = ema_module.to(weight_dtype)
-            if args.tae_path is not None:
-                ema_module.load_state_dict(tae.state_dict())
-            ema_tae = EMAModel(ema_module.parameters(), model_cls=AutoencoderTinyWan, model_config=ema_module.config)
+            ema_module = ema_module.float()
+            ema_module.load_state_dict(tae.state_dict())
+            # An explicit decay also disables the warmup ramp, mirroring train_taehv_super.py.
+            ema_kwargs = {} if args.ema_decay is None else {
+                "decay": args.ema_decay, "min_decay": args.ema_decay, "use_ema_warmup": False,
+            }
+            ema_tae = EMAModel(
+                ema_module.parameters(), model_cls=AutoencoderTinyWan, model_config=ema_module.config,
+                **ema_kwargs,
+            )
 
     # ==================== Save/Load Hooks ====================
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
-        if fsdp_stage != 0 or zero_stage == 3:
+        if fsdp_plugin is not None or zero_stage == 3:
             def save_model_hook(models, weights, output_dir):
                 accelerate_state_dict = accelerator.get_state_dict(models[-1], unwrap=True)
                 if accelerator.is_main_process:
@@ -722,7 +832,7 @@ def main():
                 if accelerator.is_main_process:
                     if args.use_ema:
                         ema_tae.save_pretrained(os.path.join(output_dir, "taehv_ema"))
-                    models[0].save_pretrained(os.path.join(output_dir, "taehv"))
+                    accelerator.unwrap_model(models[0]).save_pretrained(os.path.join(output_dir, "taehv"))
                     if not args.use_deepspeed:
                         weights.pop()
                     with open(os.path.join(output_dir, "sampler_pos_start.pkl"), 'wb') as file:
@@ -732,14 +842,13 @@ def main():
                 if args.use_ema:
                     ema_path = os.path.join(input_dir, "taehv_ema")
                     if os.path.exists(ema_path):
-                        load_model = AutoencoderTinyWan.from_pretrained(input_dir, subfolder="taehv_ema")
-                        load_ema = EMAModel(load_model.parameters(), model_cls=AutoencoderTinyWan, model_config=load_model.config)
+                        load_ema = EMAModel.from_pretrained(ema_path, AutoencoderTinyWan)
                         ema_tae.load_state_dict(load_ema.state_dict())
                         ema_tae.to(accelerator.device)
-                        del load_model, load_ema
+                        del load_ema
 
                 for i in range(len(models)):
-                    model = models.pop()
+                    model = accelerator.unwrap_model(models.pop())
                     load_model = AutoencoderTinyWan.from_pretrained(input_dir, subfolder="taehv")
                     model.register_to_config(**load_model.config)
                     model.load_state_dict(load_model.state_dict())
@@ -767,65 +876,26 @@ def main():
         )
 
     # ==================== Optimizer ====================
-    if args.use_8bit_adam:
-        import bitsandbytes as bnb
-        optimizer_cls = bnb.optim.AdamW8bit
-    elif args.use_came:
-        from came_pytorch import CAME
-        optimizer_cls = CAME
-    else:
-        optimizer_cls = torch.optim.AdamW
 
-    trainable_params_optim = [
-        {'params': [], 'lr': args.learning_rate},
-        {'params': [], 'lr': args.learning_rate / 2},
-    ]
-    in_already = []
-    for name, param in tae.named_parameters():
-        if not param.requires_grad:
-            continue
-        high_lr_flag = False
-        if name in in_already:
-            continue
-        for trainable_module_name in args.trainable_modules:
-            if trainable_module_name in name:
-                in_already.append(name)
-                high_lr_flag = True
-                trainable_params_optim[0]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr: {args.learning_rate}")
-                break
-        if high_lr_flag:
-            continue
-        for trainable_module_name in args.trainable_modules_low_learning_rate:
-            if trainable_module_name in name:
-                in_already.append(name)
-                trainable_params_optim[1]['params'].append(param)
-                if accelerator.is_main_process:
-                    print(f"Set {name} to lr: {args.learning_rate / 2}")
-                break
+    trainable_params_optim = build_trainable_optimizer_groups(
+        tae.named_parameters(), args, accelerator, only_trainable=True
+    )
 
-    if args.use_came:
-        optimizer = optimizer_cls(
-            trainable_params_optim, lr=args.learning_rate,
-            betas=(0.9, 0.999, 0.9999), eps=(1e-30, 1e-16)
-        )
-    else:
-        optimizer = optimizer_cls(
-            trainable_params_optim, lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay, eps=args.adam_epsilon,
-        )
+    optimizer = create_optimizer(trainable_params_optim, args)
 
     # ==================== Dataset ====================
     sample_n_frames_bucket_interval = vae.config.temporal_compression_ratio
 
     train_dataset = VideoDataset(
         args.train_data_meta, args.train_data_dir,
-        sample_size=args.video_sample_size, sample_stride=args.video_sample_stride,
+        sample_size=(args.video_sample_height, args.video_sample_width),
+        sample_stride=args.video_sample_strides or args.video_sample_stride,
         sample_n_frames=args.video_sample_n_frames,
         enable_bucket=args.enable_bucket, enable_inpaint=False,
     )
+    if args.max_train_samples is not None:
+        train_dataset.dataset = train_dataset.dataset[:args.max_train_samples]
+        train_dataset.length = len(train_dataset.dataset)
 
     def worker_init_fn(_seed):
         _seed = _seed * 256
@@ -844,6 +914,9 @@ def main():
             aspect_ratios=aspect_ratio_sample_size,
         )
 
+        # A fixed canvas overrides the closest bucket size, so every batch is uniform.
+        fix_size = None if args.fix_sample_size is None else [args.video_sample_height, args.video_sample_width]
+
         def collate_fn(examples):
             new_examples = {}
             new_examples["pixel_values"] = []
@@ -851,9 +924,13 @@ def main():
             pixel_value = examples[0]["pixel_values"]
             f, h, w, c = np.shape(pixel_value)
 
-            closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
-            spatial_ratio = int(vae.config.spatial_compression_ratio)
-            closest_size = [int(x / spatial_ratio) * spatial_ratio for x in closest_size]
+            if fix_size is None:
+                closest_size, closest_ratio = get_closest_ratio(h, w, ratios=aspect_ratio_sample_size)
+                spatial_ratio = int(vae.config.spatial_compression_ratio)
+                closest_size = [int(x / spatial_ratio) * spatial_ratio for x in closest_size]
+                target_size = closest_size
+            else:
+                target_size = fix_size
 
             min_example_length = min([example["pixel_values"].shape[0] for example in examples])
             batch_video_length = int(min(args.video_sample_n_frames + sample_n_frames_bucket_interval, min_example_length))
@@ -865,14 +942,19 @@ def main():
                 pixel_values = torch.from_numpy(example["pixel_values"]).permute(0, 3, 1, 2).contiguous()
                 pixel_values = pixel_values / 255.0
 
-                if closest_size[0] / h > closest_size[1] / w:
-                    resize_size = closest_size[0], int(w * closest_size[0] / h)
+                if fix_size is None:
+                    if closest_size[0] / h > closest_size[1] / w:
+                        resize_size = closest_size[0], int(w * closest_size[0] / h)
+                    else:
+                        resize_size = int(h * closest_size[1] / w), closest_size[1]
                 else:
-                    resize_size = int(h * closest_size[1] / w), closest_size[1]
+                    # Aspect-preserving cover resize, same as scripts/taehv/train_taehv_super.py.
+                    scale = max(fix_size[0] / h, fix_size[1] / w)
+                    resize_size = math.ceil(h * scale), math.ceil(w * scale)
 
                 transform = transforms.Compose([
                     transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BILINEAR),
-                    transforms.CenterCrop(closest_size),
+                    transforms.CenterCrop(target_size),
                     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                 ])
                 pixel_values = transform(pixel_values)[:batch_video_length]
@@ -900,17 +982,31 @@ def main():
             worker_init_fn=worker_init_fn(args.seed + accelerator.process_index)
         )
 
+    # Snapshot the sampler's empty bucket layout so every epoch can restore it. The shape is
+    # sampler-specific -- ImageVideoSampler holds flat lists while AspectRatioBatchImageVideoSampler
+    # holds one list per aspect ratio -- so the initial value is copied rather than rebuilt.
+    initial_bucket = copy.deepcopy(batch_sampler.bucket)
+
+    # Prepare the loader first so the scheduler uses the per-rank epoch length.
+    if deepspeed_plugin is not None:
+        ds_config = deepspeed_plugin.deepspeed_config
+        if ds_config.get("train_micro_batch_size_per_gpu") in (None, "auto"):
+            ds_config["train_micro_batch_size_per_gpu"] = args.train_batch_size
+    train_dataloader = accelerator.prepare(train_dataloader)
+
     # ==================== LR Scheduler ====================
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    if num_update_steps_per_epoch == 0:
+        raise ValueError("Training data does not contain a complete batch")
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
-
+    scheduler_factor = 1 if deepspeed_plugin is not None or accelerator.split_batches else accelerator.num_processes
     lr_scheduler = get_scheduler(
         args.lr_scheduler, optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=args.max_train_steps * accelerator.num_processes,
+        num_warmup_steps=args.lr_warmup_steps * scheduler_factor,
+        num_training_steps=args.max_train_steps * scheduler_factor,
     )
 
     # ==================== Prepare with Accelerator ====================
@@ -956,30 +1052,35 @@ def main():
     first_epoch = 0
 
     # Resume from checkpoint
+    if args.resume_from_checkpoint == "latest":
+        accelerator.recover_checkpoint_directories(args.output_dir)
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
+            path = args.resume_from_checkpoint
+            if not os.path.isabs(path) and not os.path.exists(path):
+                path = os.path.join(args.output_dir, path)
         else:
-            dirs = os.listdir(args.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+            dirs = [name for name in os.listdir(args.output_dir)
+                    if name.startswith("checkpoint-") and name.split("-")[-1].isdigit()
+                    and os.path.isdir(os.path.join(args.output_dir, name))]
+            dirs.sort(key=lambda name: int(name.split("-")[-1]))
+            path = os.path.join(args.output_dir, dirs[-1]) if dirs else None
 
         if path is None:
             accelerator.print(f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run.")
             args.resume_from_checkpoint = None
             initial_global_step = 0
         else:
-            global_step = int(path.split("-")[1])
+            global_step = int(os.path.basename(os.path.normpath(path)).split("-")[-1])
             initial_global_step = global_step
-            pkl_path = os.path.join(os.path.join(args.output_dir, path), "sampler_pos_start.pkl")
+            pkl_path = os.path.join(path, "sampler_pos_start.pkl")
             if os.path.exists(pkl_path):
                 with open(pkl_path, 'rb') as file:
                     _, first_epoch = pickle.load(file)
             else:
                 first_epoch = global_step // num_update_steps_per_epoch
             accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.output_dir, path))
+            accelerator.load_state(path)
     else:
         initial_global_step = 0
 
@@ -989,8 +1090,18 @@ def main():
     )
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        if global_step >= args.max_train_steps:
+            break
         train_loss = 0.0
+        train_dataloader.set_epoch(epoch)
         batch_sampler.sampler.generator = torch.Generator().manual_seed(args.seed + epoch)
+        # Indices that never filled a batch stay behind in `bucket` and would leak into the next
+        # epoch, silently changing the batch composition, so the layout is restored here.
+        # `_pos_start` is deliberately NOT reset: RandomSampler.__iter__ already zeroes it at the
+        # end of a full pass, and this script's resume relies on load_model_hook writing the saved
+        # position back into it. train_taehv_super.py can reset it unconditionally only because it
+        # pairs that with `resume_step` + accelerator.skip_first_batches, which this script lacks.
+        batch_sampler.bucket = copy.deepcopy(initial_bucket)
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(tae):
                 pixel_values = batch["pixel_values"].to(weight_dtype)  # [B, F, C, H, W]
@@ -1015,10 +1126,10 @@ def main():
                     vae.to('cpu')
                     torch.cuda.empty_cache()
 
-                # 2. Student forward: TAE encode -> decode
-                # Use the unwrapped model since encode/decode are not exposed by DDP.
-                z_tae = unwrap_model(tae).encode(pixel_values).latent_dist.mode()
-                decoded = unwrap_model(tae).decode(z_tae).sample
+                # 2. Run encode and decode through the distributed model wrapper.
+                with accelerator.autocast():
+                    z_tae, reconstruction = tae(pixel_values, return_latents=True)
+                    decoded = reconstruction.sample
                 # Trim to the input temporal span in case the TAE padded extra frames.
                 decoded = decoded[:, :, :pixel_values.shape[2]]
 
@@ -1028,7 +1139,7 @@ def main():
                 loss = pixel_loss + args.latent_loss_weight * latent_loss
 
                 # Gather losses for logging
-                avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
+                avg_loss = accelerator.gather(loss.detach().repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
                 # Backpropagate
@@ -1053,7 +1164,9 @@ def main():
                     else:
                         actual_max_grad_norm = args.max_grad_norm
 
-                    accelerator.clip_grad_norm_(trainable_params, actual_max_grad_norm)
+                    accelerator.clip_grad_norm_(
+                        tae.parameters() if args.use_fsdp else trainable_params, actual_max_grad_norm
+                    )
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -1073,8 +1186,8 @@ def main():
 
                 # Checkpointing
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
-                        if args.checkpoints_total_limit is not None:
+                    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
+                        if accelerator.is_main_process and args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
                             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
                             checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
@@ -1083,7 +1196,7 @@ def main():
                                 removing_checkpoints = checkpoints[0:num_to_remove]
                                 logger.info(f"Removing {len(removing_checkpoints)} checkpoints")
                                 for removing_checkpoint in removing_checkpoints:
-                                    shutil.rmtree(os.path.join(args.output_dir, removing_checkpoint))
+                                    accelerator.defer_checkpoint_removal(os.path.join(args.output_dir, removing_checkpoint))
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -1100,7 +1213,7 @@ def main():
                         logger.info(f"Saved state to {save_path}")
 
                 # Validation
-                if args.validation_paths is not None and global_step % args.validation_steps == 0:
+                if args.validation_paths is not None and args.validation_steps and global_step % args.validation_steps == 0:
                     with progress_bar.paused():
                         if args.use_ema:
                             ema_tae.store(tae.parameters())
@@ -1121,7 +1234,7 @@ def main():
                 break
 
         # Epoch-level validation
-        if args.validation_paths is not None and epoch % args.validation_epochs == 0:
+        if args.validation_paths is not None and args.validation_epochs and epoch % args.validation_epochs == 0:
             with progress_bar.paused():
                 if args.use_ema:
                     ema_tae.store(tae.parameters())
@@ -1129,25 +1242,22 @@ def main():
                 log_validation(vae, tae, args, accelerator, weight_dtype, global_step)
                 if args.use_ema:
                     ema_tae.restore(tae.parameters())
+        # Epoch-level break, mirroring train_taehv_super.py: the `break` inside the step loop only
+        # ends that epoch, so without this the remaining epochs would each run one extra step past
+        # max_train_steps and write a spurious checkpoint. Placed after the epoch validation so the
+        # final epoch still gets validated before exiting.
+        if global_step >= args.max_train_steps:
+            break
 
     # Close the bar before the end-of-run checkpoint: tqdm keeps redrawing a live bar whenever
     # something else writes to the console. PauseAwareTqdm.close() rebases the closing line onto
     # the smoothed rate, so the worker warm-up and the first dataloader fetch do not dilute it.
     progress_bar.close()
 
-    # Final save
+    # Keep the live model and optimizer state consistent for training resume.
+    # The save hook exports EMA separately under taehv_ema/ when enabled.
     accelerator.wait_for_everyone()
-    if args.use_ema and args.use_fsdp:
-        # Under FSDP every rank must write its own shards, and the shards only
-        # exist while the model is still wrapped, so this runs before the
-        # `unwrap_model` below.
-        ema_tae.copy_to(tae.parameters())
-    if accelerator.is_main_process:
-        tae_unwrapped = unwrap_model(tae)
-        if args.use_ema and not args.use_fsdp:
-            ema_tae.copy_to(tae_unwrapped.parameters())
-
-    if args.use_deepspeed or args.use_fsdp or accelerator.is_main_process:
+    if (args.use_deepspeed or args.use_fsdp or accelerator.is_main_process) or accelerator.num_processes > 1:
         gc.collect()
         torch.cuda.empty_cache()
         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")

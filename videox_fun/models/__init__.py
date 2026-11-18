@@ -90,8 +90,16 @@ from .qwenimage_transformer2d import QwenImageTransformer2DModel
 from .qwenimage_transformer2d_control import QwenImageControlTransformer2DModel
 from .qwenimage_transformer2d_instantx import QwenImageInstantXControlNetModel
 from .qwenimage_vae import AutoencoderKLQwenImage
+from .spark_transformer3d import (SparkWan2_2Transformer3DModel,
+                                  SparkWanSelfAttention,
+                                  SparkWanTransformer3DModel)
 from .turbowan_transformer3d import TurboWanTransformer3DModel
+from .fastvideo_wan_transformer3d import (FastVideoWanSelfAttention,
+                                          FastVideoWanTransformer3DModel)
+from .fastvideo_minimax_h3_transformer3d import \
+    FastVideoMiniMaxH3Transformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
+from .wan_gan_discriminator import add_wan_gan_discriminator
 from .wan_image_encoder import CLIPModel
 from .wan_latent_upsampler import WanLatentUpsamplerModel
 from .wan_tae import AutoencoderTinyWan
@@ -108,5 +116,7 @@ from .wan_transformer3d_self_forcing import WanTransformer3DModel_SelfForcing
 from .wan_transformer3d_vace import VaceWanTransformer3DModel
 from .wan_vae import AutoencoderKLWan, AutoencoderKLWan_
 from .wan_vae3_8 import AutoencoderKLWan2_2_, AutoencoderKLWan3_8
+from .wan_vae3_8_1steps import AutoencoderKLWan3_8_1Steps
+from .wan_vae_1steps import AutoencoderKLWan_1Steps
 from .z_image_transformer2d import ZImageTransformer2DModel
 from .z_image_transformer2d_control import ZImageControlTransformer2DModel
