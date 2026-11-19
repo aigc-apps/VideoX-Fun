@@ -1,6 +1,5 @@
 import inspect
 import math
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -544,8 +543,6 @@ class WanPipeline(DiffusionPipeline):
                 timestep = t.expand(latent_model_input.shape[0])
                 
                 # predict noise model_output
-                torch.cuda.synchronize()
-                forward_start_time = time.time()
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=device):
                     noise_pred = self.transformer(
                         x=latent_model_input,
@@ -553,9 +550,6 @@ class WanPipeline(DiffusionPipeline):
                         t=timestep,
                         seq_len=seq_len,
                     )
-                torch.cuda.synchronize()
-                forward_time = time.time() - forward_start_time
-                print(f"Step {i}/{len(timesteps)} - Transformer forward time: {forward_time:.4f}s")
 
                 # perform guidance
                 if do_classifier_free_guidance:
