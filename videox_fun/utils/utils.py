@@ -153,7 +153,10 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=6, f
         if path.endswith("mp4"):
             path = path.replace('.mp4', '.gif')
         outputs = [Image.fromarray(frame) for frame in frames]
-        outputs[0].save(path, format='GIF', append_images=outputs, save_all=True, duration=100, loop=0)
+        outputs[0].save(
+            path, format='GIF', append_images=outputs[1:], save_all=True,
+            duration=round(1000 / fps), loop=0,
+        )
     print(f"Saved video to: {path}")
 
 class StreamVideoSaver:
