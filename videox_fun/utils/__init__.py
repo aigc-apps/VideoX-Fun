@@ -39,13 +39,15 @@ from .lora_utils import (LoadedTaomateH3LoRA, TaomateH3LoRACheckpointError,
                          convert_peft_lora_to_kohya_lora,
                          convert_taomate_h3_adapter, create_network,
                          load_taomate_h3_adapter, merge_lora,
-                         official_to_kohya_lora_state_dict, unmerge_lora)
+                         official_to_kohya_lora_state_dict, unmerge_lora,
+                         validate_image_lora_head)
 from .lora_utils_pdd import (PDD_EMA_WEIGHTS_NAME,
                              PDD_LEGACY_LIVE_WEIGHTS_NAME, PDD_WEIGHTS_NAME,
                              PDDLoRALinear, PDDParallelHead, add_pdd_lora,
-                             pdd_sampling_plan, pdd_state_dict,
-                             pdd_teacher_mode, pdd_time_grid,
-                             pdd_training_plan)
+                             pdd_head_index, pdd_sampling_plan,
+                             pdd_state_dict, pdd_teacher_mode,
+                             pdd_time_grid, pdd_training_plan,
+                             shifted_sigma)
 from .perf_metrics import install as install_perf_metrics
 from .perf_metrics import install_training as install_perf_training
 from .perf_metrics import instrument_pipeline
