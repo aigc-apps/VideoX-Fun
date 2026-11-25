@@ -411,12 +411,6 @@ def parse_args():
         help="Save tensors from active gradient checkpoint calls on CPU to reduce accelerator memory.",
     )
     parser.add_argument(
-        "--selective_ac",
-        type=float,
-        default=0,
-        help="Rate for transformer block apply checkpointing.",
-    )
-    parser.add_argument(
         "--learning_rate",
         type=float,
         default=1e-4,
