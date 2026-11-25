@@ -6,8 +6,9 @@ interval of the next block** instead of the single instantaneous velocity. Gener
 evaluation, i.e. `NFE = N / L`.
 
 Everything here works on plain `nn.Linear`s and tensors, with no reference to any particular transformer: the math of
-the time grid and the head plans, the [`PDDParallelHead`] / [`PDDLoRALinear`] modules, the teacher switch, and the checkpoint
-resolution. Porting a model supplies only the glue that knows where the final linear layers live and how a forward is
+the time grid and the head plans, [`PDDParallelHead`] for runtime fusion, [`PDDPreFusedHeads`] for released fixed
+projections, [`PDDLoRALinear`], the teacher switch, and checkpoint resolution. Porting a model supplies only the glue
+that knows where the final linear layers live and how a forward is
 called — `videox_fun/models/minimax_h3_pdd.py` is the MiniMax-H3 reference: an attach step that swaps the final heads
 for [`PDDParallelHead`]s, a teacher mean-velocity estimate in the model's calling convention, a step callback in the
 pipeline's callback protocol, and a `load_pdd_lora` that ties them together.
@@ -26,6 +27,11 @@ import torch.nn.functional as F
 def shifted_sigma(shift: float, sigma: torch.Tensor) -> torch.Tensor:
     r"""The exponential sigma shift of a rectified-flow schedule, `sigma' = s*sigma / (1 + (s-1)*sigma)`."""
     return shift * sigma / (1 + (shift - 1) * sigma)
+
+
+def pdd_time_grid_from_sigmas(sigmas, *, dtype=torch.float64) -> torch.Tensor:
+    r"""Convert a noise-to-clean sigma grid to PDD's ascending `t = 1 - sigma` grid."""
+    return 1.0 - torch.as_tensor(sigmas, dtype=dtype)
 
 
 def pdd_time_grid(shift: float, num_steps: int) -> torch.Tensor:
@@ -47,7 +53,19 @@ def pdd_time_grid(shift: float, num_steps: int) -> torch.Tensor:
         `torch.Tensor` of shape `(num_steps + 1,)`, float64: the grid, ascending from `0` to `1`.
     """
     sigma = torch.linspace(1.0, 0.0, num_steps + 1, dtype=torch.float64)
-    return 1.0 - shifted_sigma(shift, sigma)
+    return pdd_time_grid_from_sigmas(shifted_sigma(shift, sigma))
+
+
+def pdd_head_timestep_grid(num_heads: int, sigmas=None) -> torch.Tensor:
+    r"""Return the timestep at each head's node, using a supplied sampler grid when available."""
+    if sigmas is not None and num_heads == len(sigmas) - 1:
+        return pdd_time_grid_from_sigmas(sigmas[:-1], dtype=torch.float32)
+    return torch.linspace(0.0, 1.0, num_heads + 1, dtype=torch.float32)[:num_heads]
+
+
+def pdd_head_index(head_grid: torch.Tensor, timestep: float) -> int:
+    r"""Select the head whose training node is nearest to a continuous timestep."""
+    return int(torch.argmin((head_grid - float(timestep)).abs()))
 
 
 def pdd_training_plan(step_sizes: torch.Tensor, start: int, targets: Sequence[int], advance: int) -> torch.Tensor:
@@ -164,6 +182,19 @@ class PDDParallelHead(nn.Module):
         weight = torch.einsum("pn,noi->poi", plan, self.weight).flatten(0, 1)
         bias = None if self.bias is None else torch.einsum("pn,no->po", plan, self.bias).flatten()
         return F.linear(hidden_states, weight, bias)
+
+
+class PDDPreFusedHeads(nn.ModuleList):
+    r"""Fixed PDD projections already fused for individual sampling steps.
+
+    The released heads are evaluated directly, rather than fused a second time
+    by a PDD plan. Being a `ModuleList` keeps existing per-head checkpoint keys
+    and module hooks intact.
+    """
+
+    def forward(self, hidden_states: torch.Tensor, step_index: int) -> torch.Tensor:
+        head = self[step_index]
+        return head(hidden_states.to(head.weight.dtype))
 
 
 class PDDLoRALinear(nn.Module):

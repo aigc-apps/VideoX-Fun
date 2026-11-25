@@ -456,6 +456,28 @@ def load_lora_safetensors(path):
                 state.setdefault(name, torch.tensor(float(alpha), dtype=torch.float32))
     return state
 
+
+def validate_image_lora_head(path, output_head_type, single_head_sha256=None):
+    """Reject an explicitly marked adapter trained with a different output head.
+
+    Older adapters have no marker and remain loadable; return False so the caller
+    can explain that their original head configuration is not known.
+    """
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt", device="cpu") as f:
+        metadata = f.metadata() or {}
+    declared = metadata.get("minimax_h3_image_output_head")
+    if declared is None:
+        return False
+    if declared != output_head_type:
+        raise ValueError(f"LoRA was trained with output head {declared!r}, but the model uses {output_head_type!r}")
+    expected = metadata.get("minimax_h3_image_single_head_sha256")
+    if declared == "single" and (not expected or expected != single_head_sha256):
+        raise ValueError("LoRA single output head fingerprint does not match the selected head")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Official TaoMate-H3 adapter support
 # ---------------------------------------------------------------------------

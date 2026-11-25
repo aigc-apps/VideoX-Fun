@@ -70,7 +70,16 @@ class MiniMaxH3MixedPrecisionLoaderMixin:
         # Auto-detect an original MiniMax-H3 checkpoint layout and stream-convert it on the fly, so the caller never
         # has to branch on the format itself.
         if pretrained_model_name_or_path is not None:
-            if is_raw_minimax_h3_format(pretrained_model_name_or_path):
+            subfolder = kwargs.get("subfolder")
+            component_dir = os.path.join(str(pretrained_model_name_or_path), subfolder) if subfolder else None
+            # A snapshot may hold a native transformer next to already-converted
+            # VAE/transformer components. An explicitly requested diffusers
+            # subfolder must not be routed through the root's native loader.
+            diffusers_component = bool(component_dir and (
+                glob.glob(os.path.join(component_dir, "diffusion_pytorch_model*.safetensors")) or
+                glob.glob(os.path.join(component_dir, "diffusion_pytorch_model*.safetensors.index.json"))
+            ))
+            if not diffusers_component and is_raw_minimax_h3_format(pretrained_model_name_or_path):
                 if not hasattr(cls, "from_pretrained_original"):
                     raise ValueError(
                         f"{cls.__name__} has no loader for the original MiniMax-H3 layout found in "
@@ -426,8 +435,15 @@ def get_transformer_key_plan(config):
     plan = {
         "video_patch_proj.weight": [("proj_in.weight", [hidden_size, video_patch_dim])],
         "video_patch_proj.bias": [("proj_in.bias", [hidden_size])],
-        "audio_patch_proj.weight": [("audio_proj_in.weight", [hidden_size, config["audio_in_channels"]])],
-        "audio_patch_proj.bias": [("audio_proj_in.bias", [hidden_size])],
+    }
+    # Preserve the video mapping and ordering; Image omits both audio projections.
+    audio_channels = config.get("audio_in_channels")
+    if audio_channels is not None:
+        plan.update({
+            "audio_patch_proj.weight": [("audio_proj_in.weight", [hidden_size, audio_channels])],
+            "audio_patch_proj.bias": [("audio_proj_in.bias", [hidden_size])],
+        })
+    plan.update({
         "condition_proj.weight": [("context_embedder.weight", [hidden_size, config["text_dim"]])],
         "condition_proj.bias": [("context_embedder.bias", [hidden_size])],
         # `Timesteps` + `TimestepEmbedding` reproduce the reference sinusoid and MLP exactly, so the timestep MLP is
@@ -446,9 +462,12 @@ def get_transformer_key_plan(config):
         "final_layer.adaln_proj.linear.bias": [("norm_out.linear.bias", [2 * hidden_size])],
         "final_layer.video_out.weight": [("proj_out.weight", [video_patch_dim, hidden_size])],
         "final_layer.video_out.bias": [("proj_out.bias", [video_patch_dim])],
-        "final_layer.audio_out.weight": [("audio_proj_out.weight", [config["audio_in_channels"], hidden_size])],
-        "final_layer.audio_out.bias": [("audio_proj_out.bias", [config["audio_in_channels"]])],
-    }
+    })
+    if audio_channels is not None:
+        plan.update({
+            "final_layer.audio_out.weight": [("audio_proj_out.weight", [audio_channels, hidden_size])],
+            "final_layer.audio_out.bias": [("audio_proj_out.bias", [audio_channels])],
+        })
     for key in MINIMAX_H3_TRANSFORMER_DROPPED_KEYS:
         plan[key] = []
 
@@ -644,8 +663,8 @@ def is_raw_minimax_h3_format(path):
 
     The original root `model_index.json` carries the schedule constants of the original recipe under
     `_minimax_h3.sigma_shift_scales`; as a fallback the first transformer shard header is sniffed for an original key.
-    Only that block counts as a marker: the released image partition ships an `_minimax_h3` block of its own (task
-    list, partition name) next to weights that are already in the diffusers layout, and must not be converted.
+    The Image partition has its own native loader and scheduler, so its `_minimax_h3.partition == "image"` marker
+    is explicitly excluded even when its original transformer is present alongside converted components.
     """
     if not os.path.isdir(path):
         return False
@@ -653,9 +672,26 @@ def is_raw_minimax_h3_format(path):
     if os.path.isfile(index_path):
         try:
             with open(index_path) as f:
-                if "sigma_shift_scales" in json.load(f).get("_minimax_h3", {}):
+                metadata = json.load(f).get("_minimax_h3", {})
+                # Image has its own native transformer loader and scheduler
+                # config; it is not a video partition with modality shifts.
+                if metadata.get("partition") == "image":
+                    return False
+                if "sigma_shift_scales" in metadata:
                     return True
         except (OSError, json.JSONDecodeError):
+            pass
+    # A component-only Image snapshot may omit model_index.json entirely.
+    # Its native transformer config still distinguishes it from video roots.
+    native_config_path = os.path.join(path, "transformer", "config.json")
+    if os.path.isfile(native_config_path):
+        try:
+            with open(native_config_path) as f:
+                native_config = json.load(f)
+            if (native_config.get("_class_name") == "MiniMaxH3DiTModel" and
+                    native_config.get("audio_enabled") is False):
+                return False
+        except (OSError, json.JSONDecodeError, AttributeError):
             pass
     shards = sorted(glob.glob(os.path.join(path, "transformer", "*.safetensors")))
     if shards:
@@ -696,7 +732,7 @@ def original_video_vae_weights_path(checkpoint_path):
     )
 
 
-def iter_original_transformer_tensors(checkpoint_path, config=None, torch_dtype=None):
+def iter_original_transformer_tensors(checkpoint_path, config=None, torch_dtype=None, transformer_subfolder="transformer"):
     r"""
     Stream the original transformer shards and yield `(target_key, tensor)` pairs in the `videox_fun` naming.
 
@@ -706,7 +742,7 @@ def iter_original_transformer_tensors(checkpoint_path, config=None, torch_dtype=
     """
     config = config or MINIMAX_H3_TRANSFORMER_CONFIG
     plan = get_transformer_key_plan(config)
-    transformer_dir = os.path.join(checkpoint_path, "transformer")
+    transformer_dir = os.path.join(checkpoint_path, transformer_subfolder) if transformer_subfolder else checkpoint_path
     shards = sorted(glob.glob(os.path.join(transformer_dir, "*.safetensors")))
     if not shards:
         raise FileNotFoundError(f"No `*.safetensors` shards found under {transformer_dir}.")

@@ -2062,7 +2062,9 @@ def build_trainable_optimizer_groups(named_parameters, args, accelerator, *, bas
             groups[0]["params"].append(param)
         elif any(pattern in qualified_name for pattern in low_patterns):
             groups[1]["params"].append(param)
-    return apply_trainable_module_learning_rates(groups, candidates, args, accelerator, base=base)
+    groups = apply_trainable_module_learning_rates(groups, candidates, args, accelerator, base=base)
+    # DeepSpeed drops empty param groups, desyncing the LR scheduler base_lrs; torch>=2.13 zips strictly.
+    return [group for group in groups if group["params"]]
 
 
 def create_optimizer(parameters, args, *, learning_rate=None):

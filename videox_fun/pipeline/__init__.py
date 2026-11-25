@@ -22,6 +22,7 @@ from .pipeline_minimax_h3 import (MiniMaxH3AudioReference,
                                   MiniMaxH3ImageReference, MiniMaxH3Pipeline,
                                   MiniMaxH3VideoReference)
 from .pipeline_minimax_h3_control import MiniMaxH3ControlPipeline
+from .pipeline_minimax_h3_image import MiniMaxH3ImagePipeline
 from .pipeline_mova import MOVAPipeline
 from .pipeline_qwenimage import QwenImagePipeline
 from .pipeline_qwenimage21 import QwenImage21Pipeline

@@ -46,6 +46,10 @@ from .cogvideox_vae import AutoencoderKLCogVideoX
 from .ernie_image_transformer import ErnieImageTransformer2DModel
 from .fantasytalking_audio_encoder import FantasyTalkingAudioEncoder
 from .fantasytalking_transformer3d import FantasyTalkingTransformer3DModel
+from .fastvideo_minimax_h3_transformer3d import \
+    FastVideoMiniMaxH3Transformer3DModel
+from .fastvideo_wan_transformer3d import (FastVideoWanSelfAttention,
+                                          FastVideoWanTransformer3DModel)
 from .flashhead_audio_encoder import FlashHeadAudioEncoder
 from .flashhead_transformer3d import FlashHeadTransformer3DModel
 from .flux2_image_processor import Flux2ImageProcessor
@@ -72,6 +76,8 @@ from .ltx2_transformer3d import LTX2VideoTransformer3DModel
 from .ltx2_vae import AutoencoderKLLTX2Video
 from .ltx2_vae_audio import AutoencoderKLLTX2Audio
 from .ltx2_vocoder import LTX2Vocoder, LTX2VocoderWithBWE
+from .minimax_h3_image_transformer2d import MiniMaxH3ImageTransformer2DModel
+from .minimax_h3_image_vae import AutoencoderKLMiniMaxH3Image
 from .minimax_h3_transformer3d import MiniMaxH3Transformer3DModel
 from .minimax_h3_transformer3d_control import \
     MiniMaxH3ControlTransformer3DModel
@@ -94,10 +100,6 @@ from .spark_transformer3d import (SparkWan2_2Transformer3DModel,
                                   SparkWanSelfAttention,
                                   SparkWanTransformer3DModel)
 from .turbowan_transformer3d import TurboWanTransformer3DModel
-from .fastvideo_wan_transformer3d import (FastVideoWanSelfAttention,
-                                          FastVideoWanTransformer3DModel)
-from .fastvideo_minimax_h3_transformer3d import \
-    FastVideoMiniMaxH3Transformer3DModel
 from .wan_audio_encoder import WanAudioEncoder
 from .wan_gan_discriminator import add_wan_gan_discriminator
 from .wan_image_encoder import CLIPModel
